@@ -21,7 +21,12 @@ fn free_port() -> u16 {
         .port()
 }
 
-fn spawn(db: &str, port: u16) -> Child {
+fn spawn(db: &str, port: u16, log: &std::path::Path) -> Child {
+    let out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .unwrap();
     Command::new(env!("CARGO_BIN_EXE_agentim"))
         .args([
             "--demo",
@@ -31,8 +36,9 @@ fn spawn(db: &str, port: u16) -> Child {
             &format!("127.0.0.1:{port}"),
             "--no-exit-on-storage-failure",
         ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .env("RUST_LOG", "info")
+        .stdout(Stdio::from(out.try_clone().unwrap()))
+        .stderr(Stdio::from(out))
         .spawn()
         .expect("start server")
 }
@@ -53,15 +59,24 @@ async fn http(addr: &str, method: &str, path: &str, body: &str) -> Option<(u16, 
     ))
 }
 
-async fn wait_ready(addr: &str) {
+async fn wait_ready(addr: &str, child: &mut Child, log: &std::path::Path) {
     let t = Instant::now();
-    while t.elapsed() < Duration::from_secs(30) {
+    while t.elapsed() < Duration::from_secs(60) {
         if let Some((200, _)) = http(addr, "GET", "/readyz", "").await {
             return;
         }
+        if let Ok(Some(status)) = child.try_wait() {
+            panic!(
+                "server exited with {status}:\n{}",
+                std::fs::read_to_string(log).unwrap_or_default()
+            );
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("server did not become ready");
+    panic!(
+        "server did not become ready:\n{}",
+        std::fs::read_to_string(log).unwrap_or_default()
+    );
 }
 
 async fn dev_user(addr: &str, name: &str) -> (String, String) {
@@ -115,8 +130,9 @@ async fn crash_round(crash_after: Duration) {
     let db = dir.path().join("crash.db").to_string_lossy().to_string();
     let port = free_port();
     let addr = format!("127.0.0.1:{port}");
-    let mut child = spawn(&db, port);
-    wait_ready(&addr).await;
+    let log = dir.path().join("server.log");
+    let mut child = spawn(&db, port, &log);
+    wait_ready(&addr, &mut child, &log).await;
 
     let (_, owner_token) = dev_user(&addr, "owner").await;
     let mut senders = vec![];
@@ -165,8 +181,8 @@ async fn crash_round(crash_after: Duration) {
         "nothing was acknowledged before the crash"
     );
 
-    let mut child = spawn(&db, port);
-    wait_ready(&addr).await;
+    let mut child = spawn(&db, port, &log);
+    wait_ready(&addr, &mut child, &log).await;
     let mut ows = connect(&addr, &owner_token).await;
     let mut after = 0;
     let mut seen: HashMap<String, i64> = HashMap::new();

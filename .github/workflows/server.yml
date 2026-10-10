@@ -34,7 +34,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       # unit, acceptance (SQLite), multi-database, WebSocket and kill -9 crash tests
-      - run: cargo test
+      - run: cargo test --no-fail-fast
 
   databases:
     name: tests on PostgreSQL 16 and MySQL 8.4
