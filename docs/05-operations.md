@@ -39,11 +39,11 @@
 
 - `/healthz`：进程存活。
 - `/readyz`：每个数据库都可写（没有处于存储故障状态），写入队列没有超过容量的 90%。返回每个库的状态；不就绪时返回 503。
-- ⏳ 随仓库提供 Prometheus 告警规则（提交耗时 p99 > 50ms、写入队列持续饱和、推送丢弃率过高、熔断突增、待审批草稿超过 SLA、存储错误）和 Grafana 面板 JSON。
+- ⏳ 管理系统（§8）展示健康状态；随仓库提供 Prometheus 告警规则（提交耗时 p99 > 50ms、写入队列持续饱和、推送丢弃率过高、熔断突增、待审批草稿超过 SLA、存储错误）和 Grafana 面板 JSON。
 
 ## 5. 测试
 
-所有测试都在 GitHub Actions 中运行：每次推送跑 `.github/workflows/server.yml`；规模测试在 `.github/workflows/scale.yml`，每晚跑一次，也可以手动触发（§5.1）。
+所有测试都在 GitHub Actions 中运行：每次推送跑 `.github/workflows/server.yml`；规模测试在 `.github/workflows/scale.yml`，每晚跑一次，也可以手动触发（§5.4）。
 
 | 测试 | Linux | Windows | 内容 |
 |---|---|---|---|
@@ -57,7 +57,7 @@
 | 崩溃恢复（`tests/crash.rs`） | ✅ | ✅ | 启动真实的二进制，发送过程中强杀进程（Linux 上是 SIGKILL，Windows 上是 TerminateProcess），在 3 个时间点各做一轮，重启后逐条核对已 ACK 的消息 |
 | 并发压测（`examples/loadtest.rs`） | ✅ + 性能门槛 | ✅ | 扇出场景（同群）与纯写入场景（`--solo`）。校验 seq 连续、恰好一次、发送方有序、推送有序且不缺、所有客户端视图一致、流式内容完整 |
 | 浏览器（`ci/ui_smoke.mjs`，14 项断言） | ✅ | ✅ | 完整演示流程 + 截图 |
-| 规模测试（`examples/scale.rs`，每晚） | ✅ | ✅ | 见 §5.1 |
+| 规模测试（`examples/scale.rs`，每晚） | ✅ | ✅ | 见 §5.4 |
 | ⏳ | | | 依赖安全扫描（`cargo audit`、`cargo deny`）、加密开 / 关的对比基准（P2） |
 
 ### 5.2 业务场景测试
@@ -105,7 +105,7 @@
 8. `@bob` 会把 `@bobby` 也算成提到 bob；现在取最长匹配。
 9. 文本里的 NUL 字节在 PostgreSQL 上导致存储错误；现在直接拒绝。
 
-### 5.1 规模测试
+### 5.4 规模测试
 
 压测程序和服务端在同一台 runner 上（4 核），所以这里的数字用来发现退化，不代表容量上限。万级消息/秒和百万连接要在集群阶段用独立的压测机器验证。
 
@@ -133,16 +133,43 @@ GitHub Actions 结果（标准 runner，release，SQLite，每个场景发送 12
 
 本地跑 PostgreSQL 和 MySQL 的测试：设置 `AGENTIM_TEST_PG=postgres://user@host` 和 `AGENTIM_TEST_MYSQL=mysql://user:pass@host`（URL 里不带库名），每个测试会自动新建一个库。
 
-## 6. 客户端方案（待确认）
+## 6. SDK 与客户端（D8）
 
-| 阶段 | 方案 | 说明 |
+### 6.1 方案：一个 Rust 核心，各语言绑定
+
+连接管理、断线重连、`client_msg_id` 重试去重、按 seq 的同步与补拉、resync 处理、本地存储，以及 E2EE（MLS）都比较难写对。七种语言各写一遍，行为一定会出现差异，密码学代码也无法逐一审计。业内成熟的做法是**一个 Rust 核心 + 自动生成的各语言绑定**：
+
+| 参考 | 做法 |
+|---|---|
+| matrix-rust-sdk | Rust 核心，UniFFI 生成 Kotlin / Swift 绑定，Element X 的 iOS、Android 客户端都基于它 |
+| Wire core-crypto | OpenMLS + UniFFI（移动端）+ wasm（Web） |
+| libsignal | Rust 核心，提供 Java、Swift、TypeScript 绑定 |
+| Mozilla application-services | Rust 核心，UniFFI 生成 Firefox 移动端用的绑定 |
+
+| 目标 | 绑定方式 | 产物 |
 |---|---|---|
-| 现在 | Web 客户端（由服务端直接提供） | Windows 用户用浏览器打开即可 |
-| v0.3 | 把 Web 客户端做成 PWA | Edge 或 Chrome 里可以"安装为应用"；支持桌面通知（审批提醒）；改动很小 |
-| v0.4 | **Windows 桌面端：Tauri 2** | 用系统自带的 WebView2（Windows 10/11 已预装），复用 Web 界面；安装包约 10MB，Electron 通常要 150MB 以上；支持原生通知、托盘、自动更新。代价是 WebView 在不同系统上的行为有差异，需要单独测试。macOS 和 Linux 的桌面端可以顺带支持 |
-| 并行 | TypeScript SDK、Rust SDK | 第三方客户端和 Agent 都能用 |
+| Rust | 直接使用 `agentim-sdk` crate | crates.io |
+| Android | UniFFI → Kotlin | AAR（arm64-v8a、armeabi-v7a、x86_64） |
+| iOS / macOS | UniFFI → Swift | XCFramework、Swift Package |
+| Python | UniFFI → Python（PyO3 备选） | wheel（Linux、Windows、macOS） |
+| TypeScript | 浏览器：wasm-bindgen；Node：napi-rs | npm 包 |
+| C / C++ | cbindgen 生成 C 头文件 + C++ 封装 | 静态库和动态库；附 **CMake 配置**，可以 `find_package(agentim)` 或用 `add_subdirectory` 从源码编译 |
+| Go | cgo 调用 C 接口 | Go module，附预编译库 |
 
-不选 Electron 的原因：安装包和内存占用都大得多；我们只需要 Windows 和 Web 两个渲染目标，不需要 Chromium 带来的跨平台像素级一致性。
+另外提供**纯 Go、纯 Python 的轻量 Agent 客户端**（不含 E2EE）：服务端 Agent 大多用 Go 或 Python 编写，交叉编译时 cgo 很麻烦；而协议本身是 WebSocket 上的 JSON，轻量客户端几百行就能写好。
+
+**构建脚本**：`sdk/build.sh` 和 `sdk/build.ps1`，一条命令编译指定目标（例如 `./build.sh android`、`./build.ps1 cpp -Release`）；CI 在 Linux、Windows、macOS 上构建全部产物，并对每种语言跑同一套协议一致性测试（复用服务端的场景测试，用 SDK 重新实现客户端一侧）。
+
+### 6.2 Windows 客户端
+
+| 项目 | 选择 | 理由 |
+|---|---|---|
+| 框架 | **Tauri 2** | 用系统自带的 WebView2（Windows 10/11 已预装）；安装包约 10MB，Electron 通常要 150MB 以上；后端直接调用 Rust SDK，不用绑定 |
+| 界面 | React，和 Web 客户端共用 | 一套界面同时用于 Web、Windows，之后是 macOS、Linux |
+| 本地数据 | SQLite（SDK 自带）；E2EE 私钥用 Windows DPAPI / 凭据管理器保护 | |
+| 系统集成 | 原生通知、托盘、开机启动、自动更新（签名安装包） | |
+
+Web 客户端继续由服务端直接提供，也可以安装为 PWA；手机端在 SDK 完成后再做。
 
 ## 7. 单机版运行与演示（已实现）
 
@@ -190,3 +217,34 @@ cargo run --release -- --demo          # 打开 http://127.0.0.1:8080，选 alic
 ### 7.3 已知限制
 
 演示登录不需要密码，令牌明文存储（P2 修复，见 [04 §1](04-security-compliance.md)）；没有内置 TLS（P2）；预算存在内存里；审批草稿没有过期时间（P3）；接管锁不会超时自动交还；在线迁移还没有管理接口。撤回会清空数据库中的内容，但 SQLite 的 WAL 文件在下次检查点之前可能还留着旧页面，是否在撤回后主动做检查点待定。建大群时，创建者会收到每个成员的加入事件（2000 人群就是 2000 条），超过推送队列的部分会被丢弃并改发 resync，数据不丢，但更合理的做法是合并成一条事件（放在大群模式里做，P6）。
+
+## 8. 管理系统（D14）
+
+### 8.1 结构
+
+```
+浏览器 ──► agentim-console（Go 单二进制，内嵌 React 前端）
+               │ 管理员登录、RBAC、审计
+               ▼ HTTP /admin/v1（OpenAPI）
+           agentim（Rust 服务端）──► 数据库
+```
+
+- **Rust 服务端**提供管理 API（`/admin/v1`，默认只监听内网地址，用单独的管理令牌或 mTLS 认证）。所有修改都经过服务端的业务逻辑和写线程，所以管理操作同样有序、有审计，不会绕过权限和不变量。**管理系统不直接读写数据库**。
+- **Go 管理端**（`agentim-console`）：用 `go:embed` 把 React 前端打包进二进制；负责管理员账号（密码 + TOTP，企业版接 SSO）、角色（超级管理员、单元管理员、审计员）、调用管理 API。接口用 OpenAPI 描述，Go 和 TypeScript 的客户端代码从 OpenAPI 生成，两边不会对不上。
+- **一键启动**：`agentim-console --with-server` 会顺带启动并守护本机的 `agentim` 进程，用户只需要运行一个命令；也提供 Docker Compose 和 systemd 单元。
+
+### 8.2 功能
+
+| 模块 | 内容 |
+|---|---|
+| 概览 | 在线连接数、消息量、写入延迟、存储健康、告警（读 `/metrics` 和 `/readyz`） |
+| 用户与设备 | 创建、禁用、重置密码；设备列表、强制下线；按单元筛选 |
+| 组织单元 | 单元、隔离等级、所在数据库、单元迁移（调用现有的迁移流程） |
+| 会话 | 只显示元数据（成员、消息数、所在库）；**看内容需要合规权限，并写审计** |
+| Agent（[03 §9.4](03-ai-native.md)） | 注册、凭据、权限、预算与成本、护栏配置、急停、任务和记事本的查看 |
+| 合规（D7） | 举报与审核队列、处置记录、导出、删除请求、保留策略 |
+| 审计 | 按人、按 Agent、按会话、按操作检索，可导出 |
+| 系统 | 加密状态与密钥轮换、数据库配置、版本与升级 |
+
+前端组件库待定（D17），建议 Ant Design。
+
