@@ -21,6 +21,8 @@ pub const FEATURES: &[&str] = &[
     "blocks",
     "resync",
     "observe",
+    "custom_kinds",
+    "signals",
 ];
 
 /// Every operation of protocol v1, so an unknown one can be told apart from
@@ -41,6 +43,7 @@ pub const OPS: &[&str] = &[
     "find_user",
     "send",
     "edit",
+    "signal",
     "recall",
     "pull",
     "pull_side",

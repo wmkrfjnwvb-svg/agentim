@@ -41,6 +41,14 @@ pub struct Draft {
     pub reply_to: Option<String>,
     pub state: String,
     pub created_at: i64,
+    pub kind: String,
+    pub payload: Option<Value>,
+}
+
+/// A nullable JSON column.
+fn json_col(r: &AnyRow, col: &str) -> sqlx::Result<Option<Value>> {
+    Ok(r.try_get::<Option<String>, _>(col)?
+        .and_then(|s| serde_json::from_str(&s).ok()))
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +66,7 @@ pub struct NewMsg<'a> {
     pub on_behalf_of: Option<String>,
     pub kind: &'a str,
     pub content: String,
+    pub payload: Option<Value>,
     pub state: &'a str,
     pub hop: i64,
     pub causation_id: Option<String>,
@@ -83,10 +92,9 @@ pub enum Cell {
 }
 
 const MSG_COLS: &str = "msg_id, conv_id, created_seq, sender_id, sender_name, sender_type, on_behalf_of, kind, content,
-    version, state, state_reason, hop, causation_id, reply_to, mentions, created_at, updated_at";
+    version, state, state_reason, hop, causation_id, reply_to, mentions, created_at, updated_at, payload";
 const MEMBER_COLS: &str = "user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq";
-const DRAFT_COLS: &str =
-    "draft_id, conv_id, agent_id, content, hop, causation_id, reply_to, state, created_at";
+const DRAFT_COLS: &str = "draft_id, conv_id, agent_id, content, hop, causation_id, reply_to, state, created_at, kind, payload";
 
 fn row_user(r: &AnyRow) -> sqlx::Result<User> {
     Ok(User {
@@ -109,6 +117,7 @@ fn row_msg(r: &AnyRow) -> sqlx::Result<MsgView> {
         on_behalf_of: r.try_get("on_behalf_of")?,
         kind: r.try_get("kind")?,
         content: r.try_get("content")?,
+        payload: json_col(r, "payload")?,
         version: r.try_get("version")?,
         state: r.try_get("state")?,
         state_reason: r.try_get("state_reason")?,
@@ -172,6 +181,10 @@ fn row_draft(r: &AnyRow) -> sqlx::Result<Draft> {
         reply_to: r.try_get("reply_to")?,
         state: r.try_get("state")?,
         created_at: r.try_get("created_at")?,
+        kind: r
+            .try_get::<Option<String>, _>("kind")?
+            .unwrap_or_else(|| "text".into()),
+        payload: json_col(r, "payload")?,
     })
 }
 
@@ -757,6 +770,7 @@ impl Db<'_> {
             on_behalf_of: m.on_behalf_of,
             kind: m.kind.to_string(),
             content: m.content,
+            payload: m.payload,
             version: 1,
             state: m.state.to_string(),
             state_reason: None,
@@ -768,7 +782,7 @@ impl Db<'_> {
             updated_at: ts,
         };
         sqlx::query(self.d.q(&format!(
-            "INSERT INTO messages ({MSG_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO messages ({MSG_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )))
         .bind(&view.msg_id)
         .bind(&view.conv_id)
@@ -788,6 +802,7 @@ impl Db<'_> {
         .bind(serde_json::to_string(&view.mentions).unwrap())
         .bind(ts)
         .bind(ts)
+        .bind(view.payload.as_ref().map(|p| p.to_string()))
         .execute(&mut *self.c)
         .await?;
         if let Some(cid) = m.client_msg_id {
@@ -855,6 +870,16 @@ impl Db<'_> {
         let conv_id = view.conv_id.clone();
         self.append_event(&conv_id, kind, Some(actor), Some(view), json!({}))
             .await
+    }
+
+    /// Replaces a custom kind's payload (before `update_message` announces it).
+    pub async fn set_payload(&mut self, msg_id: &str, payload: Option<&Value>) -> ApiResult<()> {
+        sqlx::query(self.d.q("UPDATE messages SET payload = ? WHERE msg_id = ?"))
+            .bind(payload.map(|p| p.to_string()))
+            .bind(msg_id)
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
     }
 
     /// Streaming checkpoint: overwrites partial content without an event.
@@ -956,6 +981,7 @@ impl Db<'_> {
                 continue;
             }
             p["msg"]["content"] = json!("");
+            p["msg"]["payload"] = Value::Null;
             p["msg"]["mentions"] = json!([]);
             sqlx::query(
                 self.d
@@ -1126,6 +1152,8 @@ impl Db<'_> {
         causation_id: Option<String>,
         reply_to: Option<String>,
         audience: &[String],
+        kind: &str,
+        payload: Option<Value>,
     ) -> ApiResult<(Draft, SideEvent)> {
         let d = Draft {
             draft_id: draft_id.to_string(),
@@ -1137,9 +1165,11 @@ impl Db<'_> {
             reply_to,
             state: "pending".into(),
             created_at: now_ms(),
+            kind: kind.to_string(),
+            payload,
         };
         sqlx::query(self.d.q(&format!(
-            "INSERT INTO drafts ({DRAFT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO drafts ({DRAFT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )))
         .bind(&d.draft_id)
         .bind(&d.conv_id)
@@ -1150,6 +1180,8 @@ impl Db<'_> {
         .bind(&d.reply_to)
         .bind(&d.state)
         .bind(d.created_at)
+        .bind(&d.kind)
+        .bind(d.payload.as_ref().map(|p| p.to_string()))
         .execute(&mut *self.c)
         .await?;
         let side = self
@@ -1158,7 +1190,7 @@ impl Db<'_> {
                 audience,
                 "draft.created",
                 Some(&agent.id),
-                json!({"draft_id": d.draft_id, "agent_id": agent.id, "agent_name": agent.name, "content": content}),
+                json!({"draft_id": d.draft_id, "agent_id": agent.id, "agent_name": agent.name, "content": content, "kind": d.kind, "payload": d.payload}),
             )
             .await?;
         Ok((d, side))

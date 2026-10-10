@@ -17,7 +17,7 @@ use crate::metrics as m;
 use crate::model::*;
 use crate::policy::PolicyChain;
 use crate::protocol;
-use crate::registry::{Pushes, Registry};
+use crate::registry::{Out, Pushes, Registry};
 use crate::shard::Shard;
 
 fn err(code: &'static str, msg: impl Into<String>) -> ApiError {
@@ -44,7 +44,12 @@ pub struct Session {
     pub user: User,
     /// Negotiated protocol and what the client said about itself in `hello`.
     client: std::sync::Mutex<ClientState>,
+    /// Signal rate window: (start, count).
+    signals: std::sync::Mutex<(Instant, u32)>,
 }
+
+/// Signals one connection may send per second.
+pub const SIGNALS_PER_SECOND: u32 = 20;
 
 #[derive(Debug, Clone)]
 pub struct ClientState {
@@ -360,6 +365,7 @@ impl Hub {
                     info: None,
                     features: Vec::new(),
                 }),
+                signals: std::sync::Mutex::new((Instant::now(), 0)),
             },
             rx,
         )
@@ -817,7 +823,74 @@ impl Hub {
                 "stats are available to operators through the admin API",
             )),
             ClientMsg::Stats => self.stats().await,
+            ClientMsg::Signal {
+                conv_id,
+                kind,
+                data,
+            } => self.signal(sess, &conv_id, &kind, data).await,
         }
+    }
+
+    /// Ephemeral event to the members online now (docs/02-architecture.md
+    /// §2.6): nothing is stored and no seq is taken, so a refused or dropped
+    /// signal leaves no trace.
+    async fn signal(
+        &self,
+        sess: &Session,
+        conv_id: &str,
+        kind: &str,
+        data: Option<Value>,
+    ) -> ApiResult<Value> {
+        let me = &sess.user;
+        if kind != "typing" {
+            crate::logic::check_custom_kind(kind)?;
+        }
+        if let Some(d) = &data {
+            crate::logic::check_json_object(d, "data", crate::logic::MAX_SIGNAL_BYTES)?;
+        }
+        {
+            let mut w = sess.signals.lock().unwrap();
+            let now = Instant::now();
+            if now.duration_since(w.0) >= std::time::Duration::from_secs(1) {
+                *w = (now, 0);
+            }
+            if w.1 >= SIGNALS_PER_SECOND {
+                return Err(err("rate_limited", "too many signals"));
+            }
+            w.1 += 1;
+        }
+        let shard = self.conv_shard(conv_id)?;
+        let (conv, members) = {
+            let c = conv_id.to_string();
+            self.read(shard, move |db| {
+                Box::pin(async move { Ok((db.conv(&c).await?, db.members(&c).await?)) })
+            })
+            .await?
+        };
+        let Some(conv) = conv else {
+            return Err(err("not_found", "conversation"));
+        };
+        if !members.iter().any(|m| m.user_id == me.id) {
+            return Err(err("forbidden", "not a member"));
+        }
+        if conv.kind == "dm"
+            && members
+                .iter()
+                .any(|m| m.user_id != me.id && self.inner.sh.blocked_either(&m.user_id, &me.id))
+        {
+            return Err(err("blocked", "you cannot message this user"));
+        }
+        let frame = json!({"type": "signal", "conv_id": conv_id, "kind": kind, "from": me.id, "data": data});
+        let outs: Vec<Out> = members
+            .iter()
+            .filter(|m| m.user_id != me.id)
+            .map(|m| Out::ToUser {
+                user_id: m.user_id.clone(),
+                frame: frame.clone(),
+            })
+            .collect();
+        self.inner.sh.reg.deliver(outs);
+        Ok(json!({}))
     }
 
     /// The member whose read scope applies: the user, or (for an owner
@@ -897,7 +970,10 @@ impl Hub {
                             && let Some(msg) = &e.msg
                             && msg.sender_id != reader.user_id
                         {
-                            let (t, flags) = sh.policy.inbound(&msg.content, msg.sender_type);
+                            let (t, flags) = sh.policy.inbound(
+                                &crate::logic::scan_text(&msg.content, msg.payload.as_ref()),
+                                msg.sender_type,
+                            );
                             v["trust"] = json!(t.as_str());
                             v["flags"] = json!(flags);
                         }

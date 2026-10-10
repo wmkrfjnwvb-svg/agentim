@@ -96,8 +96,13 @@ pub struct MsgView {
     /// Written by the server from the authenticated identity; cannot be forged.
     pub sender_type: UserKind,
     pub on_behalf_of: Option<String>,
+    /// `text` or a namespaced custom kind (docs/02-architecture.md §2.6);
+    /// `content` is then the plain-text fallback.
     pub kind: String,
     pub content: String,
+    /// Structured content of a custom kind (a JSON object).
+    #[serde(default)]
+    pub payload: Option<Value>,
     pub version: i64,
     /// committed | streaming | complete | cancelled | failed | recalled
     pub state: String,
@@ -205,7 +210,12 @@ pub enum ClientMsg {
     Send {
         conv_id: String,
         client_msg_id: String,
+        /// For a custom kind: the plain-text fallback.
         text: String,
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        payload: Option<Value>,
         #[serde(default)]
         reply_to: Option<String>,
         #[serde(default)]
@@ -220,6 +230,16 @@ pub enum ClientMsg {
     Edit {
         msg_id: String,
         text: String,
+        /// Custom kinds only: replaces the payload when given.
+        #[serde(default)]
+        payload: Option<Value>,
+    },
+    /// Ephemeral event to the online members: no storage, no seq.
+    Signal {
+        conv_id: String,
+        kind: String,
+        #[serde(default)]
+        data: Option<Value>,
     },
     Recall {
         msg_id: String,
@@ -322,6 +342,7 @@ impl ClientMsg {
             ClientMsg::FindUser { .. } => "find_user",
             ClientMsg::Send { .. } => "send",
             ClientMsg::Edit { .. } => "edit",
+            ClientMsg::Signal { .. } => "signal",
             ClientMsg::Recall { .. } => "recall",
             ClientMsg::Pull { .. } => "pull",
             ClientMsg::PullSide { .. } => "pull_side",
@@ -353,6 +374,7 @@ impl ClientMsg {
             | ClientMsg::TransferOwner { conv_id, .. }
             | ClientMsg::Dissolve { conv_id }
             | ClientMsg::Send { conv_id, .. }
+            | ClientMsg::Signal { conv_id, .. }
             | ClientMsg::Pull { conv_id, .. }
             | ClientMsg::PullSide { conv_id, .. }
             | ClientMsg::Read { conv_id, .. }

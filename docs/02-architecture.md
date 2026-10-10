@@ -122,7 +122,7 @@ Message {
 
 还没做：弃用提示、上一版 SDK 的兼容性测试（SDK 发布后加入 CI）、AsyncAPI 文档。
 
-### 2.6 扩展机制（D20，已确认）
+### 2.6 扩展机制（D20，自定义消息和信号已实现）
 
 **目标**：开发者不改服务端代码，就能加入自己的消息类型和功能，而且不破坏顺序、权限、审计、加密这些核心保证。
 
@@ -135,6 +135,22 @@ Message {
 | **Webhook** | 订阅事件（新消息、成员变化、任务变化等），服务端用签名的 HTTP 请求推送，失败自动重试，按 seq 可以补拉。适合不想维持长连接的集成 | Slack Events API、GitHub Webhooks |
 | **服务端插件** | MVP 1：Rust trait（编译进服务端，用于企业定制的过滤、审批、审计导出）。MVP 2：WASM 插件，在沙箱里运行，限制内存、CPU 时间和可调用的接口，运行时加载、不用重新编译。候选运行时是 Wasmtime，或者基于它的 Extism（多语言插件开发包） | Envoy 的 proxy-wasm、Extism |
 | Agent | Agent 本身就是一种扩展：用 SDK 或 MCP 接入即可（[03 §9](03-ai-native.md)） | |
+
+**已实现：自定义消息类型**（测试见 `tests/extensions.rs`）
+
+| 环节 | 行为 |
+|---|---|
+| 发送 | `send` 可选 `kind` 和 `payload`。`kind` 缺省或为 `text` 时不能带 `payload`。自定义类型必须带命名空间：至少两段、以点分隔，每段以小写字母开头、只含 `a-z0-9_-`，总长不超过 64 字节，`agentim.` 保留给内置类型。`payload` 必须是 JSON 对象，序列化后不超过 32 KiB，也可以不带。`text` 照常必填，就是老客户端显示的降级文本 |
+| 存储与读取 | `payload` 和消息写在同一个事务（表结构 v2 的 `messages.payload`），推送、`pull`、重启后都原样返回；去重、seq、权限和普通消息完全一样 |
+| 编辑 | `edit` 可以带新的 `payload` 替换旧的；不带就保留。纯文本消息带 `payload` 返回 `bad_request` |
+| 撤回 | 数据库里的 `payload` 清空，此前所有事件快照里的 `payload` 也清空 |
+| 仅某人可见 | 侧信道事件里带上 `kind` 和 `payload` |
+| 审批 | 草稿保存 `kind` 和 `payload`（`drafts.kind`、`drafts.payload`），批准后照原样发布；批准时改的只是降级文本 |
+| 内容策略 | Agent 发送和编辑时的 DLP、Agent 读取时的注入检测，都同时检查文本和 `payload` |
+
+**已实现：信号**
+
+`signal {conv_id, kind, data?}`：`kind` 是内置的 `typing` 或带命名空间的自定义类型；`data` 是不超过 4 KiB 的 JSON 对象。只推给此刻在线的其他成员（同一用户的所有连接，包括 Agent），不推回发送者；不落库、不占 seq、不进侧信道，之后连上的人也收不到。非成员 `forbidden`，会话不存在 `not_found`，单聊里任一方拉黑了对方 `blocked`（群聊不受影响）。每个连接每秒最多 20 个，超出 `rate_limited`。推送帧：`{"type": "signal", "conv_id", "kind", "from", "data"}`。
 
 **扩展也要守住核心保证**：自定义消息走同一条写入路径（单写者、组提交），所以同样不丢、有序；内容大小和信号频率都有上限；端到端加密的会话里，自定义内容整体加密，服务端只校验大小；扩展类型的版本放在类型的内容里（例如 `schema_version`），兼容规则和 §2.5 相同。
 

@@ -19,6 +19,10 @@ use crate::policy::PolicyChain;
 use crate::registry::{Out, Recip, Registry};
 
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+/// Serialized payload of a custom message kind.
+pub const MAX_PAYLOAD_BYTES: usize = 32 * 1024;
+/// Serialized data of a signal.
+pub const MAX_SIGNAL_BYTES: usize = 4 * 1024;
 const MODERATED_PLACEHOLDER: &str = "[该内容已被策略移除 / removed by policy]";
 
 #[derive(Debug, Clone)]
@@ -365,6 +369,70 @@ pub fn check_text(text: &str) -> ApiResult<()> {
     Ok(())
 }
 
+/// Namespaced kind of a custom message or signal: at least two dot-separated
+/// segments of `a-z0-9_-` starting with a letter, at most 64 bytes, and not
+/// under the reserved `agentim.` namespace.
+pub fn check_custom_kind(kind: &str) -> ApiResult<()> {
+    let seg_ok = |s: &str| {
+        s.starts_with(|c: char| c.is_ascii_lowercase())
+            && s.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    };
+    let ok = kind.len() <= 64 && kind.split('.').count() >= 2 && kind.split('.').all(seg_ok);
+    if !ok {
+        return Err(err(
+            "bad_request",
+            "custom kinds are namespaced like com.example.order (a-z, 0-9, _ and -, at most 64 bytes)",
+        ));
+    }
+    if kind.starts_with("agentim.") {
+        return Err(err("bad_request", "the agentim. namespace is reserved"));
+    }
+    Ok(())
+}
+
+/// A JSON object of at most `max` serialized bytes.
+pub fn check_json_object(v: &Value, what: &str, max: usize) -> ApiResult<()> {
+    if !v.is_object() {
+        return Err(err("bad_request", format!("{what} must be a JSON object")));
+    }
+    if v.to_string().len() > max {
+        return Err(err(
+            "bad_request",
+            format!("{what} is larger than {max} bytes"),
+        ));
+    }
+    Ok(())
+}
+
+/// Kind and payload of a new message: `text` takes no payload; a custom kind
+/// may carry one, and its `text` is the fallback older clients show.
+pub fn check_kind(kind: Option<String>, payload: &Option<Value>) -> ApiResult<String> {
+    match kind.as_deref() {
+        None | Some("text") => {
+            if payload.is_some() {
+                return Err(err("bad_request", "payload needs a custom kind"));
+            }
+            Ok("text".into())
+        }
+        Some(k) => {
+            check_custom_kind(k)?;
+            if let Some(p) = payload {
+                check_json_object(p, "payload", MAX_PAYLOAD_BYTES)?;
+            }
+            Ok(k.to_string())
+        }
+    }
+}
+
+/// What content policies look at: the text and, for custom kinds, the payload.
+pub fn scan_text<'t>(text: &'t str, payload: Option<&Value>) -> std::borrow::Cow<'t, str> {
+    match payload {
+        None => text.into(),
+        Some(p) => format!("{text}\n{p}").into(),
+    }
+}
+
 pub struct Ctx<'a, 'c> {
     pub db: Db<'c>,
     pub st: &'a mut ShardState,
@@ -573,6 +641,8 @@ impl Ctx<'_, '_> {
                 conv_id,
                 client_msg_id,
                 text,
+                kind,
+                payload,
                 reply_to,
                 causation_id,
                 on_behalf_of,
@@ -583,6 +653,7 @@ impl Ctx<'_, '_> {
                     &conv_id,
                     &client_msg_id,
                     &text,
+                    (kind, payload),
                     reply_to,
                     causation_id,
                     on_behalf_of,
@@ -590,7 +661,11 @@ impl Ctx<'_, '_> {
                 )
                 .await
             }
-            ClientMsg::Edit { msg_id, text } => self.edit(me, &msg_id, &text).await,
+            ClientMsg::Edit {
+                msg_id,
+                text,
+                payload,
+            } => self.edit(me, &msg_id, &text, payload).await,
             ClientMsg::Recall { msg_id } => self.recall(me, &msg_id).await,
             ClientMsg::Read { conv_id, seq } => {
                 self.require_member(&conv_id, &me.id).await?;
@@ -857,7 +932,10 @@ impl Ctx<'_, '_> {
                     && let Some(msg) = &ev.msg
                     && msg.sender_id != mb.user_id
                 {
-                    let (t, flags) = self.sh.policy.inbound(&msg.content, msg.sender_type);
+                    let (t, flags) = self.sh.policy.inbound(
+                        &scan_text(&msg.content, msg.payload.as_ref()),
+                        msg.sender_type,
+                    );
                     for f in &flags {
                         metrics::counter!(m::INBOUND_FLAGS, "flag" => f.clone()).increment(1);
                     }
@@ -1347,6 +1425,7 @@ impl Ctx<'_, '_> {
         conv_id: &str,
         client_msg_id: &str,
         text: &str,
+        (kind, payload): (Option<String>, Option<Value>),
         reply_to: Option<String>,
         causation_id: Option<String>,
         on_behalf_of: Option<String>,
@@ -1354,6 +1433,7 @@ impl Ctx<'_, '_> {
     ) -> ApiResult<Value> {
         let member = self.require_member(conv_id, &me.id).await?;
         check_text(text)?;
+        let kind = check_kind(kind, &payload)?;
         if let Some(o) = &on_behalf_of {
             // Community rule: an agent may only speak on behalf of its owner.
             if me.kind != UserKind::Agent || me.owner_id.as_deref() != Some(o.as_str()) {
@@ -1363,7 +1443,9 @@ impl Ctx<'_, '_> {
         let (causation_id, hop) = self.causation(conv_id, me, causation_id, &reply_to).await?;
         if me.kind == UserKind::Agent {
             self.agent_gate(me, conv_id, hop, text).await?;
-            if let Some((hook, reason)) = self.sh.policy.outbound(text) {
+            if let Some((hook, reason)) =
+                self.sh.policy.outbound(&scan_text(text, payload.as_ref()))
+            {
                 metrics::counter!(m::POLICY_BLOCKS, "hook" => hook.clone()).increment(1);
                 self.db
                     .audit(
@@ -1405,7 +1487,7 @@ impl Ctx<'_, '_> {
                     &audience,
                     "ephemeral",
                     Some(&me.id),
-                    json!({"text": text, "from": me.id, "from_name": me.name, "from_type": me.kind, "to": t.id, "hop": hop}),
+                    json!({"text": text, "kind": kind, "payload": payload, "from": me.id, "from_name": me.name, "from_type": me.kind, "to": t.id, "hop": hop}),
                 )
                 .await?;
             let side_seq = side.side_seq;
@@ -1427,6 +1509,8 @@ impl Ctx<'_, '_> {
                     causation_id,
                     reply_to,
                     &audience,
+                    &kind,
+                    payload,
                 )
                 .await?;
             self.db
@@ -1451,8 +1535,9 @@ impl Ctx<'_, '_> {
                 sender: me,
                 client_msg_id: Some(client_msg_id),
                 on_behalf_of,
-                kind: "text",
+                kind: &kind,
                 content: text.to_string(),
+                payload,
                 state: "committed",
                 hop,
                 causation_id,
@@ -1498,7 +1583,13 @@ impl Ctx<'_, '_> {
         Ok(recall && member(&me.id).is_some_and(|m| is_manager(&m.role)))
     }
 
-    async fn edit(&mut self, me: &User, msg_id: &str, text: &str) -> ApiResult<Value> {
+    async fn edit(
+        &mut self,
+        me: &User,
+        msg_id: &str,
+        text: &str,
+        payload: Option<Value>,
+    ) -> ApiResult<Value> {
         let msg = self
             .db
             .message(msg_id)
@@ -1512,10 +1603,20 @@ impl Ctx<'_, '_> {
             return Err(err("conflict", format!("message is {}", msg.state)));
         }
         check_text(text)?;
+        if let Some(p) = &payload {
+            if msg.kind == "text" {
+                return Err(err("bad_request", "text messages have no payload"));
+            }
+            check_json_object(p, "payload", MAX_PAYLOAD_BYTES)?;
+        }
+        let scanned = payload.as_ref().or(msg.payload.as_ref());
         if me.kind == UserKind::Agent
-            && let Some((_, reason)) = self.sh.policy.outbound(text)
+            && let Some((_, reason)) = self.sh.policy.outbound(&scan_text(text, scanned))
         {
             return Err(err("policy_blocked", reason));
+        }
+        if payload.is_some() {
+            self.db.set_payload(msg_id, payload.as_ref()).await?;
         }
         let ev = self
             .db
@@ -1554,6 +1655,7 @@ impl Ctx<'_, '_> {
             self.finish_stream(msg_id, "cancelled", Some("recalled"), &me.id)
                 .await?;
         }
+        self.db.set_payload(msg_id, None).await?;
         let ev = self
             .db
             .update_message(
@@ -1632,6 +1734,7 @@ impl Ctx<'_, '_> {
                     on_behalf_of: None,
                     kind: "text",
                     content: String::new(),
+                    payload: None,
                     state: "streaming",
                     hop,
                     causation_id: causation_id.clone(),
@@ -1898,6 +2001,8 @@ impl Ctx<'_, '_> {
                             causation_id,
                             reply_to,
                             audience,
+                            "text",
+                            None,
                         )
                         .await?;
                     self.db
@@ -2094,8 +2199,9 @@ impl Ctx<'_, '_> {
                 sender: &agent,
                 client_msg_id: Some(draft_id),
                 on_behalf_of: None,
-                kind: "text",
+                kind: &d.kind,
                 content,
+                payload: d.payload.clone(),
                 state: "committed",
                 hop: d.hop,
                 causation_id: d.causation_id.clone(),

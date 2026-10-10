@@ -62,6 +62,7 @@
 | 覆盖排查补充（`tests/coverage.rs`，18 项 × 3 种数据库 + 1 项 PostgreSQL + 2 项 SQLite） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 见 §5.5 |
 | HTTP 与 WebSocket 接口（`tests/http.rs`，5 项） | ✅ | ✅ | 见 §5.5 |
 | 表结构迁移（`tests/schema.rs`，6 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 新库直接是最新结构；老库带数据升级后内容不变、seq 连续、可继续写；DDL 做完但版本未更新时重启补完；4 个进程同时启动只迁移一次（3 轮）；较新但兼容的库照常使用且版本不被降低；不兼容或损坏的版本号拒绝启动且不改动库 |
+| 扩展（`tests/extensions.rs`，8 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 自定义类型的推送、拉取、去重、重启；类型名和 payload 的边界（64 字节、32 KiB、非对象、保留命名空间、缺降级文本）且拒绝不留痕迹；编辑替换或保留 payload；撤回后事件和数据库行里都不留 payload；仅某人可见和审批草稿带上类型和 payload；DLP 和注入检测看 payload；编辑与撤回竞争 20 轮；信号只到在线的其他成员且不落库；信号的类型、大小、成员、拉黑、限速。变异检查：撤回不清数据库里的 payload、注入检测不看 payload，都会让测试失败 |
 | 协议版本（`tests/protocol.rs`，7 项 × 3 种数据库 + 4 项 WebSocket） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 老客户端不带协商照常工作；协商选最新的共同版本，没有时 `unsupported_protocol`；最低版本的边界（相等、次版本 10 > 9、预发布、缺版本号、未配置的客户端）；名称、版本、功能数量的上限；重复和被拒绝的 `hello` 对连接状态的影响；`unknown_op` 与 `bad_request` 的区分且不留痕迹；忽略未知字段；连接参数 `v` 的各种取值；`client_too_old` 后以 1008 断开而其他拒绝不断开；指标标签不含原始输入。变异检查：去掉 `unknown_op` 判断、去掉断开都会让测试失败；`OPS` 少一项会让单元测试失败 |
 | 配置校验（`src/config.rs` 单元测试，3 项） | ✅ | ✅ | 见 §5.5 |
 | 多库（`tests/multidb.rs`，6 项） | ✅ | ✅ | 单元的内容和会话标题不会出现在共享库文件里（直接读文件字节确认）；跨库的成员、列表、侧信道；迁移后事件完全一致、seq 连续、旧库不残留内容；迁移期间并发写入不丢不重；崩溃后目录修复；单元放在另一种数据库上（SQLite 控制库 + PostgreSQL 单元库） |
@@ -268,8 +269,9 @@ cargo run --release -- --demo          # 打开 http://127.0.0.1:8080，选 alic
 | `hello {protocol?, client?, features?}`、`list_convs`、`create_conv`、`add_member` | 基础；`hello` 协商协议并检查最低客户端版本，只返回和你有共同会话的人和你的 Agent；单聊每对用户只有一个，重复创建返回已有的（`existing: true`） |
 | `remove_member`、`leave`、`set_role`、`transfer_owner`、`dissolve` | 成员生命周期：群主和管理员管理成员；被移除或退出后看不到会话；解散后全员失去访问、内容删除，只保留审计记录 |
 | `block`、`unblock`、`list_blocks`、`find_user {name}` | 拉黑（双方都不能单聊、不能拉对方进群、不能发仅某人可见的消息）；按准确用户名找人 |
-| `send {conv_id, client_msg_id, text, reply_to?, causation_id?, on_behalf_of?, to_user?}` | 发消息；`to_user` 表示仅某人可见；审批模式下返回 `draft_id` |
-| `edit`、`recall` | 修订、撤回 |
+| `send {conv_id, client_msg_id, text, kind?, payload?, reply_to?, causation_id?, on_behalf_of?, to_user?}` | 发消息；`kind` 为自定义类型时 `text` 是降级文本；`to_user` 表示仅某人可见；审批模式下返回 `draft_id` |
+| `signal {conv_id, kind, data?}` | 正在输入等临时信号，只推给在线成员，不落库 |
+| `edit {msg_id, text, payload?}`、`recall` | 修订、撤回 |
 | `pull {conv_id, after_seq, as_agent?}`、`pull_side` | 增量拉取；过滤后的结果用 `upto_seq` 推进游标 |
 | `read`、`focus` | 已读游标；前台会话（接收流式增量） |
 | `stream_start / stream_append / stream_end / stream_cancel` | 流式 |

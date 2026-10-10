@@ -379,6 +379,9 @@ pub const TABLES: &[Table] = &[
             c("created_at", Big),
             n("decided_by", Id),
             n("decided_at", Big),
+            // v2: kind and payload of custom message kinds.
+            n("kind", Id),
+            n("payload", Text),
         ],
         pk: &["draft_id"],
         indexes: &[
@@ -503,11 +506,21 @@ pub struct Migration {
 pub const MIGRATIONS: &[Migration] = &[Migration {
     version: 2,
     compat: 1,
-    about: "messages.payload for custom message kinds",
-    steps: &[Step::AddColumn {
-        table: "messages",
-        column: "payload",
-    }],
+    about: "custom message kinds: messages.payload, drafts.kind, drafts.payload",
+    steps: &[
+        Step::AddColumn {
+            table: "messages",
+            column: "payload",
+        },
+        Step::AddColumn {
+            table: "drafts",
+            column: "kind",
+        },
+        Step::AddColumn {
+            table: "drafts",
+            column: "payload",
+        },
+    ],
 }];
 
 fn table(name: &str) -> &'static Table {
