@@ -165,7 +165,12 @@ async fn ws(
     let Some(user) = st.hub.authenticate(&q.token) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    // The library defaults (128 KiB read and 128 KiB write buffer per
+    // connection) cost ~140 KB per idle connection; frames are small and every
+    // push is flushed on its own, so small buffers lose nothing.
     upgrade
+        .read_buffer_size(4 * 1024)
+        .write_buffer_size(0)
         .max_message_size(1 << 20)
         .on_upgrade(move |socket| run_socket(st.hub, user, socket))
 }

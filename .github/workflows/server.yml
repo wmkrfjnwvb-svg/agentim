@@ -102,8 +102,8 @@ jobs:
         run: |
           ./target/release/agentim --demo --db "$RUNNER_TEMP/load.db" --addr 127.0.0.1:8080 < /dev/null > "$RUNNER_TEMP/server.log" 2>&1 &
           server=$!
-          trap 'set +e; curl -s http://127.0.0.1:8080/metrics | grep -E "^agentim_(commit_batch_size|commit_duration_seconds)_(sum|count)|^agentim_push_dropped|^agentim_write_rejected"; kill $server; taskkill //F //IM agentim.exe > /dev/null 2>&1; [ $ok = 1 ] || tail -n 200 "$RUNNER_TEMP/server.log"' EXIT
           ok=0
+          trap 'set +e; curl -s http://127.0.0.1:8080/metrics | grep -E "^agentim_(commit_batch_size|commit_duration_seconds)_(sum|count)|^agentim_push_dropped|^agentim_write_rejected"; kill $server; taskkill //F //IM agentim.exe > /dev/null 2>&1; [ $ok = 1 ] || tail -n 200 "$RUNNER_TEMP/server.log"' EXIT
           for i in $(seq 150); do curl -sf -m 2 http://127.0.0.1:8080/readyz > /dev/null && break; sleep 0.2; done
           ./target/release/examples/loadtest --addr 127.0.0.1:8080 ${{ matrix.args }} ${{ matrix.gate }} | tee result.txt
           test ${PIPESTATUS[0]} -eq 0
@@ -136,8 +136,8 @@ jobs:
         run: |
           ./target/release/agentim --demo --db "$RUNNER_TEMP/ui.db" --addr 127.0.0.1:8099 --stream-idle-secs 6 < /dev/null > "$RUNNER_TEMP/server.log" 2>&1 &
           server=$!
-          trap 'set +e; kill $server; taskkill //F //IM agentim.exe > /dev/null 2>&1; [ $ok = 1 ] || tail -n 200 "$RUNNER_TEMP/server.log"' EXIT
           ok=0
+          trap 'set +e; kill $server; taskkill //F //IM agentim.exe > /dev/null 2>&1; [ $ok = 1 ] || tail -n 200 "$RUNNER_TEMP/server.log"' EXIT
           for i in $(seq 150); do curl -sf -m 2 http://127.0.0.1:8099/readyz > /dev/null && break; sleep 0.2; done
           PLAYWRIGHT="$PWD/ci/node_modules/playwright" BASE=http://127.0.0.1:8099 OUT=screenshots node ci/ui_smoke.mjs
           ok=1

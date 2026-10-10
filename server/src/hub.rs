@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
 
 use crate::config::Config;
 use crate::db::{Db, DirEntry, fingerprint, new_id};
@@ -17,7 +16,7 @@ use crate::logic::{Ctx, DirInfo, HubConfig, Op, SessCtx, Shared};
 use crate::metrics as m;
 use crate::model::*;
 use crate::policy::PolicyChain;
-use crate::registry::{Frame, Registry};
+use crate::registry::{Pushes, Registry};
 use crate::shard::Shard;
 
 fn err(code: &'static str, msg: impl Into<String>) -> ApiError {
@@ -325,7 +324,7 @@ impl Hub {
         self.inner.sh.user(&id)
     }
 
-    pub fn connect(&self, user: User) -> (Session, mpsc::Receiver<Frame>) {
+    pub fn connect(&self, user: User) -> (Session, Pushes) {
         let (sid, rx) = self.inner.sh.reg.add(&user);
         tracing::debug!(
             conn_id = sid,

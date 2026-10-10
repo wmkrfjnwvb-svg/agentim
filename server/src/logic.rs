@@ -148,11 +148,17 @@ struct Stream {
     reply_to: Option<String>,
 }
 
+/// A conversation's member list and the fan-out recipients built from it.
+type RecipCache = (Arc<Vec<Member>>, Arc<Vec<Recip>>);
+
 /// Soft state owned by one writer.
 pub struct ShardState {
     streams: HashMap<String, Stream>,
     guards: Guards,
     members: HashMap<String, Arc<Vec<Member>>>,
+    /// Fan-out recipients derived from `members` (same Arc), so a large
+    /// group's list is built once rather than once per event.
+    recips: HashMap<String, RecipCache>,
     last_flush: Instant,
     last_checkpoint: Instant,
     last_gc: Instant,
@@ -165,6 +171,7 @@ impl ShardState {
             streams: HashMap::new(),
             guards: Guards::with_budgets(sh.cfg.guards.clone(), sh.budgets.clone()),
             members: HashMap::new(),
+            recips: HashMap::new(),
             last_flush: now,
             last_checkpoint: now,
             last_gc: now,
@@ -418,11 +425,13 @@ impl Ctx<'_, '_> {
             Op::ImportConv { conv_id, rows } => {
                 self.db.import_conv(&conv_id, &rows).await?;
                 self.st.members.remove(&conv_id);
+                self.st.recips.remove(&conv_id);
                 Ok(json!({}))
             }
             Op::DeleteConv(conv) => {
                 self.db.delete_conv(&conv).await?;
                 self.st.members.remove(&conv);
+                self.st.recips.remove(&conv);
                 Ok(json!({}))
             }
             Op::Audit {
@@ -552,6 +561,7 @@ impl Ctx<'_, '_> {
                     .set_agent_policy(&conv_id, &agent.id, approval, trigger, &me.id)
                     .await?;
                 self.st.members.remove(&conv_id);
+                self.st.recips.remove(&conv_id);
                 self.db
                     .audit(
                         Some(&me.id),
@@ -682,13 +692,36 @@ impl Ctx<'_, '_> {
     /// Queues a committed event for fan-out with per-member visibility.
     async fn emit(&mut self, ev: Event) -> ApiResult<()> {
         let members = self.members(&ev.conv_id).await?;
-        let mut recips = Vec::with_capacity(members.len());
-        for mb in members.iter() {
-            let mut visible = true;
-            let mut trust = None;
-            if mb.kind == UserKind::Agent {
-                visible = Self::agent_can_see(&mut self.db, mb, &ev).await?;
-                if visible
+        let base = match self.st.recips.get(&ev.conv_id) {
+            Some((m, r)) if Arc::ptr_eq(m, &members) => r.clone(),
+            _ => {
+                let r: Arc<Vec<Recip>> = Arc::new(
+                    members
+                        .iter()
+                        .map(|mb| Recip {
+                            user_id: mb.user_id.clone(),
+                            kind: mb.kind,
+                            owner_id: mb.owner_id.clone(),
+                            visible: true,
+                            trust: None,
+                        })
+                        .collect(),
+                );
+                self.st
+                    .recips
+                    .insert(ev.conv_id.clone(), (members.clone(), r.clone()));
+                r
+            }
+        };
+        // Only agent members differ per event (trigger mode, trust labels).
+        let recips = if members.iter().any(|mb| mb.kind == UserKind::Agent) {
+            let mut recips = (*base).clone();
+            for (mb, r) in members.iter().zip(recips.iter_mut()) {
+                if mb.kind != UserKind::Agent {
+                    continue;
+                }
+                r.visible = Self::agent_can_see(&mut self.db, mb, &ev).await?;
+                if r.visible
                     && ev.kind == "msg.created"
                     && let Some(msg) = &ev.msg
                     && msg.sender_id != mb.user_id
@@ -697,17 +730,13 @@ impl Ctx<'_, '_> {
                     for f in &flags {
                         metrics::counter!(m::INBOUND_FLAGS, "flag" => f.clone()).increment(1);
                     }
-                    trust = Some((t.as_str().to_string(), flags));
+                    r.trust = Some((t.as_str().to_string(), flags));
                 }
             }
-            recips.push(Recip {
-                user_id: mb.user_id.clone(),
-                kind: mb.kind,
-                owner_id: mb.owner_id.clone(),
-                visible,
-                trust,
-            });
-        }
+            Arc::new(recips)
+        } else {
+            base
+        };
         metrics::counter!(m::EVENTS_COMMITTED, "type" => ev.kind.clone()).increment(1);
         if ev.kind == "msg.created"
             && let Some(msg) = &ev.msg
@@ -715,10 +744,7 @@ impl Ctx<'_, '_> {
             metrics::counter!(m::MESSAGES_COMMITTED, "sender_type" => msg.sender_type.as_str())
                 .increment(1);
         }
-        self.out.push(Out::Event {
-            ev,
-            recips: Arc::new(recips),
-        });
+        self.out.push(Out::Event { ev, recips });
         Ok(())
     }
 
@@ -867,6 +893,7 @@ impl Ctx<'_, '_> {
             .add_member(conv_id, &conv.kind, u, "member", &me.id)
             .await?;
         self.st.members.remove(conv_id);
+        self.st.recips.remove(conv_id);
         if u.kind == UserKind::Agent {
             self.db
                 .audit(

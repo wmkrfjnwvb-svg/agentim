@@ -1,0 +1,93 @@
+name: scale
+
+# Large-scale concurrency tests (docs/05-operations.md §4.2). Nightly and on
+# demand; also when the scale tool or this workflow changes.
+on:
+  schedule:
+    - cron: "17 18 * * *" # 02:17 Beijing time
+  workflow_dispatch:
+    inputs:
+      linux_connections:
+        description: WebSocket connections in the Linux connection test
+        default: "20000"
+      duration:
+        description: Traffic duration per scenario (seconds)
+        default: "120"
+  push:
+    paths: ["server/examples/scale.rs", ".github/workflows/scale.yml"]
+
+defaults:
+  run:
+    working-directory: server
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  scale:
+    name: scale (${{ matrix.os }}, ${{ matrix.scenario }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        scenario: [connections, biggroup, slow]
+        include:
+          # Linux: several local source addresses get past one address's port range.
+          - os: ubuntu-latest
+            scenario: connections
+            args: --users LINUX_CONNECTIONS --rate 200 --storm --sources 4
+          - os: ubuntu-latest
+            scenario: biggroup
+            args: --users 2000 --rate 50 --max-p99-ms 2000
+          - os: ubuntu-latest
+            scenario: slow
+            args: --users 500 --rate 300 --payload 2000 --max-p99-ms 2000
+          - os: windows-latest
+            scenario: connections
+            args: --users 5000 --rate 100 --storm
+          - os: windows-latest
+            scenario: biggroup
+            args: --users 1000 --rate 50
+          - os: windows-latest
+            scenario: slow
+            args: --users 200 --rate 300 --payload 2000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - run: cargo build --release --bins --examples
+      # Server start, test and stop in one step: on Windows a step does not end
+      # while a background process it started is still running.
+      - name: ${{ matrix.scenario }}
+        env:
+          LINUX_CONNECTIONS: ${{ inputs.linux_connections || '20000' }}
+          DURATION: ${{ inputs.duration || '120' }}
+        run: |
+          ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
+          ./target/release/agentim --demo --db "$RUNNER_TEMP/scale.db" --addr 127.0.0.1:8080 < /dev/null > "$RUNNER_TEMP/server.log" 2>&1 &
+          server=$!
+          ok=0
+          trap 'set +e; kill $server; taskkill //F //IM agentim.exe > /dev/null 2>&1; [ $ok = 1 ] || tail -n 100 "$RUNNER_TEMP/server.log"' EXIT
+          for i in $(seq 150); do curl -sf -m 2 http://127.0.0.1:8080/readyz > /dev/null && break; sleep 0.2; done
+          args="${{ matrix.args }}"
+          args="${args/LINUX_CONNECTIONS/$LINUX_CONNECTIONS}"
+          pid=""
+          [ "$RUNNER_OS" = Linux ] && pid="--server-pid $server"
+          ./target/release/examples/scale --addr 127.0.0.1:8080 --scenario ${{ matrix.scenario }} --duration "$DURATION" $args $pid --out result.json | tee result.txt
+          test ${PIPESTATUS[0]} -eq 0
+          ok=1
+      - name: summary
+        if: always()
+        run: |
+          { echo "### ${{ matrix.os }} / ${{ matrix.scenario }}"; echo '```'; cat result.txt 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scale-${{ matrix.os }}-${{ matrix.scenario }}
+          path: server/result.json
+          if-no-files-found: ignore

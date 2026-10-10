@@ -4,7 +4,8 @@
 //! serialised once and shared. Every session has a bounded queue: when it is
 //! full the push is dropped and the session is told to `resync` that
 //! conversation (pull is the source of truth), so a slow client can never
-//! exhaust server memory.
+//! exhaust server memory. An owed notice goes out as soon as the queue has
+//! drained, even if nothing else is pushed afterwards.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -56,12 +57,60 @@ pub struct Recip {
     pub trust: Option<(String, Vec<String>)>,
 }
 
+/// Conversations a session must be told to resync. Shared between fan-out
+/// (which adds to it when the queue is full) and the session's [`Pushes`].
+type Owed = Arc<Mutex<HashSet<String>>>;
+
+fn lock_owed(o: &Owed) -> std::sync::MutexGuard<'_, HashSet<String>> {
+    o.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn resync_frame(conv_id: &str) -> Frame {
+    json!({"type": "resync", "conv_id": conv_id})
+        .to_string()
+        .into()
+}
+
 struct Entry {
     user_id: String,
     kind: UserKind,
     tx: mpsc::Sender<Frame>,
     focus: Option<(String, Option<String>)>,
-    resync: HashSet<String>,
+    resync: Owed,
+}
+
+/// A session's push stream: queued frames in order, then any owed resync
+/// notices once the queue is empty. Without the latter, a client whose pushes
+/// were dropped near the end of a burst would never learn it has a gap.
+pub struct Pushes {
+    rx: mpsc::Receiver<Frame>,
+    owed: Owed,
+}
+
+impl Pushes {
+    fn owed_frame(&self) -> Option<Frame> {
+        let mut o = lock_owed(&self.owed);
+        let c = o.iter().next().cloned()?;
+        o.remove(&c);
+        metrics::counter!(m::RESYNC).increment(1);
+        Some(resync_frame(&c))
+    }
+
+    pub async fn recv(&mut self) -> Option<Frame> {
+        if self.rx.is_empty()
+            && let Some(f) = self.owed_frame()
+        {
+            return Some(f);
+        }
+        self.rx.recv().await
+    }
+
+    pub fn try_recv(&mut self) -> Option<Frame> {
+        match self.rx.try_recv() {
+            Ok(f) => Some(f),
+            Err(_) => self.owed_frame(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -91,13 +140,14 @@ impl Registry {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn add(&self, user: &User) -> (u64, mpsc::Receiver<Frame>) {
+    pub fn add(&self, user: &User) -> (u64, Pushes) {
         let cap = if user.kind == UserKind::Agent {
             self.agent_queue
         } else {
             self.human_queue
         };
         let (tx, rx) = mpsc::channel(cap);
+        let owed = Owed::default();
         let mut g = self.lock();
         g.next += 1;
         let sid = g.next;
@@ -108,13 +158,13 @@ impl Registry {
                 kind: user.kind,
                 tx,
                 focus: None,
-                resync: HashSet::new(),
+                resync: owed.clone(),
             },
         );
         g.by_user.entry(user.id.clone()).or_default().push(sid);
         metrics::gauge!(m::WS_CONNECTIONS, "kind" => user.kind.as_str()).increment(1.0);
         metrics::counter!(m::WS_CONNECTS, "kind" => user.kind.as_str()).increment(1);
-        (sid, rx)
+        (sid, Pushes { rx, owed })
     }
 
     /// Removes a session; returns whether the user still has other sessions.
@@ -241,25 +291,21 @@ fn send(g: &mut Inner, sid: u64, f: Frame, resync_conv: Option<&str>) {
         return;
     };
     // Owed resync notices go first, as soon as there is room.
-    if !e.resync.is_empty() {
-        let pending: Vec<String> = e.resync.iter().cloned().collect();
-        for c in pending {
-            let r: Frame = json!({"type": "resync", "conv_id": c}).to_string().into();
-            if e.tx.try_send(r).is_ok() {
-                e.resync.remove(&c);
-                metrics::counter!(m::RESYNC).increment(1);
-            } else {
-                break;
-            }
+    let mut owed = lock_owed(&e.resync);
+    while let Some(c) = owed.iter().next().cloned() {
+        if e.tx.try_send(resync_frame(&c)).is_err() {
+            break;
         }
+        owed.remove(&c);
+        metrics::counter!(m::RESYNC).increment(1);
     }
-    if e.resync.is_empty() && e.tx.try_send(f).is_ok() {
+    if owed.is_empty() && e.tx.try_send(f).is_ok() {
         metrics::counter!(m::PUSH).increment(1);
         return;
     }
     metrics::counter!(m::PUSH_DROPPED).increment(1);
     if let Some(c) = resync_conv {
-        e.resync.insert(c.to_string());
+        owed.insert(c.to_string());
     }
 }
 
@@ -353,7 +399,7 @@ mod tests {
                 recips: recips.clone(),
             }]);
         }
-        let got: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
+        let got: Vec<String> = std::iter::from_fn(|| rx.rx.try_recv().ok())
             .map(|f| f.to_string())
             .collect();
         assert_eq!(got.len(), 2, "queue is bounded");
@@ -363,5 +409,33 @@ mod tests {
             next.contains("resync"),
             "resync is sent before new pushes: {next}"
         );
+    }
+
+    #[test]
+    fn owed_resync_is_sent_once_the_queue_drains_without_further_pushes() {
+        let reg = Registry::new(2, 2);
+        let (_sid, mut rx) = reg.add(&user("a"));
+        let recips = Arc::new(vec![Recip {
+            user_id: "a".into(),
+            kind: UserKind::Human,
+            owner_id: None,
+            visible: true,
+            trust: None,
+        }]);
+        for s in 1..=5 {
+            reg.deliver(vec![Out::Event {
+                ev: ev(s),
+                recips: recips.clone(),
+            }]);
+        }
+        // Nothing else is pushed: the client still learns about the gap,
+        // after the frames that were queued before it.
+        let got: Vec<String> = std::iter::from_fn(|| rx.try_recv())
+            .map(|f| f.to_string())
+            .collect();
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert!(got[..2].iter().all(|f| f.contains("\"event\"")));
+        assert!(got[2].contains("resync"), "{}", got[2]);
+        assert!(rx.try_recv().is_none(), "the notice is sent once");
     }
 }

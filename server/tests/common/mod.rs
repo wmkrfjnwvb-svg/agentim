@@ -13,10 +13,9 @@ use agentim::guard::GuardConfig;
 use agentim::hub::{Hub, Session};
 use agentim::logic::HubConfig;
 use agentim::model::*;
-use agentim::registry::Frame;
+use agentim::registry::Pushes;
 use serde_json::{Value, json};
 use sqlx::Connection;
-use tokio::sync::mpsc::Receiver;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Backend {
@@ -144,7 +143,7 @@ pub async fn user_in(hub: &Hub, name: &str, unit: &str) -> User {
 
 pub struct Conn {
     pub s: Session,
-    pub rx: Receiver<Frame>,
+    pub rx: Pushes,
 }
 
 impl Conn {
@@ -162,7 +161,7 @@ impl Conn {
     }
     pub fn drain(&mut self) -> Vec<Value> {
         let mut out = vec![];
-        while let Ok(f) = self.rx.try_recv() {
+        while let Some(f) = self.rx.try_recv() {
             out.push(serde_json::from_str(&f).unwrap());
         }
         out
