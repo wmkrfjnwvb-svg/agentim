@@ -198,8 +198,14 @@ pub const TABLES: &[Table] = &[
             c("name", Name),
             c("kind", Id),
             n("owner_id", Id),
+            // Legacy plaintext token; since v2 a placeholder (see `tokens`).
             c("token", Id),
             c("created_at", Big),
+            // v2: profile, custom fields, deactivation.
+            n("display_name", Name),
+            n("avatar", Text),
+            n("fields", Text),
+            n("deactivated_at", Big),
         ],
         pk: &["id"],
         indexes: &[
@@ -207,6 +213,57 @@ pub const TABLES: &[Table] = &[
             ("users_token", &["token"], true),
             ("users_owner", &["owner_id"], false),
         ],
+        conv_key: None,
+    },
+    // v2: client tokens (one per device), only the SHA-256 is stored.
+    Table {
+        name: "tokens",
+        cols: &[
+            c("hash", Key),
+            c("user_id", Id),
+            c("device_id", Id),
+            n("device_name", Name),
+            n("platform", Id),
+            n("issued_by", Id),
+            c("created_at", Big),
+            n("expires_at", Big),
+            n("last_seen", Big),
+        ],
+        pk: &["hash"],
+        indexes: &[("tokens_user", &["user_id"], false)],
+        conv_key: None,
+    },
+    // v2: open API keys.
+    Table {
+        name: "api_keys",
+        cols: &[
+            c("key_id", Id),
+            c("app_id", Id),
+            c("hash", Key),
+            c("name", Name),
+            c("scopes", Text),
+            n("ip_allow", Text),
+            c("created_at", Big),
+            n("expires_at", Big),
+            n("revoked_at", Big),
+        ],
+        pk: &["key_id"],
+        indexes: &[],
+        conv_key: None,
+    },
+    // v2: open API Idempotency-Key results (24 hours).
+    Table {
+        name: "idempotency",
+        cols: &[
+            c("key_id", Id),
+            c("idem_key", Name),
+            c("request_hash", Key),
+            c("status", Big),
+            c("response", Text),
+            c("created_at", Big),
+        ],
+        pk: &["key_id", "idem_key"],
+        indexes: &[("idempotency_created", &["created_at"], false)],
         conv_key: None,
     },
     Table {
@@ -256,6 +313,8 @@ pub const TABLES: &[Table] = &[
             c("last_seq", Big),
             c("side_seq", Big),
             c("created_at", Big),
+            // v2: custom fields.
+            n("fields", Text),
         ],
         pk: &["id"],
         indexes: &[],
@@ -504,6 +563,8 @@ pub enum Step {
         table: &'static str,
         column: &'static str,
     },
+    /// Moves plaintext `users.token` values into `tokens`, hashed.
+    HashLegacyTokens,
 }
 
 pub struct Migration {
@@ -520,7 +581,7 @@ pub struct Migration {
 pub const MIGRATIONS: &[Migration] = &[Migration {
     version: 2,
     compat: 1,
-    about: "custom message kinds (messages.payload, drafts.kind, drafts.payload) and the webhook outbox",
+    about: "custom message kinds, webhook outbox, hashed tokens and devices, open API keys, profiles and custom fields",
     steps: &[
         Step::AddColumn {
             table: "messages",
@@ -534,6 +595,27 @@ pub const MIGRATIONS: &[Migration] = &[Migration {
             table: "drafts",
             column: "payload",
         },
+        Step::AddColumn {
+            table: "users",
+            column: "display_name",
+        },
+        Step::AddColumn {
+            table: "users",
+            column: "avatar",
+        },
+        Step::AddColumn {
+            table: "users",
+            column: "fields",
+        },
+        Step::AddColumn {
+            table: "users",
+            column: "deactivated_at",
+        },
+        Step::AddColumn {
+            table: "conversations",
+            column: "fields",
+        },
+        Step::HashLegacyTokens,
     ],
 }];
 
@@ -570,19 +652,57 @@ pub async fn columns(c: &mut AnyConnection, d: Dialect, table: &str) -> ApiResul
         .collect()
 }
 
+/// `name TYPE [NOT NULL]` of a declared column.
+pub fn column_ddl(d: Dialect, tn: &str, column: &str) -> String {
+    let cl = col(table(tn), column);
+    format!(
+        "{column} {}{}",
+        sql_type(d, cl.ty),
+        if cl.null { "" } else { " NOT NULL" }
+    )
+}
+
 async fn apply_step(c: &mut AnyConnection, d: Dialect, step: &Step) -> ApiResult<()> {
     match step {
         Step::AddColumn { table: tn, column } => {
             if columns(c, d, tn).await?.iter().any(|n| n == column) {
                 return Ok(());
             }
-            let cl = col(table(tn), column);
-            let sql = format!(
-                "ALTER TABLE {tn} ADD COLUMN {column} {}{}",
-                sql_type(d, cl.ty),
-                if cl.null { "" } else { " NOT NULL" }
-            );
+            let sql = format!("ALTER TABLE {tn} ADD COLUMN {}", column_ddl(d, tn, column));
             sqlx::query(AssertSqlSafe(sql)).execute(&mut *c).await?;
+        }
+        Step::HashLegacyTokens => {
+            let rows = sqlx::query("SELECT id, token, created_at FROM users")
+                .fetch_all(&mut *c)
+                .await?;
+            for r in rows {
+                let (id, token, at): (String, String, i64) =
+                    (r.try_get(0)?, r.try_get(1)?, r.try_get(2)?);
+                if token == crate::auth::legacy_placeholder(&id) {
+                    continue;
+                }
+                let h = crate::auth::hash(&token);
+                let have = sqlx::query(d.q("SELECT hash FROM tokens WHERE hash = ?"))
+                    .bind(h.clone())
+                    .fetch_optional(&mut *c)
+                    .await?;
+                if have.is_none() {
+                    sqlx::query(d.q("INSERT INTO tokens (hash, user_id, device_id, device_name, issued_by, created_at) VALUES (?, ?, ?, ?, ?, ?)"))
+                        .bind(h)
+                        .bind(id.clone())
+                        .bind(format!("d_legacy_{id}"))
+                        .bind("legacy")
+                        .bind("migration")
+                        .bind(at)
+                        .execute(&mut *c)
+                        .await?;
+                }
+                sqlx::query(d.q("UPDATE users SET token = ? WHERE id = ?"))
+                    .bind(crate::auth::legacy_placeholder(&id))
+                    .bind(id)
+                    .execute(&mut *c)
+                    .await?;
+            }
         }
     }
     Ok(())

@@ -51,7 +51,7 @@ async fn acked_messages_survive_restart_and_retries_are_deduplicated(db: TestDb)
     assert_eq!(created[0]["event"]["msg"]["content"], "hi");
     // Users and tokens come back from the control database.
     assert!(
-        hub.authenticate(&hub.token_of("alice").unwrap().1)
+        hub.authenticate(&hub.token_of("alice").await.unwrap().1)
             .is_some()
     );
 }

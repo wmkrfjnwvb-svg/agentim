@@ -80,7 +80,7 @@ async fn outside_the_demo_login_user_creation_and_stats_are_closed() {
     )
     .await;
     assert_eq!(c, 403, "anyone creating users only in the demo");
-    assert!(srv.hub.token_of("mallory").is_none());
+    assert!(srv.hub.token_of("mallory").await.is_none());
     let (c, _) = http(&srv.addr, "GET", "/api/stats", "", "").await;
     assert_eq!(c, 401, "no token");
     let auth = format!("Authorization: Bearer {token}\r\n");

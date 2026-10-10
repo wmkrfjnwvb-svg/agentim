@@ -51,6 +51,41 @@ fn json_col(r: &AnyRow, col: &str) -> sqlx::Result<Option<Value>> {
         .and_then(|s| serde_json::from_str(&s).ok()))
 }
 
+/// One client token = one device.
+#[derive(Debug, Clone)]
+pub struct TokenRow {
+    pub hash: String,
+    pub user_id: String,
+    pub device_id: String,
+    pub device_name: Option<String>,
+    pub platform: Option<String>,
+    pub issued_by: Option<String>,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub last_seen: Option<i64>,
+}
+
+impl TokenRow {
+    /// What a user or the API may see (never the hash).
+    pub fn view(&self) -> Value {
+        json!({"device_id": self.device_id, "name": self.device_name, "platform": self.platform, "created_at": self.created_at, "expires_at": self.expires_at, "last_seen": self.last_seen})
+    }
+}
+
+fn row_token(r: &AnyRow) -> sqlx::Result<TokenRow> {
+    Ok(TokenRow {
+        hash: r.try_get("hash")?,
+        user_id: r.try_get("user_id")?,
+        device_id: r.try_get("device_id")?,
+        device_name: r.try_get("device_name")?,
+        platform: r.try_get("platform")?,
+        issued_by: r.try_get("issued_by")?,
+        created_at: r.try_get("created_at")?,
+        expires_at: r.try_get("expires_at")?,
+        last_seen: r.try_get("last_seen")?,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct DirEntry {
     pub conv_id: String,
@@ -191,7 +226,8 @@ fn row_draft(r: &AnyRow) -> sqlx::Result<Draft> {
 impl Db<'_> {
     // ===================================================== control database
 
-    pub async fn insert_user(&mut self, u: &User, token: &str) -> ApiResult<()> {
+    pub async fn insert_user(&mut self, u: &User) -> ApiResult<()> {
+        let token = crate::auth::legacy_placeholder(&u.id);
         sqlx::query(self.d.q(
             "INSERT INTO users (id, tenant_id, unit_id, name, kind, owner_id, token, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         ))
@@ -201,7 +237,7 @@ impl Db<'_> {
         .bind(&u.name)
         .bind(u.kind.as_str())
         .bind(&u.owner_id)
-        .bind(token)
+        .bind(&token)
         .bind(now_ms())
         .execute(&mut *self.c)
         .await
@@ -209,15 +245,102 @@ impl Db<'_> {
         Ok(())
     }
 
-    /// All users with their tokens (loaded into the in-memory directory).
-    pub async fn load_users(&mut self) -> ApiResult<Vec<(User, String)>> {
+    /// All users and whether each is deactivated (the in-memory directory).
+    pub async fn load_users(&mut self) -> ApiResult<Vec<(User, bool)>> {
         let rows = sqlx::query(
-            "SELECT id, name, kind, owner_id, unit_id, token FROM users ORDER BY created_at, id",
+            "SELECT id, name, kind, owner_id, unit_id, deactivated_at FROM users ORDER BY created_at, id",
         )
         .fetch_all(&mut *self.c)
         .await?;
         rows.iter()
-            .map(|r| Ok((row_user(r)?, r.try_get::<String, _>("token")?)))
+            .map(|r| {
+                Ok((
+                    row_user(r)?,
+                    r.try_get::<Option<i64>, _>("deactivated_at")?.is_some(),
+                ))
+            })
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn insert_token(&mut self, t: &TokenRow) -> ApiResult<()> {
+        sqlx::query(self.d.q("INSERT INTO tokens (hash, user_id, device_id, device_name, platform, issued_by, created_at, expires_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"))
+            .bind(&t.hash)
+            .bind(&t.user_id)
+            .bind(&t.device_id)
+            .bind(&t.device_name)
+            .bind(&t.platform)
+            .bind(&t.issued_by)
+            .bind(t.created_at)
+            .bind(t.expires_at)
+            .bind(t.last_seen)
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_tokens(
+        &mut self,
+        user_id: &str,
+        device: Option<&str>,
+    ) -> ApiResult<Vec<String>> {
+        let rows = match device {
+            Some(d) => {
+                sqlx::query(
+                    self.d
+                        .q("SELECT hash FROM tokens WHERE user_id = ? AND device_id = ?"),
+                )
+                .bind(user_id)
+                .bind(d)
+                .fetch_all(&mut *self.c)
+                .await?
+            }
+            None => {
+                sqlx::query(self.d.q("SELECT hash FROM tokens WHERE user_id = ?"))
+                    .bind(user_id)
+                    .fetch_all(&mut *self.c)
+                    .await?
+            }
+        };
+        let hashes: Vec<String> = rows
+            .iter()
+            .map(|r| r.try_get(0))
+            .collect::<sqlx::Result<_>>()?;
+        for h in &hashes {
+            sqlx::query(self.d.q("DELETE FROM tokens WHERE hash = ?"))
+                .bind(h)
+                .execute(&mut *self.c)
+                .await?;
+        }
+        Ok(hashes)
+    }
+
+    pub async fn touch_token(&mut self, hash: &str) -> ApiResult<()> {
+        sqlx::query(self.d.q("UPDATE tokens SET last_seen = ? WHERE hash = ?"))
+            .bind(now_ms())
+            .bind(hash)
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn tokens_all(&mut self) -> ApiResult<Vec<TokenRow>> {
+        let rows = sqlx::query("SELECT hash, user_id, device_id, device_name, platform, issued_by, created_at, expires_at, last_seen FROM tokens")
+            .fetch_all(&mut *self.c)
+            .await?;
+        rows.iter()
+            .map(row_token)
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn devices(&mut self, user_id: &str) -> ApiResult<Vec<TokenRow>> {
+        let rows = sqlx::query(self.d.q("SELECT hash, user_id, device_id, device_name, platform, issued_by, created_at, expires_at, last_seen FROM tokens WHERE user_id = ? ORDER BY created_at, device_id"))
+            .bind(user_id)
+            .fetch_all(&mut *self.c)
+            .await?;
+        rows.iter()
+            .map(row_token)
             .collect::<sqlx::Result<_>>()
             .map_err(Into::into)
     }

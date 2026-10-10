@@ -129,3 +129,21 @@
 | MVP 1（M3） | 应用与 API Key（Bearer）、签发和吊销登录令牌、用户（含开发者自定义 ID、批量）、会话与成员、消息（以用户或系统身份、给某人发消息、编辑撤回、历史、已读、批量发送）、防重复、错误格式、分页、限流、OpenAPI 文档、Node / Python / Go 服务端 SDK |
 | MVP 1（M10，合规） | 导出与删除的异步任务、审核接口 |
 | MVP 2 | 请求签名（HMAC）、全员通知、历史导入、Java / PHP SDK、多应用的管理界面 |
+
+## 5. 实现细节（M3）
+
+| 方面 | 做法 |
+|---|---|
+| 应用 | MVP 1 每个部署一个应用（`default`，即数据模型里的 `tenant_id`）。多应用之间的完全隔离和管理界面放 MVP 2 |
+| API Key | 格式 `ak_<key_id>_<secret>`，数据库只存整个 Key 的 SHA-256。用命令行管理：`agentim api-key create --scopes …`（只在创建时显示一次）、`api-key list`、`api-key revoke <key_id>`。可选过期时间和 IP 允许列表 |
+| 明文 HTTP | 只有来自本机地址的请求允许；部署在 TLS 反向代理之后时设 `open_api.allow_http = true` |
+| 客户端令牌 | 格式 `atk_<43 位 base64url>`（256 位随机数），只存 SHA-256；每个令牌就是一台设备（`device_id`、名称、平台、签发时间、过期时间、最近使用时间）。老数据库里的明文令牌在升级时改为哈希 |
+| 设备 | 客户端协议加 `list_devices`、`logout_device {device_id}`（吊销并立即断开那台设备的连接）；开放 API 吊销用户的全部令牌时也立即断开。新设备登录时，这个用户已在线的设备收到 `device.added`；已读在其他设备上同步（`read` 推送） |
+| 以系统身份 | 内置的系统用户（`kind = system`，名字 `system` 保留）。可以发系统通知（`sender_type = system`，不需要是成员）、拉人、移除非群主的成员（群主要先转让）、改角色、转让群主、撤回任何消息、解散会话、读取任何会话的历史。建会话必须指定 `owner`，按这个用户的身份建，拉黑等规则照常检查 |
+| 以用户身份 | 内部用一个不登记在线状态的会话执行和客户端完全相同的操作，所以规则、去重、推送、审计一致 |
+| 审计 | 每个写操作和每次读取历史都写审计：`api.<操作>`，带 Key ID 和身份 |
+| 防重复 | `Idempotency-Key`（1–255 个可见字符）保存 24 小时：同 Key 同请求体返回第一次的结果（响应头 `Idempotent-Replayed: true`）；不同请求体 `422`；第一次还在执行时 `409` |
+| 限流 | 每个 Key 一个令牌桶，默认每秒 100 次、突发 200 次（`open_api.rate_per_second`、`open_api.burst`）；响应头 `RateLimit-Policy`、`RateLimit`；超出 `429` + `Retry-After` |
+| 错误 | `application/problem+json`：`type`（`https://agentim.dev/errors/<code>`）、`title`、`status`、`detail`、`code`；状态码：`bad_request` 400、未认证 401、`forbidden` / 缺权限 403、`not_found` 404、`conflict` 409、`idempotency_mismatch` 422、`rate_limited` 429、`blocked` 403、`policy_blocked` 403、`overloaded` / `storage_unavailable` 503 |
+| OpenAPI | 手写的 OpenAPI 3.1 文档放在 `server/openapi.json`，`GET /v1/openapi.json` 返回它；测试保证文档里的每个路径和方法都存在于路由里，反之亦然。（原计划用 utoipa 在代码上标注，改为手写加测试，少一个宏依赖，效果一样） |
+| 服务端 SDK | Node（TypeScript）、Python、Go 三个轻量客户端，手写，覆盖全部接口，带重试（同一个 `Idempotency-Key`）和错误类型；CI 里各跑一遍对真实服务端的冒烟测试 |

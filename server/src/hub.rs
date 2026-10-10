@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::config::Config;
 use crate::db::{Db, DirEntry, fingerprint, new_id};
-use crate::logic::{Ctx, DirInfo, HubConfig, Op, SessCtx, Shared};
+use crate::logic::{Ctx, DirInfo, HubConfig, Op, SessCtx, Shared, TokenInfo};
 use crate::metrics as m;
 use crate::model::*;
 use crate::policy::PolicyChain;
@@ -53,6 +53,8 @@ pub struct Session {
     hub: Hub,
     pub sid: u64,
     pub user: User,
+    pub device_id: Option<String>,
+    kicked: Arc<tokio::sync::Notify>,
     /// Negotiated protocol and what the client said about itself in `hello`.
     client: std::sync::Mutex<ClientState>,
     /// Signal rate window: (start, count).
@@ -101,6 +103,7 @@ impl Hub {
             reg: Registry::new(hub_cfg.human_queue, hub_cfg.agent_queue),
             users: Default::default(),
             tokens: Default::default(),
+            deactivated: Default::default(),
             dir: Default::default(),
             stream_index: Default::default(),
             policy: PolicyChain::default_chain(),
@@ -152,12 +155,27 @@ impl Hub {
     async fn load(&self) -> ApiResult<()> {
         let sh = &self.inner.sh;
         let control = self.control();
-        for (u, token) in self
+        for (u, off) in self
             .read(control, |db| Box::pin(async move { db.load_users().await }))
             .await?
         {
-            sh.tokens.write().unwrap().insert(token, u.id.clone());
+            if off {
+                sh.deactivated.write().unwrap().insert(u.id.clone());
+            }
             sh.users.write().unwrap().insert(u.id.clone(), u);
+        }
+        for t in self
+            .read(control, |db| Box::pin(async move { db.tokens_all().await }))
+            .await?
+        {
+            sh.tokens.write().unwrap().insert(
+                t.hash,
+                TokenInfo {
+                    user_id: t.user_id,
+                    device_id: t.device_id,
+                    expires_at: t.expires_at,
+                },
+            );
         }
         let blocks = self
             .read(control, |db| Box::pin(async move { db.blocks_all().await }))
@@ -374,12 +392,118 @@ impl Hub {
     // ------------------------------------------------------------ sessions
 
     pub fn authenticate(&self, token: &str) -> Option<User> {
-        let id = self.inner.sh.tokens.read().unwrap().get(token).cloned()?;
-        self.inner.sh.user(&id)
+        self.authenticate_device(token).map(|(u, _)| u)
     }
 
-    pub fn connect(&self, user: User) -> (Session, Pushes) {
-        let (sid, rx) = self.inner.sh.reg.add(&user);
+    /// The user and device of a valid, unexpired client token.
+    pub fn authenticate_device(&self, token: &str) -> Option<(User, String)> {
+        let hash = crate::auth::hash(token);
+        let t = self.inner.sh.tokens.read().unwrap().get(&hash).cloned()?;
+        if t.expires_at.is_some_and(|e| e <= now_ms()) {
+            return None;
+        }
+        if self
+            .inner
+            .sh
+            .deactivated
+            .read()
+            .unwrap()
+            .contains(&t.user_id)
+        {
+            return None;
+        }
+        let u = self.inner.sh.user(&t.user_id)?;
+        self.control().post(Op::TouchToken { hash });
+        Some((u, t.device_id))
+    }
+
+    /// Issues a client token for a new device. `ttl_ms` None = no expiry.
+    pub async fn issue_token(
+        &self,
+        user_id: &str,
+        device_name: Option<&str>,
+        platform: Option<&str>,
+        ttl_ms: Option<i64>,
+        issued_by: &str,
+    ) -> ApiResult<(String, crate::db::TokenRow)> {
+        let user = self
+            .inner
+            .sh
+            .user(user_id)
+            .ok_or_else(|| err("not_found", "user"))?;
+        if user.kind == UserKind::System {
+            return Err(err("bad_request", "the system user does not log in"));
+        }
+        for (what, v) in [("device name", device_name), ("platform", platform)] {
+            if v.is_some_and(|v| v.is_empty() || v.len() > 64 || v.contains('\0')) {
+                return Err(err("bad_request", format!("{what} must be 1..64 bytes")));
+            }
+        }
+        if ttl_ms.is_some_and(|t| t <= 0) {
+            return Err(err("bad_request", "ttl must be positive"));
+        }
+        let token = crate::auth::new_secret("atk");
+        let now = now_ms();
+        let row = crate::db::TokenRow {
+            hash: crate::auth::hash(&token),
+            user_id: user.id.clone(),
+            device_id: format!("d_{}", new_id()),
+            device_name: device_name.map(String::from),
+            platform: platform.map(String::from),
+            issued_by: Some(issued_by.to_string()),
+            created_at: now,
+            expires_at: ttl_ms.map(|t| now.saturating_add(t)),
+            last_seen: None,
+        };
+        self.control().call(Op::IssueToken(row.clone())).await?;
+        self.inner.sh.tokens.write().unwrap().insert(
+            row.hash.clone(),
+            TokenInfo {
+                user_id: user.id.clone(),
+                device_id: row.device_id.clone(),
+                expires_at: row.expires_at,
+            },
+        );
+        // The user's other devices are told (security notice).
+        self.inner.sh.reg.deliver(vec![Out::ToUser {
+            user_id: user.id.clone(),
+            frame: json!({"type": "device.added", "device": row.view()}),
+        }]);
+        Ok((token, row))
+    }
+
+    /// Revokes a user's tokens (all, or one device) and disconnects them.
+    /// Returns how many tokens were removed.
+    pub async fn revoke_tokens(&self, user_id: &str, device_id: Option<&str>) -> ApiResult<usize> {
+        let v = self
+            .control()
+            .call(Op::RevokeTokens {
+                user_id: user_id.to_string(),
+                device_id: device_id.map(String::from),
+            })
+            .await?;
+        let hashes: Vec<String> = serde_json::from_value(v["hashes"].clone()).unwrap_or_default();
+        {
+            let mut t = self.inner.sh.tokens.write().unwrap();
+            for h in &hashes {
+                t.remove(h);
+            }
+        }
+        self.inner.sh.reg.kick(user_id, device_id);
+        Ok(hashes.len())
+    }
+
+    pub async fn devices(&self, user_id: &str) -> ApiResult<Vec<crate::db::TokenRow>> {
+        let u = user_id.to_string();
+        self.read(self.control(), move |db| {
+            Box::pin(async move { db.devices(&u).await })
+        })
+        .await
+    }
+
+    /// A session for a device (WebSocket); `kicked` fires on logout.
+    pub fn connect_device(&self, user: User, device_id: Option<String>) -> (Session, Pushes) {
+        let (sid, rx, kick) = self.inner.sh.reg.add_device(&user, device_id.clone());
         tracing::debug!(
             conn_id = sid,
             user_id = user.id,
@@ -391,6 +515,8 @@ impl Hub {
                 hub: self.clone(),
                 sid,
                 user,
+                device_id,
+                kicked: kick,
                 client: std::sync::Mutex::new(ClientState {
                     protocol: protocol::PROTOCOL_VERSIONS[0],
                     info: None,
@@ -400,6 +526,10 @@ impl Hub {
             },
             rx,
         )
+    }
+
+    pub fn connect(&self, user: User) -> (Session, Pushes) {
+        self.connect_device(user, None)
     }
 
     pub async fn create_user(
@@ -423,39 +553,28 @@ impl Hub {
             owner_id: owner.map(String::from),
             unit_id: unit,
         };
-        let token = uuid::Uuid::new_v4().simple().to_string();
         self.control()
-            .call(Op::CreateUser {
-                user: user.clone(),
-                token: token.clone(),
-            })
+            .call(Op::CreateUser { user: user.clone() })
             .await?;
-        self.inner
-            .sh
-            .tokens
-            .write()
-            .unwrap()
-            .insert(token.clone(), user.id.clone());
         self.inner
             .sh
             .users
             .write()
             .unwrap()
             .insert(user.id.clone(), user.clone());
+        let (token, _) = self
+            .issue_token(&user.id, Some("first device"), None, None, "create")
+            .await?;
         Ok((user, token))
     }
 
-    pub fn token_of(&self, name: &str) -> Option<(User, String)> {
+    /// Demo login: a new device token for an existing human user.
+    pub async fn token_of(&self, name: &str) -> Option<(User, String)> {
         let u = self.inner.sh.user_by_name(name)?;
-        let t = self
-            .inner
-            .sh
-            .tokens
-            .read()
-            .unwrap()
-            .iter()
-            .find(|(_, id)| **id == u.id)
-            .map(|(t, _)| t.clone())?;
+        let (t, _) = self
+            .issue_token(&u.id, Some("web"), Some("web"), None, "demo")
+            .await
+            .ok()?;
         Some((u, t))
     }
 
@@ -867,6 +986,32 @@ impl Hub {
                 kind,
                 data,
             } => self.signal(sess, &conv_id, &kind, data).await,
+            ClientMsg::ListDevices => {
+                let list: Vec<Value> = self
+                    .devices(&me.id)
+                    .await?
+                    .iter()
+                    .map(|d| {
+                        let mut v = d.view();
+                        v["current"] =
+                            json!(sess.device_id.as_deref() == Some(d.device_id.as_str()));
+                        v
+                    })
+                    .collect();
+                Ok(json!({"devices": list}))
+            }
+            ClientMsg::LogoutDevice { device_id } => {
+                if !self
+                    .devices(&me.id)
+                    .await?
+                    .iter()
+                    .any(|d| d.device_id == device_id)
+                {
+                    return Err(err("not_found", "device"));
+                }
+                let n = self.revoke_tokens(&me.id, Some(&device_id)).await?;
+                Ok(json!({"revoked": n}))
+            }
         }
     }
 
@@ -1583,6 +1728,11 @@ impl Hub {
 impl Session {
     pub async fn handle_text(&self, text: &str) -> Value {
         self.hub.handle_text(self, text).await
+    }
+
+    /// Completes when this session's device is logged out.
+    pub async fn kicked(&self) {
+        self.kicked.notified().await
     }
 
     pub fn client(&self) -> ClientState {

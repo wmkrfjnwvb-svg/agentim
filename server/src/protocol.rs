@@ -23,6 +23,7 @@ pub const FEATURES: &[&str] = &[
     "observe",
     "custom_kinds",
     "signals",
+    "devices",
 ];
 
 /// Every operation of protocol v1, so an unknown one can be told apart from
@@ -62,6 +63,8 @@ pub const OPS: &[&str] = &[
     "reset_guard",
     "list_drafts",
     "stats",
+    "list_devices",
+    "logout_device",
 ];
 
 pub const MAX_CLIENT_FEATURES: usize = 100;

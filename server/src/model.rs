@@ -322,6 +322,12 @@ pub enum ClientMsg {
     },
     ListDrafts,
     Stats,
+    /// This user's devices (one per client token).
+    ListDevices,
+    /// Revokes one device's token and disconnects it (also this device).
+    LogoutDevice {
+        device_id: String,
+    },
 }
 
 impl ClientMsg {
@@ -361,6 +367,8 @@ impl ClientMsg {
             ClientMsg::ResetGuard { .. } => "reset_guard",
             ClientMsg::ListDrafts => "list_drafts",
             ClientMsg::Stats => "stats",
+            ClientMsg::ListDevices => "list_devices",
+            ClientMsg::LogoutDevice { .. } => "logout_device",
         }
     }
 

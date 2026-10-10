@@ -56,7 +56,7 @@ async fn login(State(st): State<AppState>, Json(req): Json<LoginReq>) -> Respons
         )
             .into_response();
     }
-    match st.hub.token_of(&req.name) {
+    match st.hub.token_of(&req.name).await {
         Some((user, token)) if user.kind == UserKind::Human => {
             Json(json!({"user": user, "token": token})).into_response()
         }
@@ -196,7 +196,7 @@ async fn ws(
     Query(q): Query<WsQuery>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    let Some(user) = st.hub.authenticate(&q.token) else {
+    let Some((user, device)) = st.hub.authenticate_device(&q.token) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let version = match ws_protocol(q.v.as_deref()) {
@@ -210,11 +210,11 @@ async fn ws(
         .read_buffer_size(4 * 1024)
         .write_buffer_size(0)
         .max_message_size(1 << 20)
-        .on_upgrade(move |socket| run_socket(st.hub, user, version, socket))
+        .on_upgrade(move |socket| run_socket(st.hub, user, device, version, socket))
 }
 
-async fn run_socket(hub: Hub, user: User, version: u32, socket: WebSocket) {
-    let (session, mut pushes) = hub.connect(user.clone());
+async fn run_socket(hub: Hub, user: User, device: String, version: u32, socket: WebSocket) {
+    let (session, mut pushes) = hub.connect_device(user.clone(), Some(device));
     session.set_protocol(version);
     let (mut sink, mut stream) = socket.split();
     let (res_tx, mut res_rx) = tokio::sync::mpsc::channel::<Message>(64);
@@ -239,7 +239,23 @@ async fn run_socket(hub: Hub, user: User, version: u32, socket: WebSocket) {
     welcome["me"] = json!(user);
     let _ = res_tx.send(Message::Text(welcome.to_string().into())).await;
     // Requests of one connection are processed one at a time, in order.
-    while let Some(Ok(msg)) = stream.next().await {
+    loop {
+        let msg = tokio::select! {
+            m = stream.next() => match m {
+                Some(Ok(m)) => m,
+                _ => break,
+            },
+            // Logged out: tell the client why, then close.
+            _ = session.kicked() => {
+                let _ = res_tx
+                    .send(Message::Close(Some(CloseFrame {
+                        code: close_code::POLICY,
+                        reason: "logged_out".into(),
+                    })))
+                    .await;
+                break;
+            }
+        };
         match msg {
             Message::Text(t) => {
                 let res = session.handle_text(t.as_str()).await;

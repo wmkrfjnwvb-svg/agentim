@@ -79,6 +79,9 @@ fn resync_frame(conv_id: &str) -> Frame {
 
 struct Entry {
     user_id: String,
+    device_id: Option<String>,
+    /// Closes the connection (device logged out).
+    kick: Arc<tokio::sync::Notify>,
     kind: UserKind,
     tx: mpsc::Sender<Frame>,
     focus: Option<(String, Option<String>)>,
@@ -147,6 +150,18 @@ impl Registry {
     }
 
     pub fn add(&self, user: &User) -> (u64, Pushes) {
+        let (sid, p, _) = self.add_device(user, None);
+        (sid, p)
+    }
+
+    /// A session of one device; the returned notify fires when that device
+    /// is logged out.
+    pub fn add_device(
+        &self,
+        user: &User,
+        device_id: Option<String>,
+    ) -> (u64, Pushes, Arc<tokio::sync::Notify>) {
+        let kick = Arc::new(tokio::sync::Notify::new());
         let cap = if user.kind == UserKind::Agent {
             self.agent_queue
         } else {
@@ -161,6 +176,8 @@ impl Registry {
             sid,
             Entry {
                 user_id: user.id.clone(),
+                device_id,
+                kick: kick.clone(),
                 kind: user.kind,
                 tx,
                 focus: None,
@@ -170,7 +187,31 @@ impl Registry {
         g.by_user.entry(user.id.clone()).or_default().push(sid);
         metrics::gauge!(m::WS_CONNECTIONS, "kind" => user.kind.as_str()).increment(1.0);
         metrics::counter!(m::WS_CONNECTS, "kind" => user.kind.as_str()).increment(1);
-        (sid, Pushes { rx, owed })
+        (sid, Pushes { rx, owed }, kick)
+    }
+
+    /// Disconnects a user's sessions: all of them, or one device's.
+    pub fn kick(&self, user_id: &str, device_id: Option<&str>) -> usize {
+        let g = self.lock();
+        let mut n = 0;
+        for sid in g.by_user.get(user_id).into_iter().flatten() {
+            if let Some(e) = g.sessions.get(sid)
+                && (device_id.is_none() || e.device_id.as_deref() == device_id)
+            {
+                e.kick.notify_one();
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Sessions of a user other than `except`.
+    pub fn others(&self, user_id: &str, except: u64) -> Vec<u64> {
+        let g = self.lock();
+        g.by_user
+            .get(user_id)
+            .map(|v| v.iter().copied().filter(|s| *s != except).collect())
+            .unwrap_or_default()
     }
 
     /// Removes a session; returns whether the user still has other sessions.

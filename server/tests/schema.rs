@@ -70,6 +70,7 @@ async fn downgrade(db: &TestDb, version: i64) {
                     .await
                     .unwrap();
                 }
+                Step::HashLegacyTokens => {}
             }
         }
     }
@@ -131,7 +132,41 @@ async fn an_old_database_is_migrated_with_its_data(db: TestDb) {
 
     for from in 1..SCHEMA_VERSION {
         downgrade(&db, from).await;
+        if from == 1 {
+            // Version 1 kept plaintext tokens in users.token.
+            let (mut c, d) = raw(&db).await;
+            sqlx::query(d.q("UPDATE users SET token = ? WHERE id = ?"))
+                .bind("legacy-plain-alice")
+                .bind(alice.id.clone())
+                .execute(&mut c)
+                .await
+                .unwrap();
+            sqlx::query(d.q("DELETE FROM tokens WHERE user_id = ?"))
+                .bind(alice.id.clone())
+                .execute(&mut c)
+                .await
+                .unwrap();
+        }
         let hub = open(single(&db.url)).await;
+        if from == 1 {
+            assert_eq!(
+                hub.authenticate("legacy-plain-alice").unwrap().id,
+                alice.id,
+                "still logs in"
+            );
+            let (mut c, d) = raw(&db).await;
+            let r = sqlx::query(d.q("SELECT token FROM users WHERE id = ?"))
+                .bind(alice.id.clone())
+                .fetch_one(&mut c)
+                .await
+                .unwrap();
+            let t: String = sqlx::Row::get(&r, 0);
+            assert_eq!(
+                t,
+                agentim::auth::legacy_placeholder(&alice.id),
+                "plaintext gone"
+            );
+        }
         assert_latest_columns(&db).await;
         assert_eq!(
             meta(&db, "schema_compat").await.unwrap(),
@@ -161,14 +196,13 @@ async fn a_migration_interrupted_after_its_ddl_is_finished_on_restart(db: TestDb
     downgrade(&db, 1).await;
     let (mut c, d) = raw(&db).await;
     for m in MIGRATIONS {
-        for Step::AddColumn { table, column } in m.steps {
+        for step in m.steps {
+            let Step::AddColumn { table, column } = step else {
+                continue;
+            };
             sqlx::query(sqlx::AssertSqlSafe(format!(
-                "ALTER TABLE {table} ADD COLUMN {column} {}",
-                if d == Dialect::Mysql {
-                    "LONGTEXT"
-                } else {
-                    "TEXT"
-                }
+                "ALTER TABLE {table} ADD COLUMN {}",
+                storage::column_ddl(d, table, column)
             )))
             .execute(&mut c)
             .await

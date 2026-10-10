@@ -734,7 +734,7 @@ async fn user_and_conversation_listing_edges(db: TestDb) {
     user(&hub, "alice", UserKind::Human, None).await;
     let dup = hub.create_user("alice", UserKind::Human, None, None).await;
     assert!(dup.is_err(), "user names are unique");
-    let alice = hub.token_of("alice").unwrap().0;
+    let alice = hub.token_of("alice").await.unwrap().0;
     let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
     let g = Conn::new(&hub, &bot);
     let a = Conn::new(&hub, &alice);

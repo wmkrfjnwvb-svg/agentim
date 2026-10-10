@@ -5,7 +5,7 @@
 //! `commit_on_error` (a rejection that must still be recorded, e.g. a breaker
 //! trip or a policy block).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -73,10 +73,20 @@ pub struct DirInfo {
 
 /// State shared by the hub and every writer. All of it is either derived
 /// from the databases (and rebuilt at startup) or soft state.
+#[derive(Debug, Clone)]
+pub struct TokenInfo {
+    pub user_id: String,
+    pub device_id: String,
+    pub expires_at: Option<i64>,
+}
+
 pub struct Shared {
     pub reg: Registry,
     pub users: std::sync::RwLock<HashMap<String, User>>,
-    pub tokens: std::sync::RwLock<HashMap<String, String>>,
+    /// SHA-256 of each valid client token → its device.
+    pub tokens: std::sync::RwLock<HashMap<String, TokenInfo>>,
+    /// Users that may not log in or act (open API deactivation).
+    pub deactivated: std::sync::RwLock<HashSet<String>>,
     pub dir: std::sync::RwLock<HashMap<String, DirInfo>>,
     /// Active stream (or streamed draft) id → database index.
     pub stream_index: std::sync::Mutex<HashMap<String, usize>>,
@@ -251,7 +261,15 @@ pub enum Op {
     // control database
     CreateUser {
         user: User,
-        token: String,
+    },
+    IssueToken(crate::db::TokenRow),
+    /// All tokens of a user, or of one device. Returns the removed hashes.
+    RevokeTokens {
+        user_id: String,
+        device_id: Option<String>,
+    },
+    TouchToken {
+        hash: String,
     },
     UpsertUnit {
         name: String,
@@ -336,6 +354,9 @@ impl Op {
             Op::AgentGone(_) => "agent_gone",
             Op::Barrier => "barrier",
             Op::CreateUser { .. } => "create_user",
+            Op::IssueToken(_) => "issue_token",
+            Op::RevokeTokens { .. } => "revoke_tokens",
+            Op::TouchToken { .. } => "touch_token",
             Op::UpsertUnit { .. } => "upsert_unit",
             Op::RegisterConv { .. } => "register_conv",
             Op::MemberIndexAdd { .. } => "member_index_add",
@@ -513,8 +534,23 @@ impl Ctx<'_, '_> {
                 Ok(json!({}))
             }
             Op::Barrier => Ok(json!({})),
-            Op::CreateUser { user, token } => {
-                self.db.insert_user(&user, &token).await?;
+            Op::CreateUser { user } => {
+                self.db.insert_user(&user).await?;
+                Ok(json!({}))
+            }
+            Op::IssueToken(t) => {
+                self.db.insert_token(&t).await?;
+                Ok(json!({}))
+            }
+            Op::RevokeTokens { user_id, device_id } => {
+                let gone = self
+                    .db
+                    .delete_tokens(&user_id, device_id.as_deref())
+                    .await?;
+                Ok(json!({"hashes": gone}))
+            }
+            Op::TouchToken { hash } => {
+                self.db.touch_token(&hash).await?;
                 Ok(json!({}))
             }
             Op::UpsertUnit { name, database } => {
@@ -705,7 +741,16 @@ impl Ctx<'_, '_> {
                     .await?
                     .map(|c| c.last_seq)
                     .unwrap_or(0);
-                self.db.set_read(&conv_id, &me.id, seq.min(head)).await?;
+                let seq = seq.min(head);
+                self.db.set_read(&conv_id, &me.id, seq).await?;
+                // The user's other devices update their unread counts.
+                let frame = json!({"type": "read", "conv_id": conv_id, "seq": seq});
+                for sid in self.sh.reg.others(&me.id, sess.sid) {
+                    self.out.push(Out::ToSession {
+                        sid,
+                        frame: frame.clone(),
+                    });
+                }
                 Ok(json!({}))
             }
             ClientMsg::Focus {
