@@ -38,6 +38,8 @@ pub const WS_CONNECTIONS: &str = "agentim_ws_connections";
 pub const WS_CONNECTS: &str = "agentim_ws_connects_total";
 pub const WS_DISCONNECTS: &str = "agentim_ws_disconnects_total";
 pub const REQUESTS: &str = "agentim_requests_total";
+/// Handshakes by negotiated protocol and client name (bounded label set).
+pub const CLIENTS: &str = "agentim_clients_total";
 pub const REQUEST_DURATION: &str = "agentim_request_duration_seconds";
 pub const ACK_LATENCY: &str = "agentim_ack_latency_seconds";
 pub const COMMIT_BATCH_SIZE: &str = "agentim_commit_batch_size";

@@ -149,7 +149,16 @@ pub struct Envelope {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ClientMsg {
-    Hello,
+    /// Handshake (docs/02-architecture.md §2.5). Every field is optional so
+    /// clients that predate negotiation keep working.
+    Hello {
+        #[serde(default)]
+        protocol: Option<Vec<u32>>,
+        #[serde(default)]
+        client: Option<crate::protocol::ClientInfo>,
+        #[serde(default)]
+        features: Option<Vec<String>>,
+    },
     ListConvs,
     CreateConv {
         kind: String,
@@ -298,7 +307,7 @@ pub enum ClientMsg {
 impl ClientMsg {
     pub fn name(&self) -> &'static str {
         match self {
-            ClientMsg::Hello => "hello",
+            ClientMsg::Hello { .. } => "hello",
             ClientMsg::ListConvs => "list_convs",
             ClientMsg::CreateConv { .. } => "create_conv",
             ClientMsg::AddMember { .. } => "add_member",

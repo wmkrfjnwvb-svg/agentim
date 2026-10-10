@@ -92,6 +92,7 @@ pub fn single(url: &str) -> Config {
         },
         units: vec![],
         writer: WriterConfig::default(),
+        clients: Default::default(),
     }
 }
 
@@ -120,6 +121,7 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
             database: unit_b_in.into(),
         }],
         writer: WriterConfig::default(),
+        clients: Default::default(),
     }
 }
 

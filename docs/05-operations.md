@@ -27,7 +27,7 @@
 | 类别 | 已实现 | ⏳ 后续 |
 |---|---|---|
 | 连接 | `agentim_ws_connections{kind}`、`agentim_ws_connects_total{kind}`、`agentim_ws_disconnects_total{kind}` | |
-| 请求 | `agentim_requests_total{op,result}`、`agentim_request_duration_seconds{op}`、`agentim_ack_latency_seconds` | |
+| 请求 | `agentim_requests_total{op,result}`、`agentim_request_duration_seconds{op}`、`agentim_ack_latency_seconds`、`agentim_clients_total{protocol,client}` | |
 | 写入路径 | `agentim_commit_batch_size`、`agentim_commit_duration_seconds{database}`、`agentim_write_queue_depth{database}`、`agentim_write_rejected_total{reason}`、`agentim_messages_committed_total{sender_type}`、`agentim_events_committed_total{type}`、`agentim_dedup_hits_total` | |
 | 推送 | `agentim_push_total`、`agentim_push_dropped_total`、`agentim_resync_total`、`agentim_stream_deltas_total` | 每个连接的队列深度 |
 | 流式 | `agentim_streams_active`、`agentim_streams_finished_total{state,reason}` | 首个增量的延迟 |
@@ -61,6 +61,7 @@
 | 成员生命周期（`tests/membership.rs`，17 个场景 + 7 个竞争 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 见 §5.3.1 的覆盖矩阵 |
 | 覆盖排查补充（`tests/coverage.rs`，19 项 × 3 种数据库 + 1 项 PostgreSQL + 2 项 SQLite） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 见 §5.5 |
 | HTTP 与 WebSocket 接口（`tests/http.rs`，5 项） | ✅ | ✅ | 见 §5.5 |
+| 协议版本（`tests/protocol.rs`，7 项 × 3 种数据库 + 4 项 WebSocket） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 老客户端不带协商照常工作；协商选最新的共同版本，没有时 `unsupported_protocol`；最低版本的边界（相等、次版本 10 > 9、预发布、缺版本号、未配置的客户端）；名称、版本、功能数量的上限；重复和被拒绝的 `hello` 对连接状态的影响；`unknown_op` 与 `bad_request` 的区分且不留痕迹；忽略未知字段；连接参数 `v` 的各种取值；`client_too_old` 后以 1008 断开而其他拒绝不断开；指标标签不含原始输入。变异检查：去掉 `unknown_op` 判断、去掉断开都会让测试失败；`OPS` 少一项会让单元测试失败 |
 | 配置校验（`src/config.rs` 单元测试，3 项） | ✅ | ✅ | 见 §5.5 |
 | 多库（`tests/multidb.rs`，6 项） | ✅ | ✅ | 单元的内容和会话标题不会出现在共享库文件里（直接读文件字节确认）；跨库的成员、列表、侧信道；迁移后事件完全一致、seq 连续、旧库不残留内容；迁移期间并发写入不丢不重；崩溃后目录修复；单元放在另一种数据库上（SQLite 控制库 + PostgreSQL 单元库） |
 | WebSocket 端到端（2） | ✅ | ✅ | 鉴权、请求与响应、推送；内置 Agent 的流式回复 |
@@ -81,7 +82,7 @@
 | 流式 | 只有成员 Agent 能流式；每个 Agent 在每个会话最多 2 路；分块重复忽略、跳号拒绝；别人不能追加或结束；结束后不能再追加；成员和所有者可以打断，非成员和其他 Agent 不行；大小上限不会被超过；超时由看门狗关闭；撤回进行中的流；中途打开会话的人看到的文本不重复 |
 | 审批 | 草稿只有所有者看得到，不占 seq；只有所有者能批准或拒绝；批准时可以改文本，作者仍是 Agent；重复批准、批准后拒绝、拒绝后批准都返回冲突；未知草稿 |
 | 介入 | 耳语只在所有者和自己的 Agent 之间；接管时取消进行中的流，Agent 发消息和开流都被拒绝；接管重启后仍有效；只有所有者能改 Agent 策略，重启后保留 |
-| 护栏与协议 | 人类不限速，Agent 突发会被限速但不熔断；格式错误、未知操作、缺字段、类型错误都返回 bad_request 并带回 rid，不产生任何写入 |
+| 护栏与协议 | 人类不限速，Agent 突发会被限速但不熔断；未知操作返回 unknown_op，格式错误、缺字段、类型错误返回 bad_request，都带回 rid，不产生任何写入 |
 | 重启 | 日志、成员策略、未读、待审批草稿、侧信道都保留；重启后可以批准之前的草稿；seq 接着增长 |
 
 ### 5.3 并发场景测试
@@ -259,11 +260,11 @@ cargo run --release -- --demo          # 打开 http://127.0.0.1:8080，选 alic
 
 ### 7.1 协议摘要（JSON over WebSocket）
 
-连接：`GET /ws?token=<token>`。客户端帧：`{"op": "...", "rid": 1, ...}`；服务端对请求回 `{"type": "res", "rid": 1, "ok": true | false, ...}`。
+连接：`GET /ws?token=<token>[&v=<协议版本列表>]`，服务端先发 `welcome`（选定的协议版本、服务端版本、功能列表、限制），版本规则见 [02 §2.5](02-architecture.md)。客户端帧：`{"op": "...", "rid": 1, ...}`；服务端对请求回 `{"type": "res", "rid": 1, "ok": true | false, ...}`。
 
 | op | 用途 |
 |---|---|
-| `hello`、`list_convs`、`create_conv`、`add_member` | 基础；`hello` 只返回和你有共同会话的人和你的 Agent；单聊每对用户只有一个，重复创建返回已有的（`existing: true`） |
+| `hello {protocol?, client?, features?}`、`list_convs`、`create_conv`、`add_member` | 基础；`hello` 协商协议并检查最低客户端版本，只返回和你有共同会话的人和你的 Agent；单聊每对用户只有一个，重复创建返回已有的（`existing: true`） |
 | `remove_member`、`leave`、`set_role`、`transfer_owner`、`dissolve` | 成员生命周期：群主和管理员管理成员；被移除或退出后看不到会话；解散后全员失去访问、内容删除，只保留审计记录 |
 | `block`、`unblock`、`list_blocks`、`find_user {name}` | 拉黑（双方都不能单聊、不能拉对方进群、不能发仅某人可见的消息）；按准确用户名找人 |
 | `send {conv_id, client_msg_id, text, reply_to?, causation_id?, on_behalf_of?, to_user?}` | 发消息；`to_user` 表示仅某人可见；审批模式下返回 `draft_id` |

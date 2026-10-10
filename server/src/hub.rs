@@ -16,6 +16,7 @@ use crate::logic::{Ctx, DirInfo, HubConfig, Op, SessCtx, Shared};
 use crate::metrics as m;
 use crate::model::*;
 use crate::policy::PolicyChain;
+use crate::protocol;
 use crate::registry::{Pushes, Registry};
 use crate::shard::Shard;
 
@@ -41,6 +42,15 @@ pub struct Session {
     hub: Hub,
     pub sid: u64,
     pub user: User,
+    /// Negotiated protocol and what the client said about itself in `hello`.
+    client: std::sync::Mutex<ClientState>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientState {
+    pub protocol: u32,
+    pub info: Option<protocol::ClientInfo>,
+    pub features: Vec<String>,
 }
 
 impl Drop for Session {
@@ -345,6 +355,11 @@ impl Hub {
                 hub: self.clone(),
                 sid,
                 user,
+                client: std::sync::Mutex::new(ClientState {
+                    protocol: protocol::PROTOCOL_VERSIONS[0],
+                    info: None,
+                    features: Vec::new(),
+                }),
             },
             rx,
         )
@@ -427,12 +442,24 @@ impl Hub {
         match serde_json::from_str::<Envelope>(text) {
             Ok(env) => self.handle(sess, env).await,
             Err(e) => {
-                let rid = serde_json::from_str::<Value>(text)
-                    .ok()
-                    .and_then(|v| v["rid"].as_u64());
-                metrics::counter!(m::REQUESTS, "op" => "invalid", "result" => "bad_request")
-                    .increment(1);
-                json!({"type": "res", "rid": rid, "ok": false, "error": {"code": "bad_request", "message": e.to_string()}})
+                let raw = serde_json::from_str::<Value>(text).ok();
+                let rid = raw.as_ref().and_then(|v| v["rid"].as_u64());
+                // An op this server does not know is told apart from a known
+                // op with bad fields, so clients can detect an old server.
+                let unknown = raw
+                    .as_ref()
+                    .and_then(|v| v["op"].as_str())
+                    .is_some_and(|op| !protocol::OPS.contains(&op));
+                let (code, message) = if unknown {
+                    (
+                        "unknown_op",
+                        "this server does not support this operation".to_string(),
+                    )
+                } else {
+                    ("bad_request", e.to_string())
+                };
+                metrics::counter!(m::REQUESTS, "op" => "invalid", "result" => code).increment(1);
+                json!({"type": "res", "rid": rid, "ok": false, "error": {"code": code, "message": message}})
             }
         }
     }
@@ -542,9 +569,33 @@ impl Hub {
     async fn dispatch(&self, sess: &Session, msg: ClientMsg) -> ApiResult<Value> {
         let me = &sess.user;
         match msg {
-            ClientMsg::Hello => {
+            ClientMsg::Hello {
+                protocol: requested,
+                client,
+                features,
+            } => {
+                let version = protocol::negotiate(requested.as_deref())?;
+                let client = client.unwrap_or_default();
+                let features = features.unwrap_or_default();
+                protocol::check_client(&client, &features, &self.inner.cfg.clients.min_versions)?;
                 let users = self.visible_users(me).await?;
-                Ok(json!({"me": me, "users": users, "my_agents": self.inner.sh.agents_of(&me.id)}))
+                metrics::counter!(
+                    m::CLIENTS,
+                    "protocol" => version.to_string(),
+                    "client" => protocol::metric_client_name(&client.name)
+                )
+                .increment(1);
+                *sess.client.lock().unwrap() = ClientState {
+                    protocol: version,
+                    info: Some(client),
+                    features,
+                };
+                let mut res = protocol::server_info();
+                res["protocol"] = json!(version);
+                res["me"] = json!(me);
+                res["users"] = json!(users);
+                res["my_agents"] = json!(self.inner.sh.agents_of(&me.id));
+                Ok(res)
             }
             ClientMsg::FindUser { name } => {
                 let found = self.inner.sh.user_by_name(&name).filter(|u| {
@@ -1373,5 +1424,14 @@ impl Hub {
 impl Session {
     pub async fn handle_text(&self, text: &str) -> Value {
         self.hub.handle_text(self, text).await
+    }
+
+    pub fn client(&self) -> ClientState {
+        self.client.lock().unwrap().clone()
+    }
+
+    /// Protocol chosen when connecting (`/ws?v=`), before `hello`.
+    pub fn set_protocol(&self, v: u32) {
+        self.client.lock().unwrap().protocol = v;
     }
 }

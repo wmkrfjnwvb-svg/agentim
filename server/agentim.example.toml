@@ -35,3 +35,8 @@ read_pool = 8
 max_batch = 512          # commands per transaction (one fsync)
 queue_capacity = 10000   # bounded queue per database; full => "overloaded"
 commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
+
+# Lowest supported client versions (docs/02-architecture.md §2.5). Older
+# clients are refused in `hello` with "client_too_old" and disconnected.
+# [clients.min_versions]
+# agentim-js = "1.2.0"

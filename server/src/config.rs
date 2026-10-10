@@ -28,6 +28,17 @@ pub struct Config {
     pub units: Vec<UnitConfig>,
     #[serde(default)]
     pub writer: WriterConfig,
+    #[serde(default)]
+    pub clients: ClientsConfig,
+}
+
+/// Client compatibility (docs/02-architecture.md §2.5).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ClientsConfig {
+    /// Lowest supported version per client name, e.g. `agentim-js = "1.2.0"`.
+    /// Older clients are refused in `hello` with `client_too_old`.
+    #[serde(default)]
+    pub min_versions: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -107,6 +118,7 @@ impl Config {
             },
             units: vec![],
             writer: WriterConfig::default(),
+            clients: Default::default(),
         }
     }
 
@@ -149,6 +161,16 @@ impl Config {
         if self.writer.max_batch == 0 || self.writer.queue_capacity == 0 {
             return Err("writer.max_batch and writer.queue_capacity must be > 0".into());
         }
+        for (name, v) in &self.clients.min_versions {
+            if name.is_empty() || name.len() > 64 {
+                return Err(format!("clients.min_versions: bad client name {name:?}"));
+            }
+            if crate::protocol::parse_version(v).is_none() {
+                return Err(format!(
+                    "clients.min_versions.{name} = {v:?} is not a version like 1.2.3"
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -189,6 +211,7 @@ mod tests {
                 })
                 .collect(),
             writer: WriterConfig::default(),
+            clients: Default::default(),
         }
     }
 
@@ -214,6 +237,45 @@ mod tests {
         let mut c = cfg(&["main"], "main", &[]);
         c.writer.queue_capacity = 0;
         assert!(c.validate().is_err());
+        for (name, v, want) in [
+            ("agentim-js", "1.x", "not a version"),
+            ("agentim-js", "", "not a version"),
+            ("", "1.0.0", "bad client name"),
+        ] {
+            let mut c = cfg(&["main"], "main", &[]);
+            c.clients.min_versions.insert(name.into(), v.into());
+            let e = c.validate().unwrap_err();
+            assert!(e.contains(want), "{e} should mention {want}");
+        }
+        let mut c = cfg(&["main"], "main", &[]);
+        c.clients
+            .min_versions
+            .insert("agentim-js".into(), "1.2".into());
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn client_minimum_versions_parse_from_toml() {
+        let c: Config = toml::from_str(
+            r#"
+            [storage]
+            control = "main"
+            databases = [{ name = "main", url = "sqlite::memory:" }]
+            [clients.min_versions]
+            agentim-js = "1.2.0"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.clients.min_versions["agentim-js"], "1.2.0");
+        let c: Config = toml::from_str(
+            r#"
+            [storage]
+            control = "main"
+            databases = [{ name = "main", url = "sqlite::memory:" }]
+            "#,
+        )
+        .unwrap();
+        assert!(c.clients.min_versions.is_empty(), "optional section");
     }
 
     #[test]

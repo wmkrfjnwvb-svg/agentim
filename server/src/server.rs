@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
     extract::{
         Query, State,
-        ws::{Message, WebSocket, WebSocketUpgrade},
+        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code},
     },
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
@@ -158,6 +158,37 @@ async fn readyz(State(st): State<AppState>) -> Response {
 #[derive(Deserialize)]
 struct WsQuery {
     token: String,
+    /// Protocol versions the client speaks, comma separated (`v=2,1`).
+    #[serde(default)]
+    v: Option<String>,
+}
+
+/// `v=2,1` -> the version both sides speak; errors are answered before the
+/// upgrade so an incompatible client never gets a half-working socket.
+fn ws_protocol(v: Option<&str>) -> Result<u32, Box<Response>> {
+    let Some(v) = v else {
+        return Ok(crate::protocol::PROTOCOL_VERSIONS[0]);
+    };
+    let list: Option<Vec<u32>> = v
+        .split(',')
+        .map(|p| p.trim().parse().ok())
+        .collect::<Option<Vec<u32>>>()
+        .filter(|l| !l.is_empty() && l.len() <= 16);
+    let refuse = |code: &str, message: String| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"code": code, "message": message}, "protocols": crate::protocol::PROTOCOL_VERSIONS})),
+        )
+            .into_response()
+            .into()
+    };
+    let Some(list) = list else {
+        return Err(refuse(
+            "bad_request",
+            "v must be a comma separated list of protocol versions".into(),
+        ));
+    };
+    crate::protocol::negotiate(Some(&list)).map_err(|e| refuse(e.code, e.message))
 }
 
 async fn ws(
@@ -168,6 +199,10 @@ async fn ws(
     let Some(user) = st.hub.authenticate(&q.token) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    let version = match ws_protocol(q.v.as_deref()) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
     // The library defaults (128 KiB read and 128 KiB write buffer per
     // connection) cost ~140 KB per idle connection; frames are small and every
     // push is flushed on its own, so small buffers lose nothing.
@@ -175,34 +210,55 @@ async fn ws(
         .read_buffer_size(4 * 1024)
         .write_buffer_size(0)
         .max_message_size(1 << 20)
-        .on_upgrade(move |socket| run_socket(st.hub, user, socket))
+        .on_upgrade(move |socket| run_socket(st.hub, user, version, socket))
 }
 
-async fn run_socket(hub: Hub, user: User, socket: WebSocket) {
+async fn run_socket(hub: Hub, user: User, version: u32, socket: WebSocket) {
     let (session, mut pushes) = hub.connect(user.clone());
+    session.set_protocol(version);
     let (mut sink, mut stream) = socket.split();
-    let (res_tx, mut res_rx) = tokio::sync::mpsc::channel::<String>(64);
+    let (res_tx, mut res_rx) = tokio::sync::mpsc::channel::<Message>(64);
     let writer = tokio::spawn(async move {
         loop {
-            let text: String = tokio::select! {
-                Some(v) = res_rx.recv() => v,
-                Some(f) = pushes.recv() => f.to_string(),
+            let frame = tokio::select! {
+                // Responses first: a refusal must go out before the close.
+                biased;
+                Some(m) = res_rx.recv() => m,
+                Some(f) = pushes.recv() => Message::Text(f.to_string().into()),
                 else => break,
             };
-            if sink.send(Message::Text(text.into())).await.is_err() {
+            let closing = matches!(frame, Message::Close(_));
+            if sink.send(frame).await.is_err() || closing {
                 break;
             }
         }
     });
-    let _ = res_tx
-        .send(json!({"type": "welcome", "me": user}).to_string())
-        .await;
+    let mut welcome = crate::protocol::server_info();
+    welcome["type"] = json!("welcome");
+    welcome["protocol"] = json!(version);
+    welcome["me"] = json!(user);
+    let _ = res_tx.send(Message::Text(welcome.to_string().into())).await;
     // Requests of one connection are processed one at a time, in order.
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
             Message::Text(t) => {
                 let res = session.handle_text(t.as_str()).await;
-                if res_tx.send(res.to_string()).await.is_err() {
+                let too_old = res["error"]["code"] == "client_too_old";
+                if res_tx
+                    .send(Message::Text(res.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                if too_old {
+                    // A refused client is not left running half compatible.
+                    let _ = res_tx
+                        .send(Message::Close(Some(CloseFrame {
+                            code: close_code::POLICY,
+                            reason: "client_too_old".into(),
+                        })))
+                        .await;
                     break;
                 }
             }
@@ -211,5 +267,14 @@ async fn run_socket(hub: Hub, user: User, socket: WebSocket) {
         }
     }
     drop(session);
-    writer.abort();
+    drop(res_tx);
+    // Let queued responses (and a close frame) go out, but never hang on a
+    // dead peer.
+    let abort = writer.abort_handle();
+    if tokio::time::timeout(std::time::Duration::from_secs(2), writer)
+        .await
+        .is_err()
+    {
+        abort.abort();
+    }
 }

@@ -157,7 +157,7 @@ async fn websocket_auth_request_response_and_push() {
         .await
         .unwrap();
     let e = recv_until(&mut a, |f| f["type"] == "res" && f["rid"] == 9).await;
-    assert_eq!(e["error"]["code"], "bad_request");
+    assert_eq!(e["error"]["code"], "unknown_op");
     let r = req(&mut a, 10, json!({"op": "hello"})).await;
     assert_eq!(r["ok"], true);
 }

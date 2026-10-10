@@ -1252,7 +1252,7 @@ async fn malformed_requests_are_rejected_without_side_effects(db: TestDb) {
     let r = raw("not json").await;
     assert_eq!((r["ok"].as_bool(), code(&r)), (Some(false), "bad_request"));
     let r = raw(r#"{"op":"nope","rid":7}"#).await;
-    assert_eq!((code(&r), r["rid"].as_i64()), ("bad_request", Some(7)));
+    assert_eq!((code(&r), r["rid"].as_i64()), ("unknown_op", Some(7)));
     let r = raw(r#"{"op":"send","rid":8}"#).await;
     assert_eq!((code(&r), r["rid"].as_i64()), ("bad_request", Some(8)));
     let bad_type =
