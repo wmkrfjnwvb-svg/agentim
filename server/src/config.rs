@@ -608,4 +608,88 @@ mod tests {
         assert!(Config::load(&p).is_err());
         assert!(Config::load(&dir.path().join("missing.toml")).is_err());
     }
+
+    #[test]
+    fn hook_auth_and_api_settings_are_checked() {
+        let base = "[storage]\ncontrol = \"main\"\ndatabases = [{ name = \"main\", url = \"sqlite::memory:\" }]\n";
+        let parse = |extra: &str| -> Result<Config, String> {
+            let c: Config = toml::from_str(&format!("{base}{extra}")).map_err(|e| e.to_string())?;
+            c.validate().map(|_| c)
+        };
+        let hook = |name: &str, url: &str, secret: &str, rest: &str| {
+            format!(
+                "[[webhooks]]\nname = \"{name}\"\nurl = \"{url}\"\nsecret = \"{secret}\"\n{rest}\n"
+            )
+        };
+        let good = hook("crm", "https://x.example/h", "0123456789abcdef", "");
+        // Defaults: every event, retries, timeouts.
+        let c = parse(&good).unwrap();
+        assert_eq!(c.webhooks[0].events, vec!["*".to_string()]);
+        assert!(c.webhooks[0].max_attempts > 0 && c.webhooks[0].timeout_ms > 0);
+        let cases = [
+            (hook("", "https://x/h", "0123456789abcdef", ""), "bad name"),
+            (hook("a b", "https://x/h", "0123456789abcdef", ""), "bad name"),
+            (hook(&"n".repeat(65), "https://x/h", "0123456789abcdef", ""), "bad name"),
+            (format!("{good}{good}"), "duplicate name"),
+            (hook("crm", "ftp://x/h", "0123456789abcdef", ""), "url must be http(s)"),
+            (hook("crm", "https://x/h", "short", ""), "secret must be at least 16 bytes"),
+            (hook("crm", "https://x/h", "0123456789abcdef", "events = []"), "events must be"),
+            (hook("crm", "https://x/h", "0123456789abcdef", "events = [\"msg.*.x\"]"), "events must be"),
+            (hook("crm", "https://x/h", "0123456789abcdef", "max_attempts = 0"), "max_attempts"),
+            (hook("crm", "https://x/h", "0123456789abcdef", "timeout_ms = 0"), "max_attempts"),
+            ("[before_send]\nurl = \"x\"\nsecret = \"0123456789abcdef\"\n".to_string(), "before_send.url"),
+            ("[before_send]\nurl = \"https://x\"\nsecret = \"short\"\n".to_string(), "before_send.secret"),
+            ("[before_send]\nurl = \"https://x\"\nsecret = \"0123456789abcdef\"\ntimeout_ms = 0\n".to_string(), "before_send.timeout_ms"),
+            ("[auth]\nmax_failures = 0\n".to_string(), "auth.max_failures"),
+            ("[auth]\nlock_minutes = 0\n".to_string(), "auth.max_failures"),
+            ("[open_api]\nrate_per_second = 0.0\n".to_string(), "open_api.rate_per_second"),
+            ("[open_api]\nburst = 0.5\n".to_string(), "open_api.rate_per_second"),
+        ];
+        for (extra, want) in cases {
+            let e = parse(&extra)
+                .err()
+                .unwrap_or_else(|| panic!("accepted: {extra}"));
+            assert!(e.contains(want), "{extra} -> {e}");
+        }
+        let c =
+            parse("[before_send]\nurl = \"https://x\"\nsecret = \"0123456789abcdef\"\n").unwrap();
+        assert!(c.before_send.unwrap().timeout_ms > 0, "default timeout");
+    }
+
+    #[test]
+    fn the_master_key_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a b%.db");
+        let mut c = Config::single_sqlite(&path.to_string_lossy());
+        // Generated next to the database (also through a percent-encoded URL).
+        let k = c.master_key().unwrap().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(format!("{}.key", path.to_string_lossy())).unwrap(),
+            k
+        );
+        assert_eq!(
+            c.master_key().unwrap().unwrap(),
+            k,
+            "read back, not regenerated"
+        );
+        // An explicit file wins; a missing file is an error.
+        let f = dir.path().join("k");
+        std::fs::write(&f, " other \n").unwrap();
+        c.encryption.key_file = Some(f.to_string_lossy().into());
+        assert_eq!(c.master_key().unwrap().unwrap(), "other");
+        c.encryption.key_file = Some(dir.path().join("none").to_string_lossy().into());
+        assert!(c.master_key().is_err());
+        c.encryption.mode = EncryptionMode::Off;
+        assert_eq!(c.master_key().unwrap(), None);
+        // In memory: a fresh key each time. Several databases: must be configured.
+        let mut m = Config::single_sqlite(":memory:");
+        m.storage.databases[0].url = "sqlite::memory:".into();
+        assert!(m.master_key().unwrap().is_some());
+        let mut two = m.clone();
+        two.storage.databases.push(two.storage.databases[0].clone());
+        if std::env::var("AGENTIM_MASTER_KEY").is_err() {
+            assert!(two.master_key().unwrap_err().contains("no master key"));
+        }
+        assert_eq!(percent_decode("a%20b%zz%2"), "a b%zz%2");
+    }
 }

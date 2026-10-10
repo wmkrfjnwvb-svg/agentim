@@ -299,3 +299,53 @@ async fn password_endpoints_over_http() {
     .unwrap();
     assert_eq!(r.status().as_u16(), 400);
 }
+
+#[tokio::test]
+async fn open_registration_over_http() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = cfg(&dir);
+    c.auth.open_registration = true;
+    let (addr, hub) = plain(c, false).await;
+    let http = reqwest::Client::new();
+    let post = |body: serde_json::Value, origin: Option<&'static str>| {
+        let mut r = http
+            .post(format!("http://{addr}/api/auth/register"))
+            .header("content-type", "application/json")
+            .body(body.to_string());
+        if let Some(o) = origin {
+            r = r.header("origin", o);
+        }
+        r.send()
+    };
+    let pw = "correct horse battery";
+    let r = post(
+        serde_json::json!({"name": "bob", "password": pw}),
+        Some("https://evil.example"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 403);
+    let r = post(
+        serde_json::json!({"name": "bob", "password": "x".repeat(2000)}),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 400);
+    assert!(
+        hub.user_by_name("bob").is_none(),
+        "refused registrations create nobody"
+    );
+    let r = post(serde_json::json!({"name": "bob", "password": pw}), None)
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 201);
+    let v: serde_json::Value = serde_json::from_str(&r.text().await.unwrap()).unwrap();
+    assert_eq!(v["user"]["name"], "bob");
+    assert!(!v.to_string().contains("hash"));
+    let r = post(serde_json::json!({"name": "bob", "password": pw}), None)
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 409, "name taken");
+    assert!(hub.login("bob", pw, None, None, None).await.is_ok());
+}

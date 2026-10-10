@@ -261,10 +261,6 @@ impl Registry {
         v
     }
 
-    pub fn is_online(&self, user_id: &str) -> bool {
-        self.lock().by_user.contains_key(user_id)
-    }
-
     pub fn session_count(&self) -> usize {
         self.lock().sessions.len()
     }

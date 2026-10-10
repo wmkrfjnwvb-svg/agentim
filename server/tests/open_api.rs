@@ -27,6 +27,7 @@ backend_tests!(
     idempotency_keys,
     rate_limits_per_key,
     errors_are_problem_details,
+    input_limits,
 );
 
 struct Api {
@@ -1385,4 +1386,83 @@ async fn errors_are_problem_details(db: TestDb) {
     let (s, v) = api.call("PUT", "/v1/users/new_one", Some(json!({}))).await;
     assert_eq!(s, 503, "{v}");
     assert!(!v["detail"].as_str().unwrap().contains("injected"), "{v}");
+}
+
+async fn input_limits(db: TestDb) {
+    let api = Api::start(&db).await;
+    let code = |v: &Value| v["code"].as_str().unwrap_or("").to_string();
+    api.user("alice").await;
+    let long_id = "r".repeat(64);
+    api.user(&long_id).await;
+    // Users per batch: 1..500.
+    let many: Vec<Value> = (0..501).map(|i| json!({"id": format!("b{i}")})).collect();
+    let (s, v) = api
+        .call("POST", "/v1/users:batch", Some(json!({"users": many})))
+        .await;
+    assert_eq!((s, code(&v)), (400, "bad_request".into()));
+    assert!(
+        api.hub.user_by_name("b0").is_none(),
+        "a refused batch creates nobody"
+    );
+    // client_msg_id: 1..128 bytes, also with the recipient appended.
+    let send = |id: String| json!({"as": "alice", "text": "hi", "client_msg_id": id});
+    let (s, v) = api
+        .call("POST", "/v1/messages:batch-send", Some(json!({"as": "alice", "to": [long_id], "text": "hi", "client_msg_id": "c".repeat(64)})))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["results"][0]["ok"], false, "{v}");
+    assert_eq!(
+        v["results"][0]["code"], "bad_request",
+        "id plus recipient over 128 bytes"
+    );
+    let conv = api
+        .ok(
+            "POST",
+            "/v1/conversations",
+            Some(json!({"as": "alice", "kind": "group", "title": "g", "members": []})),
+        )
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let path = format!("/v1/conversations/{conv}/messages");
+    for bad in ["".to_string(), "m".repeat(129)] {
+        let (s, v) = api.call("POST", &path, Some(send(bad))).await;
+        assert_eq!((s, code(&v)), (400, "bad_request".into()));
+    }
+    let ok = api.ok("POST", &path, Some(send("m".repeat(128)))).await;
+    assert!(ok["msg_id"].is_string(), "{ok}");
+    // Members and recipients per call: 1..500.
+    let many: Vec<String> = (0..501).map(|i| format!("x{i}")).collect();
+    for (path, body) in [
+        (
+            format!("/v1/conversations/{conv}/members"),
+            json!({"as": "alice", "users": []}),
+        ),
+        (
+            format!("/v1/conversations/{conv}/members"),
+            json!({"as": "alice", "users": many}),
+        ),
+        (
+            "/v1/messages:batch-send".to_string(),
+            json!({"as": "alice", "to": [], "text": "x"}),
+        ),
+        (
+            "/v1/messages:batch-send".to_string(),
+            json!({"as": "alice", "to": many, "text": "x"}),
+        ),
+    ] {
+        let (s, v) = api.call("POST", &path, Some(body)).await;
+        assert_eq!((s, code(&v)), (400, "bad_request".into()), "{path}");
+    }
+    // Unknown actions on a message.
+    let id = ok["msg_id"].as_str().unwrap();
+    let (s, v) = api
+        .call(
+            "POST",
+            &format!("/v1/messages/{id}:explode"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (404, "not_found".into()));
 }

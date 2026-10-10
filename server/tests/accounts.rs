@@ -22,6 +22,8 @@ backend_tests!(
     registration,
     race_failed_logins_are_all_counted,
     race_one_code_logs_in_once,
+    two_factor_over_the_client_protocol,
+    race_two_enables_with_one_setup,
 );
 
 const PW: &str = "correct horse battery";
@@ -394,5 +396,79 @@ async fn race_one_code_logs_in_once(db: TestDb) {
         }
         assert_eq!(ok, 1, "round {round}: exactly one login per code");
         assert_eq!(hub.devices(&u.id).await.unwrap().len(), 1);
+    }
+}
+
+async fn two_factor_over_the_client_protocol(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = person(&hub, "alice").await;
+    let bot = hub
+        .create_user("bot", UserKind::Agent, Some(&alice.id), None)
+        .await
+        .unwrap()
+        .0;
+    let a = Conn::new(&hub, &alice);
+    let r = a.call(json!({"op": "totp_enable", "code": "123456"})).await;
+    assert_eq!(r["error"]["code"], "conflict", "no setup yet");
+    let v = a.ok(json!({"op": "totp_setup"})).await;
+    let secret = v["secret"].as_str().unwrap().to_string();
+    let step = fresh_step().await;
+    let at = |s: i64| auth::totp_at(&secret, s).unwrap();
+    a.ok(json!({"op": "totp_enable", "code": at(step - 1)}))
+        .await;
+    assert!(
+        login(&hub, "alice", PW, None).await.is_err(),
+        "a code is needed now"
+    );
+    let r = a
+        .call(json!({"op": "totp_disable", "code": "000000"}))
+        .await;
+    assert_eq!(r["error"]["code"], "bad_request");
+    a.ok(json!({"op": "totp_disable", "code": at(step)})).await;
+    assert!(login(&hub, "alice", PW, None).await.is_ok(), "off again");
+    // Agents have no passwords.
+    let g = Conn::new(&hub, &bot);
+    let r = g
+        .call(json!({"op": "set_password", "new": "another long password"}))
+        .await;
+    assert_eq!(r["error"]["code"], "bad_request");
+    assert_eq!(
+        hub.reset_password(&bot, "another long password")
+            .await
+            .unwrap_err()
+            .code,
+        "bad_request"
+    );
+}
+
+async fn race_two_enables_with_one_setup(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    for round in 0..10 {
+        let u = person(&hub, &format!("r{round}")).await;
+        let secret = hub.totp_setup(&u).await.unwrap()["secret"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let step = fresh_step().await;
+        let mut tasks = vec![];
+        for s in [step - 1, step] {
+            let (hub, u, code) = (hub.clone(), u.clone(), auth::totp_at(&secret, s).unwrap());
+            tasks.push(tokio::spawn(
+                async move { hub.totp_enable(&u, &code).await },
+            ));
+        }
+        let mut ok = 0;
+        for t in tasks {
+            match t.await.unwrap() {
+                Ok(()) => ok += 1,
+                Err(e) => assert_eq!(
+                    e.code, "conflict",
+                    "the setup was used by the other: {}",
+                    e.message
+                ),
+            }
+        }
+        assert_eq!(ok, 1, "round {round}: exactly one enable wins");
+        assert!(hub.totp_setup(&u).await.is_err(), "two-factor login is on");
     }
 }

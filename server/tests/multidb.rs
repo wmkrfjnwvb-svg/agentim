@@ -316,3 +316,186 @@ async fn units_can_use_a_different_backend() {
     );
     assert!(!contains(&raw(&main), "in-postgres"));
 }
+
+async fn count(db: &TestDb, sql: &str) -> i64 {
+    let mut c = sqlx::AnyConnection::connect(&db.url).await.unwrap();
+    sqlx::Row::get(
+        &sqlx::query(sqlx::AssertSqlSafe(sql.to_string()))
+            .fetch_one(&mut c)
+            .await
+            .unwrap(),
+        0,
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_move_cancels_running_streams() {
+    let (main, secret) = two_sqlite().await;
+    let hub = open(two(&main.url, &secret.url, "main")).await;
+    let carol = user_in(&hub, "carol", "b").await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&carol)).await;
+    let c = Conn::new(&hub, &carol);
+    let g = Conn::new(&hub, &bot);
+    let conv = c.group(&[&bot]).await;
+    let s = g
+        .ok(json!({"op": "stream_start", "conv_id": conv, "client_msg_id": "s"}))
+        .await["msg_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    g.ok(json!({"op": "stream_append", "msg_id": s, "idx": 0, "text": "half"}))
+        .await;
+    drop(c);
+    drop(g);
+    drop(hub);
+    let hub = open(two(&main.url, &secret.url, "secret")).await;
+    // Restarting already ends streams; start a new one in the new process.
+    let g = Conn::new(&hub, &bot);
+    let s2 = g
+        .ok(json!({"op": "stream_start", "conv_id": conv, "client_msg_id": "s2"}))
+        .await["msg_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    g.ok(json!({"op": "stream_append", "msg_id": s2, "idx": 0, "text": "partial"}))
+        .await;
+    hub.migrate_unit("b").await.unwrap();
+    let c = Conn::new(&hub, &carol);
+    let p = c.pull(&conv, 0).await;
+    let m = msg_by_id(&p, &s2).unwrap();
+    assert_eq!(m["state"], "cancelled", "{m}");
+    assert_eq!(m["state_reason"], "migrated");
+    assert_eq!(m["content"], "partial", "what was streamed is kept");
+    let r = g
+        .call(json!({"op": "stream_append", "msg_id": s2, "idx": 1, "text": "more"}))
+        .await;
+    assert_ne!(r["ok"], true, "the stream is over: {r}");
+    // The agent can start again in the new database.
+    let s3 = g
+        .ok(json!({"op": "stream_start", "conv_id": conv, "client_msg_id": "s3"}))
+        .await;
+    assert_eq!(
+        s3["seq"].as_i64().unwrap(),
+        p["upto_seq"].as_i64().unwrap() + 1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_move_leaves_the_conversation_where_it_was() {
+    let (main, secret) = two_sqlite().await;
+    let hub = open(plain(two(&main.url, &secret.url, "main"))).await;
+    let carol = user_in(&hub, "carol", "b").await;
+    let c = Conn::new(&hub, &carol);
+    let conv = c.group(&[]).await;
+    c.send(&conv, "kept-in-main").await;
+    drop(c);
+    drop(hub);
+    let hub = open(plain(two(&main.url, &secret.url, "secret"))).await;
+    // The copy into the target fails.
+    hub.inject_job_failures("secret", 1);
+    assert!(hub.migrate_unit("b").await.is_err());
+    let c = Conn::new(&hub, &carol);
+    assert_eq!(
+        c.ok(json!({"op": "list_convs"})).await["convs"][0]["database"],
+        "main"
+    );
+    assert!(c.pull(&conv, 0).await.to_string().contains("kept-in-main"));
+    assert_eq!(c.send(&conv, "still-writable").await["ok"], true);
+    assert_eq!(
+        count(&secret, "SELECT COUNT(*) FROM messages").await,
+        0,
+        "no partial copy"
+    );
+    assert_eq!(
+        count(&main, "SELECT COUNT(*) FROM conv_dir WHERE migrating <> 0").await,
+        0
+    );
+    // Trying again works and keeps everything.
+    assert_eq!(hub.migrate_unit("b").await.unwrap()["moved"], 1);
+    let p = c.pull(&conv, 0).await.to_string();
+    assert!(p.contains("kept-in-main") && p.contains("still-writable"));
+    assert_eq!(
+        c.ok(json!({"op": "list_convs"})).await["convs"][0]["database"],
+        "secret"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn startup_removes_stale_copies_and_dangling_entries() {
+    let (main, secret) = two_sqlite().await;
+    let hub = open(plain(two(&main.url, &secret.url, "main"))).await;
+    let carol = user_in(&hub, "carol", "b").await;
+    let c = Conn::new(&hub, &carol);
+    let conv = c.group(&[]).await;
+    c.send(&conv, "the-real-one").await;
+    drop(c);
+    drop(hub);
+    let hub = open(plain(two(&main.url, &secret.url, "secret"))).await;
+    hub.migrate_unit("b").await.unwrap();
+    drop(hub);
+    // A crash after the switch but before the source was deleted leaves a
+    // copy in main; a lost conversation leaves a directory entry pointing
+    // at nothing.
+    let mut m = sqlx::AnyConnection::connect(&main.url).await.unwrap();
+    let sec = secret.path.as_ref().unwrap().to_string_lossy().to_string();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "ATTACH DATABASE '{sec}' AS sec"
+    )))
+    .execute(&mut m)
+    .await
+    .unwrap();
+    for t in agentim::storage::TABLES
+        .iter()
+        .filter(|t| t.conv_key.is_some() && t.name != "conv_dir" && t.name != "member_index")
+    {
+        let k = t.conv_key.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO main.{0} SELECT * FROM sec.{0} WHERE {k} = '{conv}'",
+            t.name
+        )))
+        .execute(&mut m)
+        .await
+        .unwrap();
+    }
+    sqlx::query("DETACH DATABASE sec")
+        .execute(&mut m)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO conv_dir (conv_id, database_name, unit_id, migrating, created_at) VALUES ('c_ghost', 'secret', 'b', 0, 0)")
+        .execute(&mut m)
+        .await
+        .unwrap();
+    drop(m);
+    assert!(
+        count(
+            &main,
+            &format!("SELECT COUNT(*) FROM messages WHERE conv_id = '{conv}'")
+        )
+        .await
+            > 0
+    );
+    let hub = open(plain(two(&main.url, &secret.url, "secret"))).await;
+    assert_eq!(
+        count(
+            &main,
+            &format!("SELECT COUNT(*) FROM messages WHERE conv_id = '{conv}'")
+        )
+        .await,
+        0,
+        "stale copy removed"
+    );
+    assert_eq!(
+        count(
+            &main,
+            "SELECT COUNT(*) FROM conv_dir WHERE conv_id = 'c_ghost'"
+        )
+        .await,
+        0,
+        "dangling entry removed"
+    );
+    let c = Conn::new(&hub, &carol);
+    let list = c.ok(json!({"op": "list_convs"})).await;
+    assert_eq!(list["convs"].as_array().unwrap().len(), 1);
+    assert_eq!(list["convs"][0]["database"], "secret");
+    assert!(c.pull(&conv, 0).await.to_string().contains("the-real-one"));
+}
