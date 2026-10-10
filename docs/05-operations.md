@@ -52,6 +52,7 @@
 | 验收测试（`tests/hub.rs`，13 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | seq 连续、去重、编辑和撤回能被已同步的客户端拿到、流式三种中断、打断、熔断、重复检测、接管、读取范围、注入、DLP、并发且组提交生效、**故障注入：提交失败时不发 ACK** |
 | 业务场景（`tests/scenarios.rs`，29 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 每个业务领域一项，覆盖允许的路径、拒绝的路径（谁不能做、返回什么错误码）以及事后状态（主日志、侧信道、推送、重启后），见 §5.2 |
 | 并发场景（`tests/concurrency.rs`，12 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 同一业务操作在多个会话里同时发生、互相冲突的操作竞争，每种重复 20 轮后检查不变量，见 §5.3 |
+| 成员生命周期（`tests/membership.rs`，9 个场景 + 5 个竞争 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 移除后失去访问且本人收到通知、角色权限、退出与转让、移除 Agent 时停止它的流和草稿、解散、拉黑、单聊唯一、用户目录、单元数据库里的成员变化；竞争：发送与移除（移除之后没有被移除者的消息）、多端同时建单聊（只有一个）、移除与退出同时发生（只成功一次）、同时转让群主（只有一个群主）、发送与解散 |
 | 多库（`tests/multidb.rs`，6 项） | ✅ | ✅ | 单元的内容和会话标题不会出现在共享库文件里（直接读文件字节确认）；跨库的成员、列表、侧信道；迁移后事件完全一致、seq 连续、旧库不残留内容；迁移期间并发写入不丢不重；崩溃后目录修复；单元放在另一种数据库上（SQLite 控制库 + PostgreSQL 单元库） |
 | WebSocket 端到端（2） | ✅ | ✅ | 鉴权、请求与响应、推送；内置 Agent 的流式回复 |
 | 崩溃恢复（`tests/crash.rs`） | ✅ | ✅ | 启动真实的二进制，发送过程中强杀进程（Linux 上是 SIGKILL，Windows 上是 TerminateProcess），在 3 个时间点各做一轮，重启后逐条核对已 ACK 的消息 |
@@ -199,7 +200,9 @@ cargo run --release -- --demo          # 打开 http://127.0.0.1:8080，选 alic
 
 | op | 用途 |
 |---|---|
-| `hello`、`list_convs`、`create_conv`、`add_member` | 基础 |
+| `hello`、`list_convs`、`create_conv`、`add_member` | 基础；`hello` 只返回和你有共同会话的人和你的 Agent；单聊每对用户只有一个，重复创建返回已有的（`existing: true`） |
+| `remove_member`、`leave`、`set_role`、`transfer_owner`、`dissolve` | 成员生命周期：群主和管理员管理成员；被移除或退出后看不到会话；解散后全员失去访问、内容删除，只保留审计记录 |
+| `block`、`unblock`、`list_blocks`、`find_user {name}` | 拉黑（双方都不能单聊、不能拉对方进群、不能发仅某人可见的消息）；按准确用户名找人 |
 | `send {conv_id, client_msg_id, text, reply_to?, causation_id?, on_behalf_of?, to_user?}` | 发消息；`to_user` 表示仅某人可见；审批模式下返回 `draft_id` |
 | `edit`、`recall` | 修订、撤回 |
 | `pull {conv_id, after_seq, as_agent?}`、`pull_side` | 增量拉取；过滤后的结果用 `upto_seq` 推进游标 |

@@ -331,6 +331,104 @@ impl Db<'_> {
         Ok(out)
     }
 
+    pub async fn member_index_remove(&mut self, conv_id: &str, user_id: &str) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("DELETE FROM member_index WHERE conv_id = ? AND user_id = ?"),
+        )
+        .bind(conv_id)
+        .bind(user_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    /// Removes everything the control database knows about a conversation.
+    pub async fn forget_conv(&mut self, conv_id: &str) -> ApiResult<()> {
+        for q in [
+            "DELETE FROM member_index WHERE conv_id = ?",
+            "DELETE FROM dm_index WHERE conv_id = ?",
+            "DELETE FROM conv_dir WHERE conv_id = ?",
+        ] {
+            sqlx::query(self.d.q(q))
+                .bind(conv_id)
+                .execute(&mut *self.c)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Everyone who shares at least one conversation with the user.
+    pub async fn contacts(&mut self, user_id: &str) -> ApiResult<Vec<String>> {
+        let rows = sqlx::query(self.d.q(
+            "SELECT DISTINCT b.user_id FROM member_index a JOIN member_index b ON a.conv_id = b.conv_id WHERE a.user_id = ?",
+        ))
+        .bind(user_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(|r| r.try_get::<String, _>(0))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn set_block(&mut self, user_id: &str, blocked_id: &str, on: bool) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("DELETE FROM blocks WHERE user_id = ? AND blocked_id = ?"),
+        )
+        .bind(user_id)
+        .bind(blocked_id)
+        .execute(&mut *self.c)
+        .await?;
+        if on {
+            sqlx::query(
+                self.d
+                    .q("INSERT INTO blocks (user_id, blocked_id, created_at) VALUES (?, ?, ?)"),
+            )
+            .bind(user_id)
+            .bind(blocked_id)
+            .bind(now_ms())
+            .execute(&mut *self.c)
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn blocks_all(&mut self) -> ApiResult<Vec<(String, String)>> {
+        let rows = sqlx::query("SELECT user_id, blocked_id FROM blocks")
+            .fetch_all(&mut *self.c)
+            .await?;
+        rows.iter()
+            .map(|r| Ok((r.try_get(0)?, r.try_get(1)?)))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn dm_get(&mut self, pair_key: &str) -> ApiResult<Option<String>> {
+        let r = sqlx::query(self.d.q("SELECT conv_id FROM dm_index WHERE pair_key = ?"))
+            .bind(pair_key)
+            .fetch_optional(&mut *self.c)
+            .await?;
+        Ok(r.map(|r| r.try_get(0)).transpose()?)
+    }
+
+    pub async fn dm_put(&mut self, pair_key: &str, conv_id: &str) -> ApiResult<()> {
+        sqlx::query(self.d.q("DELETE FROM dm_index WHERE pair_key = ?"))
+            .bind(pair_key)
+            .execute(&mut *self.c)
+            .await?;
+        sqlx::query(
+            self.d
+                .q("INSERT INTO dm_index (pair_key, conv_id) VALUES (?, ?)"),
+        )
+        .bind(pair_key)
+        .bind(conv_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
     // ============================================== conversation databases
 
     pub async fn conv(&mut self, id: &str) -> ApiResult<Option<ConvRow>> {
@@ -537,6 +635,49 @@ impl Db<'_> {
         .fetch_optional(&mut *self.c)
         .await?;
         r.as_ref().map(row_member).transpose().map_err(Into::into)
+    }
+
+    pub async fn remove_member(&mut self, conv_id: &str, user_id: &str) -> ApiResult<()> {
+        for q in [
+            "DELETE FROM members WHERE conv_id = ? AND user_id = ?",
+            "DELETE FROM read_cursors WHERE conv_id = ? AND user_id = ?",
+            "DELETE FROM takeovers WHERE conv_id = ? AND agent_id = ?",
+        ] {
+            sqlx::query(self.d.q(q))
+                .bind(conv_id)
+                .bind(user_id)
+                .execute(&mut *self.c)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn set_role(&mut self, conv_id: &str, user_id: &str, role: &str) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("UPDATE members SET role = ? WHERE conv_id = ? AND user_id = ?"),
+        )
+        .bind(role)
+        .bind(conv_id)
+        .bind(user_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    /// Pending drafts of an agent in a conversation become `discarded`.
+    pub async fn discard_drafts(&mut self, conv_id: &str, agent_id: &str) -> ApiResult<u64> {
+        Ok(sqlx::query(
+            self.d
+                .q("UPDATE drafts SET state = ? WHERE conv_id = ? AND agent_id = ? AND state = ?"),
+        )
+        .bind("discarded")
+        .bind(conv_id)
+        .bind(agent_id)
+        .bind("pending")
+        .execute(&mut *self.c)
+        .await?
+        .rows_affected())
     }
 
     pub async fn set_agent_policy(

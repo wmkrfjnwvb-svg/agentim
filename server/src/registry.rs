@@ -35,6 +35,12 @@ pub enum Out {
         sid: u64,
         frame: Value,
     },
+    /// Stop live deltas of a conversation for a member who lost access
+    /// (`user_id`, also when observing through that agent), or for everyone.
+    Unfocus {
+        conv_id: String,
+        user_id: Option<String>,
+    },
     Delta {
         conv_id: String,
         msg_id: String,
@@ -246,6 +252,31 @@ impl Registry {
                     }
                 }
                 Out::ToSession { sid, frame } => send(&mut g, sid, frame.to_string().into(), None),
+                Out::Unfocus { conv_id, user_id } => {
+                    let sids: Vec<u64> = g
+                        .by_focus
+                        .get(&conv_id)
+                        .map(|s| s.iter().copied().collect())
+                        .unwrap_or_default();
+                    for sid in sids {
+                        let Some(e) = g.sessions.get_mut(&sid) else {
+                            continue;
+                        };
+                        let hit = match &user_id {
+                            None => true,
+                            Some(u) => {
+                                e.user_id == *u
+                                    || e.focus.as_ref().and_then(|f| f.1.as_deref()) == Some(u)
+                            }
+                        };
+                        if hit {
+                            e.focus = None;
+                            if let Some(s) = g.by_focus.get_mut(&conv_id) {
+                                s.remove(&sid);
+                            }
+                        }
+                    }
+                }
                 Out::Delta {
                     conv_id,
                     msg_id,

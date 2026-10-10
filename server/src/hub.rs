@@ -28,6 +28,8 @@ struct Inner {
     shards: Vec<Shard>,
     cfg: Config,
     tickers: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Serialises direct-conversation creation so a pair gets only one.
+    dm_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -80,6 +82,7 @@ impl Hub {
             control,
             db_names: db_names.clone(),
             cfg: hub_cfg,
+            blocks: Default::default(),
         });
         let mut shards = Vec::new();
         for (i, d) in cfg.storage.databases.iter().enumerate() {
@@ -91,6 +94,7 @@ impl Hub {
                 shards,
                 cfg,
                 tickers: Mutex::new(vec![]),
+                dm_lock: tokio::sync::Mutex::new(()),
             }),
         };
         hub.load().await?;
@@ -109,6 +113,10 @@ impl Hub {
             sh.tokens.write().unwrap().insert(token, u.id.clone());
             sh.users.write().unwrap().insert(u.id.clone(), u);
         }
+        let blocks = self
+            .read(control, |db| Box::pin(async move { db.blocks_all().await }))
+            .await?;
+        sh.blocks.write().unwrap().extend(blocks);
         for u in &self.inner.cfg.units {
             control
                 .call(Op::UpsertUnit {
@@ -534,9 +542,67 @@ impl Hub {
     async fn dispatch(&self, sess: &Session, msg: ClientMsg) -> ApiResult<Value> {
         let me = &sess.user;
         match msg {
-            ClientMsg::Hello => Ok(
-                json!({"me": me, "users": self.users(), "my_agents": self.inner.sh.agents_of(&me.id)}),
-            ),
+            ClientMsg::Hello => {
+                let users = self.visible_users(me).await?;
+                Ok(json!({"me": me, "users": users, "my_agents": self.inner.sh.agents_of(&me.id)}))
+            }
+            ClientMsg::FindUser { name } => {
+                let found = self.inner.sh.user_by_name(&name).filter(|u| {
+                    u.unit_id == me.unit_id
+                        || self.inner.sh.agents_of(&me.id).iter().any(|a| a.id == u.id)
+                });
+                let found = match found {
+                    Some(u) => Some(u),
+                    None => {
+                        // Someone you already share a conversation with.
+                        let visible = self.visible_users(me).await?;
+                        visible.into_iter().find(|u| u.name == name)
+                    }
+                };
+                found
+                    .map(|u| json!({"user": {"id": u.id, "name": u.name, "kind": u.kind, "owner_id": u.owner_id}}))
+                    .ok_or_else(|| err("not_found", "user"))
+            }
+            ClientMsg::Block { user_id } => self.set_block(me, &user_id, true).await,
+            ClientMsg::Unblock { user_id } => self.set_block(me, &user_id, false).await,
+            ClientMsg::ListBlocks => {
+                let mut ids: Vec<String> = self
+                    .inner
+                    .sh
+                    .blocks
+                    .read()
+                    .unwrap()
+                    .iter()
+                    .filter(|(u, _)| *u == me.id)
+                    .map(|(_, b)| b.clone())
+                    .collect();
+                ids.sort();
+                Ok(json!({"blocked": ids}))
+            }
+            ClientMsg::RemoveMember { conv_id, user_id } => {
+                let user = self
+                    .inner
+                    .sh
+                    .user(&user_id)
+                    .or_else(|| self.inner.sh.user_by_name(&user_id))
+                    .ok_or_else(|| err("not_found", "user"))?;
+                self.remove_member(me, &conv_id, user).await
+            }
+            ClientMsg::Leave { conv_id } => self.remove_member(me, &conv_id, me.clone()).await,
+            ClientMsg::Dissolve { conv_id } => {
+                let shard = self.conv_shard(&conv_id)?;
+                let v = shard
+                    .call(Op::Dissolve {
+                        conv_id: conv_id.clone(),
+                        actor: me.clone(),
+                    })
+                    .await?;
+                if shard.idx != self.inner.sh.control {
+                    self.control().call(Op::ForgetConv(conv_id.clone())).await?;
+                }
+                self.inner.sh.dir_set(&conv_id, None);
+                Ok(json!({"members": v["members"]}))
+            }
             ClientMsg::ListConvs => self.list_convs(me).await,
             ClientMsg::CreateConv {
                 kind,
@@ -618,6 +684,8 @@ impl Hub {
             | ClientMsg::Takeover { ref conv_id, .. }
             | ClientMsg::Release { ref conv_id, .. }
             | ClientMsg::SetAgentPolicy { ref conv_id, .. }
+            | ClientMsg::SetRole { ref conv_id, .. }
+            | ClientMsg::TransferOwner { ref conv_id, .. }
             | ClientMsg::ResetGuard { ref conv_id, .. } => {
                 let c = conv_id.clone();
                 self.on_conv(sess, &c, msg).await
@@ -874,6 +942,74 @@ impl Hub {
         Ok(json!({"convs": out}))
     }
 
+    /// Who a user may see in the directory: themselves, their agents and
+    /// everyone they share a conversation with (docs/02-architecture.md §2.4).
+    async fn visible_users(&self, me: &User) -> ApiResult<Vec<User>> {
+        let id = me.id.clone();
+        let mut ids: std::collections::BTreeSet<String> = self
+            .read(self.control(), move |db| {
+                Box::pin(async move { db.contacts(&id).await })
+            })
+            .await?
+            .into_iter()
+            .collect();
+        ids.insert(me.id.clone());
+        let sh = &self.inner.sh;
+        for a in sh.agents_of(&me.id) {
+            ids.insert(a.id);
+        }
+        if let Some(o) = &me.owner_id {
+            ids.insert(o.clone());
+        }
+        Ok(ids.iter().filter_map(|i| sh.user(i)).collect())
+    }
+
+    async fn set_block(&self, me: &User, target: &str, on: bool) -> ApiResult<Value> {
+        let sh = &self.inner.sh;
+        let t = sh
+            .user(target)
+            .or_else(|| sh.user_by_name(target))
+            .ok_or_else(|| err("not_found", "user"))?;
+        if t.id == me.id {
+            return Err(err("bad_request", "you cannot block yourself"));
+        }
+        self.control()
+            .call(Op::SetBlock {
+                user_id: me.id.clone(),
+                target: t.id.clone(),
+                on,
+            })
+            .await?;
+        Ok(json!({"user_id": t.id, "blocked": on}))
+    }
+
+    async fn remove_member(&self, me: &User, conv_id: &str, user: User) -> ApiResult<Value> {
+        let mut attempt = 0;
+        let (v, shard) = loop {
+            let shard = self.conv_shard(conv_id)?;
+            match shard
+                .call(Op::RemoveMember {
+                    conv_id: conv_id.to_string(),
+                    actor: me.clone(),
+                    user: user.clone(),
+                })
+                .await
+            {
+                Err(e) if e.code == "conv_moved" && attempt < 3 => attempt += 1,
+                res => break (res?, shard),
+            }
+        };
+        if shard.idx != self.inner.sh.control {
+            self.control()
+                .call(Op::MemberIndexRemove {
+                    conv_id: conv_id.to_string(),
+                    user_id: user.id,
+                })
+                .await?;
+        }
+        Ok(v)
+    }
+
     async fn create_conv(
         &self,
         me: &User,
@@ -908,6 +1044,36 @@ impl Hub {
                 "a direct conversation has exactly one other member",
             ));
         }
+        if let Some(u) = users.iter().find(|u| sh.blocked(&u.id, &me.id)) {
+            return Err(err(
+                "blocked",
+                format!("{} does not accept conversations from you", u.name),
+            ));
+        }
+        if kind == "dm" && sh.blocked(&me.id, &users[0].id) {
+            return Err(err("blocked", "unblock this user first"));
+        }
+        // One direct conversation per pair: creating it again returns it.
+        let _dm_guard = if kind == "dm" {
+            let guard = self.inner.dm_lock.lock().await;
+            let mut pair = [me.id.clone(), users[0].id.clone()];
+            pair.sort();
+            let key = pair.join("|");
+            let k = key.clone();
+            let existing = self
+                .read(self.control(), move |db| {
+                    Box::pin(async move { db.dm_get(&k).await })
+                })
+                .await?;
+            if let Some(c) = existing
+                && sh.dir_get(&c).is_some()
+            {
+                return Ok(json!({"conv_id": c, "existing": true}));
+            }
+            Some((guard, key))
+        } else {
+            None
+        };
         // New conversations live in the database of the creator's unit.
         let db_name = self.inner.cfg.unit_database(&me.unit_id).to_string();
         let idx = sh.db_names.iter().position(|n| *n == db_name).unwrap();
@@ -948,6 +1114,14 @@ impl Hub {
                         migrating: false,
                     },
                     member_ids: ids,
+                })
+                .await?;
+        }
+        if let Some((_, key)) = &_dm_guard {
+            self.control()
+                .call(Op::DmPut {
+                    pair_key: key.clone(),
+                    conv_id: id.clone(),
                 })
                 .await?;
         }

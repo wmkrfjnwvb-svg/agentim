@@ -160,6 +160,39 @@ pub enum ClientMsg {
         conv_id: String,
         user_id: String,
     },
+    /// Owner / admin removes a member; anyone removes an agent they own.
+    RemoveMember {
+        conv_id: String,
+        user_id: String,
+    },
+    Leave {
+        conv_id: String,
+    },
+    /// Owner only: `admin` or `member`.
+    SetRole {
+        conv_id: String,
+        user_id: String,
+        role: String,
+    },
+    TransferOwner {
+        conv_id: String,
+        user_id: String,
+    },
+    /// Owner only: everyone loses access and the content is deleted.
+    Dissolve {
+        conv_id: String,
+    },
+    Block {
+        user_id: String,
+    },
+    Unblock {
+        user_id: String,
+    },
+    ListBlocks,
+    /// Exact user name; only users the caller may discover are returned.
+    FindUser {
+        name: String,
+    },
     Send {
         conv_id: String,
         client_msg_id: String,
@@ -269,6 +302,15 @@ impl ClientMsg {
             ClientMsg::ListConvs => "list_convs",
             ClientMsg::CreateConv { .. } => "create_conv",
             ClientMsg::AddMember { .. } => "add_member",
+            ClientMsg::RemoveMember { .. } => "remove_member",
+            ClientMsg::Leave { .. } => "leave",
+            ClientMsg::SetRole { .. } => "set_role",
+            ClientMsg::TransferOwner { .. } => "transfer_owner",
+            ClientMsg::Dissolve { .. } => "dissolve",
+            ClientMsg::Block { .. } => "block",
+            ClientMsg::Unblock { .. } => "unblock",
+            ClientMsg::ListBlocks => "list_blocks",
+            ClientMsg::FindUser { .. } => "find_user",
             ClientMsg::Send { .. } => "send",
             ClientMsg::Edit { .. } => "edit",
             ClientMsg::Recall { .. } => "recall",
@@ -296,6 +338,11 @@ impl ClientMsg {
     pub fn conv_id(&self) -> Option<&str> {
         match self {
             ClientMsg::AddMember { conv_id, .. }
+            | ClientMsg::RemoveMember { conv_id, .. }
+            | ClientMsg::Leave { conv_id }
+            | ClientMsg::SetRole { conv_id, .. }
+            | ClientMsg::TransferOwner { conv_id, .. }
+            | ClientMsg::Dissolve { conv_id }
             | ClientMsg::Send { conv_id, .. }
             | ClientMsg::Pull { conv_id, .. }
             | ClientMsg::PullSide { conv_id, .. }

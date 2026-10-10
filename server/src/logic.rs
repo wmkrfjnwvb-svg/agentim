@@ -72,9 +72,24 @@ pub struct Shared {
     pub budgets: crate::guard::Budgets,
     pub control: usize,
     pub db_names: Vec<String>,
+    /// (user, blocked user) pairs, loaded from the control database.
+    pub blocks: std::sync::RwLock<std::collections::HashSet<(String, String)>>,
 }
 
 impl Shared {
+    /// Whether `a` blocked `b`.
+    pub fn blocked(&self, a: &str, b: &str) -> bool {
+        self.blocks
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&(a.to_string(), b.to_string()))
+    }
+
+    /// Whether either of the two blocked the other.
+    pub fn blocked_either(&self, a: &str, b: &str) -> bool {
+        self.blocked(a, b) || self.blocked(b, a)
+    }
+
     pub fn user(&self, id: &str) -> Option<User> {
         self.users
             .read()
@@ -243,6 +258,31 @@ pub enum Op {
         actor: User,
         user: User,
     },
+    /// Removal by someone else, or leaving when `user` is the actor.
+    RemoveMember {
+        conv_id: String,
+        actor: User,
+        user: User,
+    },
+    Dissolve {
+        conv_id: String,
+        actor: User,
+    },
+    // control database, membership lifecycle
+    MemberIndexRemove {
+        conv_id: String,
+        user_id: String,
+    },
+    ForgetConv(String),
+    SetBlock {
+        user_id: String,
+        target: String,
+        on: bool,
+    },
+    DmPut {
+        pair_key: String,
+        conv_id: String,
+    },
     StopConvStreams(String),
     ImportConv {
         conv_id: String,
@@ -279,6 +319,12 @@ impl Op {
             Op::DirDelete(_) => "dir_delete",
             Op::CreateConv { .. } => "create_conv",
             Op::AddMember { .. } => "add_member",
+            Op::RemoveMember { .. } => "remove_member",
+            Op::Dissolve { .. } => "dissolve",
+            Op::MemberIndexRemove { .. } => "member_index_remove",
+            Op::ForgetConv(_) => "forget_conv",
+            Op::SetBlock { .. } => "set_block",
+            Op::DmPut { .. } => "dm_put",
             Op::StopConvStreams(_) => "stop_conv_streams",
             Op::ImportConv { .. } => "import_conv",
             Op::DeleteConv(_) => "delete_conv",
@@ -290,6 +336,11 @@ impl Op {
 
 fn err(code: &'static str, msg: impl Into<String>) -> ApiError {
     ApiError::new(code, msg)
+}
+
+/// Owners and admins manage members and moderate messages.
+fn is_manager(role: &str) -> bool {
+    role == "owner" || role == "admin"
 }
 
 /// Message text: 1..64KB, and no NUL (PostgreSQL cannot store it).
@@ -418,6 +469,38 @@ impl Ctx<'_, '_> {
                 actor,
                 user,
             } => self.add_member(&conv_id, &actor, &user).await,
+            Op::RemoveMember {
+                conv_id,
+                actor,
+                user,
+            } => self.remove_member(&conv_id, &actor, &user).await,
+            Op::Dissolve { conv_id, actor } => self.dissolve(&conv_id, &actor).await,
+            Op::MemberIndexRemove { conv_id, user_id } => {
+                self.db.member_index_remove(&conv_id, &user_id).await?;
+                Ok(json!({}))
+            }
+            Op::ForgetConv(conv) => {
+                self.db.forget_conv(&conv).await?;
+                Ok(json!({}))
+            }
+            Op::SetBlock {
+                user_id,
+                target,
+                on,
+            } => {
+                self.db.set_block(&user_id, &target, on).await?;
+                let mut b = self.sh.blocks.write().unwrap_or_else(|e| e.into_inner());
+                if on {
+                    b.insert((user_id, target));
+                } else {
+                    b.remove(&(user_id, target));
+                }
+                Ok(json!({}))
+            }
+            Op::DmPut { pair_key, conv_id } => {
+                self.db.dm_put(&pair_key, &conv_id).await?;
+                Ok(json!({}))
+            }
             Op::StopConvStreams(conv) => {
                 let ids: Vec<String> = self
                     .st
@@ -599,6 +682,14 @@ impl Ctx<'_, '_> {
                 let seq = ev.seq;
                 self.emit(ev).await?;
                 Ok(json!({"seq": seq}))
+            }
+            ClientMsg::SetRole {
+                conv_id,
+                user_id,
+                role,
+            } => self.set_role(me, &conv_id, &user_id, &role).await,
+            ClientMsg::TransferOwner { conv_id, user_id } => {
+                self.transfer_owner(me, &conv_id, &user_id).await
             }
             ClientMsg::ResetGuard { conv_id, agent_id } => {
                 let agent = self.owned_agent(me, &agent_id)?;
@@ -912,10 +1003,16 @@ impl Ctx<'_, '_> {
         self.own_conv(conv_id)?;
         let mine = self.require_member(conv_id, &me.id).await?;
         let own_agent = u.owner_id.as_deref() == Some(me.id.as_str());
-        if mine.role != "owner" && !own_agent {
+        if !is_manager(&mine.role) && !own_agent {
             return Err(err(
                 "forbidden",
-                "only the conversation owner can add members",
+                "only the owner or an admin can add members",
+            ));
+        }
+        if self.sh.blocked(&u.id, &me.id) {
+            return Err(err(
+                "blocked",
+                "this user does not accept invitations from you",
             ));
         }
         let conv = self
@@ -946,6 +1043,259 @@ impl Ctx<'_, '_> {
         let seq = ev.seq;
         self.emit(ev).await?;
         Ok(json!({"seq": seq}))
+    }
+
+    /// In a direct conversation, a block in either direction stops messages.
+    async fn check_dm_block(&mut self, conv_id: &str, me: &str) -> ApiResult<()> {
+        let members = self.members(conv_id).await?;
+        if members.len() != 2 {
+            return Ok(());
+        }
+        let Some(other) = members.iter().find(|m| m.user_id != me) else {
+            return Ok(());
+        };
+        if !self.sh.blocked_either(&other.user_id, me) {
+            return Ok(());
+        }
+        let dm = self.db.conv(conv_id).await?.is_some_and(|c| c.kind == "dm");
+        if dm {
+            return Err(err("blocked", "you cannot message this user"));
+        }
+        Ok(())
+    }
+
+    async fn remove_member(&mut self, conv_id: &str, me: &User, u: &User) -> ApiResult<Value> {
+        self.own_conv(conv_id)?;
+        let mine = self.require_member(conv_id, &me.id).await?;
+        let target = self
+            .members(conv_id)
+            .await?
+            .iter()
+            .find(|m| m.user_id == u.id)
+            .cloned()
+            .ok_or_else(|| err("not_found", "not a member of this conversation"))?;
+        let leaving = me.id == u.id;
+        if leaving {
+            if target.role == "owner" {
+                return Err(err(
+                    "conflict",
+                    "the owner must transfer ownership or dissolve the conversation",
+                ));
+            }
+        } else {
+            let own_agent = u.owner_id.as_deref() == Some(me.id.as_str());
+            let allowed = match mine.role.as_str() {
+                "owner" => true,
+                "admin" => target.role == "member",
+                _ => false,
+            } || (own_agent && target.role != "owner");
+            if !allowed {
+                return Err(err("forbidden", "you cannot remove this member"));
+            }
+        }
+        if u.kind == UserKind::Agent {
+            // Its live streams end visibly before it goes; drafts are dropped.
+            let ids: Vec<String> = self
+                .st
+                .streams
+                .values()
+                .filter(|s| s.sender.id == u.id && s.conv_id == conv_id)
+                .map(|s| s.msg_id.clone())
+                .collect();
+            for id in ids {
+                self.finish_stream(&id, "cancelled", Some("removed"), &me.id)
+                    .await?;
+            }
+            self.db.discard_drafts(conv_id, &u.id).await?;
+        }
+        let kind = if leaving {
+            "member.left"
+        } else {
+            "member.removed"
+        };
+        let ev = self
+            .db
+            .append_event(
+                conv_id,
+                kind,
+                Some(&me.id),
+                None,
+                json!({"user_id": u.id, "name": u.name, "kind": u.kind, "by": me.id}),
+            )
+            .await?;
+        let seq = ev.seq;
+        // The member still receives this event; nothing after it.
+        self.emit(ev).await?;
+        self.db.remove_member(conv_id, &u.id).await?;
+        self.st.members.remove(conv_id);
+        self.st.recips.remove(conv_id);
+        self.out.push(Out::Unfocus {
+            conv_id: conv_id.to_string(),
+            user_id: Some(u.id.clone()),
+        });
+        if self.idx == self.sh.control {
+            self.db.member_index_remove(conv_id, &u.id).await?;
+        }
+        self.db
+            .audit(Some(&me.id), kind, Some(conv_id), Some(&u.id), json!({}))
+            .await?;
+        Ok(json!({"seq": seq}))
+    }
+
+    async fn set_role(
+        &mut self,
+        me: &User,
+        conv_id: &str,
+        user_id: &str,
+        role: &str,
+    ) -> ApiResult<Value> {
+        if role != "admin" && role != "member" {
+            return Err(err("bad_request", "role must be admin or member"));
+        }
+        let mine = self.require_member(conv_id, &me.id).await?;
+        if mine.role != "owner" {
+            return Err(err("forbidden", "only the owner changes roles"));
+        }
+        let u = self.resolve_user(user_id)?;
+        let target = self
+            .require_member(conv_id, &u.id)
+            .await
+            .map_err(|_| err("not_found", "not a member of this conversation"))?;
+        if target.role == "owner" {
+            return Err(err("conflict", "use transfer_owner to change the owner"));
+        }
+        if target.kind != UserKind::Human {
+            return Err(err("bad_request", "only people can be admins"));
+        }
+        self.db.set_role(conv_id, &u.id, role).await?;
+        let ev = self
+            .db
+            .append_event(
+                conv_id,
+                "member.role",
+                Some(&me.id),
+                None,
+                json!({"user_id": u.id, "role": role}),
+            )
+            .await?;
+        self.st.members.remove(conv_id);
+        self.st.recips.remove(conv_id);
+        let seq = ev.seq;
+        self.emit(ev).await?;
+        Ok(json!({"seq": seq}))
+    }
+
+    async fn transfer_owner(
+        &mut self,
+        me: &User,
+        conv_id: &str,
+        user_id: &str,
+    ) -> ApiResult<Value> {
+        let mine = self.require_member(conv_id, &me.id).await?;
+        if mine.role != "owner" {
+            return Err(err("forbidden", "only the owner transfers ownership"));
+        }
+        let u = self.resolve_user(user_id)?;
+        let target = self
+            .require_member(conv_id, &u.id)
+            .await
+            .map_err(|_| err("not_found", "not a member of this conversation"))?;
+        if target.user_id == me.id {
+            return Err(err("conflict", "you are already the owner"));
+        }
+        if target.kind != UserKind::Human {
+            return Err(err("bad_request", "only a person can own a conversation"));
+        }
+        self.db.set_role(conv_id, &u.id, "owner").await?;
+        self.db.set_role(conv_id, &me.id, "admin").await?;
+        let ev = self
+            .db
+            .append_event(
+                conv_id,
+                "owner.transferred",
+                Some(&me.id),
+                None,
+                json!({"from": me.id, "to": u.id}),
+            )
+            .await?;
+        self.db
+            .audit(
+                Some(&me.id),
+                "owner.transferred",
+                Some(conv_id),
+                Some(&u.id),
+                json!({}),
+            )
+            .await?;
+        self.st.members.remove(conv_id);
+        self.st.recips.remove(conv_id);
+        let seq = ev.seq;
+        self.emit(ev).await?;
+        Ok(json!({"seq": seq}))
+    }
+
+    /// Every member loses access and the content is deleted; only the audit
+    /// record that the conversation existed remains.
+    async fn dissolve(&mut self, conv_id: &str, me: &User) -> ApiResult<Value> {
+        self.own_conv(conv_id)?;
+        let mine = self.require_member(conv_id, &me.id).await?;
+        if mine.role != "owner" {
+            return Err(err("forbidden", "only the owner dissolves a conversation"));
+        }
+        let members: Vec<String> = self
+            .members(conv_id)
+            .await?
+            .iter()
+            .map(|m| m.user_id.clone())
+            .collect();
+        let streams: Vec<(String, String)> = self
+            .st
+            .streams
+            .values()
+            .filter(|s| s.conv_id == conv_id)
+            .map(|s| (s.msg_id.clone(), s.sender.id.clone()))
+            .collect();
+        for (id, sender) in streams {
+            self.st.streams.remove(&id);
+            self.stream_removed(&id);
+            self.out.push(Out::ToUser {
+                user_id: sender,
+                frame: json!({"type": "stream_cancelled", "msg_id": id, "reason": "dissolved"}),
+            });
+        }
+        let ev = self
+            .db
+            .append_event(
+                conv_id,
+                "conv.dissolved",
+                Some(&me.id),
+                None,
+                json!({"by": me.id}),
+            )
+            .await?;
+        self.emit(ev).await?;
+        self.db.delete_conv(conv_id).await?;
+        if self.idx == self.sh.control {
+            self.db.forget_conv(conv_id).await?;
+        }
+        self.db
+            .audit(
+                Some(&me.id),
+                "conv.dissolved",
+                Some(conv_id),
+                None,
+                json!({"members": members.len()}),
+            )
+            .await?;
+        self.st.members.remove(conv_id);
+        self.st.recips.remove(conv_id);
+        self.out.push(Out::Unfocus {
+            conv_id: conv_id.to_string(),
+            user_id: None,
+        });
+        // Later commands for it are refused here; the hub drops it everywhere.
+        self.sh.dir_set(conv_id, None);
+        Ok(json!({"members": members}))
     }
 
     // ---------------------------------------------------------------- send
@@ -996,10 +1346,14 @@ impl Ctx<'_, '_> {
             }
         }
 
+        self.check_dm_block(conv_id, &me.id).await?;
         // Targeted visibility goes to the side channel and takes no conv_seq.
         if let Some(target) = to_user {
             let t = self.resolve_user(&target)?;
             self.require_member(conv_id, &t.id).await?;
+            if self.sh.blocked_either(&t.id, &me.id) {
+                return Err(err("blocked", "you cannot message this user"));
+            }
             let mut audience = Self::agent_audience(me);
             if !audience.contains(&t.id) {
                 audience.push(t.id.clone());
@@ -1096,7 +1450,7 @@ impl Ctx<'_, '_> {
             return Ok(true);
         }
         if recall && let Ok(mem) = self.require_member(&msg.conv_id, &me.id).await {
-            return Ok(mem.role == "owner");
+            return Ok(is_manager(&mem.role));
         }
         Ok(false)
     }

@@ -227,6 +227,21 @@ pub const TABLES: &[Table] = &[
         indexes: &[("member_index_user", &["user_id"], false)],
         conv_key: None,
     },
+    Table {
+        name: "blocks",
+        cols: &[c("user_id", Id), c("blocked_id", Id), c("created_at", Big)],
+        pk: &["user_id", "blocked_id"],
+        indexes: &[("blocks_blocked", &["blocked_id"], false)],
+        conv_key: None,
+    },
+    // One direct conversation per pair of users: "<smaller id>|<larger id>".
+    Table {
+        name: "dm_index",
+        cols: &[c("pair_key", Name), c("conv_id", Id)],
+        pk: &["pair_key"],
+        indexes: &[("dm_index_conv", &["conv_id"], false)],
+        conv_key: None,
+    },
     // ---- conversation databases
     Table {
         name: "conversations",
