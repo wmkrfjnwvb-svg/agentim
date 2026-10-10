@@ -59,8 +59,9 @@
 | 业务场景（`tests/scenarios.rs`，29 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 每个业务领域一项，覆盖允许的路径、拒绝的路径（谁不能做、返回什么错误码）以及事后状态（主日志、侧信道、推送、重启后），见 §5.2 |
 | 并发场景（`tests/concurrency.rs`，12 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 同一业务操作在多个会话里同时发生、互相冲突的操作竞争，每种重复 20 轮后检查不变量，见 §5.3 |
 | 成员生命周期（`tests/membership.rs`，17 个场景 + 7 个竞争 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 见 §5.3.1 的覆盖矩阵 |
-| 覆盖排查补充（`tests/coverage.rs`，19 项 × 3 种数据库 + 1 项 PostgreSQL + 2 项 SQLite） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 见 §5.5 |
+| 覆盖排查补充（`tests/coverage.rs`，18 项 × 3 种数据库 + 1 项 PostgreSQL + 2 项 SQLite） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 见 §5.5 |
 | HTTP 与 WebSocket 接口（`tests/http.rs`，5 项） | ✅ | ✅ | 见 §5.5 |
+| 表结构迁移（`tests/schema.rs`，6 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 新库直接是最新结构；老库带数据升级后内容不变、seq 连续、可继续写；DDL 做完但版本未更新时重启补完；4 个进程同时启动只迁移一次（3 轮）；较新但兼容的库照常使用且版本不被降低；不兼容或损坏的版本号拒绝启动且不改动库 |
 | 协议版本（`tests/protocol.rs`，7 项 × 3 种数据库 + 4 项 WebSocket） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 老客户端不带协商照常工作；协商选最新的共同版本，没有时 `unsupported_protocol`；最低版本的边界（相等、次版本 10 > 9、预发布、缺版本号、未配置的客户端）；名称、版本、功能数量的上限；重复和被拒绝的 `hello` 对连接状态的影响；`unknown_op` 与 `bad_request` 的区分且不留痕迹；忽略未知字段；连接参数 `v` 的各种取值；`client_too_old` 后以 1008 断开而其他拒绝不断开；指标标签不含原始输入。变异检查：去掉 `unknown_op` 判断、去掉断开都会让测试失败；`OPS` 少一项会让单元测试失败 |
 | 配置校验（`src/config.rs` 单元测试，3 项） | ✅ | ✅ | 见 §5.5 |
 | 多库（`tests/multidb.rs`，6 项） | ✅ | ✅ | 单元的内容和会话标题不会出现在共享库文件里（直接读文件字节确认）；跨库的成员、列表、侧信道；迁移后事件完全一致、seq 连续、旧库不残留内容；迁移期间并发写入不丢不重；崩溃后目录修复；单元放在另一种数据库上（SQLite 控制库 + PostgreSQL 单元库） |

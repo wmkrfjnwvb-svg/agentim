@@ -34,7 +34,6 @@ backend_tests!(
     user_and_conversation_listing_edges,
     stats_are_not_open_to_users,
     side_channel_paging_and_read_errors,
-    a_newer_schema_is_refused,
 );
 
 fn code(r: &Value) -> &str {
@@ -804,25 +803,6 @@ async fn side_channel_paging_and_read_errors(db: TestDb) {
     );
     a.ok(json!({"op": "read", "conv_id": conv, "seq": -5}))
         .await; // harmless no-op
-}
-
-async fn a_newer_schema_is_refused(db: TestDb) {
-    use sqlx::Connection;
-    let hub = open(single(&db.url)).await;
-    drop(hub);
-    sqlx::any::install_default_drivers();
-    let url = db.url.replace("mariadb://", "mysql://");
-    let mut c = sqlx::AnyConnection::connect(&url).await.unwrap();
-    sqlx::query("UPDATE meta SET v = '999' WHERE k = 'schema_version'")
-        .execute(&mut c)
-        .await
-        .unwrap();
-    drop(c);
-    let err = Hub::open(single(&db.url), hub_cfg())
-        .await
-        .err()
-        .expect("must refuse");
-    assert_eq!(err.code, "schema_mismatch", "{}", err.message);
 }
 
 /// PostgreSQL only: the setting can be changed for one database without

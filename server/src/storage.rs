@@ -10,7 +10,9 @@ use sqlx::{AssertSqlSafe, Connection, Row};
 
 use crate::model::{ApiError, ApiResult};
 
-pub const SCHEMA_VERSION: i64 = 1;
+/// Version of the schema in `TABLES`. Bump it together with a new entry in
+/// `MIGRATIONS` (docs/02-architecture.md §5.3).
+pub const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -312,6 +314,8 @@ pub const TABLES: &[Table] = &[
             c("mentions", Text),
             c("created_at", Big),
             c("updated_at", Big),
+            // v2: structured content of custom message kinds (JSON).
+            n("payload", Text),
         ],
         pk: &["msg_id"],
         indexes: &[
@@ -476,18 +480,154 @@ pub fn table_ddl(d: Dialect, t: &Table) -> Vec<String> {
     out
 }
 
-/// Creates the schema on an empty database, or checks the version of an
-/// existing one. Migrations are forward-only and versioned.
-pub async fn ensure_schema(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
-    // SQLite: take the write lock up front (see the writer in shard.rs).
-    let mut tx = if d == Dialect::Sqlite {
-        Connection::begin_with(&mut *c, "BEGIN IMMEDIATE").await?
-    } else {
-        Connection::begin(&mut *c).await?
+/// One additive change. Steps are idempotent: a MySQL migration cannot be
+/// rolled back (DDL commits implicitly), so a restart must finish it.
+pub enum Step {
+    AddColumn {
+        table: &'static str,
+        column: &'static str,
+    },
+}
+
+pub struct Migration {
+    /// Schema version after this migration.
+    pub version: i64,
+    /// Oldest schema version a binary may have and still use the database
+    /// after this migration. Additive migrations keep the previous value.
+    pub compat: i64,
+    pub about: &'static str,
+    pub steps: &'static [Step],
+}
+
+/// Every migration after version 1, in order.
+pub const MIGRATIONS: &[Migration] = &[Migration {
+    version: 2,
+    compat: 1,
+    about: "messages.payload for custom message kinds",
+    steps: &[Step::AddColumn {
+        table: "messages",
+        column: "payload",
+    }],
+}];
+
+fn table(name: &str) -> &'static Table {
+    TABLES
+        .iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| panic!("unknown table {name}"))
+}
+
+fn col(t: &'static Table, name: &str) -> &'static Col {
+    t.cols
+        .iter()
+        .find(|c| c.name == name)
+        .unwrap_or_else(|| panic!("unknown column {}.{name}", t.name))
+}
+
+/// Column names of a table as the database reports them (lower case).
+pub async fn columns(c: &mut AnyConnection, d: Dialect, table: &str) -> ApiResult<Vec<String>> {
+    let sql = match d {
+        Dialect::Sqlite => "SELECT name FROM pragma_table_info(?) ORDER BY name",
+        Dialect::Postgres => {
+            "SELECT CAST(column_name AS TEXT) FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = ? ORDER BY 1"
+        }
+        Dialect::Mysql => {
+            "SELECT CAST(column_name AS CHAR) FROM information_schema.columns \
+             WHERE table_schema = DATABASE() AND table_name = ? ORDER BY 1"
+        }
     };
-    apply_schema(&mut tx, d).await?;
-    tx.commit().await?;
+    let rows = sqlx::query(d.q(sql)).bind(table).fetch_all(&mut *c).await?;
+    rows.iter()
+        .map(|r| Ok(r.try_get::<String, _>(0)?.to_lowercase()))
+        .collect()
+}
+
+async fn apply_step(c: &mut AnyConnection, d: Dialect, step: &Step) -> ApiResult<()> {
+    match step {
+        Step::AddColumn { table: tn, column } => {
+            if columns(c, d, tn).await?.iter().any(|n| n == column) {
+                return Ok(());
+            }
+            let cl = col(table(tn), column);
+            let sql = format!(
+                "ALTER TABLE {tn} ADD COLUMN {column} {}{}",
+                sql_type(d, cl.ty),
+                if cl.null { "" } else { " NOT NULL" }
+            );
+            sqlx::query(AssertSqlSafe(sql)).execute(&mut *c).await?;
+        }
+    }
     Ok(())
+}
+
+/// Creates the schema on an empty database, migrates an older one, and
+/// refuses one this binary cannot use (docs/02-architecture.md §5.3).
+pub async fn ensure_schema(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
+    // Only one process migrates at a time. SQLite: the write lock, taken up
+    // front (see the writer in shard.rs). PostgreSQL: a transaction-scoped
+    // advisory lock. MySQL: a session lock around the transaction, because
+    // its DDL commits implicitly.
+    if d == Dialect::Mysql {
+        let got: Option<i64> = sqlx::query("SELECT GET_LOCK('agentim_schema', 60)")
+            .fetch_one(&mut *c)
+            .await?
+            .try_get(0)?;
+        if got != Some(1) {
+            return Err(ApiError::new(
+                "storage_unavailable",
+                "timed out waiting for another node to finish the schema setup",
+            ));
+        }
+    }
+    let res = async {
+        let mut tx = if d == Dialect::Sqlite {
+            Connection::begin_with(&mut *c, "BEGIN IMMEDIATE").await?
+        } else {
+            Connection::begin(&mut *c).await?
+        };
+        if d == Dialect::Postgres {
+            sqlx::query("SELECT pg_advisory_xact_lock(7262011)")
+                .execute(&mut *tx)
+                .await?;
+        }
+        apply_schema(&mut tx, d).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    if d == Dialect::Mysql {
+        let _ = sqlx::query("SELECT RELEASE_LOCK('agentim_schema')")
+            .execute(&mut *c)
+            .await;
+    }
+    res
+}
+
+async fn meta_get(c: &mut AnyConnection, d: Dialect, k: &str) -> ApiResult<Option<String>> {
+    Ok(sqlx::query(d.q("SELECT v FROM meta WHERE k = ?"))
+        .bind(k.to_string())
+        .fetch_optional(&mut *c)
+        .await?
+        .map(|r| r.try_get(0))
+        .transpose()?)
+}
+
+async fn meta_set(c: &mut AnyConnection, d: Dialect, k: &str, v: i64) -> ApiResult<()> {
+    sqlx::query(d.q("DELETE FROM meta WHERE k = ?"))
+        .bind(k.to_string())
+        .execute(&mut *c)
+        .await?;
+    sqlx::query(d.q("INSERT INTO meta (k, v) VALUES (?, ?)"))
+        .bind(k.to_string())
+        .bind(v.to_string())
+        .execute(&mut *c)
+        .await?;
+    Ok(())
+}
+
+fn mismatch(msg: String) -> ApiError {
+    ApiError::new("schema_mismatch", msg)
 }
 
 async fn apply_schema(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
@@ -496,29 +636,55 @@ async fn apply_schema(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
             sqlx::query(AssertSqlSafe(stmt)).execute(&mut *c).await?;
         }
     }
-    let v: Option<String> = sqlx::query(d.q("SELECT v FROM meta WHERE k = ?"))
-        .bind("schema_version")
-        .fetch_optional(&mut *c)
-        .await?
-        .map(|r| r.try_get(0))
-        .transpose()?;
-    match v {
+    let parse = |k: &str, v: String| {
+        v.parse::<i64>()
+            .ok()
+            .filter(|n| *n >= 1)
+            .ok_or_else(|| mismatch(format!("meta.{k} = {v:?} is not a schema version")))
+    };
+    let version = match meta_get(c, d, "schema_version").await? {
         None => {
-            sqlx::query(d.q("INSERT INTO meta (k, v) VALUES (?, ?)"))
-                .bind("schema_version")
-                .bind(SCHEMA_VERSION.to_string())
-                .execute(&mut *c)
-                .await?;
+            // A new database: the tables above are already the latest schema.
+            meta_set(c, d, "schema_version", SCHEMA_VERSION).await?;
+            meta_set(c, d, "schema_compat", current_compat()).await?;
+            return Ok(());
         }
-        Some(v) if v == SCHEMA_VERSION.to_string() => {}
-        Some(v) => {
-            return Err(ApiError::new(
-                "schema_mismatch",
-                format!("database schema version {v}, this binary expects {SCHEMA_VERSION}"),
-            ));
+        Some(v) => parse("schema_version", v)?,
+    };
+    // Databases from before compat tracking require their own version.
+    let compat = match meta_get(c, d, "schema_compat").await? {
+        None => version,
+        Some(v) => parse("schema_compat", v)?,
+    };
+    if version > SCHEMA_VERSION {
+        if compat > SCHEMA_VERSION {
+            return Err(mismatch(format!(
+                "database schema version {version} needs a binary of schema version {compat} or newer; this binary has {SCHEMA_VERSION}"
+            )));
         }
+        tracing::warn!(
+            database_version = version,
+            binary_version = SCHEMA_VERSION,
+            "database schema is newer than this binary but compatible; upgrade this node"
+        );
+        return Ok(());
+    }
+    let mut compat = compat;
+    for m in MIGRATIONS.iter().filter(|m| m.version > version) {
+        for step in m.steps {
+            apply_step(c, d, step).await?;
+        }
+        compat = compat.max(m.compat);
+        meta_set(c, d, "schema_version", m.version).await?;
+        meta_set(c, d, "schema_compat", compat).await?;
+        tracing::info!(version = m.version, about = m.about, "schema migrated");
     }
     Ok(())
+}
+
+/// `schema_compat` of a database created at the latest version.
+pub fn current_compat() -> i64 {
+    MIGRATIONS.iter().map(|m| m.compat).max().unwrap_or(1)
 }
 
 /// Refuses databases that could lose acknowledged writes (G2) unless

@@ -296,12 +296,25 @@ hub（业务逻辑） ──▶ trait Storage（领域接口，不出现 SQL）
 **与确认时方案的差异**：没有引入 sea-query。业务 SQL 都很简单，三种数据库的差异只有占位符（PostgreSQL 用 `$n`）、列类型（MySQL 用 `LONGTEXT`，主键列用 `VARCHAR`）和建索引的写法（MySQL 不支持 `CREATE INDEX IF NOT EXISTS`，改为在建表语句里声明）。这些由 `storage.rs` 里一个很小的方言层处理；需要 upsert 的地方，在写线程里改成"先查后写"（写线程是单一的，不存在竞争）。业务 SQL 只有 `db.rs` 一份。
 
 - **数据库层**：`storage.rs`（方言、连接、建表、持久化检查）和 `db.rs`（全部业务 SQL）。业务逻辑（`logic.rs`）只调用 `db.rs` 的函数，看不到 SQL。
-- **迁移**：表结构带版本号（`meta` 表），只向前；启动时检查版本，不一致就拒绝启动。
+- **表结构升级**：见下面的"表结构版本与自动迁移"。
 - **持久化配置检查**（G2）：启动时检查。SQLite 要求 `synchronous=FULL`；PostgreSQL 要求 `fsync=on` 且 `synchronous_commit` 不为 `off`；MySQL 要求 `innodb_flush_log_at_trx_commit=1`，开启 binlog 时还要求 `sync_binlog=1`。不满足就拒绝启动，配置项 `unsafe_durability = true` 可以显式放行，并打印警告。
 - **SQLite `secure_delete`**：删除的内容会被覆盖，而不是留在空闲页里。会话迁移到专属库之后，旧库文件里不会残留它的内容（测试会直接读数据库文件确认）。
 - **一致性测试套件**：同一套 13 个验收测试分别跑三种后端（`tests/hub.rs`）。CI 在 Linux 上用服务容器跑 PostgreSQL 16 和 MySQL 8.4，并检查没有测试被跳过；SQLite 在 Linux 和 Windows 上都跑。
 - **迁移工具**（后续）：SQLite → PostgreSQL 的导出导入工具，类似 Synapse 的 `synapse_port_db`。
 - **加密字段**：消息内容等加密后以 BLOB / BYTEA / LONGBLOB 存储，见 [04](04-security-compliance.md) §2。
+
+**表结构版本与自动迁移**（业内参考：Flyway、Liquibase、Synapse 的 schema delta 和 `SCHEMA_COMPAT_VERSION`）
+
+| 方面 | 规则 |
+|---|---|
+| 版本 | `meta` 表记录 `schema_version`（库的版本）和 `schema_compat`（还能使用这个库的最老的程序所对应的版本）。程序里的 `TABLES` 永远描述最新的表结构，`MIGRATIONS` 按版本列出每一步的变化 |
+| 新库 | 直接按最新结构建表，写入最新版本，不重放迁移 |
+| 老库 | 启动时在一个事务里按顺序执行缺少的迁移，每做完一个就更新版本号。每个库（控制库和各单元库）各自迁移 |
+| 可重入 | 每一步先检查再执行（例如加列前先查列是否已存在）。MySQL 的 DDL 会隐式提交，不能整体回滚，所以中途崩溃后重启必须能接着做完 |
+| 并发启动 | 集群里多个节点同时启动时只能有一个在迁移：PostgreSQL 用事务级的 advisory lock，MySQL 用 `GET_LOCK`，SQLite 用 `BEGIN IMMEDIATE` 的写锁 |
+| 只做加法 | 主版本内的迁移只能新增表、可为空的列和索引，所以老程序在新库上照样能读写（忽略新列）。这样的迁移不提高 `schema_compat`，滚动升级时新老节点可以同时在线 |
+| 破坏性变化 | 删除或改名列、改类型、改含义时提高 `schema_compat`；老程序发现库的 `schema_compat` 比自己新就拒绝启动（`schema_mismatch`），不会写坏数据。这类变化要分两步发布：先发能同时处理新旧结构的版本，再发真正的变化 |
+| 启动检查 | 库的版本比程序新、但 `schema_compat` 不比程序新：照常启动并打印警告；否则拒绝启动 |
 
 ### 5.4 多库路由：组织单元的物理隔离（方案 A，已实现）
 
