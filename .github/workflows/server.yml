@@ -19,6 +19,7 @@ jobs:
   check:
     name: fmt / clippy / tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +40,7 @@ jobs:
   databases:
     name: tests on PostgreSQL 16 and MySQL 8.4
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -69,6 +71,7 @@ jobs:
   load:
     name: load (${{ matrix.os }}, ${{ matrix.name }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -93,23 +96,24 @@ jobs:
         with:
           workspaces: server
       - run: cargo build --release --bins --examples
-      - name: start server
-        run: |
-          ./target/release/agentim --demo --db "$RUNNER_TEMP/load.db" --addr 127.0.0.1:8080 > "$RUNNER_TEMP/server.log" 2>&1 &
-          for i in $(seq 100); do curl -sf http://127.0.0.1:8080/readyz && break; sleep 0.2; done
+      # Server start, test and stop in one step: on Windows a step does not end
+      # while a background process it started is still running.
       - name: load test with consistency checks
         run: |
+          ./target/release/agentim --demo --db "$RUNNER_TEMP/load.db" --addr 127.0.0.1:8080 < /dev/null > "$RUNNER_TEMP/server.log" 2>&1 &
+          server=$!
+          trap 'set +e; curl -s http://127.0.0.1:8080/metrics | grep -E "^agentim_(commit_batch_size|commit_duration_seconds)_(sum|count)|^agentim_push_dropped|^agentim_write_rejected"; kill $server; taskkill //F //IM agentim.exe > /dev/null 2>&1; [ $ok = 1 ] || tail -n 200 "$RUNNER_TEMP/server.log"' EXIT
+          ok=0
+          for i in $(seq 150); do curl -sf -m 2 http://127.0.0.1:8080/readyz > /dev/null && break; sleep 0.2; done
           ./target/release/examples/loadtest --addr 127.0.0.1:8080 ${{ matrix.args }} ${{ matrix.gate }} | tee result.txt
+          test ${PIPESTATUS[0]} -eq 0
+          ok=1
           { echo "### ${{ matrix.os }} / ${{ matrix.name }}"; echo '```'; cat result.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: metrics after the run
-        if: always()
-        run: curl -s http://127.0.0.1:8080/metrics | grep -E '^agentim_(commit_batch_size|commit_duration_seconds)_(sum|count)|^agentim_push_dropped|^agentim_write_rejected' || true
-      - if: failure()
-        run: tail -n 200 "$RUNNER_TEMP/server.log"
 
   ui:
     name: browser smoke test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -128,16 +132,17 @@ jobs:
         run: |
           npm install --no-save --prefix ci playwright@1.56.1
           npx --prefix ci playwright install --with-deps chromium
-      - name: start demo server
+      - name: run UI checks against the demo server
         run: |
-          ./target/release/agentim --demo --db "$RUNNER_TEMP/ui.db" --addr 127.0.0.1:8099 --stream-idle-secs 6 > "$RUNNER_TEMP/server.log" 2>&1 &
-          for i in $(seq 100); do curl -sf http://127.0.0.1:8099/readyz && break; sleep 0.2; done
-      - name: run UI checks
-        run: PLAYWRIGHT="$PWD/ci/node_modules/playwright" BASE=http://127.0.0.1:8099 OUT=screenshots node ci/ui_smoke.mjs
+          ./target/release/agentim --demo --db "$RUNNER_TEMP/ui.db" --addr 127.0.0.1:8099 --stream-idle-secs 6 < /dev/null > "$RUNNER_TEMP/server.log" 2>&1 &
+          server=$!
+          trap 'set +e; kill $server; taskkill //F //IM agentim.exe > /dev/null 2>&1; [ $ok = 1 ] || tail -n 200 "$RUNNER_TEMP/server.log"' EXIT
+          ok=0
+          for i in $(seq 150); do curl -sf -m 2 http://127.0.0.1:8099/readyz > /dev/null && break; sleep 0.2; done
+          PLAYWRIGHT="$PWD/ci/node_modules/playwright" BASE=http://127.0.0.1:8099 OUT=screenshots node ci/ui_smoke.mjs
+          ok=1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ui-screenshots-${{ matrix.os }}
           path: server/screenshots
-      - if: failure()
-        run: tail -n 200 "$RUNNER_TEMP/server.log"

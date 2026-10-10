@@ -14,6 +14,7 @@ control = "main"
 [[storage.databases]]
 name = "main"
 url = "sqlite://agentim.db?mode=rwc"
+# On Windows use the sqlite:<path> form, e.g. url = "sqlite:C:/agentim/agentim.db?mode=rwc"
 # url = "postgres://agentim:secret@db.internal/agentim"
 # url = "mysql://agentim:secret@db.internal/agentim"
 read_pool = 8

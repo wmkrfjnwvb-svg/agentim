@@ -74,9 +74,22 @@ impl Default for WriterConfig {
     }
 }
 
-/// `sqlite://` URL for a file path; works for Windows paths too.
+/// SQLite URL for a file path. Uses the `sqlite:<path>` form, which keeps
+/// Windows drive letters (`sqlite://C:/..` would read `C` as a host name).
+/// The driver percent-decodes the path, so reserved characters are encoded.
 pub fn sqlite_url(path: &str) -> String {
-    format!("sqlite://{}?mode=rwc", path.replace('\\', "/"))
+    let mut p = String::with_capacity(path.len());
+    for c in path.chars() {
+        match c {
+            '\\' => p.push('/'),
+            '%' => p.push_str("%25"),
+            '?' => p.push_str("%3F"),
+            '#' => p.push_str("%23"),
+            ' ' => p.push_str("%20"),
+            c => p.push(c),
+        }
+    }
+    format!("sqlite:{p}?mode=rwc")
 }
 
 impl Config {

@@ -59,16 +59,26 @@ impl Dialect {
     }
 }
 
-fn mysql_url(url: &str) -> String {
+/// Rewrites a configured URL into the form the sqlx `Any` driver accepts.
+pub(crate) fn driver_url(url: &str) -> String {
     // sqlx's MySQL driver only knows the mysql:// scheme.
-    url.strip_prefix("mariadb://")
-        .map(|r| format!("mysql://{r}"))
-        .unwrap_or_else(|| url.to_string())
+    if let Some(r) = url.strip_prefix("mariadb://") {
+        return format!("mysql://{r}");
+    }
+    // `sqlite://C:/x.db` is parsed as a URL with host "c", which loses the
+    // drive letter; `sqlite:C:/x.db` keeps the whole path.
+    if let Some(r) = url.strip_prefix("sqlite://") {
+        let b = r.as_bytes();
+        if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+            return format!("sqlite:{}", r.replace('\\', "/"));
+        }
+    }
+    url.to_string()
 }
 
 /// The single connection a database's writer owns.
 pub async fn open_writer(url: &str, d: Dialect) -> ApiResult<AnyConnection> {
-    let mut c = AnyConnection::connect(&mysql_url(url))
+    let mut c = AnyConnection::connect(&driver_url(url))
         .await
         .map_err(conn_err)?;
     if d == Dialect::Sqlite {
@@ -102,7 +112,7 @@ pub async fn open_pool(url: &str, d: Dialect, size: u32) -> ApiResult<AnyPool> {
             })
         });
     }
-    opts.connect(&mysql_url(url)).await.map_err(conn_err)
+    opts.connect(&driver_url(url)).await.map_err(conn_err)
 }
 
 fn conn_err(e: sqlx::Error) -> ApiError {
@@ -558,6 +568,21 @@ mod tests {
         );
         assert_eq!(Dialect::Mysql.q("a = ?").0, "a = ?");
         assert_eq!(Dialect::from_url("mariadb://x").unwrap(), Dialect::Mysql);
+    }
+
+    #[test]
+    fn windows_sqlite_paths_keep_the_drive_letter() {
+        assert_eq!(
+            driver_url("sqlite://C:/data/a.db?mode=rwc"),
+            "sqlite:C:/data/a.db?mode=rwc"
+        );
+        assert_eq!(driver_url("sqlite://a.db"), "sqlite://a.db");
+        assert_eq!(driver_url("mariadb://h/db"), "mysql://h/db");
+        let url = crate::config::sqlite_url(r"C:\Users\me\a b.db");
+        assert_eq!(url, "sqlite:C:/Users/me/a%20b.db?mode=rwc");
+        let opts: sqlx::any::AnyConnectOptions = driver_url(&url).parse().unwrap();
+        let back = opts.database_url.as_str().trim_start_matches("sqlite:");
+        assert!(back.starts_with("C:/Users/me/"), "{back}");
     }
 
     #[test]
