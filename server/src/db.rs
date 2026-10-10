@@ -1385,8 +1385,21 @@ impl Db<'_> {
         Ok(out)
     }
 
+    /// Deletes a conversation's rows (after it moved to another database).
     pub async fn delete_conv(&mut self, conv_id: &str) -> ApiResult<()> {
-        for t in TABLES.iter().filter(|t| t.conv_key.is_some()) {
+        self.delete_conv_rows(conv_id, true).await
+    }
+
+    /// Deletes a dissolved conversation's content; its audit trail stays.
+    pub async fn delete_conv_content(&mut self, conv_id: &str) -> ApiResult<()> {
+        self.delete_conv_rows(conv_id, false).await
+    }
+
+    async fn delete_conv_rows(&mut self, conv_id: &str, with_audit: bool) -> ApiResult<()> {
+        for t in TABLES
+            .iter()
+            .filter(|t| t.conv_key.is_some() && (with_audit || t.name != "audit"))
+        {
             sqlx::query(self.d.q(&format!(
                 "DELETE FROM {} WHERE {} = ?",
                 t.name,

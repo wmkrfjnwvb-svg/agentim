@@ -1020,6 +1020,12 @@ impl Ctx<'_, '_> {
             .conv(conv_id)
             .await?
             .ok_or_else(|| err("not_found", "conversation"))?;
+        if conv.kind == "dm" {
+            return Err(err(
+                "bad_request",
+                "a direct conversation has fixed members",
+            ));
+        }
         let ev = self
             .db
             .add_member(conv_id, &conv.kind, u, "member", &me.id)
@@ -1043,6 +1049,10 @@ impl Ctx<'_, '_> {
         let seq = ev.seq;
         self.emit(ev).await?;
         Ok(json!({"seq": seq}))
+    }
+
+    async fn is_dm(&mut self, conv_id: &str) -> ApiResult<bool> {
+        Ok(self.db.conv(conv_id).await?.is_some_and(|c| c.kind == "dm"))
     }
 
     /// In a direct conversation, a block in either direction stops messages.
@@ -1074,6 +1084,12 @@ impl Ctx<'_, '_> {
             .find(|m| m.user_id == u.id)
             .cloned()
             .ok_or_else(|| err("not_found", "not a member of this conversation"))?;
+        if self.is_dm(conv_id).await? {
+            return Err(err(
+                "bad_request",
+                "a direct conversation has fixed members; dissolve it instead",
+            ));
+        }
         let leaving = me.id == u.id;
         if leaving {
             if target.role == "owner" {
@@ -1152,6 +1168,9 @@ impl Ctx<'_, '_> {
         if role != "admin" && role != "member" {
             return Err(err("bad_request", "role must be admin or member"));
         }
+        if self.is_dm(conv_id).await? {
+            return Err(err("bad_request", "a direct conversation has no roles"));
+        }
         let mine = self.require_member(conv_id, &me.id).await?;
         if mine.role != "owner" {
             return Err(err("forbidden", "only the owner changes roles"));
@@ -1194,6 +1213,12 @@ impl Ctx<'_, '_> {
         let mine = self.require_member(conv_id, &me.id).await?;
         if mine.role != "owner" {
             return Err(err("forbidden", "only the owner transfers ownership"));
+        }
+        if self.is_dm(conv_id).await? {
+            return Err(err(
+                "bad_request",
+                "a direct conversation has no owner to transfer",
+            ));
         }
         let u = self.resolve_user(user_id)?;
         let target = self
@@ -1239,7 +1264,8 @@ impl Ctx<'_, '_> {
     async fn dissolve(&mut self, conv_id: &str, me: &User) -> ApiResult<Value> {
         self.own_conv(conv_id)?;
         let mine = self.require_member(conv_id, &me.id).await?;
-        if mine.role != "owner" {
+        // A direct conversation can be deleted by either person in it.
+        if mine.role != "owner" && !(self.is_dm(conv_id).await? && me.kind == UserKind::Human) {
             return Err(err("forbidden", "only the owner dissolves a conversation"));
         }
         let members: Vec<String> = self
@@ -1274,7 +1300,7 @@ impl Ctx<'_, '_> {
             )
             .await?;
         self.emit(ev).await?;
-        self.db.delete_conv(conv_id).await?;
+        self.db.delete_conv_content(conv_id).await?;
         if self.idx == self.sh.control {
             self.db.forget_conv(conv_id).await?;
         }
@@ -1436,23 +1462,26 @@ impl Ctx<'_, '_> {
 
     /// May `me` modify this message? The sender, the sending agent's owner,
     /// or (recall only) the conversation owner.
+    /// May `me` modify this message? The sender while still a member, the
+    /// owner of the sending agent while the agent is still a member, or
+    /// (recall only) an owner or admin of the conversation.
     async fn can_modify(&mut self, me: &User, msg: &MsgView, recall: bool) -> ApiResult<bool> {
+        let members = self.members(&msg.conv_id).await?;
+        let member = |id: &str| members.iter().find(|m| m.user_id == id);
+        let sender_present = member(&msg.sender_id).is_some();
         if msg.sender_id == me.id {
-            return Ok(true);
+            return Ok(sender_present);
         }
-        if self
+        let owns_sender = self
             .sh
             .user(&msg.sender_id)
             .and_then(|s| s.owner_id)
             .as_deref()
-            == Some(me.id.as_str())
-        {
+            == Some(me.id.as_str());
+        if owns_sender && sender_present {
             return Ok(true);
         }
-        if recall && let Ok(mem) = self.require_member(&msg.conv_id, &me.id).await {
-            return Ok(is_manager(&mem.role));
-        }
-        Ok(false)
+        Ok(recall && member(&me.id).is_some_and(|m| is_manager(&m.role)))
     }
 
     async fn edit(&mut self, me: &User, msg_id: &str, text: &str) -> ApiResult<Value> {

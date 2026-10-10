@@ -26,7 +26,51 @@ backend_tests!(
     race_remove_and_leave,
     race_ownership_transfers,
     race_sends_against_dissolve,
+    removed_members_cannot_act_on_anything_in_the_conversation,
+    a_re_added_agent_sees_only_what_follows_its_return,
+    direct_conversations_have_fixed_members,
+    role_rules_at_the_edges,
+    dissolving_stops_live_work,
+    the_directory_follows_membership_and_units,
+    blocking_edge_cases,
+    membership_actions_are_audited,
+    race_add_and_remove_keep_log_and_state_consistent,
+    race_membership_changes_against_dissolve,
 );
+
+/// Members as replayed from the log's join / leave / remove events.
+fn replay_members(log: &[Value]) -> std::collections::BTreeSet<String> {
+    let mut m = std::collections::BTreeSet::new();
+    for e in log {
+        let u = e["data"]["user_id"].as_str().unwrap_or("").to_string();
+        match e["type"].as_str().unwrap_or("") {
+            "member.joined" => {
+                m.insert(u);
+            }
+            "member.left" | "member.removed" => {
+                m.remove(&u);
+            }
+            _ => {}
+        }
+    }
+    m
+}
+
+async fn listed_members(c: &Conn, conv: &str) -> std::collections::BTreeSet<String> {
+    convs(c)
+        .await
+        .iter()
+        .find(|v| v["conv_id"] == conv)
+        .map(|v| {
+            v["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["user_id"].as_str().unwrap().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 fn code(r: &Value) -> &str {
     r["error"]["code"].as_str().unwrap_or("")
@@ -684,5 +728,558 @@ async fn race_sends_against_dissolve(db: TestDb) {
             code(&a.call(json!({"op": "pull", "conv_id": conv})).await),
             "not_found"
         );
+    }
+}
+
+// ------------------------------------------- coverage of affected paths
+
+async fn removed_members_cannot_act_on_anything_in_the_conversation(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let bobbot = user(&hub, "bobbot", UserKind::Agent, Some(&bob)).await;
+    let a = Conn::new(&hub, &alice);
+    let mut b1 = Conn::new(&hub, &bob);
+    let mut b2 = Conn::new(&hub, &bob);
+    let g = Conn::new(&hub, &bot);
+    let bb = Conn::new(&hub, &bobbot);
+    let conv = a.group(&[&bob, &carol, &bot, &bobbot]).await;
+    a.ok(json!({"op": "set_role", "conv_id": conv, "user_id": bob.id, "role": "admin"}))
+        .await;
+    let old = b1.send(&conv, "bob's old message").await["msg_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let q = a.send(&conv, "@bot go").await["msg_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let s = g
+        .ok(json!({"op": "stream_start", "conv_id": conv, "client_msg_id": "s", "reply_to": q}))
+        .await["msg_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    b1.ok(json!({"op": "focus", "conv_id": conv})).await;
+    b2.ok(json!({"op": "focus", "conv_id": conv, "as_agent": bobbot.id}))
+        .await;
+    // bob owns bobbot, which stays; bob himself is removed.
+    a.ok(remove(&conv, &bob)).await;
+    b1.drain();
+    b2.drain();
+    g.ok(json!({"op": "stream_append", "msg_id": s, "idx": 0, "text": "live text"}))
+        .await;
+    hub.tick().await;
+    assert!(
+        !b1.drain().iter().any(|f| f["type"] == "delta"),
+        "a removed member's focused session gets no deltas"
+    );
+    let refused = [
+        b1.send(&conv, "x").await,
+        b1.call(json!({"op": "send", "conv_id": conv, "client_msg_id": "e", "text": "psst", "to_user": carol.id})).await,
+        b1.call(json!({"op": "edit", "msg_id": old, "text": "rewritten"})).await,
+        b1.call(json!({"op": "recall", "msg_id": old})).await,
+        b1.call(json!({"op": "stream_cancel", "msg_id": s})).await,
+        b1.call(json!({"op": "read", "conv_id": conv, "seq": 1})).await,
+        b1.call(json!({"op": "focus", "conv_id": conv})).await,
+        b1.call(json!({"op": "pull", "conv_id": conv})).await,
+        b1.call(json!({"op": "add_member", "conv_id": conv, "user_id": bob.id})).await,
+        b1.call(remove(&conv, &carol)).await,
+        b1.call(json!({"op": "set_role", "conv_id": conv, "user_id": carol.id, "role": "admin"})).await,
+        b1.call(json!({"op": "leave", "conv_id": conv})).await,
+        b1.call(json!({"op": "dissolve", "conv_id": conv})).await,
+    ];
+    for (i, r) in refused.iter().enumerate() {
+        assert_eq!(code(r), "forbidden", "request {i}: {r}");
+    }
+    // Others cannot target the removed member either.
+    let to_bob = json!({"op": "send", "conv_id": conv, "client_msg_id": "e2", "text": "for bob", "to_user": bob.id});
+    assert_eq!(code(&a.call(to_bob).await), "forbidden");
+    // bob's agent is still a member, so bob may still see the side events
+    // addressed to him as its owner, and nothing else.
+    assert_eq!(bb.send(&conv, "bobbot still here").await["ok"], true);
+    let side = b1.ok(json!({"op": "pull_side", "conv_id": conv})).await;
+    assert!(
+        side["side_events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["audience"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|u| u == bob.id.as_str())),
+        "{side}"
+    );
+    // Removing the agent too ends bob's observation through it.
+    a.ok(remove(&conv, &bobbot)).await;
+    for r in [
+        b1.call(json!({"op": "pull", "conv_id": conv, "as_agent": bobbot.id})).await,
+        b1.call(json!({"op": "whisper", "conv_id": conv, "agent_id": bobbot.id, "text": "x"})).await,
+        b1.call(json!({"op": "takeover", "conv_id": conv, "agent_id": bobbot.id})).await,
+        b1.call(json!({"op": "set_agent_policy", "conv_id": conv, "agent_id": bobbot.id, "trigger": "all"})).await,
+        b1.call(json!({"op": "reset_guard", "conv_id": conv, "agent_id": bobbot.id})).await,
+        b1.call(json!({"op": "pull_side", "conv_id": conv})).await,
+    ] {
+        assert_eq!(code(&r), "forbidden", "{r}");
+    }
+    assert!(
+        convs(&b1).await.is_empty(),
+        "not even listed through the agent"
+    );
+    // The old message is untouched; the stream continues for the others.
+    let log = a.pull(&conv, 0).await;
+    assert_eq!(
+        msg_by_id(&log, &old).unwrap()["content"],
+        "bob's old message"
+    );
+    assert_eq!(msg_by_id(&log, &s).unwrap()["state"], "streaming");
+    assert_eq!(
+        replay_members(&events(&log)),
+        listed_members(&a, &conv).await
+    );
+    drop((a, b1, b2, g, bb));
+    drop(hub);
+    let hub = open(single(&db.url)).await;
+    let b = Conn::new(&hub, &bob);
+    assert_eq!(
+        code(&b.call(json!({"op": "pull", "conv_id": conv})).await),
+        "forbidden",
+        "after a restart too"
+    );
+}
+
+async fn a_re_added_agent_sees_only_what_follows_its_return(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let g = Conn::new(&hub, &bot);
+    let conv = a.group(&[&bot]).await;
+    a.send(&conv, "@bot first").await;
+    a.ok(remove(&conv, &bot)).await;
+    a.send(&conv, "@bot while you were away").await;
+    a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": bot.id}))
+        .await;
+    a.send(&conv, "@bot welcome back").await;
+    let seen = g.pull(&conv, 0).await.to_string();
+    assert!(seen.contains("welcome back"));
+    assert!(
+        !seen.contains("while you were away") && !seen.contains("@bot first"),
+        "{seen}"
+    );
+}
+
+async fn direct_conversations_have_fixed_members(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let aria = user(&hub, "aria", UserKind::Agent, Some(&carol)).await;
+    let a = Conn::new(&hub, &alice);
+    let b = Conn::new(&hub, &bob);
+    let conv = a.ok(dm(&bob)).await["conv_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for r in [
+        a.call(json!({"op": "add_member", "conv_id": conv, "user_id": carol.id}))
+            .await,
+        a.call(remove(&conv, &bob)).await,
+        b.call(json!({"op": "leave", "conv_id": conv})).await,
+        a.call(json!({"op": "set_role", "conv_id": conv, "user_id": bob.id, "role": "admin"}))
+            .await,
+        a.call(json!({"op": "transfer_owner", "conv_id": conv, "user_id": bob.id}))
+            .await,
+    ] {
+        assert_eq!(code(&r), "bad_request", "{r}");
+    }
+    assert_eq!(listed_members(&a, &conv).await.len(), 2);
+    // Either person may delete it; the agent in a direct conversation may not.
+    b.ok(json!({"op": "dissolve", "conv_id": conv})).await;
+    assert!(convs(&a).await.is_empty());
+    let c = Conn::new(&hub, &carol);
+    let with_agent = c.ok(dm(&aria)).await["conv_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let g = Conn::new(&hub, &aria);
+    assert_eq!(
+        code(
+            &g.call(json!({"op": "dissolve", "conv_id": with_agent}))
+                .await
+        ),
+        "forbidden"
+    );
+    // An existing direct conversation is not handed out once blocked.
+    let again = a.ok(dm(&bob)).await["conv_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    b.ok(json!({"op": "block", "user_id": alice.id})).await;
+    assert_eq!(code(&a.call(dm(&bob)).await), "blocked");
+    b.ok(json!({"op": "unblock", "user_id": alice.id})).await;
+    assert_eq!(a.ok(dm(&bob)).await["conv_id"], again.as_str());
+}
+
+async fn role_rules_at_the_edges(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let dave = user(&hub, "dave", UserKind::Human, None).await;
+    let cbot = user(&hub, "cbot", UserKind::Agent, Some(&carol)).await;
+    let a = Conn::new(&hub, &alice);
+    let b = Conn::new(&hub, &bob);
+    let cb = Conn::new(&hub, &cbot);
+    let conv = a.group(&[&bob, &carol, &cbot]).await;
+    let set_role = |u: &str, role: &str| json!({"op": "set_role", "conv_id": conv, "user_id": u, "role": role});
+    assert_eq!(
+        code(&a.call(remove(&conv, &alice)).await),
+        "conflict",
+        "the owner cannot remove themselves"
+    );
+    assert_eq!(
+        code(
+            &a.call(json!({"op": "transfer_owner", "conv_id": conv, "user_id": alice.id}))
+                .await
+        ),
+        "conflict"
+    );
+    assert_eq!(
+        code(&a.call(set_role(&alice.id, "member")).await),
+        "conflict",
+        "use transfer_owner"
+    );
+    assert_eq!(
+        code(&a.call(set_role(&dave.id, "admin")).await),
+        "not_found",
+        "not a member"
+    );
+    assert_eq!(
+        code(&a.call(set_role("nobody", "admin")).await),
+        "not_found"
+    );
+    assert_eq!(code(&a.call(set_role(&bob.id, "")).await), "bad_request");
+    assert_eq!(code(&a.call(remove(&conv, &dave)).await), "not_found");
+    assert_eq!(
+        code(
+            &a.call(json!({"op": "remove_member", "conv_id": conv, "user_id": "nobody"}))
+                .await
+        ),
+        "not_found"
+    );
+    assert_eq!(
+        code(
+            &a.call(json!({"op": "remove_member", "conv_id": "c_unknown", "user_id": bob.id}))
+                .await
+        ),
+        "not_found"
+    );
+    assert_eq!(
+        code(&cb.call(remove(&conv, &bob)).await),
+        "forbidden",
+        "agents do not manage members"
+    );
+    a.ok(set_role(&bob.id, "admin")).await;
+    b.ok(remove(&conv, &cbot)).await; // an admin may remove someone else's agent
+    a.ok(remove(&conv, &bob)).await; // the owner may remove an admin
+    // Rejoining starts as a plain member.
+    a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": bob.id}))
+        .await;
+    assert_eq!(role_of(&a, &conv, &bob).await, "member");
+    // An agent may leave on its own.
+    a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": cbot.id}))
+        .await;
+    cb.ok(json!({"op": "leave", "conv_id": conv})).await;
+    let log = events(&a.pull(&conv, 0).await);
+    assert_eq!(replay_members(&log), listed_members(&a, &conv).await);
+}
+
+async fn dissolving_stops_live_work(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let helper = user(&hub, "helper", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let mut g = Conn::new(&hub, &bot);
+    let h = Conn::new(&hub, &helper);
+    let conv = a.group(&[&bot, &helper]).await;
+    let q = a.send(&conv, "@bot @helper go").await["msg_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let s = g
+        .ok(json!({"op": "stream_start", "conv_id": conv, "client_msg_id": "s", "reply_to": q}))
+        .await["msg_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    a.ok(
+        json!({"op": "set_agent_policy", "conv_id": conv, "agent_id": helper.id, "approval": true}),
+    )
+    .await;
+    let d = h.reply(&conv, "draft", &q).await["draft_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    a.ok(json!({"op": "whisper", "conv_id": conv, "agent_id": bot.id, "text": "secret whisper"}))
+        .await;
+    g.drain();
+    a.ok(json!({"op": "dissolve", "conv_id": conv})).await;
+    assert!(
+        g.drain()
+            .iter()
+            .any(|f| f["type"] == "stream_cancelled" && f["reason"] == "dissolved")
+    );
+    assert_eq!(
+        code(
+            &g.call(json!({"op": "stream_append", "msg_id": s, "idx": 0, "text": "x"}))
+                .await
+        ),
+        "not_found"
+    );
+    assert_eq!(
+        code(&a.call(json!({"op": "approve", "draft_id": d})).await),
+        "not_found"
+    );
+    assert_eq!(
+        a.ok(json!({"op": "list_drafts"})).await["drafts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        code(&a.call(json!({"op": "pull_side", "conv_id": conv})).await),
+        "not_found"
+    );
+    assert!(
+        hub.stats().await.unwrap()["active_streams"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+async fn the_directory_follows_membership_and_units(db: TestDb) {
+    let secret = new_db(Backend::Sqlite).await.unwrap();
+    let hub = open(two(&db.url, &secret.url, "secret")).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let zed = user_in(&hub, "zed", "b").await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let b = Conn::new(&hub, &bob);
+    let z = Conn::new(&hub, &zed);
+    let names = |h: Value| -> Vec<String> {
+        let mut v: Vec<String> = h["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["name"].as_str().unwrap().to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    let conv = a.group(&[&bob]).await;
+    assert!(names(b.ok(json!({"op": "hello"})).await).contains(&"alice".to_string()));
+    b.ok(json!({"op": "leave", "conv_id": conv})).await;
+    assert_eq!(
+        names(b.ok(json!({"op": "hello"})).await),
+        vec!["bob"],
+        "no longer a contact"
+    );
+    // An agent sees its owner.
+    let g = Conn::new(&hub, &bot);
+    assert!(names(g.ok(json!({"op": "hello"})).await).contains(&"alice".to_string()));
+    // Exact-name lookup stays inside the unit unless you already share a conversation.
+    assert_eq!(
+        code(&z.call(json!({"op": "find_user", "name": "alice"})).await),
+        "not_found"
+    );
+    assert_eq!(
+        code(&a.call(json!({"op": "find_user", "name": "zed"})).await),
+        "not_found"
+    );
+    assert_eq!(
+        b.ok(json!({"op": "find_user", "name": "alice"})).await["user"]["id"],
+        alice.id.as_str()
+    );
+    let shared = z.group(&[&alice]).await;
+    assert_eq!(
+        a.ok(json!({"op": "find_user", "name": "zed"})).await["user"]["id"],
+        zed.id.as_str()
+    );
+    let _ = shared;
+}
+
+async fn blocking_edge_cases(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let mut b = Conn::new(&hub, &bob);
+    assert_eq!(
+        code(&a.call(json!({"op": "block", "user_id": "nobody"})).await),
+        "not_found"
+    );
+    a.ok(json!({"op": "block", "user_id": bob.id})).await;
+    a.ok(json!({"op": "block", "user_id": "bob"})).await; // by name, and idempotent
+    assert_eq!(
+        a.ok(json!({"op": "list_blocks"})).await["blocked"],
+        json!([bob.id])
+    );
+    // The one who blocked may still put the other into a group (their choice);
+    // the blocked one cannot do the same.
+    let group = a.group(&[&carol]).await;
+    a.ok(json!({"op": "add_member", "conv_id": group, "user_id": bob.id}))
+        .await;
+    b.drain();
+    a.send(&group, "group still works").await;
+    assert!(
+        b.drain()
+            .iter()
+            .any(|f| f["event"]["msg"]["content"] == "group still works")
+    );
+    let other = Conn::new(&hub, &carol).group(&[&bob]).await;
+    assert_eq!(
+        code(
+            &b.call(json!({"op": "add_member", "conv_id": other, "user_id": alice.id}))
+                .await
+        ),
+        "forbidden",
+        "bob is not the owner there; owner rules come first"
+    );
+    a.ok(json!({"op": "unblock", "user_id": bob.id})).await;
+    a.ok(json!({"op": "unblock", "user_id": bob.id})).await; // idempotent
+    assert_eq!(
+        a.ok(json!({"op": "list_blocks"})).await["blocked"],
+        json!([])
+    );
+}
+
+async fn membership_actions_are_audited(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let c = Conn::new(&hub, &carol);
+    let conv = a.group(&[&bob, &carol]).await;
+    a.ok(remove(&conv, &bob)).await;
+    a.ok(json!({"op": "transfer_owner", "conv_id": conv, "user_id": carol.id}))
+        .await;
+    a.ok(json!({"op": "leave", "conv_id": conv})).await;
+    c.ok(json!({"op": "dissolve", "conv_id": conv})).await;
+    let audit = hub.stats().await.unwrap()["audit"].to_string();
+    for action in [
+        "member.removed",
+        "owner.transferred",
+        "member.left",
+        "conv.dissolved",
+    ] {
+        assert!(audit.contains(action), "{action} missing from {audit}");
+    }
+}
+
+async fn race_add_and_remove_keep_log_and_state_consistent(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let owner: Vec<Arc<Conn>> = (0..3).map(|_| Arc::new(Conn::new(&hub, &alice))).collect();
+    let conv = owner[0].group(&[]).await;
+    let people: Vec<User> = {
+        let mut v = vec![];
+        for i in 0..5 {
+            v.push(user(&hub, &format!("p{i}"), UserKind::Human, None).await);
+        }
+        v
+    };
+    for round in 0..10 {
+        let mut tasks = vec![];
+        for (i, p) in people.iter().enumerate() {
+            let c = owner[(i + round) % owner.len()].clone();
+            let req = if (i + round) % 2 == 0 {
+                json!({"op": "add_member", "conv_id": conv, "user_id": p.id})
+            } else {
+                remove(&conv, p)
+            };
+            tasks.push(tokio::spawn(async move { c.call(req).await }));
+            let c2 = owner[(i + round + 1) % owner.len()].clone();
+            let req2 = json!({"op": "set_role", "conv_id": conv, "user_id": p.id, "role": "admin"});
+            tasks.push(tokio::spawn(async move { c2.call(req2).await }));
+        }
+        for t in tasks {
+            let r = t.await.unwrap();
+            assert!(
+                r["ok"] == true || matches!(code(&r), "conflict" | "not_found"),
+                "{r}"
+            );
+        }
+        let log = events(&owner[0].pull(&conv, 0).await);
+        let seqs: Vec<i64> = log.iter().map(|e| e["seq"].as_i64().unwrap()).collect();
+        assert_eq!(seqs, (1..=seqs.len() as i64).collect::<Vec<_>>());
+        assert_eq!(
+            replay_members(&log),
+            listed_members(&owner[0], &conv).await,
+            "round {round}"
+        );
+    }
+}
+
+async fn race_membership_changes_against_dissolve(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    for _ in 0..10 {
+        let a: Vec<Arc<Conn>> = (0..3).map(|_| Arc::new(Conn::new(&hub, &alice))).collect();
+        let conv = a[0].group(&[&bob]).await;
+        let reqs = vec![
+            (a[0].clone(), json!({"op": "dissolve", "conv_id": conv})),
+            (
+                a[1].clone(),
+                json!({"op": "add_member", "conv_id": conv, "user_id": carol.id}),
+            ),
+            (a[2].clone(), remove(&conv, &bob)),
+            (
+                a[1].clone(),
+                json!({"op": "set_role", "conv_id": conv, "user_id": bob.id, "role": "admin"}),
+            ),
+        ];
+        let tasks: Vec<_> = reqs
+            .into_iter()
+            .map(|(c, v)| tokio::spawn(async move { c.call(v).await }))
+            .collect();
+        let rs: Vec<Value> = {
+            let mut v = vec![];
+            for t in tasks {
+                v.push(t.await.unwrap());
+            }
+            v
+        };
+        assert_eq!(
+            rs[0]["ok"], true,
+            "the dissolve always wins eventually: {}",
+            rs[0]
+        );
+        for r in &rs[1..] {
+            assert!(
+                r["ok"] == true || matches!(code(r), "not_found" | "forbidden"),
+                "{r}"
+            );
+        }
+        for u in [&alice, &bob, &carol] {
+            assert!(
+                convs(&Conn::new(&hub, u))
+                    .await
+                    .iter()
+                    .all(|v| v["conv_id"] != conv.as_str()),
+                "nobody keeps it listed"
+            );
+        }
     }
 }
