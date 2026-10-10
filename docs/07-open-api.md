@@ -135,7 +135,7 @@
 | 方面 | 做法 |
 |---|---|
 | 应用 | MVP 1 每个部署一个应用（`default`，即数据模型里的 `tenant_id`）。多应用之间的完全隔离和管理界面放 MVP 2 |
-| API Key | 格式 `ak_<key_id>_<secret>`，数据库只存整个 Key 的 SHA-256。用命令行管理：`agentim api-key create --scopes …`（只在创建时显示一次）、`api-key list`、`api-key revoke <key_id>`。可选过期时间和 IP 允许列表 |
+| API Key | 格式 `ak_<key_id>_<secret>`，数据库只存整个 Key 的 SHA-256。用命令行管理：`agentim api-key create --scopes …`（只在创建时显示一次）、`api-key list`、`api-key revoke <key_id>`。可选过期时间和 IP 允许列表。服务端运行时用命令行新建的 Key 立即可用；吊销在 10 秒内生效（每 10 秒重新读取，未知的 Key 最多每秒查一次库） |
 | 明文 HTTP | 只有来自本机地址的请求允许；部署在 TLS 反向代理之后时设 `open_api.allow_http = true` |
 | 客户端令牌 | 格式 `atk_<43 位 base64url>`（256 位随机数），只存 SHA-256；每个令牌就是一台设备（`device_id`、名称、平台、签发时间、过期时间、最近使用时间）。老数据库里的明文令牌在升级时改为哈希 |
 | 设备 | 客户端协议加 `list_devices`、`logout_device {device_id}`（吊销并立即断开那台设备的连接）；开放 API 吊销用户的全部令牌时也立即断开。新设备登录时，这个用户已在线的设备收到 `device.added`；已读在其他设备上同步（`read` 推送） |
