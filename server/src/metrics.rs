@@ -66,5 +66,6 @@ pub const STORAGE_ERRORS: &str = "agentim_storage_errors_total";
 pub const WEBHOOK_DELIVERIES: &str = "agentim_webhook_deliveries_total";
 pub const WEBHOOK_DROPPED: &str = "agentim_webhook_dropped_total";
 pub const BEFORE_SEND: &str = "agentim_before_send_total";
+pub const LOGIN_FAILURES: &str = "agentim_login_failures_total";
 pub const STORAGE_HEALTHY: &str = "agentim_storage_healthy";
 pub const MIGRATIONS: &str = "agentim_conversation_migrations_total";

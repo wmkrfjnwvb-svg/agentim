@@ -233,6 +233,23 @@ pub const TABLES: &[Table] = &[
         indexes: &[("tokens_user", &["user_id"], false)],
         conv_key: None,
     },
+    // v2: built-in passwords and TOTP (docs/04-security-compliance.md §1).
+    Table {
+        name: "credentials",
+        cols: &[
+            c("user_id", Id),
+            n("password_hash", Text),
+            n("totp_secret", Id),
+            n("totp_pending", Id),
+            n("totp_last_step", Big),
+            c("failures", Big),
+            n("locked_until", Big),
+            c("updated_at", Big),
+        ],
+        pk: &["user_id"],
+        indexes: &[],
+        conv_key: None,
+    },
     // v2: open API keys.
     Table {
         name: "api_keys",

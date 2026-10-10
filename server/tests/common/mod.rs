@@ -30,6 +30,40 @@ pub struct TestDb {
     _dir: Option<tempfile::TempDir>,
 }
 
+/// Server databases are dropped when the test ends, so local runs do not
+/// fill the disk (CI starts from empty containers anyway).
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        if self.path.is_some() {
+            return;
+        }
+        let url = self.url.clone();
+        let Some((base, name)) = url.rsplit_once('/') else {
+            return;
+        };
+        let (admin, sql) = if url.starts_with("postgres") {
+            (
+                format!("{base}/postgres"),
+                format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"),
+            )
+        } else {
+            (base.to_string(), format!("DROP DATABASE IF EXISTS {name}"))
+        };
+        let _ = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                if let Ok(mut c) = sqlx::AnyConnection::connect(&admin).await {
+                    let _ = sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&mut c).await;
+                }
+            });
+        })
+        .join();
+    }
+}
+
 pub async fn new_db(b: Backend) -> Option<TestDb> {
     match b {
         Backend::Sqlite => {
@@ -97,6 +131,7 @@ pub fn single(url: &str) -> Config {
         before_send: None,
         open_api: Default::default(),
         server: Default::default(),
+        auth: Default::default(),
     }
 }
 
@@ -130,6 +165,7 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
         before_send: None,
         open_api: Default::default(),
         server: Default::default(),
+        auth: Default::default(),
     }
 }
 

@@ -52,6 +52,19 @@ fn json_col(r: &AnyRow, col: &str) -> sqlx::Result<Option<Value>> {
         .and_then(|s| serde_json::from_str(&s).ok()))
 }
 
+/// Built-in login secrets of a user.
+#[derive(Debug, Clone, Default)]
+pub struct Credentials {
+    pub password_hash: Option<String>,
+    pub totp_secret: Option<String>,
+    /// Set up but not yet confirmed with a code.
+    pub totp_pending: Option<String>,
+    /// Last accepted TOTP step: a code is never accepted twice.
+    pub totp_last_step: Option<i64>,
+    pub failures: i64,
+    pub locked_until: Option<i64>,
+}
+
 /// An open API key (only its hash is stored).
 #[derive(Debug, Clone)]
 pub struct ApiKeyRow {
@@ -350,6 +363,43 @@ impl Db<'_> {
                 .await?;
         }
         Ok(hashes)
+    }
+
+    pub async fn credentials(&mut self, user_id: &str) -> ApiResult<Option<Credentials>> {
+        let r = sqlx::query(self.d.q("SELECT password_hash, totp_secret, totp_pending, totp_last_step, failures, locked_until FROM credentials WHERE user_id = ?"))
+            .bind(user_id)
+            .fetch_optional(&mut *self.c)
+            .await?;
+        Ok(match r {
+            Some(r) => Some(Credentials {
+                password_hash: r.try_get(0)?,
+                totp_secret: r.try_get(1)?,
+                totp_pending: r.try_get(2)?,
+                totp_last_step: r.try_get(3)?,
+                failures: r.try_get(4)?,
+                locked_until: r.try_get(5)?,
+            }),
+            None => None,
+        })
+    }
+
+    pub async fn put_credentials(&mut self, user_id: &str, c: &Credentials) -> ApiResult<()> {
+        sqlx::query(self.d.q("DELETE FROM credentials WHERE user_id = ?"))
+            .bind(user_id)
+            .execute(&mut *self.c)
+            .await?;
+        sqlx::query(self.d.q("INSERT INTO credentials (user_id, password_hash, totp_secret, totp_pending, totp_last_step, failures, locked_until, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"))
+            .bind(user_id)
+            .bind(&c.password_hash)
+            .bind(&c.totp_secret)
+            .bind(&c.totp_pending)
+            .bind(c.totp_last_step)
+            .bind(c.failures)
+            .bind(c.locked_until)
+            .bind(now_ms())
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
     }
 
     pub async fn insert_api_key(&mut self, k: &ApiKeyRow) -> ApiResult<()> {

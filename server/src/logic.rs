@@ -83,6 +83,16 @@ pub struct DirInfo {
 
 /// State shared by the hub and every writer. All of it is either derived
 /// from the databases (and rebuilt at startup) or soft state.
+#[derive(Debug)]
+pub enum CredChange {
+    SetPassword(String),
+    Failed { max: i64, lock_ms: i64 },
+    Succeeded { totp_step: Option<i64> },
+    TotpPending(String),
+    TotpEnable { step: i64 },
+    TotpDisable,
+}
+
 #[derive(Debug, Clone)]
 pub struct TokenInfo {
     pub user_id: String,
@@ -291,6 +301,12 @@ pub enum Op {
         user_id: String,
         on: bool,
     },
+    /// Read-modify-write of a user's credentials in the writer, so
+    /// concurrent logins count failures and TOTP steps exactly.
+    Credentials {
+        user_id: String,
+        change: CredChange,
+    },
     CreateApiKey(crate::db::ApiKeyRow),
     RevokeApiKey {
         key_id: String,
@@ -390,6 +406,7 @@ impl Op {
             Op::TouchToken { .. } => "touch_token",
             Op::UpdateUser { .. } => "update_user",
             Op::SetDeactivated { .. } => "set_deactivated",
+            Op::Credentials { .. } => "credentials",
             Op::CreateApiKey(_) => "create_api_key",
             Op::RevokeApiKey { .. } => "revoke_api_key",
             Op::IdemPut { .. } => "idem_put",
@@ -608,6 +625,57 @@ impl Ctx<'_, '_> {
             Op::SetDeactivated { user_id, on } => {
                 self.db.set_deactivated(&user_id, on).await?;
                 Ok(json!({}))
+            }
+            Op::Credentials { user_id, change } => {
+                let mut c = self.db.credentials(&user_id).await?.unwrap_or_default();
+                let now = now_ms();
+                let v = match change {
+                    CredChange::SetPassword(h) => {
+                        c.password_hash = Some(h);
+                        c.failures = 0;
+                        c.locked_until = None;
+                        json!({})
+                    }
+                    CredChange::Failed { max, lock_ms } => {
+                        c.failures += 1;
+                        if c.failures >= max {
+                            c.locked_until = Some(now + lock_ms);
+                            c.failures = 0;
+                        }
+                        json!({"locked_until": c.locked_until})
+                    }
+                    CredChange::Succeeded { totp_step } => {
+                        if let Some(s) = totp_step {
+                            // A code is single-use, also between racing logins.
+                            if c.totp_last_step.is_some_and(|l| s <= l) {
+                                return Err(err("conflict", "this code was already used"));
+                            }
+                            c.totp_last_step = Some(s);
+                        }
+                        c.failures = 0;
+                        c.locked_until = None;
+                        json!({})
+                    }
+                    CredChange::TotpPending(secret) => {
+                        c.totp_pending = Some(secret);
+                        json!({})
+                    }
+                    CredChange::TotpEnable { step } => {
+                        let Some(p) = c.totp_pending.take() else {
+                            return Err(err("conflict", "run totp_setup first"));
+                        };
+                        c.totp_secret = Some(p);
+                        c.totp_last_step = Some(step);
+                        json!({})
+                    }
+                    CredChange::TotpDisable => {
+                        c.totp_secret = None;
+                        c.totp_pending = None;
+                        json!({})
+                    }
+                };
+                self.db.put_credentials(&user_id, &c).await?;
+                Ok(v)
             }
             Op::CreateApiKey(k) => {
                 self.db.insert_api_key(&k).await?;

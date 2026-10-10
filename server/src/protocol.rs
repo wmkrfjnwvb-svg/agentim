@@ -66,6 +66,10 @@ pub const OPS: &[&str] = &[
     "stats",
     "list_devices",
     "logout_device",
+    "set_password",
+    "totp_setup",
+    "totp_enable",
+    "totp_disable",
 ];
 
 pub const MAX_CLIENT_FEATURES: usize = 100;

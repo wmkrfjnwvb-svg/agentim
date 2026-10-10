@@ -425,6 +425,249 @@ impl Hub {
         }
     }
 
+    // ------------------------------------------------------- built-in login
+
+    async fn credentials(&self, user_id: &str) -> ApiResult<crate::db::Credentials> {
+        let u = user_id.to_string();
+        Ok(self
+            .read(self.control(), move |db| {
+                Box::pin(async move { db.credentials(&u).await })
+            })
+            .await?
+            .unwrap_or_default())
+    }
+
+    async fn cred(&self, user_id: &str, change: crate::logic::CredChange) -> ApiResult<Value> {
+        self.control()
+            .call(Op::Credentials {
+                user_id: user_id.into(),
+                change,
+            })
+            .await
+    }
+
+    /// Operator reset (the `user set-password` command): no current password
+    /// needed; every device is logged out.
+    pub async fn reset_password(&self, user: &User, new: &str) -> ApiResult<()> {
+        self.store_password(user, new, None).await
+    }
+
+    async fn store_password(
+        &self,
+        user: &User,
+        new: &str,
+        keep_device: Option<&str>,
+    ) -> ApiResult<()> {
+        if user.kind != UserKind::Human {
+            return Err(err("bad_request", "only people have passwords"));
+        }
+        crate::auth::check_password_policy(&user.name, new).map_err(|m| err("bad_request", m))?;
+        let n = new.to_string();
+        let hash = tokio::task::spawn_blocking(move || crate::auth::hash_password(&n))
+            .await
+            .map_err(|e| err("internal", e.to_string()))?;
+        self.cred(&user.id, crate::logic::CredChange::SetPassword(hash))
+            .await?;
+        for d in self.devices(&user.id).await? {
+            if keep_device != Some(d.device_id.as_str()) {
+                self.revoke_tokens(&user.id, Some(&d.device_id)).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sets a password; `current` must match an existing one. Other devices
+    /// are logged out (all of them when `keep_device` is None).
+    pub async fn set_password(
+        &self,
+        user: &User,
+        current: Option<&str>,
+        new: &str,
+        keep_device: Option<&str>,
+    ) -> ApiResult<()> {
+        if user.kind != UserKind::Human {
+            return Err(err("bad_request", "only people have passwords"));
+        }
+        crate::auth::check_password_policy(&user.name, new).map_err(|m| err("bad_request", m))?;
+        let c = self.credentials(&user.id).await?;
+        if let Some(h) = c.password_hash {
+            let cur = current.unwrap_or("").to_string();
+            let ok = tokio::task::spawn_blocking(move || crate::auth::verify_password(&cur, &h))
+                .await
+                .unwrap_or(false);
+            if !ok {
+                return Err(err("forbidden", "the current password is wrong"));
+            }
+        }
+        self.store_password(user, new, keep_device).await
+    }
+
+    /// Password (and TOTP) login; a new device token on success. Every
+    /// failure looks the same to the caller except a missing second factor.
+    pub async fn login(
+        &self,
+        name: &str,
+        password: &str,
+        totp: Option<&str>,
+        device_name: Option<&str>,
+        platform: Option<&str>,
+    ) -> ApiResult<(String, crate::db::TokenRow, User)> {
+        let invalid = || err("invalid_credentials", "wrong name, password or code");
+        let user = self
+            .inner
+            .sh
+            .user_by_name(name)
+            .filter(|u| u.kind == UserKind::Human);
+        let c = match &user {
+            Some(u) => self.credentials(&u.id).await?,
+            None => Default::default(),
+        };
+        let now = now_ms();
+        if let Some(until) = c.locked_until
+            && until > now
+        {
+            return Err(err(
+                "rate_limited",
+                format!(
+                    "too many failed logins; retry in {}s",
+                    (until - now) / 1000 + 1
+                ),
+            ));
+        }
+        // Unknown users and users without a password take as long as a check.
+        let hash = c
+            .password_hash
+            .clone()
+            .unwrap_or_else(|| crate::auth::dummy_hash().to_string());
+        let pw = password.to_string();
+        let ok = tokio::task::spawn_blocking(move || crate::auth::verify_password(&pw, &hash))
+            .await
+            .unwrap_or(false);
+        let (Some(user), true, true) = (user, ok, c.password_hash.is_some()) else {
+            if let Some(u) = self
+                .inner
+                .sh
+                .user_by_name(name)
+                .filter(|u| u.kind == UserKind::Human)
+            {
+                self.login_failed(&u.id).await?;
+            }
+            return Err(invalid());
+        };
+        let mut step = None;
+        if let Some(secret) = &c.totp_secret {
+            let Some(code) = totp else {
+                return Err(err(
+                    "totp_required",
+                    "enter the code from your authenticator app",
+                ));
+            };
+            match crate::auth::totp_check(secret, code, now / 1000) {
+                Some(s) => step = Some(s),
+                None => {
+                    self.login_failed(&user.id).await?;
+                    return Err(invalid());
+                }
+            }
+        }
+        if self.is_deactivated(&user.id) {
+            return Err(err("forbidden", "the account is deactivated"));
+        }
+        self.cred(
+            &user.id,
+            crate::logic::CredChange::Succeeded { totp_step: step },
+        )
+        .await
+        .map_err(|e| if e.code == "conflict" { invalid() } else { e })?;
+        let (token, row) = self
+            .issue_token(&user.id, device_name, platform, None, "password")
+            .await?;
+        Ok((token, row, user))
+    }
+
+    async fn login_failed(&self, user_id: &str) -> ApiResult<()> {
+        let a = &self.inner.cfg.auth;
+        self.cred(
+            user_id,
+            crate::logic::CredChange::Failed {
+                max: a.max_failures,
+                lock_ms: a.lock_minutes * 60_000,
+            },
+        )
+        .await?;
+        metrics::counter!(m::LOGIN_FAILURES).increment(1);
+        Ok(())
+    }
+
+    /// Self-registration (only with `auth.open_registration`).
+    pub async fn register(&self, name: &str, password: &str) -> ApiResult<User> {
+        if !self.inner.cfg.auth.open_registration {
+            return Err(err("forbidden", "registration is closed"));
+        }
+        if !crate::open_api::valid_user_id(name) {
+            return Err(err(
+                "bad_request",
+                "names are 1..64 of A-Z a-z 0-9 _ - . @ : and do not start with _",
+            ));
+        }
+        crate::auth::check_password_policy(name, password).map_err(|m| err("bad_request", m))?;
+        let (user, _) = self.create_user(name, UserKind::Human, None, None).await?;
+        // The first device of create_user is not handed out.
+        self.revoke_tokens(&user.id, None).await?;
+        self.reset_password(&user, password).await?;
+        Ok(user)
+    }
+
+    pub async fn totp_setup(&self, user: &User) -> ApiResult<Value> {
+        if self.credentials(&user.id).await?.totp_secret.is_some() {
+            return Err(err(
+                "conflict",
+                "two-factor login is already on; turn it off first",
+            ));
+        }
+        let secret = crate::auth::new_totp_secret();
+        self.cred(
+            &user.id,
+            crate::logic::CredChange::TotpPending(secret.clone()),
+        )
+        .await?;
+        Ok(
+            json!({"secret": secret, "uri": crate::auth::otpauth_uri("AgentIM", &user.name, &secret)}),
+        )
+    }
+
+    pub async fn totp_enable(&self, user: &User, code: &str) -> ApiResult<()> {
+        let c = self.credentials(&user.id).await?;
+        let Some(p) = c.totp_pending else {
+            return Err(err("conflict", "run totp_setup first"));
+        };
+        let step = crate::auth::totp_check(&p, code, now_ms() / 1000)
+            .ok_or_else(|| err("bad_request", "wrong code"))?;
+        self.cred(&user.id, crate::logic::CredChange::TotpEnable { step })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn totp_disable(&self, user: &User, code: &str) -> ApiResult<()> {
+        let c = self.credentials(&user.id).await?;
+        let Some(s) = c.totp_secret else {
+            return Err(err("conflict", "two-factor login is off"));
+        };
+        let step = crate::auth::totp_check(&s, code, now_ms() / 1000)
+            .ok_or_else(|| err("bad_request", "wrong code"))?;
+        self.cred(
+            &user.id,
+            crate::logic::CredChange::Succeeded {
+                totp_step: Some(step),
+            },
+        )
+        .await
+        .map_err(|_| err("bad_request", "this code was already used"))?;
+        self.cred(&user.id, crate::logic::CredChange::TotpDisable)
+            .await?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------ open API
 
     /// Creates an API key; the secret is returned once (docs/07 §5).
@@ -1327,6 +1570,16 @@ impl Hub {
                 kind,
                 data,
             } => self.signal(sess, &conv_id, &kind, data).await,
+            ClientMsg::SetPassword { current, new } => {
+                self.set_password(me, current.as_deref(), &new, sess.device_id.as_deref())
+                    .await?;
+                Ok(json!({}))
+            }
+            ClientMsg::TotpSetup => self.totp_setup(me).await,
+            ClientMsg::TotpEnable { code } => self.totp_enable(me, &code).await.map(|_| json!({})),
+            ClientMsg::TotpDisable { code } => {
+                self.totp_disable(me, &code).await.map(|_| json!({}))
+            }
             ClientMsg::ListDevices => {
                 let list: Vec<Value> = self
                     .devices(&me.id)

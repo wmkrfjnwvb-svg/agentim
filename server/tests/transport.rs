@@ -231,3 +231,71 @@ async fn the_server_speaks_tls_itself() {
     );
     drop(silent);
 }
+
+#[tokio::test]
+async fn password_endpoints_over_http() {
+    let dir = tempfile::tempdir().unwrap();
+    let (addr, hub) = plain(cfg(&dir), false).await;
+    let (alice, _) = hub
+        .create_user("alice", UserKind::Human, None, None)
+        .await
+        .unwrap();
+    hub.reset_password(&alice, "correct horse battery")
+        .await
+        .unwrap();
+    let http = reqwest::Client::new();
+    let post = |path: &str, body: serde_json::Value, origin: Option<&'static str>| {
+        let mut r = http
+            .post(format!("http://{addr}{path}"))
+            .header("content-type", "application/json")
+            .body(body.to_string());
+        if let Some(o) = origin {
+            r = r.header("origin", o);
+        }
+        r.send()
+    };
+    let r = post(
+        "/api/auth/login",
+        serde_json::json!({"name": "alice", "password": "nope nope nope"}),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 401);
+    let v: serde_json::Value = serde_json::from_str(&r.text().await.unwrap()).unwrap();
+    assert_eq!(v["error"]["code"], "invalid_credentials");
+    let r = post("/api/auth/login", serde_json::json!({"name": "alice", "password": "correct horse battery", "device_name": "web"}), None).await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let v: serde_json::Value = serde_json::from_str(&r.text().await.unwrap()).unwrap();
+    assert!(hub.authenticate(v["token"].as_str().unwrap()).is_some());
+    assert_eq!(v["device"]["name"], "web");
+    assert!(!v.to_string().contains("hash"));
+    let r = post(
+        "/api/auth/login",
+        serde_json::json!({"name": "alice", "password": "correct horse battery"}),
+        Some("https://evil.example"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 403);
+    let r = post(
+        "/api/auth/register",
+        serde_json::json!({"name": "bob", "password": "correct horse battery"}),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        403,
+        "registration is closed by default"
+    );
+    let r = post(
+        "/api/auth/login",
+        serde_json::json!({"name": "alice", "password": "x".repeat(2000)}),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 400);
+}

@@ -51,10 +51,25 @@ enum Cmd {
         #[arg(long)]
         unit: String,
     },
+    /// Built-in accounts.
+    User {
+        #[command(subcommand)]
+        action: UserCmd,
+    },
     /// Open API keys (docs/07-open-api.md §5).
     ApiKey {
         #[command(subcommand)]
         action: KeyCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum UserCmd {
+    /// Sets a person's password, read from standard input, and logs out
+    /// all of their devices. Creates the person when missing.
+    SetPassword {
+        #[arg(long)]
+        name: String,
     },
 }
 
@@ -117,6 +132,34 @@ async fn main() {
             std::process::exit(1)
         }
     };
+
+    if let Some(Cmd::User {
+        action: UserCmd::SetPassword { name },
+    }) = &args.cmd
+    {
+        let mut pw = String::new();
+        std::io::stdin().read_line(&mut pw).ok();
+        let pw = pw.trim_end_matches(['\r', '\n']);
+        let user = match hub.user_by_name(name) {
+            Some(u) => Ok(u),
+            None => hub
+                .create_user(name, agentim::model::UserKind::Human, None, None)
+                .await
+                .map(|(u, _)| u),
+        };
+        let r = match user {
+            Ok(u) => hub.reset_password(&u, pw).await.map(|_| u),
+            Err(e) => Err(e),
+        };
+        match r {
+            Ok(u) => println!("password set for {} ({})", u.name, u.id),
+            Err(e) => {
+                eprintln!("user set-password: {} {}", e.code, e.message);
+                std::process::exit(1)
+            }
+        }
+        return;
+    }
 
     if let Some(Cmd::ApiKey { action }) = &args.cmd {
         let split = |s: &str| {

@@ -171,7 +171,7 @@ Message {
 
 `[before_send]`：`url`、`secret`、`timeout_ms`（默认 2000）、`on_error`（`allow` 或 `reject`）。每条 `send` 在进入写线程**之前**同步调用（不占写线程，组提交不受影响），请求带同样的签名头，内容为 `{"type": "message.before_send", "conv_id", "client_msg_id", "kind", "text", "payload", "reply_to", "to_user", "sender"}`。回复 `{"action": "allow"}`、`{"action": "reject", "reason"}`（返回 `policy_blocked` 和这个原因）或 `{"action": "replace", "text", "payload"}`（替换后照常校验，非法就 `bad_request`）。超时、非 2xx、不是 JSON、未知的 action 都按 `on_error` 处理。格式不对的请求先被拒绝，不会发给钩子；成员、拉黑等规则在钩子之后照常检查。编辑和流式消息不经过钩子。
 
-**改到 M3**：用户和会话的自定义字段，和开放 API 的 `PATCH /v1/users`、`PATCH /v1/conversations` 一起做（[07 §3.4](07-open-api.md)）。
+**自定义字段**（M3 已实现）：用户和会话都可以挂一个不超过 4 KiB 的 JSON 对象，通过开放 API（`PUT/PATCH /v1/users/{id}`、`PATCH /v1/conversations/{id}`）或客户端的 `update_conv` 修改，会话的修改以 `conv.updated` 事件通知成员。
 
 **扩展也要守住核心保证**：自定义消息走同一条写入路径（单写者、组提交），所以同样不丢、有序；内容大小和信号频率都有上限；端到端加密的会话里，自定义内容整体加密，服务端只校验大小；扩展类型的版本放在类型的内容里（例如 `schema_version`），兼容规则和 §2.5 相同。
 

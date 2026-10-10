@@ -9,6 +9,8 @@
 | 人类账号 | 账号密码，用 argon2id 哈希（m=19MiB、t=2、p=1）；可选 TOTP 二次验证；登录失败限流 | OWASP Password Storage Cheat Sheet 的最低建议参数 |
 | 第三方登录 | OIDC（Google、Microsoft、GitHub）放社区版；SAML、SCIM 放企业版 | |
 | Agent 凭据 | API Key，格式为"前缀 + 随机密钥"，可以设置权限范围、轮换和吊销；之后支持 OAuth client credentials | MCP 2025-11-25 授权规范 |
+| 内置账号密码 | Argon2id（19 MiB、2 轮，OWASP 最低要求），10–128 个字符且不能等于用户名；`POST /api/auth/login` 登录成功签发一台设备的令牌；名字不存在、没有设置密码、密码错误返回同一个错误，且对不存在的用户也做一次哈希，避免通过时间差探测账号；连续失败 10 次锁定 15 分钟（可配置，重启后仍有效）；修改密码后其他设备全部下线；自助注册默认关闭（`auth.open_registration`）；运维可用 `agentim user set-password --name …`（从标准输入读密码）重置 | ✅ 已实现 |
+| 两步验证（TOTP） | RFC 6238（SHA1、6 位、30 秒、前后各容忍一步）；`totp_setup` 生成密钥和 `otpauth://` 链接，`totp_enable` 用一个验证码确认后才生效，`totp_disable` 也需要验证码；每个验证码只能用一次（并发登录也只成功一次） | ✅ 已实现 |
 | Origin 校验 | 浏览器访问 `/ws` 和登录接口时，`Origin` 必须是本站或 `server.allowed_origins` 里的地址，防止跨站 WebSocket 劫持；App、SDK、Agent 不带 `Origin`，不受影响 | ✅ 已实现 |
 | 内置 TLS | `[server.tls] cert/key`（PEM）后服务端直接提供 HTTPS 和 WSS（rustls + ring）；握手在接受循环之外进行、10 秒超时；也可以放在 TLS 反向代理之后（`open_api.behind_proxy`） | ✅ 已实现 |
 | 会话令牌 | 256 位随机数；数据库里**只存 SHA-256 哈希**；有过期时间，可以吊销 | ✅ 已实现（`atk_` 前缀，老库升级时转为哈希） |

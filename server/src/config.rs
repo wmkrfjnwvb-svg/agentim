@@ -40,6 +40,29 @@ pub struct Config {
     pub open_api: OpenApiConfig,
     #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
+    pub auth: AuthConfig,
+}
+
+/// Built-in accounts (docs/04-security-compliance.md §1).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AuthConfig {
+    /// Anyone may create an account at /api/auth/register.
+    pub open_registration: bool,
+    /// Failed logins before the account is locked, and for how long.
+    pub max_failures: i64,
+    pub lock_minutes: i64,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        AuthConfig {
+            open_registration: false,
+            max_failures: 10,
+            lock_minutes: 15,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -228,6 +251,7 @@ impl Config {
             before_send: None,
             open_api: Default::default(),
             server: Default::default(),
+            auth: Default::default(),
         }
     }
 
@@ -316,6 +340,9 @@ impl Config {
                 return Err("before_send.timeout_ms must be > 0".into());
             }
         }
+        if self.auth.max_failures < 1 || self.auth.lock_minutes < 1 {
+            return Err("auth.max_failures and auth.lock_minutes must be >= 1".into());
+        }
         for o in &self.server.allowed_origins {
             if !crate::server::valid_origin(o) {
                 return Err(format!(
@@ -381,6 +408,7 @@ mod tests {
             before_send: None,
             open_api: Default::default(),
             server: Default::default(),
+            auth: Default::default(),
         }
     }
 

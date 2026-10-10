@@ -348,6 +348,20 @@ pub enum ClientMsg {
         #[serde(default)]
         fields: Option<Value>,
     },
+    /// Built-in accounts: set or change the password (other devices are
+    /// logged out), and two-factor login.
+    SetPassword {
+        #[serde(default)]
+        current: Option<String>,
+        new: String,
+    },
+    TotpSetup,
+    TotpEnable {
+        code: String,
+    },
+    TotpDisable {
+        code: String,
+    },
     /// This user's devices (one per client token).
     ListDevices,
     /// Revokes one device's token and disconnects it (also this device).
@@ -394,6 +408,10 @@ impl ClientMsg {
             ClientMsg::ListDrafts => "list_drafts",
             ClientMsg::Stats => "stats",
             ClientMsg::ListDevices => "list_devices",
+            ClientMsg::SetPassword { .. } => "set_password",
+            ClientMsg::TotpSetup => "totp_setup",
+            ClientMsg::TotpEnable { .. } => "totp_enable",
+            ClientMsg::TotpDisable { .. } => "totp_disable",
             ClientMsg::UpdateConv { .. } => "update_conv",
             ClientMsg::LogoutDevice { .. } => "logout_device",
         }

@@ -32,7 +32,7 @@
 | 推送 | `agentim_push_total`、`agentim_push_dropped_total`、`agentim_resync_total`、`agentim_stream_deltas_total` | 每个连接的队列深度 |
 | 流式 | `agentim_streams_active`、`agentim_streams_finished_total{state,reason}` | 首个增量的延迟 |
 | AI 治理 | `agentim_guard_trips_total{reason}`、`agentim_guard_rejects_total{code}`、`agentim_policy_blocks_total{hook}`、`agentim_inbound_flags_total{flag}`、`agentim_drafts_total{state}`、`agentim_approval_latency_seconds`、`agentim_takeovers_total{action}` | 待审批数量（gauge）、工具调用（P3） |
-| 扩展 | `agentim_webhook_deliveries_total{webhook,result}`、`agentim_webhook_dropped_total{webhook}`、`agentim_before_send_total{result}` | 投递延迟、积压数量 |
+| 扩展 | `agentim_webhook_deliveries_total{webhook,result}`、`agentim_webhook_dropped_total{webhook}`、`agentim_before_send_total{result}`、`agentim_login_failures_total` | 投递延迟、积压数量 |
 | 存储 | `agentim_storage_healthy{database}`、`agentim_storage_errors_total{kind}`、`agentim_conversation_migrations_total{result}` | 连接池、加密与 KMS（P2） |
 | 进程 | | CPU、内存、文件描述符 |
 
@@ -64,7 +64,8 @@
 | HTTP 与 WebSocket 接口（`tests/http.rs`，5 项） | ✅ | ✅ | 见 §5.5 |
 | 表结构迁移（`tests/schema.rs`，6 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 新库直接是最新结构；老库带数据升级后内容不变、seq 连续、可继续写；DDL 做完但版本未更新时重启补完；4 个进程同时启动只迁移一次（3 轮）；较新但兼容的库照常使用且版本不被降低；不兼容或损坏的版本号拒绝启动且不改动库 |
 | 开放 API（`tests/open_api.rs`，10 项 × 3 种数据库，每项起一个真实服务端） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 无 Key、错 Key、客户端令牌、吊销、过期都是 401；每类接口缺权限 403 且不改变任何东西；创建 Key 的参数边界；地址允许列表、`X-Forwarded-For` 只在 `behind_proxy` 时生效且只看第一跳；用户的创建与更新（PUT 幂等）、资料与自定义字段、各种非法 ID 和资料、Agent 必须有人类所有者、身份不可改、停用后令牌失效且不能操作也不能签发、重启后保持；签发和吊销令牌；以用户和以系统身份建会话（系统必须指定群主）、单聊唯一、改名和自定义字段的权限、系统拉人、改角色、转让群主（原群主变管理员）、不能移除群主、自己退出、解散；以用户发消息（推送到其他成员和自己的其他设备）、去重、自定义类型、仅某人可见、非成员和拉黑、系统通知、系统可撤回任何消息但不能改别人的话、给某人发消息自动建单聊；历史需要 `messages:read`、用开发者 ID、分页、写审计；已读同步；批量建用户和批量发送逐项返回、重复收件人、重试不重复发送、超限；`Idempotency-Key` 重放、不同请求体 422、按 Key 隔离、4xx 也记住、非法 Key、8 个并发重试只产生一条消息；限流头和 429、Key 之间互不影响；JSON 错误和未知字段都是 problem+json 400；存储故障 503 且不泄露内部信息；OpenAPI 文档和路由完全一致。变异检查：去掉「系统不能移除群主」会让测试失败 |
-| 传输安全（`tests/transport.rs`，4 项） | — | ✅ | WebSocket 和登录：没有 Origin、同源、允许列表里（不区分大小写）的放行，其他站点、相似域名、`null` 返回 403，被拒绝的登录不产生设备；`allowed_origins` 的格式检查；证书与私钥不匹配、文件不存在、没有证书时启动报错；内置 TLS 下 HTTPS 正常、只连接不握手的客户端不会挡住其他人、开放 API 的地址规则照常、明文访问 TLS 端口失败、不受信任的证书被拒绝 |
+| 内置账号（`tests/accounts.rs`，7 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 密码登录签发设备；错误密码、不存在的用户、没有密码、Agent、系统用户返回同一个错误且不产生设备；停用的人不能登录；重启后密码仍有效，审计里没有明文；修改密码需要正确的当前密码、密码规则的边界、成功后其他设备下线而当前设备保留、旧密码失效、第一次设置不需要当前密码；失败计数被成功清零、达到次数后即使密码正确也锁定、其他账号不受影响、锁定在重启后仍有效；TOTP 的设置、未确认前不需要验证码、错误验证码、缺验证码、窗口外、已用过的验证码、关闭也需要新验证码；自助注册默认关闭、开启后的名字和密码规则、重复注册、被拒绝的注册不留下用户；12 个并发错误登录全部计数并锁定；同一个验证码 6 个并发登录只成功一次（10 轮）。变异检查：去掉验证码只能用一次会让测试失败 |
+| 传输安全（`tests/transport.rs`，5 项） | — | ✅ | WebSocket 和登录：没有 Origin、同源、允许列表里（不区分大小写）的放行，其他站点、相似域名、`null` 返回 403，被拒绝的登录不产生设备；`allowed_origins` 的格式检查；登录接口的状态码、跨站请求被拒、注册默认关闭、超长密码；证书与私钥不匹配、文件不存在、没有证书时启动报错；内置 TLS 下 HTTPS 正常、只连接不握手的客户端不会挡住其他人、开放 API 的地址规则照常、明文访问 TLS 端口失败、不受信任的证书被拒绝 |
 | 服务端 SDK（`sdk/smoke.sh`） | SQLite | — | Node、Python、Go 三个 SDK 对同一个真实服务端跑相同场景：建用户、批量建用户、签发令牌、以系统身份建群、发消息与去重、系统通知、编辑、给某人发消息、批量发送部分失败、历史、已读、`not_found` 和 `forbidden` 的错误类型、撤回、解散；服务端运行时用命令行新建的 Key 立即可用 |
 | 令牌与设备（`tests/devices.rs`，6 项 × 3 种数据库 + 1 项 WebSocket） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 数据库里任何表都没有明文令牌；每次登录一台设备，设备列表标出当前设备，新设备登录通知其他设备且不含密钥；下线别人的、不存在的设备返回 `not_found`；签发参数的边界；过期、吊销后不能认证，重复吊销为 0；重启后令牌和吊销都保持；已读同步到自己的其他设备、不回给自己、不给别人；WebSocket 上下线一台设备时它的所有连接立即以 `logged_out` 关闭，其他设备不受影响；老库的明文令牌升级后照常可用且明文被清除（`tests/schema.rs`）。变异检查：吊销后不断开连接会让测试失败 |
 | Webhook 与发送前拦截（`tests/webhooks.rs`，12 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 按日志顺序投递且签名正确、ID 唯一；事件类型过滤；失败重试后顺序不变；超过次数后放弃、写审计、不阻塞后面的；被拒绝的请求和提交失败的写入不发；重启后不丢不重；新 Webhook 不重放历史；全部投递后 outbox 清空，有一个没投递就保留；多库；4 个会话并发各发 25 条全部恰好一次；发送前拦截的放行、拒绝、替换（含 payload）、替换后不合法、格式错误不发给钩子、钩子后仍检查成员；超时、坏 JSON、未知 action、500、连不上分别按 `allow` 和 `reject` 处理。变异检查：游标不保存会让重启测试失败 |
@@ -284,6 +285,7 @@ cargo run --release -- --demo          # 打开 http://127.0.0.1:8080，选 alic
 | `stream_start / stream_append / stream_end / stream_cancel` | 流式 |
 | `whisper`、`approve`、`reject`、`takeover`、`release`、`set_agent_policy`、`reset_guard` | 所有者的介入操作 |
 | `list_drafts`、`stats` | 待审批草稿；运行状态和审计 |
+| `set_password {current?, new}`、`totp_setup`、`totp_enable {code}`、`totp_disable {code}` | 内置账号的密码和两步验证 |
 | `list_devices`、`logout_device {device_id}` | 自己的设备（每个令牌一台）；下线一台设备并立即断开它的连接 |
 
 服务端推送：`read`（自己在其他设备上的已读）、`device.added`（新设备登录）、`event`（发给 Agent 时附带 `trust` 和 `flags`）、`side`、`delta`、`stream_cancelled`。外部 Agent 的接入示例见 `server/examples/agent.mjs`。
