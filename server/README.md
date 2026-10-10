@@ -4,10 +4,12 @@
 cargo run --release -- --demo                        # http://127.0.0.1:8080, log in as alice / bob / carol
 cargo run --release -- --config agentim.toml         # databases and units, see agentim.example.toml
 cargo run --release -- --config agentim.toml migrate-unit --unit subsidiary-b
-cargo test                                           # unit, acceptance, multi-database, WebSocket, kill -9
+cargo test                                           # unit, acceptance, scenarios, concurrency, multi-database, WebSocket, kill -9
 AGENTIM_TEST_PG=postgres://postgres@127.0.0.1 AGENTIM_TEST_MYSQL=mysql://user:pass@127.0.0.1 cargo test
 cargo run --release --example loadtest -- --addr 127.0.0.1:8080 --clients 50 --messages 100 --streams 10
 cargo run --release --example loadtest -- --addr 127.0.0.1:8080 --solo --clients 50 --messages 200
+cargo run --release --example scale -- --addr 127.0.0.1:8080 --scenario connections --users 10000 --storm
+bench/single-node.sh                                 # full single-node benchmark (see the top-level README)
 ```
 
 Options: `--config`, `--db` (single SQLite file), `--addr`, `--demo`, `--stream-idle-secs`,

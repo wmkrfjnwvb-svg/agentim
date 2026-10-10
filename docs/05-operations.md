@@ -212,7 +212,7 @@ cargo run --release -- --demo          # 打开 http://127.0.0.1:8080，选 alic
 
 ### 7.2 当前性能
 
-见 [02 §4.7–§4.8](02-architecture.md)：组提交已经把 fsync 从瓶颈中去掉；目前单个 SQLite 库每秒约 1,100–1,300 条，瓶颈是每条 SQL 语句的固定开销。下一步的优化方案待确认。
+三种数据库的单机完整数据见根目录 [README](../README.md#single-node-performance)，用 `server/bench/single-node.sh` 生成，用户可以在自己的机器上重跑。要点：单库写入约 1,000–1,300 条/秒（瓶颈是每条 SQL 语句的固定开销，不是 fsync，见 [02 §4.8](02-architecture.md)）；1 万连接时端到端 p99 在 11–21ms；每个连接约 13.5KB 服务端内存；`kill -9` 后 130–240ms 恢复就绪。
 
 ### 7.3 已知限制
 

@@ -4,3 +4,4 @@
 *.db-shm
 /screenshots
 /ci/node_modules
+/bench/out
