@@ -64,7 +64,7 @@ jobs:
         with:
           workspaces: server
       - name: same acceptance suite against every backend, plus mixed-backend units
-        run: cargo test --test hub --test multidb -- --nocapture 2>&1 | tee result.txt; test ${PIPESTATUS[0]} -eq 0
+        run: cargo test --test hub --test multidb --test scenarios --test concurrency -- --nocapture 2>&1 | tee result.txt; test ${PIPESTATUS[0]} -eq 0
       - name: no test may be silently skipped here
         run: "! grep -q 'skipped:' result.txt"
 
