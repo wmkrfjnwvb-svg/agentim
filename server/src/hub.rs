@@ -758,7 +758,8 @@ impl Hub {
         if ttl_ms.is_some_and(|t| t <= 0) {
             return Err(err("bad_request", "ttl must be positive"));
         }
-        let key_id = format!("k{}", &new_id()[..16]);
+        // The whole id: its first half is a timestamp and repeats within a millisecond.
+        let key_id = format!("k{}", new_id());
         let secret = format!("ak_{key_id}_{}", &crate::auth::new_secret("x")[2..]);
         let now = now_ms();
         let mut scopes = scopes.to_vec();

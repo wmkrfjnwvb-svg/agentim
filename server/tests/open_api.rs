@@ -211,6 +211,17 @@ async fn authentication_and_scopes(db: TestDb) {
             .0,
         401
     );
+    // Many keys created at once get distinct ids (a regression: ids used to
+    // repeat within one millisecond).
+    let mut ids = std::collections::HashSet::new();
+    for _ in 0..50 {
+        let (_, row) = api
+            .hub
+            .create_api_key("burst", &scopes, None, None)
+            .await
+            .unwrap();
+        assert!(ids.insert(row.key_id));
+    }
     // Key creation input.
     for (name, sc, ttl, ip) in [
         ("", vec!["users:read"], None, None),
