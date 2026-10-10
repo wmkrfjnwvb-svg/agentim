@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const TENANT_DEFAULT: &str = "default";
+pub const UNIT_DEFAULT: &str = "default";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -40,10 +41,12 @@ pub struct User {
     pub name: String,
     pub kind: UserKind,
     pub owner_id: Option<String>,
+    /// Organisation unit; decides which database new conversations go to.
+    pub unit_id: String,
 }
 
 /// How an agent member is triggered in a conversation, which also bounds what
-/// it can read (see docs/05-review.md §4.2).
+/// it can read (see docs/03-ai-native.md §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Trigger {
@@ -259,6 +262,56 @@ pub enum ClientMsg {
     Stats,
 }
 
+impl ClientMsg {
+    pub fn name(&self) -> &'static str {
+        match self {
+            ClientMsg::Hello => "hello",
+            ClientMsg::ListConvs => "list_convs",
+            ClientMsg::CreateConv { .. } => "create_conv",
+            ClientMsg::AddMember { .. } => "add_member",
+            ClientMsg::Send { .. } => "send",
+            ClientMsg::Edit { .. } => "edit",
+            ClientMsg::Recall { .. } => "recall",
+            ClientMsg::Pull { .. } => "pull",
+            ClientMsg::PullSide { .. } => "pull_side",
+            ClientMsg::Read { .. } => "read",
+            ClientMsg::Focus { .. } => "focus",
+            ClientMsg::StreamStart { .. } => "stream_start",
+            ClientMsg::StreamAppend { .. } => "stream_append",
+            ClientMsg::StreamEnd { .. } => "stream_end",
+            ClientMsg::StreamCancel { .. } => "stream_cancel",
+            ClientMsg::Whisper { .. } => "whisper",
+            ClientMsg::Approve { .. } => "approve",
+            ClientMsg::Reject { .. } => "reject",
+            ClientMsg::Takeover { .. } => "takeover",
+            ClientMsg::Release { .. } => "release",
+            ClientMsg::SetAgentPolicy { .. } => "set_agent_policy",
+            ClientMsg::ResetGuard { .. } => "reset_guard",
+            ClientMsg::ListDrafts => "list_drafts",
+            ClientMsg::Stats => "stats",
+        }
+    }
+
+    /// The conversation a request addresses directly, if any.
+    pub fn conv_id(&self) -> Option<&str> {
+        match self {
+            ClientMsg::AddMember { conv_id, .. }
+            | ClientMsg::Send { conv_id, .. }
+            | ClientMsg::Pull { conv_id, .. }
+            | ClientMsg::PullSide { conv_id, .. }
+            | ClientMsg::Read { conv_id, .. }
+            | ClientMsg::StreamStart { conv_id, .. }
+            | ClientMsg::Whisper { conv_id, .. }
+            | ClientMsg::Takeover { conv_id, .. }
+            | ClientMsg::Release { conv_id, .. }
+            | ClientMsg::SetAgentPolicy { conv_id, .. }
+            | ClientMsg::ResetGuard { conv_id, .. } => Some(conv_id),
+            ClientMsg::Focus { conv_id, .. } => conv_id.as_deref(),
+            _ => None,
+        }
+    }
+}
+
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -281,8 +334,8 @@ impl ApiError {
     }
 }
 
-impl From<rusqlite::Error> for ApiError {
-    fn from(e: rusqlite::Error) -> Self {
+impl From<sqlx::Error> for ApiError {
+    fn from(e: sqlx::Error) -> Self {
         ApiError::new("storage", e.to_string())
     }
 }

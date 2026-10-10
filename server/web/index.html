@@ -173,6 +173,11 @@ async function onFrame(f) {
     if (S.cur && S.cur.conv_id === ev.conv_id) render(); else renderPanel();
     return;
   }
+  if (f.type === 'resync') {
+    // The server dropped pushes for this conversation (slow connection): pull.
+    if (f.conv_id in S.lastSeq) { await pull(f.conv_id); if (S.cur && S.cur.conv_id === f.conv_id) render(); }
+    return;
+  }
   if (f.type === 'delta') {
     const log = S.logs[f.conv_id]; if (!log || f.draft) return;
     const m = log.msgs.get(f.msg_id); if (!m || m.state !== 'streaming') return;

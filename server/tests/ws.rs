@@ -3,9 +3,10 @@
 
 use std::time::Duration;
 
-use agentim::hub::{Hub, HubConfig};
+use agentim::config::{Config, sqlite_url};
+use agentim::hub::Hub;
+use agentim::logic::HubConfig;
 use agentim::server::{AppState, router};
-use agentim::store::Store;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -13,21 +14,26 @@ use tokio_tungstenite::tungstenite::Message;
 
 async fn start(demo_agents: bool) -> (String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open(dir.path().join("db").to_str().unwrap()).unwrap();
-    agentim::demo::seed(&mut store).unwrap();
-    let hub = Hub::new(store, HubConfig::default());
+    let mut cfg = Config::single_sqlite("unused");
+    cfg.storage.databases[0].url = sqlite_url(&dir.path().join("db").to_string_lossy());
+    let hub = Hub::open(cfg, HubConfig::default()).await.unwrap();
+    agentim::demo::seed(&hub).await.unwrap();
     hub.spawn_background();
     if demo_agents {
         agentim::demo::spawn_agents(&hub);
     }
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = tcp.local_addr().unwrap().to_string();
+    let listener = axum::serve::ListenerExt::tap_io(tcp, |t| {
+        let _ = t.set_nodelay(true);
+    });
     tokio::spawn(async move {
         axum::serve(
             listener,
             router(AppState {
                 hub,
                 demo_login: true,
+                metrics_token: None,
             }),
         )
         .await
@@ -94,23 +100,31 @@ async fn req(ws: &mut Ws, rid: u64, v: Value) -> Value {
 async fn websocket_auth_request_response_and_push() {
     let (addr, _dir) = start(false).await;
     // Bad token is refused; agents cannot use demo login.
-    match tokio_tungstenite::connect_async(format!("ws://{addr}/ws?token=nope")).await {
+    match tokio_tungstenite::connect_async_with_config(
+        format!("ws://{addr}/ws?token=nope"),
+        None,
+        true,
+    )
+    .await
+    {
         Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => assert_eq!(resp.status(), 401),
         other => panic!("expected 401, got {:?}", other.map(|_| ())),
     }
     let (code, _) = http(&addr, "POST", "/api/login", r#"{"name":"Aria"}"#).await;
     assert_eq!(code, 404);
 
-    let (mut a, _) = tokio_tungstenite::connect_async(format!(
-        "ws://{addr}/ws?token={}",
-        login(&addr, "alice").await
-    ))
+    let (mut a, _) = tokio_tungstenite::connect_async_with_config(
+        format!("ws://{addr}/ws?token={}", login(&addr, "alice").await),
+        None,
+        true,
+    )
     .await
     .unwrap();
-    let (mut b, _) = tokio_tungstenite::connect_async(format!(
-        "ws://{addr}/ws?token={}",
-        login(&addr, "bob").await
-    ))
+    let (mut b, _) = tokio_tungstenite::connect_async_with_config(
+        format!("ws://{addr}/ws?token={}", login(&addr, "bob").await),
+        None,
+        true,
+    )
     .await
     .unwrap();
     let w = recv_until(&mut a, |f| f["type"] == "welcome").await;
@@ -151,10 +165,11 @@ async fn websocket_auth_request_response_and_push() {
 #[tokio::test]
 async fn demo_agent_streams_a_reply_with_coalesced_deltas() {
     let (addr, _dir) = start(true).await;
-    let (mut a, _) = tokio_tungstenite::connect_async(format!(
-        "ws://{addr}/ws?token={}",
-        login(&addr, "alice").await
-    ))
+    let (mut a, _) = tokio_tungstenite::connect_async_with_config(
+        format!("ws://{addr}/ws?token={}", login(&addr, "alice").await),
+        None,
+        true,
+    )
     .await
     .unwrap();
     let convs = req(&mut a, 1, json!({"op": "list_convs"})).await;

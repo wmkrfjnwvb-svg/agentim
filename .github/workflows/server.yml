@@ -10,14 +10,19 @@ on:
 defaults:
   run:
     working-directory: server
+    shell: bash
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   check:
-    name: fmt / clippy / tests
-    runs-on: ubuntu-latest
+    name: fmt / clippy / tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -28,19 +33,59 @@ jobs:
           workspaces: server
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - name: unit + integration + websocket tests
-        run: cargo test
+      # unit, acceptance (SQLite), multi-database, WebSocket and kill -9 crash tests
+      - run: cargo test
+
+  databases:
+    name: tests on PostgreSQL 16 and MySQL 8.4
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: agentim
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 2s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: agentim
+        ports: ["3306:3306"]
+        options: --health-cmd "mysqladmin ping -h 127.0.0.1 -pagentim" --health-interval 2s --health-retries 60
+    env:
+      AGENTIM_TEST_PG: postgres://postgres:agentim@127.0.0.1:5432
+      AGENTIM_TEST_MYSQL: mysql://root:agentim@127.0.0.1:3306
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - name: same acceptance suite against every backend, plus mixed-backend units
+        run: cargo test --test hub --test multidb -- --nocapture 2>&1 | tee result.txt; test ${PIPESTATUS[0]} -eq 0
+      - name: no test may be silently skipped here
+        run: "! grep -q 'skipped:' result.txt"
 
   load:
-    name: concurrency (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    name: load (${{ matrix.os }}, ${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
+        name: [fanout, write-path]
         include:
-          - { name: "50 clients x 100 msgs + 10 streams", clients: 50, messages: 100, streams: 10, chunks: 60 }
-          - { name: "200 clients x 20 msgs + 20 streams", clients: 200, messages: 20, streams: 20, chunks: 40 }
-          - { name: "10 clients x 500 msgs + 2 streams", clients: 10, messages: 500, streams: 2, chunks: 200 }
+          - name: fanout
+            args: --clients 50 --messages 100 --streams 10 --chunks 60
+          - name: write-path
+            args: --solo --clients 50 --messages 200
+          # Performance gates on Linux only (runner disks differ a lot on Windows).
+          - os: ubuntu-latest
+            name: fanout
+            gate: --min-throughput 300 --max-p99-ms 1000
+          - os: ubuntu-latest
+            name: write-path
+            gate: --min-throughput 400 --max-p99-ms 500
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -51,39 +96,24 @@ jobs:
       - name: start server
         run: |
           ./target/release/agentim --demo --db "$RUNNER_TEMP/load.db" --addr 127.0.0.1:8080 > "$RUNNER_TEMP/server.log" 2>&1 &
-          for i in $(seq 50); do curl -sf http://127.0.0.1:8080/healthz && break; sleep 0.1; done
+          for i in $(seq 100); do curl -sf http://127.0.0.1:8080/readyz && break; sleep 0.2; done
       - name: load test with consistency checks
         run: |
-          ./target/release/examples/loadtest --addr 127.0.0.1:8080 \
-            --clients ${{ matrix.clients }} --messages ${{ matrix.messages }} \
-            --streams ${{ matrix.streams }} --chunks ${{ matrix.chunks }} | tee result.txt
-          { echo "### ${{ matrix.name }}"; echo '```'; cat result.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          ./target/release/examples/loadtest --addr 127.0.0.1:8080 ${{ matrix.args }} ${{ matrix.gate }} | tee result.txt
+          { echo "### ${{ matrix.os }} / ${{ matrix.name }}"; echo '```'; cat result.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: metrics after the run
+        if: always()
+        run: curl -s http://127.0.0.1:8080/metrics | grep -E '^agentim_(commit_batch_size|commit_duration_seconds)_(sum|count)|^agentim_push_dropped|^agentim_write_rejected' || true
       - if: failure()
         run: tail -n 200 "$RUNNER_TEMP/server.log"
 
-  crash:
-    name: kill -9 recovery (after ${{ matrix.after }}s)
-    runs-on: ubuntu-latest
+  ui:
+    name: browser smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        after: [1, 2, 4]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: server
-      - run: cargo build --release --bins --examples
-      - name: crash while sending, restart, verify every ACKed message
-        run: CRASH_AFTER=${{ matrix.after }} ./ci/crash_test.sh | tee result.txt
-      - name: summary
-        run: |
-          { echo "### kill -9 after ${{ matrix.after }}s"; echo '```'; cat result.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-
-  ui:
-    name: browser smoke test
-    runs-on: ubuntu-latest
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -101,13 +131,13 @@ jobs:
       - name: start demo server
         run: |
           ./target/release/agentim --demo --db "$RUNNER_TEMP/ui.db" --addr 127.0.0.1:8099 --stream-idle-secs 6 > "$RUNNER_TEMP/server.log" 2>&1 &
-          for i in $(seq 50); do curl -sf http://127.0.0.1:8099/healthz && break; sleep 0.1; done
+          for i in $(seq 100); do curl -sf http://127.0.0.1:8099/readyz && break; sleep 0.2; done
       - name: run UI checks
         run: PLAYWRIGHT="$PWD/ci/node_modules/playwright" BASE=http://127.0.0.1:8099 OUT=screenshots node ci/ui_smoke.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ui-screenshots
+          name: ui-screenshots-${{ matrix.os }}
           path: server/screenshots
       - if: failure()
         run: tail -n 200 "$RUNNER_TEMP/server.log"

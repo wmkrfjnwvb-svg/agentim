@@ -1,0 +1,36 @@
+# AgentIM configuration (see docs/02-architecture.md §5).
+#
+#   agentim --config agentim.toml
+#
+# Databases: SQLite (single node, small deployments), PostgreSQL (recommended
+# for production) or MySQL 8 / MariaDB. Every database must be configured for
+# full durability or the server refuses to start (set unsafe_durability = true
+# to override, e.g. for throwaway test databases).
+
+[storage]
+# Database holding users, units and the conversation directory.
+control = "main"
+
+[[storage.databases]]
+name = "main"
+url = "sqlite://agentim.db?mode=rwc"
+# url = "postgres://agentim:secret@db.internal/agentim"
+# url = "mysql://agentim:secret@db.internal/agentim"
+read_pool = 8
+
+# A subsidiary whose conversations must be stored separately (plan A).
+# [[storage.databases]]
+# name = "unit-b"
+# url = "postgres://agentim:secret@db-eu.internal/agentim_b"
+
+# [[units]]
+# name = "subsidiary-b"
+# database = "unit-b"
+# Changing a unit's database only affects new conversations; move the existing
+# ones with (server stopped):
+#   agentim --config agentim.toml migrate-unit --unit subsidiary-b
+
+[writer]
+max_batch = 512          # commands per transaction (one fsync)
+queue_capacity = 10000   # bounded queue per database; full => "overloaded"
+commit_delay_us = 0      # optional wait to grow batches; 0 = never wait

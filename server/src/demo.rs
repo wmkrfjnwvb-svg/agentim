@@ -8,104 +8,105 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::time::sleep;
 
-use crate::hub::{Hub, SessionHandle};
+use crate::hub::{Hub, Session};
 use crate::model::*;
-use crate::store::{NewMsg, Store};
 
-pub fn seed(store: &mut Store) -> ApiResult<()> {
-    if !store.is_empty()? {
+async fn call(s: &Session, v: Value) -> ApiResult<Value> {
+    let r = s.handle_text(&v.to_string()).await;
+    if r["ok"] != true {
+        return Err(ApiError::new("seed", r.to_string()));
+    }
+    Ok(r)
+}
+
+/// Creates the demo users and conversations through the normal request path.
+pub async fn seed(hub: &Hub) -> ApiResult<()> {
+    if !hub.users().is_empty() {
         return Ok(());
     }
-    let (alice, _) = store.create_user("alice", UserKind::Human, None)?;
-    let (bob, _) = store.create_user("bob", UserKind::Human, None)?;
-    let (carol, _) = store.create_user("carol", UserKind::Human, None)?;
-    let (aria, _) = store.create_user("Aria", UserKind::Agent, Some(&alice.id))?;
-    let (refund, _) = store.create_user("RefundBot", UserKind::Agent, Some(&alice.id))?;
-    let (pong_a, _) = store.create_user("PingA", UserKind::Agent, Some(&alice.id))?;
-    let (pong_b, _) = store.create_user("PongB", UserKind::Agent, Some(&bob.id))?;
+    let (alice, _) = hub
+        .create_user("alice", UserKind::Human, None, None)
+        .await?;
+    let (bob, _) = hub.create_user("bob", UserKind::Human, None, None).await?;
+    let (carol, _) = hub
+        .create_user("carol", UserKind::Human, None, None)
+        .await?;
+    let (aria, _) = hub
+        .create_user("Aria", UserKind::Agent, Some(&alice.id), None)
+        .await?;
+    let (refund, _) = hub
+        .create_user("RefundBot", UserKind::Agent, Some(&alice.id), None)
+        .await?;
+    let (ping, _) = hub
+        .create_user("PingA", UserKind::Agent, Some(&alice.id), None)
+        .await?;
+    let (pong, _) = hub
+        .create_user("PongB", UserKind::Agent, Some(&bob.id), None)
+        .await?;
 
-    store.create_conv("dm", "Alice · Aria", &alice, std::slice::from_ref(&aria))?;
-    let (group, _) = store.create_conv(
-        "group",
-        "产品讨论群",
-        &alice,
-        &[bob.clone(), carol.clone(), aria.clone()],
-    )?;
-    let (support, _) = store.create_conv(
-        "group",
-        "客服：退款工单",
-        &bob,
-        &[refund.clone(), alice.clone()],
-    )?;
-    store.set_agent_policy(
-        &support,
-        &refund.id,
-        Some(true),
-        Some(Trigger::All),
-        &alice.id,
-    )?;
-    let (lab, _) = store.create_conv(
-        "group",
-        "Agent 循环实验室",
-        &alice,
-        &[pong_a.clone(), pong_b.clone()],
-    )?;
-    store.set_agent_policy(&lab, &pong_a.id, None, Some(Trigger::All), &alice.id)?;
-    store.set_agent_policy(&lab, &pong_b.id, None, Some(Trigger::All), &bob.id)?;
-    store.create_conv("dm", "Bob · Aria", &bob, std::slice::from_ref(&aria))?;
-
-    let say = |store: &mut Store, conv: &str, who: &User, text: &str| -> ApiResult<()> {
-        store.commit_message(NewMsg {
-            conv_id: conv,
-            sender: who,
-            client_msg_id: None,
-            on_behalf_of: None,
-            kind: "text",
-            content: text.to_string(),
-            state: "committed",
-            hop: 0,
-            causation_id: None,
-            reply_to: None,
-            mentions: vec![],
-        })?;
-        Ok(())
-    };
-    say(
-        store,
-        &group,
-        &alice,
-        "欢迎来到 AgentIM 单机版演示。群里 @Aria 才会召唤 AI（群聊默认 trigger=mention）。",
-    )?;
-    say(
-        store,
-        &support,
-        &bob,
-        "你好，我的订单一直没发货，想申请退款。",
-    )?;
-    say(
-        store,
-        &lab,
-        &alice,
-        "这里有两个 Agent 会互相回复。发一条消息，看护栏如何在跳数上限处熔断。",
-    )?;
+    let (a, _arx) = hub.connect(alice.clone());
+    let (b, _brx) = hub.connect(bob.clone());
+    let conv = |r: Value| r["conv_id"].as_str().unwrap_or_default().to_string();
+    call(
+        &a,
+        json!({"op": "create_conv", "kind": "dm", "title": "Alice · Aria", "members": [aria.id]}),
+    )
+    .await?;
+    let group = conv(call(&a, json!({"op": "create_conv", "kind": "group", "title": "产品讨论群", "members": [bob.id, carol.id, aria.id]})).await?);
+    let support = conv(call(&b, json!({"op": "create_conv", "kind": "group", "title": "客服：退款工单", "members": [refund.id, alice.id]})).await?);
+    call(&a, json!({"op": "set_agent_policy", "conv_id": support, "agent_id": refund.id, "approval": true, "trigger": "all"})).await?;
+    let lab = conv(call(&a, json!({"op": "create_conv", "kind": "group", "title": "Agent 循环实验室", "members": [ping.id, pong.id]})).await?);
+    call(
+        &a,
+        json!({"op": "set_agent_policy", "conv_id": lab, "agent_id": ping.id, "trigger": "all"}),
+    )
+    .await?;
+    call(
+        &b,
+        json!({"op": "set_agent_policy", "conv_id": lab, "agent_id": pong.id, "trigger": "all"}),
+    )
+    .await?;
+    call(
+        &b,
+        json!({"op": "create_conv", "kind": "dm", "title": "Bob · Aria", "members": [aria.id]}),
+    )
+    .await?;
+    let say = |conv: &str, text: &str| json!({"op": "send", "conv_id": conv, "client_msg_id": uuid::Uuid::new_v4().to_string(), "text": text});
+    call(
+        &a,
+        say(
+            &group,
+            "欢迎来到 AgentIM 单机版演示。群里 @Aria 才会召唤 AI（群聊默认 trigger=mention）。",
+        ),
+    )
+    .await?;
+    call(&b, say(&support, "你好，我的订单一直没发货，想申请退款。")).await?;
+    call(
+        &a,
+        say(
+            &lab,
+            "这里有两个 Agent 会互相回复。发一条消息，看护栏如何在跳数上限处熔断。",
+        ),
+    )
+    .await?;
     Ok(())
 }
 
 /// Minimal in-process client used by the scripted agents.
 struct Client {
-    session: SessionHandle,
+    session: Session,
     rid: Mutex<u64>,
 }
 
 impl Client {
-    fn call(&self, mut v: Value) -> Value {
+    async fn call(&self, mut v: Value) -> Value {
         let rid = {
             let mut r = self.rid.lock().unwrap();
             *r += 1;
             *r
         };
         v["rid"] = json!(rid);
-        self.session.handle_text(&v.to_string())
+        self.session.handle_text(&v.to_string()).await
     }
     fn me(&self) -> &User {
         &self.session.user
@@ -121,8 +122,11 @@ enum Behavior {
 }
 
 pub fn spawn_agents(hub: &Hub) {
-    let users = hub.store(|s| s.list_users()).unwrap_or_default();
-    for u in users.into_iter().filter(|u| u.kind == UserKind::Agent) {
+    for u in hub
+        .users()
+        .into_iter()
+        .filter(|u| u.kind == UserKind::Agent)
+    {
         let b = match u.name.as_str() {
             "Aria" => Behavior::Assistant,
             "RefundBot" => Behavior::Refund,
@@ -148,7 +152,7 @@ async fn run_agent(hub: Hub, user: User, behavior: Behavior) {
         let crash = Arc::new(tokio::sync::Notify::new());
         loop {
             let v = tokio::select! {
-                v = rx.recv() => match v { Some(v) => v, None => break },
+                v = rx.recv() => match v { Some(f) => serde_json::from_str::<Value>(&f).unwrap_or(Value::Null), None => break },
                 _ = crash.notified() => break,
             };
             match v["type"].as_str() {
@@ -217,7 +221,7 @@ async fn stream_text(
     delay_ms: u64,
     cancelled: &Mutex<HashSet<String>>,
 ) -> Option<String> {
-    let start = c.call(json!({"op": "stream_start", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "reply_to": msg.msg_id}));
+    let start = c.call(json!({"op": "stream_start", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "reply_to": msg.msg_id})).await;
     if start["ok"] != true {
         return None;
     }
@@ -227,12 +231,14 @@ async fn stream_text(
         if cancelled.lock().unwrap().remove(&id) {
             return Some(id);
         }
-        let r = c.call(json!({"op": "stream_append", "msg_id": id, "idx": i, "text": part}));
+        let r = c
+            .call(json!({"op": "stream_append", "msg_id": id, "idx": i, "text": part}))
+            .await;
         if r["ok"] != true {
             return Some(id);
         }
     }
-    c.call(json!({"op": "stream_end", "msg_id": id}));
+    c.call(json!({"op": "stream_end", "msg_id": id})).await;
     Some(id)
 }
 
@@ -263,25 +269,27 @@ async fn assistant(
         return;
     }
     if text.contains("/stall") {
-        let start = c.call(json!({"op": "stream_start", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "reply_to": msg.msg_id}));
+        let start = c.call(json!({"op": "stream_start", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "reply_to": msg.msg_id})).await;
         if let Some(id) = start["msg_id"].as_str() {
             for (i, p) in chunks("我开始回答了，但接下来会卡住不再输出……", 2)
                 .iter()
                 .enumerate()
             {
                 sleep(Duration::from_millis(80)).await;
-                c.call(json!({"op": "stream_append", "msg_id": id, "idx": i, "text": p}));
+                c.call(json!({"op": "stream_append", "msg_id": id, "idx": i, "text": p}))
+                    .await;
             }
         }
         return; // never ends: the server watchdog marks it failed(timeout)
     }
     if text.contains("/crash") {
-        let start = c.call(json!({"op": "stream_start", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "reply_to": msg.msg_id}));
+        let start = c.call(json!({"op": "stream_start", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "reply_to": msg.msg_id})).await;
         if let Some(id) = start["msg_id"].as_str() {
             for (i, p) in chunks("我正在回答，然后进程会崩溃……", 2).iter().enumerate()
             {
                 sleep(Duration::from_millis(80)).await;
-                c.call(json!({"op": "stream_append", "msg_id": id, "idx": i, "text": p}));
+                c.call(json!({"op": "stream_append", "msg_id": id, "idx": i, "text": p}))
+                    .await;
             }
         }
         crash.notify_one();
@@ -311,7 +319,7 @@ async fn refund(c: Arc<Client>, msg: MsgView, whisper: Option<String>, n: u64) {
     if let Some(w) = whisper {
         text.push_str(&format!("（主管提示已采纳：{w}）"));
     }
-    c.call(json!({"op": "send", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "text": text, "reply_to": msg.msg_id}));
+    c.call(json!({"op": "send", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "text": text, "reply_to": msg.msg_id})).await;
 }
 
 async fn pingpong(c: Arc<Client>, msg: MsgView, b: Behavior, n: u64) {
@@ -329,5 +337,5 @@ async fn pingpong(c: Arc<Client>, msg: MsgView, b: Behavior, n: u64) {
     ];
     let line = lines[(n as usize) % lines.len()];
     let text = format!("@{} {}（第 {} 轮）", msg.sender_name, line, msg.hop + 1);
-    c.call(json!({"op": "send", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "text": text, "reply_to": msg.msg_id}));
+    c.call(json!({"op": "send", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "text": text, "reply_to": msg.msg_id})).await;
 }

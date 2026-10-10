@@ -1,0 +1,1733 @@
+//! Business logic executed by a database's writer, inside the batch
+//! transaction (one savepoint per command). Everything a command writes
+//! commits together with everything else in its batch, after which its output
+//! is delivered. A command that fails is rolled back alone, unless it set
+//! `commit_on_error` (a rejection that must still be recorded, e.g. a breaker
+//! trip or a policy block).
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+
+use crate::db::{Cell, Committed, Db, DirEntry, NewMsg};
+use crate::guard::{GuardConfig, Guards, Verdict};
+use crate::metrics as m;
+use crate::model::*;
+use crate::policy::PolicyChain;
+use crate::registry::{Out, Recip, Registry};
+
+pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+const MODERATED_PLACEHOLDER: &str = "[该内容已被策略移除 / removed by policy]";
+const DEDUP_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
+
+#[derive(Debug, Clone)]
+pub struct HubConfig {
+    pub stream_idle: Duration,
+    pub stream_max: Duration,
+    pub stream_max_bytes: usize,
+    pub checkpoint_every: Duration,
+    pub coalesce: Duration,
+    pub guards: GuardConfig,
+    pub human_queue: usize,
+    pub agent_queue: usize,
+}
+
+impl Default for HubConfig {
+    fn default() -> Self {
+        HubConfig {
+            stream_idle: Duration::from_secs(30),
+            stream_max: Duration::from_secs(600),
+            stream_max_bytes: 256 * 1024,
+            checkpoint_every: Duration::from_secs(1),
+            coalesce: Duration::from_millis(60),
+            guards: GuardConfig::default(),
+            human_queue: 1024,
+            agent_queue: 4096,
+        }
+    }
+}
+
+// ------------------------------------------------------------ shared state
+
+#[derive(Debug, Clone)]
+pub struct DirInfo {
+    pub db: usize,
+    pub unit: String,
+    pub migrating: bool,
+}
+
+/// State shared by the hub and every writer. All of it is either derived
+/// from the databases (and rebuilt at startup) or soft state.
+pub struct Shared {
+    pub reg: Registry,
+    pub users: std::sync::RwLock<HashMap<String, User>>,
+    pub tokens: std::sync::RwLock<HashMap<String, String>>,
+    pub dir: std::sync::RwLock<HashMap<String, DirInfo>>,
+    /// Active stream (or streamed draft) id → database index.
+    pub stream_index: std::sync::Mutex<HashMap<String, usize>>,
+    pub policy: PolicyChain,
+    pub cfg: HubConfig,
+    pub budgets: crate::guard::Budgets,
+    pub control: usize,
+    pub db_names: Vec<String>,
+}
+
+impl Shared {
+    pub fn user(&self, id: &str) -> Option<User> {
+        self.users
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
+    }
+
+    pub fn user_by_name(&self, name: &str) -> Option<User> {
+        self.users
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .find(|u| u.name == name)
+            .cloned()
+    }
+
+    pub fn agents_of(&self, owner: &str) -> Vec<User> {
+        let mut v: Vec<User> = self
+            .users
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|u| u.owner_id.as_deref() == Some(owner))
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
+    }
+
+    pub fn dir_get(&self, conv: &str) -> Option<DirInfo> {
+        self.dir
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(conv)
+            .cloned()
+    }
+
+    pub fn dir_set(&self, conv: &str, info: Option<DirInfo>) {
+        let mut d = self.dir.write().unwrap_or_else(|e| e.into_inner());
+        match info {
+            Some(i) => {
+                d.insert(conv.to_string(), i);
+            }
+            None => {
+                d.remove(conv);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+enum Target {
+    Main,
+    Draft { audience: Vec<String> },
+}
+
+struct Stream {
+    msg_id: String,
+    conv_id: String,
+    sender: User,
+    target: Target,
+    buf: String,
+    pending: String,
+    next_idx: u64,
+    started: Instant,
+    last_append: Instant,
+    checkpointed: usize,
+    hop: i64,
+    causation_id: Option<String>,
+    reply_to: Option<String>,
+}
+
+/// Soft state owned by one writer.
+pub struct ShardState {
+    streams: HashMap<String, Stream>,
+    guards: Guards,
+    members: HashMap<String, Arc<Vec<Member>>>,
+    last_flush: Instant,
+    last_checkpoint: Instant,
+    last_gc: Instant,
+}
+
+impl ShardState {
+    pub fn new(sh: &Shared) -> ShardState {
+        let now = Instant::now();
+        ShardState {
+            streams: HashMap::new(),
+            guards: Guards::with_budgets(sh.cfg.guards.clone(), sh.budgets.clone()),
+            members: HashMap::new(),
+            last_flush: now,
+            last_checkpoint: now,
+            last_gc: now,
+        }
+    }
+
+    /// Whether a tick has database work (otherwise the writer skips the
+    /// transaction entirely).
+    pub fn tick_needs_db(&self) -> bool {
+        !self.streams.is_empty() || self.last_gc.elapsed() > Duration::from_secs(600)
+    }
+
+    pub fn active_streams(&self) -> Vec<Value> {
+        self.streams
+            .values()
+            .map(|s| json!({"msg_id": s.msg_id, "conv_id": s.conv_id, "agent": s.sender.name, "bytes": s.buf.len(), "age_ms": s.started.elapsed().as_millis() as u64, "draft": matches!(s.target, Target::Draft{..})}))
+            .collect()
+    }
+}
+
+// ------------------------------------------------------------------- ops
+
+#[derive(Debug, Clone)]
+pub struct SessCtx {
+    pub sid: u64,
+    pub user: User,
+}
+
+#[derive(Debug)]
+pub enum Op {
+    Client {
+        sess: SessCtx,
+        msg: ClientMsg,
+    },
+    Tick,
+    Recover,
+    AgentGone(String),
+    Barrier,
+    // control database
+    CreateUser {
+        user: User,
+        token: String,
+    },
+    UpsertUnit {
+        name: String,
+        database: String,
+    },
+    RegisterConv {
+        entry: DirEntry,
+        member_ids: Vec<String>,
+    },
+    MemberIndexAdd {
+        conv_id: String,
+        user_id: String,
+    },
+    DirPut(DirEntry),
+    DirDelete(String),
+    // conversation databases
+    CreateConv {
+        id: String,
+        kind: String,
+        title: String,
+        unit: String,
+        creator: User,
+        members: Vec<User>,
+    },
+    AddMember {
+        conv_id: String,
+        actor: User,
+        user: User,
+    },
+    StopConvStreams(String),
+    ImportConv {
+        conv_id: String,
+        rows: Vec<(&'static str, Vec<Vec<Cell>>)>,
+    },
+    DeleteConv(String),
+    Audit {
+        actor: String,
+        action: String,
+        conv_id: String,
+        target: Option<String>,
+        detail: Value,
+    },
+    Stats,
+}
+
+impl Op {
+    pub fn is_tick(&self) -> bool {
+        matches!(self, Op::Tick)
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Op::Client { msg, .. } => msg.name(),
+            Op::Tick => "tick",
+            Op::Recover => "recover",
+            Op::AgentGone(_) => "agent_gone",
+            Op::Barrier => "barrier",
+            Op::CreateUser { .. } => "create_user",
+            Op::UpsertUnit { .. } => "upsert_unit",
+            Op::RegisterConv { .. } => "register_conv",
+            Op::MemberIndexAdd { .. } => "member_index_add",
+            Op::DirPut(_) => "dir_put",
+            Op::DirDelete(_) => "dir_delete",
+            Op::CreateConv { .. } => "create_conv",
+            Op::AddMember { .. } => "add_member",
+            Op::StopConvStreams(_) => "stop_conv_streams",
+            Op::ImportConv { .. } => "import_conv",
+            Op::DeleteConv(_) => "delete_conv",
+            Op::Audit { .. } => "audit",
+            Op::Stats => "stats",
+        }
+    }
+}
+
+fn err(code: &'static str, msg: impl Into<String>) -> ApiError {
+    ApiError::new(code, msg)
+}
+
+pub struct Ctx<'a, 'c> {
+    pub db: Db<'c>,
+    pub st: &'a mut ShardState,
+    pub sh: &'a Shared,
+    pub out: &'a mut Vec<Out>,
+    pub idx: usize,
+    /// Keep this command's writes even though it returns an error.
+    pub commit_on_error: bool,
+}
+
+impl Ctx<'_, '_> {
+    pub async fn run(&mut self, op: Op) -> ApiResult<Value> {
+        match op {
+            Op::Client { sess, msg } => self.client(&sess, msg).await,
+            Op::Tick => {
+                self.tick().await?;
+                Ok(json!({}))
+            }
+            Op::Recover => {
+                for msg in self.db.streaming_messages().await? {
+                    let ev = self
+                        .db
+                        .update_message(
+                            &msg.msg_id,
+                            "msg.updated",
+                            &msg.sender_id,
+                            None,
+                            Some("failed"),
+                            Some("server_restart"),
+                        )
+                        .await?;
+                    metrics::counter!(m::STREAMS_FINISHED, "state" => "failed", "reason" => "server_restart").increment(1);
+                    self.emit(ev).await?;
+                }
+                Ok(json!({}))
+            }
+            Op::AgentGone(agent_id) => {
+                let ids: Vec<String> = self
+                    .st
+                    .streams
+                    .values()
+                    .filter(|s| s.sender.id == agent_id)
+                    .map(|s| s.msg_id.clone())
+                    .collect();
+                for id in ids {
+                    self.finish_stream(&id, "failed", Some("disconnected"), &agent_id)
+                        .await?;
+                }
+                Ok(json!({}))
+            }
+            Op::Barrier => Ok(json!({})),
+            Op::CreateUser { user, token } => {
+                self.db.insert_user(&user, &token).await?;
+                Ok(json!({}))
+            }
+            Op::UpsertUnit { name, database } => {
+                self.db.upsert_unit(&name, &database).await?;
+                Ok(json!({}))
+            }
+            Op::RegisterConv { entry, member_ids } => {
+                self.db.dir_put(&entry).await?;
+                for u in member_ids {
+                    self.db.member_index_add(&entry.conv_id, &u).await?;
+                }
+                Ok(json!({}))
+            }
+            Op::MemberIndexAdd { conv_id, user_id } => {
+                self.db.member_index_add(&conv_id, &user_id).await?;
+                Ok(json!({}))
+            }
+            Op::DirPut(e) => {
+                self.db.dir_put(&e).await?;
+                Ok(json!({}))
+            }
+            Op::DirDelete(c) => {
+                self.db.dir_delete(&c).await?;
+                Ok(json!({}))
+            }
+            Op::CreateConv {
+                id,
+                kind,
+                title,
+                unit,
+                creator,
+                members,
+            } => {
+                let events = self
+                    .db
+                    .create_conv(&id, &kind, &title, &unit, &creator, &members)
+                    .await?;
+                if self.idx == self.sh.control {
+                    // Same database as the directory: register atomically.
+                    self.db
+                        .dir_put(&DirEntry {
+                            conv_id: id.clone(),
+                            database: self.sh.db_names[self.idx].clone(),
+                            unit_id: unit,
+                            migrating: false,
+                        })
+                        .await?;
+                    self.db.member_index_add(&id, &creator.id).await?;
+                    for u in &members {
+                        self.db.member_index_add(&id, &u.id).await?;
+                    }
+                }
+                for ev in events {
+                    self.emit(ev).await?;
+                }
+                Ok(json!({"conv_id": id}))
+            }
+            Op::AddMember {
+                conv_id,
+                actor,
+                user,
+            } => self.add_member(&conv_id, &actor, &user).await,
+            Op::StopConvStreams(conv) => {
+                let ids: Vec<String> = self
+                    .st
+                    .streams
+                    .values()
+                    .filter(|s| s.conv_id == conv)
+                    .map(|s| s.msg_id.clone())
+                    .collect();
+                for id in ids {
+                    let sender = self.st.streams[&id].sender.id.clone();
+                    self.finish_stream(&id, "cancelled", Some("migrated"), &sender)
+                        .await?;
+                }
+                Ok(json!({}))
+            }
+            Op::ImportConv { conv_id, rows } => {
+                self.db.import_conv(&conv_id, &rows).await?;
+                self.st.members.remove(&conv_id);
+                Ok(json!({}))
+            }
+            Op::DeleteConv(conv) => {
+                self.db.delete_conv(&conv).await?;
+                self.st.members.remove(&conv);
+                Ok(json!({}))
+            }
+            Op::Audit {
+                actor,
+                action,
+                conv_id,
+                target,
+                detail,
+            } => {
+                self.db
+                    .audit(
+                        Some(&actor),
+                        &action,
+                        Some(&conv_id),
+                        target.as_deref(),
+                        detail,
+                    )
+                    .await?;
+                Ok(json!({}))
+            }
+            Op::Stats => Ok(
+                json!({"counts": self.db.counts().await?, "active_streams": self.st.active_streams(), "audit": self.db.audit_log(50).await?}),
+            ),
+        }
+    }
+
+    async fn client(&mut self, sess: &SessCtx, msg: ClientMsg) -> ApiResult<Value> {
+        let me = &sess.user;
+        if let Some(conv) = msg.conv_id() {
+            self.own_conv(conv)?;
+        }
+        match msg {
+            ClientMsg::Send {
+                conv_id,
+                client_msg_id,
+                text,
+                reply_to,
+                causation_id,
+                on_behalf_of,
+                to_user,
+            } => {
+                self.send(
+                    me,
+                    &conv_id,
+                    &client_msg_id,
+                    &text,
+                    reply_to,
+                    causation_id,
+                    on_behalf_of,
+                    to_user,
+                )
+                .await
+            }
+            ClientMsg::Edit { msg_id, text } => self.edit(me, &msg_id, &text).await,
+            ClientMsg::Recall { msg_id } => self.recall(me, &msg_id).await,
+            ClientMsg::Read { conv_id, seq } => {
+                self.require_member(&conv_id, &me.id).await?;
+                self.db.set_read(&conv_id, &me.id, seq).await?;
+                Ok(json!({}))
+            }
+            ClientMsg::Focus {
+                conv_id: Some(c), ..
+            } => {
+                // Late joiners get the accumulated content of in-flight streams.
+                for st in self
+                    .st
+                    .streams
+                    .values()
+                    .filter(|s| s.conv_id == c && matches!(s.target, Target::Main))
+                {
+                    self.out.push(Out::ToSession {
+                        sid: sess.sid,
+                        frame: json!({"type": "delta", "conv_id": st.conv_id, "msg_id": st.msg_id, "reset": true, "text": st.buf}),
+                    });
+                }
+                Ok(json!({}))
+            }
+            ClientMsg::StreamStart {
+                conv_id,
+                client_msg_id,
+                reply_to,
+                causation_id,
+            } => {
+                self.stream_start(me, &conv_id, &client_msg_id, reply_to, causation_id)
+                    .await
+            }
+            ClientMsg::StreamAppend { msg_id, idx, text } => {
+                self.stream_append(me, &msg_id, idx, &text).await
+            }
+            ClientMsg::StreamEnd { msg_id } => {
+                let st = self
+                    .st
+                    .streams
+                    .get(&msg_id)
+                    .ok_or_else(|| err("not_found", "no active stream"))?;
+                if st.sender.id != me.id {
+                    return Err(err("forbidden", "not your stream"));
+                }
+                self.finish_stream(&msg_id, "complete", None, &me.id)
+                    .await?;
+                Ok(json!({"msg_id": msg_id}))
+            }
+            ClientMsg::StreamCancel { msg_id } => self.stream_cancel(me, &msg_id).await,
+            ClientMsg::Whisper {
+                conv_id,
+                agent_id,
+                text,
+            } => self.whisper(me, &conv_id, &agent_id, &text).await,
+            ClientMsg::Approve { draft_id, text } => self.approve(me, &draft_id, text).await,
+            ClientMsg::Reject { draft_id } => self.reject(me, &draft_id).await,
+            ClientMsg::Takeover { conv_id, agent_id } => {
+                self.takeover(me, &conv_id, &agent_id, true).await
+            }
+            ClientMsg::Release { conv_id, agent_id } => {
+                self.takeover(me, &conv_id, &agent_id, false).await
+            }
+            ClientMsg::SetAgentPolicy {
+                conv_id,
+                agent_id,
+                approval,
+                trigger,
+            } => {
+                let agent = self.owned_agent(me, &agent_id)?;
+                self.require_member(&conv_id, &agent.id).await?;
+                let ev = self
+                    .db
+                    .set_agent_policy(&conv_id, &agent.id, approval, trigger, &me.id)
+                    .await?;
+                self.st.members.remove(&conv_id);
+                self.db
+                    .audit(
+                        Some(&me.id),
+                        "agent.policy",
+                        Some(&conv_id),
+                        Some(&agent.id),
+                        json!({"approval": approval, "trigger": trigger}),
+                    )
+                    .await?;
+                let seq = ev.seq;
+                self.emit(ev).await?;
+                Ok(json!({"seq": seq}))
+            }
+            ClientMsg::ResetGuard { conv_id, agent_id } => {
+                let agent = self.owned_agent(me, &agent_id)?;
+                let ev = self
+                    .db
+                    .append_event(
+                        &conv_id,
+                        "agent.state",
+                        Some(&me.id),
+                        None,
+                        json!({"agent_id": agent.id, "state": "active", "reason": "guard_reset"}),
+                    )
+                    .await?;
+                self.db
+                    .audit(
+                        Some(&me.id),
+                        "guard.reset",
+                        Some(&conv_id),
+                        Some(&agent.id),
+                        json!({}),
+                    )
+                    .await?;
+                self.st.guards.reset(&agent.id, &conv_id);
+                self.emit(ev).await?;
+                Ok(json!({}))
+            }
+            other => Err(err(
+                "bad_request",
+                format!("{} is not handled by a conversation writer", other.name()),
+            )),
+        }
+    }
+
+    // ------------------------------------------------------------- helpers
+
+    /// A command may only touch a conversation this database currently owns.
+    /// A command routed before a migration switched the directory must not
+    /// write into the old copy (it is about to be deleted): it is refused and
+    /// the hub re-routes it.
+    fn own_conv(&self, conv: &str) -> ApiResult<()> {
+        match self.sh.dir_get(conv) {
+            Some(d) if d.migrating => Err(err(
+                "conv_migrating",
+                "conversation is being moved; retry shortly",
+            )),
+            Some(d) if d.db == self.idx => Ok(()),
+            Some(_) => Err(err("conv_moved", "conversation moved to another database")),
+            None => Err(err("not_found", "conversation")),
+        }
+    }
+
+    async fn members(&mut self, conv_id: &str) -> ApiResult<Arc<Vec<Member>>> {
+        if let Some(m) = self.st.members.get(conv_id) {
+            return Ok(m.clone());
+        }
+        let m = Arc::new(self.db.members(conv_id).await?);
+        self.st.members.insert(conv_id.to_string(), m.clone());
+        Ok(m)
+    }
+
+    async fn require_member(&mut self, conv_id: &str, user_id: &str) -> ApiResult<Member> {
+        self.members(conv_id)
+            .await?
+            .iter()
+            .find(|m| m.user_id == user_id)
+            .cloned()
+            .ok_or_else(|| err("forbidden", "not a member of this conversation"))
+    }
+
+    fn owned_agent(&self, me: &User, agent_id: &str) -> ApiResult<User> {
+        let a = self
+            .sh
+            .user(agent_id)
+            .ok_or_else(|| err("not_found", "agent"))?;
+        if a.kind != UserKind::Agent || a.owner_id.as_deref() != Some(me.id.as_str()) {
+            return Err(err("forbidden", "you do not own this agent"));
+        }
+        Ok(a)
+    }
+
+    fn resolve_user(&self, key: &str) -> ApiResult<User> {
+        self.sh
+            .user(key)
+            .or_else(|| self.sh.user_by_name(key))
+            .ok_or_else(|| err("not_found", format!("user {key}")))
+    }
+
+    fn agent_audience(agent: &User) -> Vec<String> {
+        let mut a = vec![agent.id.clone()];
+        if let Some(o) = &agent.owner_id {
+            a.push(o.clone());
+        }
+        a
+    }
+
+    /// What an agent member may read (bounded by its trigger mode).
+    pub async fn agent_can_see(db: &mut Db<'_>, m: &Member, ev: &Event) -> ApiResult<bool> {
+        if ev.seq < m.join_seq {
+            return Ok(false);
+        }
+        let Some(msg) = &ev.msg else { return Ok(true) };
+        if m.trigger == Trigger::All
+            || msg.sender_id == m.user_id
+            || msg.mentions.contains(&m.user_id)
+        {
+            return Ok(true);
+        }
+        if let Some(r) = &msg.reply_to
+            && let Some(parent) = db.message(r).await?
+        {
+            return Ok(parent.sender_id == m.user_id);
+        }
+        Ok(false)
+    }
+
+    /// Queues a committed event for fan-out with per-member visibility.
+    async fn emit(&mut self, ev: Event) -> ApiResult<()> {
+        let members = self.members(&ev.conv_id).await?;
+        let mut recips = Vec::with_capacity(members.len());
+        for mb in members.iter() {
+            let mut visible = true;
+            let mut trust = None;
+            if mb.kind == UserKind::Agent {
+                visible = Self::agent_can_see(&mut self.db, mb, &ev).await?;
+                if visible
+                    && ev.kind == "msg.created"
+                    && let Some(msg) = &ev.msg
+                    && msg.sender_id != mb.user_id
+                {
+                    let (t, flags) = self.sh.policy.inbound(&msg.content, msg.sender_type);
+                    for f in &flags {
+                        metrics::counter!(m::INBOUND_FLAGS, "flag" => f.clone()).increment(1);
+                    }
+                    trust = Some((t.as_str().to_string(), flags));
+                }
+            }
+            recips.push(Recip {
+                user_id: mb.user_id.clone(),
+                kind: mb.kind,
+                owner_id: mb.owner_id.clone(),
+                visible,
+                trust,
+            });
+        }
+        metrics::counter!(m::EVENTS_COMMITTED, "type" => ev.kind.clone()).increment(1);
+        if ev.kind == "msg.created"
+            && let Some(msg) = &ev.msg
+        {
+            metrics::counter!(m::MESSAGES_COMMITTED, "sender_type" => msg.sender_type.as_str())
+                .increment(1);
+        }
+        self.out.push(Out::Event {
+            ev,
+            recips: Arc::new(recips),
+        });
+        Ok(())
+    }
+
+    async fn notify_owner(
+        &mut self,
+        conv_id: &str,
+        agent: &User,
+        kind: &str,
+        data: Value,
+    ) -> ApiResult<()> {
+        let audience = Self::agent_audience(agent);
+        let side = self
+            .db
+            .append_side(conv_id, &audience, kind, Some(&agent.id), data)
+            .await?;
+        self.out.push(Out::Side(side));
+        Ok(())
+    }
+
+    async fn mentions(&mut self, conv_id: &str, text: &str) -> ApiResult<Vec<String>> {
+        Ok(self
+            .members(conv_id)
+            .await?
+            .iter()
+            .filter(|m| text.contains(&format!("@{}", m.name)))
+            .map(|m| m.user_id.clone())
+            .collect())
+    }
+
+    /// Causation and hop are computed by the server; agent-supplied values
+    /// only pick which message in this conversation is being answered.
+    async fn causation(
+        &mut self,
+        conv_id: &str,
+        sender: &User,
+        causation_id: Option<String>,
+        reply_to: &Option<String>,
+    ) -> ApiResult<(Option<String>, i64)> {
+        let explicit = causation_id.or_else(|| reply_to.clone());
+        let cause = match explicit {
+            Some(id) => {
+                let msg = self
+                    .db
+                    .message(&id)
+                    .await?
+                    .ok_or_else(|| err("bad_request", "unknown causation message"))?;
+                if msg.conv_id != conv_id {
+                    return Err(err(
+                        "bad_request",
+                        "causation message is in another conversation",
+                    ));
+                }
+                Some(msg)
+            }
+            None => self.db.latest_other_message(conv_id, &sender.id).await?,
+        };
+        if sender.kind != UserKind::Agent {
+            return Ok((cause.map(|m| m.msg_id), 0));
+        }
+        let hop = cause.as_ref().map(|m| m.hop + 1).unwrap_or(1);
+        Ok((cause.map(|m| m.msg_id), hop))
+    }
+
+    /// Takeover, breaker, rate, budget and loop checks for an agent message.
+    async fn agent_gate(
+        &mut self,
+        agent: &User,
+        conv_id: &str,
+        hop: i64,
+        text: &str,
+    ) -> ApiResult<()> {
+        if let Some(by) = self.db.takeover(conv_id, &agent.id).await? {
+            return Err(err(
+                "taken_over",
+                format!("conversation is taken over by {by}"),
+            ));
+        }
+        let recent = self
+            .db
+            .recent_contents(conv_id, &agent.id, self.st.guards.cfg.dup_window)
+            .await?;
+        match self.st.guards.check(&agent.id, conv_id, hop, text, &recent) {
+            Verdict::Allow => Ok(()),
+            Verdict::Reject(code, reason) => {
+                metrics::counter!(m::GUARD_REJECTS, "code" => code).increment(1);
+                self.db
+                    .audit(
+                        Some(&agent.id),
+                        "guard.reject",
+                        Some(conv_id),
+                        None,
+                        json!({"code": code, "reason": reason}),
+                    )
+                    .await?;
+                self.commit_on_error = true;
+                Err(err(code, reason))
+            }
+            Verdict::Trip(code, reason) => {
+                metrics::counter!(m::GUARD_TRIPS, "reason" => code).increment(1);
+                let ev = self
+                    .db
+                    .append_event(conv_id, "agent.state", Some(&agent.id), None, json!({"agent_id": agent.id, "state": "tripped", "reason": code, "detail": reason}))
+                    .await?;
+                self.db
+                    .audit(
+                        Some(&agent.id),
+                        "guard.trip",
+                        Some(conv_id),
+                        None,
+                        json!({"code": code, "reason": reason, "hop": hop}),
+                    )
+                    .await?;
+                self.emit(ev).await?;
+                self.notify_owner(
+                    conv_id,
+                    agent,
+                    "guard.tripped",
+                    json!({"agent_id": agent.id, "code": code, "reason": reason}),
+                )
+                .await?;
+                self.commit_on_error = true;
+                Err(err(code, reason))
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- membership
+
+    async fn add_member(&mut self, conv_id: &str, me: &User, u: &User) -> ApiResult<Value> {
+        self.own_conv(conv_id)?;
+        let mine = self.require_member(conv_id, &me.id).await?;
+        let own_agent = u.owner_id.as_deref() == Some(me.id.as_str());
+        if mine.role != "owner" && !own_agent {
+            return Err(err(
+                "forbidden",
+                "only the conversation owner can add members",
+            ));
+        }
+        let conv = self
+            .db
+            .conv(conv_id)
+            .await?
+            .ok_or_else(|| err("not_found", "conversation"))?;
+        let ev = self
+            .db
+            .add_member(conv_id, &conv.kind, u, "member", &me.id)
+            .await?;
+        self.st.members.remove(conv_id);
+        if u.kind == UserKind::Agent {
+            self.db
+                .audit(
+                    Some(&me.id),
+                    "agent.added",
+                    Some(conv_id),
+                    Some(&u.id),
+                    json!({}),
+                )
+                .await?;
+        }
+        if self.idx == self.sh.control {
+            self.db.member_index_add(conv_id, &u.id).await?;
+        }
+        let seq = ev.seq;
+        self.emit(ev).await?;
+        Ok(json!({"seq": seq}))
+    }
+
+    // ---------------------------------------------------------------- send
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send(
+        &mut self,
+        me: &User,
+        conv_id: &str,
+        client_msg_id: &str,
+        text: &str,
+        reply_to: Option<String>,
+        causation_id: Option<String>,
+        on_behalf_of: Option<String>,
+        to_user: Option<String>,
+    ) -> ApiResult<Value> {
+        let member = self.require_member(conv_id, &me.id).await?;
+        if text.is_empty() || text.len() > MAX_MESSAGE_BYTES {
+            return Err(err("bad_request", "message must be 1..64KB"));
+        }
+        if let Some(o) = &on_behalf_of {
+            // Community rule: an agent may only speak on behalf of its owner.
+            if me.kind != UserKind::Agent || me.owner_id.as_deref() != Some(o.as_str()) {
+                return Err(err("forbidden", "on_behalf_of must be the agent's owner"));
+            }
+        }
+        let (causation_id, hop) = self.causation(conv_id, me, causation_id, &reply_to).await?;
+        if me.kind == UserKind::Agent {
+            self.agent_gate(me, conv_id, hop, text).await?;
+            if let Some((hook, reason)) = self.sh.policy.outbound(text) {
+                metrics::counter!(m::POLICY_BLOCKS, "hook" => hook.clone()).increment(1);
+                self.db
+                    .audit(
+                        Some(&me.id),
+                        "policy.block",
+                        Some(conv_id),
+                        None,
+                        json!({"hook": hook, "reason": reason}),
+                    )
+                    .await?;
+                self.notify_owner(
+                    conv_id,
+                    me,
+                    "policy.blocked",
+                    json!({"agent_id": me.id, "hook": hook, "reason": reason}),
+                )
+                .await?;
+                self.commit_on_error = true;
+                return Err(err("policy_blocked", reason));
+            }
+        }
+
+        // Targeted visibility goes to the side channel and takes no conv_seq.
+        if let Some(target) = to_user {
+            let t = self.resolve_user(&target)?;
+            self.require_member(conv_id, &t.id).await?;
+            let mut audience = Self::agent_audience(me);
+            if !audience.contains(&t.id) {
+                audience.push(t.id.clone());
+            }
+            let side = self
+                .db
+                .append_side(
+                    conv_id,
+                    &audience,
+                    "ephemeral",
+                    Some(&me.id),
+                    json!({"text": text, "from": me.id, "from_name": me.name, "from_type": me.kind, "to": t.id, "hop": hop}),
+                )
+                .await?;
+            let side_seq = side.side_seq;
+            self.out.push(Out::Side(side));
+            return Ok(json!({"side_seq": side_seq}));
+        }
+
+        if me.kind == UserKind::Agent && member.approval {
+            let audience = Self::agent_audience(me);
+            let draft_id = format!("d_{}", crate::db::new_id());
+            let (d, side) = self
+                .db
+                .create_draft(
+                    &draft_id,
+                    conv_id,
+                    me,
+                    text,
+                    hop,
+                    causation_id,
+                    reply_to,
+                    &audience,
+                )
+                .await?;
+            self.db
+                .audit(
+                    Some(&me.id),
+                    "draft.created",
+                    Some(conv_id),
+                    Some(&d.draft_id),
+                    json!({}),
+                )
+                .await?;
+            metrics::counter!(m::DRAFTS, "state" => "pending").increment(1);
+            self.out.push(Out::Side(side));
+            return Ok(json!({"draft_id": d.draft_id, "state": "pending_approval"}));
+        }
+
+        let mentions = self.mentions(conv_id, text).await?;
+        let res = self
+            .db
+            .commit_message(NewMsg {
+                conv_id,
+                sender: me,
+                client_msg_id: Some(client_msg_id),
+                on_behalf_of,
+                kind: "text",
+                content: text.to_string(),
+                state: "committed",
+                hop,
+                causation_id,
+                reply_to,
+                mentions,
+            })
+            .await?;
+        match res {
+            Committed::Duplicate { seq, msg_id } => {
+                metrics::counter!(m::DEDUP_HITS).increment(1);
+                Ok(json!({"seq": seq, "msg_id": msg_id, "duplicate": true}))
+            }
+            Committed::New(ev) => {
+                let msg = ev.msg.as_ref().unwrap();
+                let v = json!({"seq": ev.seq, "msg_id": msg.msg_id, "hop": msg.hop});
+                self.emit(ev).await?;
+                Ok(v)
+            }
+        }
+    }
+
+    /// May `me` modify this message? The sender, the sending agent's owner,
+    /// or (recall only) the conversation owner.
+    async fn can_modify(&mut self, me: &User, msg: &MsgView, recall: bool) -> ApiResult<bool> {
+        if msg.sender_id == me.id {
+            return Ok(true);
+        }
+        if self
+            .sh
+            .user(&msg.sender_id)
+            .and_then(|s| s.owner_id)
+            .as_deref()
+            == Some(me.id.as_str())
+        {
+            return Ok(true);
+        }
+        if recall && let Ok(mem) = self.require_member(&msg.conv_id, &me.id).await {
+            return Ok(mem.role == "owner");
+        }
+        Ok(false)
+    }
+
+    async fn edit(&mut self, me: &User, msg_id: &str, text: &str) -> ApiResult<Value> {
+        let msg = self
+            .db
+            .message(msg_id)
+            .await?
+            .ok_or_else(|| err("conv_moved", "message not in this database"))?;
+        self.own_conv(&msg.conv_id)?;
+        if !self.can_modify(me, &msg, false).await? {
+            return Err(err("forbidden", "cannot edit this message"));
+        }
+        if msg.state == "streaming" || msg.state == "recalled" {
+            return Err(err("conflict", format!("message is {}", msg.state)));
+        }
+        if text.is_empty() || text.len() > MAX_MESSAGE_BYTES {
+            return Err(err("bad_request", "message must be 1..64KB"));
+        }
+        if me.kind == UserKind::Agent
+            && let Some((_, reason)) = self.sh.policy.outbound(text)
+        {
+            return Err(err("policy_blocked", reason));
+        }
+        let ev = self
+            .db
+            .update_message(msg_id, "msg.updated", &me.id, Some(text), None, None)
+            .await?;
+        if msg.sender_id != me.id {
+            self.db
+                .audit(
+                    Some(&me.id),
+                    "msg.revised",
+                    Some(&msg.conv_id),
+                    Some(msg_id),
+                    json!({}),
+                )
+                .await?;
+        }
+        let seq = ev.seq;
+        self.emit(ev).await?;
+        Ok(json!({"seq": seq}))
+    }
+
+    async fn recall(&mut self, me: &User, msg_id: &str) -> ApiResult<Value> {
+        let msg = self
+            .db
+            .message(msg_id)
+            .await?
+            .ok_or_else(|| err("conv_moved", "message not in this database"))?;
+        self.own_conv(&msg.conv_id)?;
+        if !self.can_modify(me, &msg, true).await? {
+            return Err(err("forbidden", "cannot recall this message"));
+        }
+        if msg.state == "streaming" {
+            self.finish_stream(msg_id, "cancelled", Some("recalled"), &me.id)
+                .await?;
+        }
+        let ev = self
+            .db
+            .update_message(
+                msg_id,
+                "msg.recalled",
+                &me.id,
+                Some(""),
+                Some("recalled"),
+                None,
+            )
+            .await?;
+        if msg.sender_id != me.id {
+            self.db
+                .audit(
+                    Some(&me.id),
+                    "msg.recalled",
+                    Some(&msg.conv_id),
+                    Some(msg_id),
+                    json!({}),
+                )
+                .await?;
+        }
+        let seq = ev.seq;
+        self.emit(ev).await?;
+        Ok(json!({"seq": seq}))
+    }
+
+    // ----------------------------------------------------------- streaming
+
+    async fn stream_start(
+        &mut self,
+        me: &User,
+        conv_id: &str,
+        client_msg_id: &str,
+        reply_to: Option<String>,
+        causation_id: Option<String>,
+    ) -> ApiResult<Value> {
+        if me.kind != UserKind::Agent {
+            return Err(err("forbidden", "only agents stream"));
+        }
+        let member = self.require_member(conv_id, &me.id).await?;
+        let active = self
+            .st
+            .streams
+            .values()
+            .filter(|s| s.sender.id == me.id && s.conv_id == conv_id)
+            .count();
+        if active >= 2 {
+            return Err(err(
+                "rate_limited",
+                "too many concurrent streams in this conversation",
+            ));
+        }
+        let (causation_id, hop) = self.causation(conv_id, me, causation_id, &reply_to).await?;
+        self.agent_gate(me, conv_id, hop, "").await?;
+        let now = Instant::now();
+        let (msg_id, target, seq) = if member.approval {
+            (
+                format!("d_{}", crate::db::new_id()),
+                Target::Draft {
+                    audience: Self::agent_audience(me),
+                },
+                None,
+            )
+        } else {
+            let res = self
+                .db
+                .commit_message(NewMsg {
+                    conv_id,
+                    sender: me,
+                    client_msg_id: Some(client_msg_id),
+                    on_behalf_of: None,
+                    kind: "text",
+                    content: String::new(),
+                    state: "streaming",
+                    hop,
+                    causation_id: causation_id.clone(),
+                    reply_to: reply_to.clone(),
+                    mentions: vec![],
+                })
+                .await?;
+            match res {
+                Committed::Duplicate { seq, msg_id } => {
+                    return Ok(json!({"msg_id": msg_id, "seq": seq, "duplicate": true}));
+                }
+                Committed::New(ev) => {
+                    let id = ev.msg.as_ref().unwrap().msg_id.clone();
+                    let seq = ev.seq;
+                    self.emit(ev).await?;
+                    (id, Target::Main, Some(seq))
+                }
+            }
+        };
+        let pending_approval = matches!(target, Target::Draft { .. });
+        self.st.streams.insert(
+            msg_id.clone(),
+            Stream {
+                msg_id: msg_id.clone(),
+                conv_id: conv_id.to_string(),
+                sender: me.clone(),
+                target,
+                buf: String::new(),
+                pending: String::new(),
+                next_idx: 0,
+                started: now,
+                last_append: now,
+                checkpointed: 0,
+                hop,
+                causation_id,
+                reply_to,
+            },
+        );
+        self.sh
+            .stream_index
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(msg_id.clone(), self.idx);
+        metrics::gauge!(m::STREAMS_ACTIVE).increment(1.0);
+        Ok(json!({"msg_id": msg_id, "seq": seq, "pending_approval": pending_approval, "hop": hop}))
+    }
+
+    async fn stream_append(
+        &mut self,
+        me: &User,
+        msg_id: &str,
+        idx: u64,
+        text: &str,
+    ) -> ApiResult<Value> {
+        let max_bytes = self.sh.cfg.stream_max_bytes;
+        let st = self
+            .st
+            .streams
+            .get_mut(msg_id)
+            .ok_or_else(|| err("not_found", "no active stream"))?;
+        if st.sender.id != me.id {
+            return Err(err("forbidden", "not your stream"));
+        }
+        if idx < st.next_idx {
+            return Ok(json!({"duplicate": true}));
+        }
+        if idx > st.next_idx {
+            return Err(err(
+                "out_of_order",
+                format!("expected chunk {}", st.next_idx),
+            ));
+        }
+        st.next_idx += 1;
+        st.last_append = Instant::now();
+        st.buf.push_str(text);
+        st.pending.push_str(text);
+        let over = st.buf.len() > max_bytes;
+        let buf = st.buf.clone();
+        let conv_id = st.conv_id.clone();
+        if !self
+            .st
+            .guards
+            .charge_chars(&me.id, text.chars().count() as u64)
+        {
+            self.finish_stream(msg_id, "cancelled", Some("budget_exceeded"), &me.id)
+                .await?;
+            self.commit_on_error = true;
+            return Err(err("budget_exceeded", "daily agent budget exhausted"));
+        }
+        // Streaming filter: check the accumulated text chunk by chunk.
+        if let Some((hook, reason)) = self.sh.policy.outbound(&buf) {
+            metrics::counter!(m::POLICY_BLOCKS, "hook" => hook.clone()).increment(1);
+            self.db
+                .audit(
+                    Some(&me.id),
+                    "policy.block",
+                    Some(&conv_id),
+                    Some(msg_id),
+                    json!({"hook": hook, "reason": reason, "streaming": true}),
+                )
+                .await?;
+            self.moderate_stream(msg_id, &reason).await?;
+            self.commit_on_error = true;
+            return Err(err("policy_blocked", reason));
+        }
+        if over {
+            self.finish_stream(msg_id, "complete", Some("size_limit"), &me.id)
+                .await?;
+            self.commit_on_error = true;
+            return Err(err(
+                "size_limit",
+                "stream exceeded the maximum size and was closed",
+            ));
+        }
+        Ok(json!({}))
+    }
+
+    async fn stream_cancel(&mut self, me: &User, msg_id: &str) -> ApiResult<Value> {
+        let st = self
+            .st
+            .streams
+            .get(msg_id)
+            .ok_or_else(|| err("not_found", "no active stream"))?;
+        let sender = st.sender.clone();
+        let conv_id = st.conv_id.clone();
+        let is_owner = sender.owner_id.as_deref() == Some(me.id.as_str());
+        let human_member =
+            me.kind == UserKind::Human && self.require_member(&conv_id, &me.id).await.is_ok();
+        if sender.id != me.id && !is_owner && !human_member {
+            return Err(err("forbidden", "cannot interrupt this stream"));
+        }
+        let reason = format!("cancelled_by:{}", me.name);
+        self.finish_stream(msg_id, "cancelled", Some(&reason), &me.id)
+            .await?;
+        if sender.id != me.id {
+            self.db
+                .audit(
+                    Some(&me.id),
+                    "stream.interrupt",
+                    Some(&conv_id),
+                    Some(msg_id),
+                    json!({"agent_id": sender.id}),
+                )
+                .await?;
+        }
+        Ok(json!({"msg_id": msg_id}))
+    }
+
+    fn stream_removed(&mut self, msg_id: &str) {
+        self.sh
+            .stream_index
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(msg_id);
+        metrics::gauge!(m::STREAMS_ACTIVE).decrement(1.0);
+    }
+
+    /// Policy hit mid-stream: stop the stream and replace what was already
+    /// pushed with a placeholder (a new version of the same message).
+    async fn moderate_stream(&mut self, msg_id: &str, reason: &str) -> ApiResult<()> {
+        let (conv_id, sender, target) = match self.st.streams.get(msg_id) {
+            Some(s) => (s.conv_id.clone(), s.sender.clone(), s.target.clone()),
+            None => return Ok(()),
+        };
+        let r = format!("policy: {reason}");
+        match &target {
+            Target::Main => {
+                let ev = self
+                    .db
+                    .update_message(
+                        msg_id,
+                        "msg.updated",
+                        &sender.id,
+                        Some(MODERATED_PLACEHOLDER),
+                        Some("cancelled"),
+                        Some(&r),
+                    )
+                    .await?;
+                self.emit(ev).await?;
+            }
+            Target::Draft { audience } => {
+                let side = self
+                    .db
+                    .append_side(
+                        &conv_id,
+                        audience,
+                        "draft.discarded",
+                        Some(&sender.id),
+                        json!({"draft_id": msg_id, "reason": r}),
+                    )
+                    .await?;
+                self.out.push(Out::Side(side));
+            }
+        }
+        self.notify_owner(
+            &conv_id,
+            &sender,
+            "policy.blocked",
+            json!({"agent_id": sender.id, "msg_id": msg_id, "reason": reason}),
+        )
+        .await?;
+        self.out.push(Out::ToUser {
+            user_id: sender.id.clone(),
+            frame: json!({"type": "stream_cancelled", "msg_id": msg_id, "reason": r}),
+        });
+        self.st.streams.remove(msg_id);
+        self.stream_removed(msg_id);
+        metrics::counter!(m::STREAMS_FINISHED, "state" => "cancelled", "reason" => "policy")
+            .increment(1);
+        Ok(())
+    }
+
+    /// Terminal transition of a stream: complete | cancelled | failed.
+    async fn finish_stream(
+        &mut self,
+        msg_id: &str,
+        state: &str,
+        reason: Option<&str>,
+        actor: &str,
+    ) -> ApiResult<()> {
+        self.flush_one(msg_id);
+        let (conv_id, sender, target, buf, hop, causation_id, reply_to) =
+            match self.st.streams.get(msg_id) {
+                Some(s) => (
+                    s.conv_id.clone(),
+                    s.sender.clone(),
+                    s.target.clone(),
+                    s.buf.clone(),
+                    s.hop,
+                    s.causation_id.clone(),
+                    s.reply_to.clone(),
+                ),
+                None => return Ok(()),
+            };
+        match &target {
+            Target::Main => {
+                let ev = self
+                    .db
+                    .update_message(
+                        msg_id,
+                        "msg.updated",
+                        actor,
+                        Some(&buf),
+                        Some(state),
+                        reason,
+                    )
+                    .await?;
+                self.emit(ev).await?;
+            }
+            Target::Draft { audience } => {
+                if state == "complete" && !buf.is_empty() {
+                    let (d, side) = self
+                        .db
+                        .create_draft(
+                            msg_id,
+                            &conv_id,
+                            &sender,
+                            &buf,
+                            hop,
+                            causation_id,
+                            reply_to,
+                            audience,
+                        )
+                        .await?;
+                    self.db
+                        .audit(
+                            Some(&sender.id),
+                            "draft.created",
+                            Some(&conv_id),
+                            Some(&d.draft_id),
+                            json!({"streamed": true}),
+                        )
+                        .await?;
+                    metrics::counter!(m::DRAFTS, "state" => "pending").increment(1);
+                    self.out.push(Out::Side(side));
+                } else {
+                    let side = self
+                        .db
+                        .append_side(
+                            &conv_id,
+                            audience,
+                            "draft.discarded",
+                            Some(actor),
+                            json!({"draft_id": msg_id, "reason": reason.unwrap_or(state)}),
+                        )
+                        .await?;
+                    self.out.push(Out::Side(side));
+                }
+            }
+        }
+        if state != "complete" && actor != sender.id {
+            self.out.push(Out::ToUser { user_id: sender.id.clone(), frame: json!({"type": "stream_cancelled", "msg_id": msg_id, "reason": reason.unwrap_or(state)}) });
+        }
+        self.st.streams.remove(msg_id);
+        self.stream_removed(msg_id);
+        let reason_label = reason
+            .map(|r| r.split(':').next().unwrap_or(r).to_string())
+            .unwrap_or_else(|| "end".into());
+        metrics::counter!(m::STREAMS_FINISHED, "state" => state.to_string(), "reason" => reason_label).increment(1);
+        Ok(())
+    }
+
+    /// Queues a stream's pending delta for the sessions looking at it.
+    fn flush_one(&mut self, msg_id: &str) {
+        let Some(st) = self.st.streams.get_mut(msg_id) else {
+            return;
+        };
+        if st.pending.is_empty() {
+            return;
+        }
+        let text = std::mem::take(&mut st.pending);
+        let audience = match &st.target {
+            Target::Main => None,
+            Target::Draft { audience } => Some(audience.clone()),
+        };
+        self.out.push(Out::Delta {
+            conv_id: st.conv_id.clone(),
+            msg_id: st.msg_id.clone(),
+            text,
+            reset: false,
+            sender_id: st.sender.id.clone(),
+            audience,
+        });
+    }
+
+    async fn tick(&mut self) -> ApiResult<()> {
+        let now = Instant::now();
+        if now.duration_since(self.st.last_flush) >= self.sh.cfg.coalesce {
+            self.st.last_flush = now;
+            let ids: Vec<String> = self.st.streams.keys().cloned().collect();
+            for id in ids {
+                self.flush_one(&id);
+            }
+        }
+        if now.duration_since(self.st.last_checkpoint) >= self.sh.cfg.checkpoint_every {
+            self.st.last_checkpoint = now;
+            let dirty: Vec<(String, String)> = self
+                .st
+                .streams
+                .values_mut()
+                .filter(|s| matches!(s.target, Target::Main) && s.buf.len() != s.checkpointed)
+                .map(|s| {
+                    s.checkpointed = s.buf.len();
+                    (s.msg_id.clone(), s.buf.clone())
+                })
+                .collect();
+            for (id, content) in dirty {
+                self.db.checkpoint(&id, &content).await?;
+            }
+        }
+        let expired: Vec<(String, &'static str, &'static str, String)> = self
+            .st
+            .streams
+            .values()
+            .filter_map(|s| {
+                if now.duration_since(s.last_append) > self.sh.cfg.stream_idle {
+                    Some((s.msg_id.clone(), "failed", "timeout", s.sender.id.clone()))
+                } else if now.duration_since(s.started) > self.sh.cfg.stream_max {
+                    Some((
+                        s.msg_id.clone(),
+                        "complete",
+                        "duration_limit",
+                        s.sender.id.clone(),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (id, state, reason, sender) in expired {
+            self.finish_stream(&id, state, Some(reason), &sender)
+                .await?;
+        }
+        if self.st.last_gc.elapsed() > Duration::from_secs(600) {
+            self.st.last_gc = now;
+            self.db.dedup_gc(now_ms() - DEDUP_TTL_MS).await?;
+        }
+        Ok(())
+    }
+
+    // -------------------------------------------------------- intervention
+
+    async fn whisper(
+        &mut self,
+        me: &User,
+        conv_id: &str,
+        agent_id: &str,
+        text: &str,
+    ) -> ApiResult<Value> {
+        let agent = self.owned_agent(me, agent_id)?;
+        self.require_member(conv_id, &agent.id).await?;
+        if text.is_empty() || text.len() > MAX_MESSAGE_BYTES {
+            return Err(err("bad_request", "whisper must be 1..64KB"));
+        }
+        let audience = vec![agent.id.clone(), me.id.clone()];
+        let side = self
+            .db
+            .append_side(
+                conv_id,
+                &audience,
+                "whisper",
+                Some(&me.id),
+                json!({"text": text, "from": me.id, "from_name": me.name, "to": agent.id}),
+            )
+            .await?;
+        self.db
+            .audit(
+                Some(&me.id),
+                "whisper",
+                Some(conv_id),
+                Some(&agent.id),
+                json!({}),
+            )
+            .await?;
+        let v = json!({"side_seq": side.side_seq, "anchor_seq": side.anchor_seq});
+        self.out.push(Out::Side(side));
+        Ok(v)
+    }
+
+    async fn approve(
+        &mut self,
+        me: &User,
+        draft_id: &str,
+        text: Option<String>,
+    ) -> ApiResult<Value> {
+        let d = self
+            .db
+            .draft(draft_id)
+            .await?
+            .ok_or_else(|| err("conv_moved", "draft not in this database"))?;
+        self.own_conv(&d.conv_id)?;
+        let agent = self.owned_agent(me, &d.agent_id)?;
+        if d.state != "pending" {
+            return Err(err("conflict", "draft already decided"));
+        }
+        let audience = Self::agent_audience(&agent);
+        let side = self
+            .db
+            .decide_draft(draft_id, "approved", &me.id, &audience, &d.conv_id)
+            .await?;
+        let content = text.unwrap_or(d.content.clone());
+        let mentions = self.mentions(&d.conv_id, &content).await?;
+        let res = self
+            .db
+            .commit_message(NewMsg {
+                conv_id: &d.conv_id,
+                sender: &agent,
+                client_msg_id: Some(draft_id),
+                on_behalf_of: None,
+                kind: "text",
+                content,
+                state: "committed",
+                hop: d.hop,
+                causation_id: d.causation_id.clone(),
+                reply_to: d.reply_to.clone(),
+                mentions,
+            })
+            .await?;
+        self.db
+            .audit(
+                Some(&me.id),
+                "draft.approved",
+                Some(&d.conv_id),
+                Some(draft_id),
+                json!({"edited": d.content}),
+            )
+            .await?;
+        metrics::counter!(m::DRAFTS, "state" => "approved").increment(1);
+        metrics::histogram!(m::APPROVAL_LATENCY)
+            .record((now_ms() - d.created_at).max(0) as f64 / 1000.0);
+        self.out.push(Out::Side(side));
+        if let Committed::New(ev) = res {
+            let seq = ev.seq;
+            self.emit(ev).await?;
+            return Ok(json!({"seq": seq}));
+        }
+        Ok(json!({}))
+    }
+
+    async fn reject(&mut self, me: &User, draft_id: &str) -> ApiResult<Value> {
+        let d = self
+            .db
+            .draft(draft_id)
+            .await?
+            .ok_or_else(|| err("conv_moved", "draft not in this database"))?;
+        self.own_conv(&d.conv_id)?;
+        let agent = self.owned_agent(me, &d.agent_id)?;
+        let audience = Self::agent_audience(&agent);
+        let side = self
+            .db
+            .decide_draft(draft_id, "rejected", &me.id, &audience, &d.conv_id)
+            .await?;
+        self.db
+            .audit(
+                Some(&me.id),
+                "draft.rejected",
+                Some(&d.conv_id),
+                Some(draft_id),
+                json!({}),
+            )
+            .await?;
+        metrics::counter!(m::DRAFTS, "state" => "rejected").increment(1);
+        metrics::histogram!(m::APPROVAL_LATENCY)
+            .record((now_ms() - d.created_at).max(0) as f64 / 1000.0);
+        self.out.push(Out::Side(side));
+        Ok(json!({}))
+    }
+
+    async fn takeover(
+        &mut self,
+        me: &User,
+        conv_id: &str,
+        agent_id: &str,
+        on: bool,
+    ) -> ApiResult<Value> {
+        let agent = self.owned_agent(me, agent_id)?;
+        self.require_member(conv_id, &agent.id).await?;
+        let current = self.db.takeover(conv_id, &agent.id).await?;
+        if on == current.is_some() {
+            return Err(err(
+                "conflict",
+                if on {
+                    "already taken over"
+                } else {
+                    "not taken over"
+                },
+            ));
+        }
+        if on {
+            let ids: Vec<String> = self
+                .st
+                .streams
+                .values()
+                .filter(|s| s.sender.id == agent.id && s.conv_id == conv_id)
+                .map(|s| s.msg_id.clone())
+                .collect();
+            for id in ids {
+                self.finish_stream(&id, "cancelled", Some("taken_over"), &me.id)
+                    .await?;
+            }
+        }
+        let ev = self
+            .db
+            .set_takeover(conv_id, &agent.id, if on { Some(&me.id) } else { None })
+            .await?;
+        self.db
+            .audit(
+                Some(&me.id),
+                if on { "takeover" } else { "release" },
+                Some(conv_id),
+                Some(&agent.id),
+                json!({}),
+            )
+            .await?;
+        metrics::counter!(m::TAKEOVERS, "action" => if on { "takeover" } else { "release" })
+            .increment(1);
+        let seq = ev.seq;
+        self.emit(ev).await?;
+        Ok(json!({"seq": seq}))
+    }
+}

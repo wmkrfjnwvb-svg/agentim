@@ -30,6 +30,12 @@ struct Args {
     chunks: usize,
     ack_log: Option<String>,
     verify_ack_log: Option<String>,
+    /// Fail unless acked msg/s is at least this.
+    min_throughput: f64,
+    /// Fail if the p99 ACK latency exceeds this (ms).
+    max_p99_ms: f64,
+    /// Write-path mode: every client sends into its own conversation (no fan-out).
+    solo: bool,
 }
 
 fn parse_args() -> Args {
@@ -41,10 +47,18 @@ fn parse_args() -> Args {
         chunks: 40,
         ack_log: None,
         verify_ack_log: None,
+        min_throughput: 0.0,
+        max_p99_ms: f64::INFINITY,
+        solo: false,
     };
     let v: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < v.len() {
+        if v[i] == "--solo" {
+            a.solo = true;
+            i += 1;
+            continue;
+        }
         let val = v.get(i + 1).cloned().unwrap_or_default();
         match v[i].as_str() {
             "--addr" => a.addr = val,
@@ -54,6 +68,8 @@ fn parse_args() -> Args {
             "--chunks" => a.chunks = val.parse().unwrap(),
             "--ack-log" => a.ack_log = Some(val),
             "--verify-ack-log" => a.verify_ack_log = Some(val),
+            "--min-throughput" => a.min_throughput = val.parse().unwrap(),
+            "--max-p99-ms" => a.max_p99_ms = val.parse().unwrap(),
             other => panic!("unknown argument {other}"),
         }
         i += 2;
@@ -109,9 +125,13 @@ struct Client {
 
 impl Client {
     async fn connect(addr: &str, token: &str) -> Result<Client, String> {
-        let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws?token={token}"))
-            .await
-            .map_err(|e| e.to_string())?;
+        let (ws, _) = tokio_tungstenite::connect_async_with_config(
+            format!("ws://{addr}/ws?token={token}"),
+            None,
+            true,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         let (mut sink, mut stream) = ws.split();
         let (out, mut out_rx) = mpsc::unbounded_channel::<Message>();
         tokio::spawn(async move {
@@ -206,6 +226,9 @@ async fn main() {
         return verify_ack_log(&a.addr, path).await;
     }
     let tag = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    if a.solo {
+        return solo_mode(&a, tag).await;
+    }
     let owner = create_user(&a.addr, &format!("lt-{tag}-owner"), false, None).await;
     let mut humans = vec![];
     for i in 0..a.clients {
@@ -234,6 +257,9 @@ async fn main() {
         c.ok(json!({"op": "focus", "conv_id": conv})).await;
         clients.push(Arc::new(c));
     }
+    // Agents answer a human prompt explicitly (reply_to), as real agents do;
+    // unprompted agent messages would be chained by the loop guard.
+    let prompt = oc.ok(json!({"op": "send", "conv_id": conv, "client_msg_id": "prompt", "text": "please answer"})).await["msg_id"].as_str().unwrap().to_string();
     let base_seq = oc.pull_all(&conv).await.len() as i64;
     let started = Instant::now();
 
@@ -263,9 +289,9 @@ async fn main() {
     let mut stream_tasks = vec![];
     for (i, u) in agents.iter().enumerate() {
         let c = Client::connect(&a.addr, &u.token).await.unwrap();
-        let (conv, chunks) = (conv.clone(), a.chunks);
+        let (conv, chunks, prompt) = (conv.clone(), a.chunks, prompt.clone());
         stream_tasks.push(tokio::spawn(async move {
-            let r = c.ok(json!({"op": "stream_start", "conv_id": conv, "client_msg_id": format!("stream-{i}")})).await;
+            let r = c.ok(json!({"op": "stream_start", "conv_id": conv, "client_msg_id": format!("stream-{i}"), "reply_to": prompt})).await;
             let id = r["msg_id"].as_str().unwrap().to_string();
             let mut text = String::new();
             for k in 0..chunks {
@@ -318,7 +344,7 @@ async fn main() {
             latest.insert(id, e["msg"].clone());
         }
     }
-    let expected_msgs = a.clients * a.messages + a.streams;
+    let expected_msgs = a.clients * a.messages + a.streams + 1;
     assert_eq!(created.len(), expected_msgs, "message count");
     let texts: HashSet<String> = latest
         .values()
@@ -405,6 +431,18 @@ async fn main() {
         pushed_total,
         deltas_total
     );
+    let throughput = total_sends as f64 / elapsed.as_secs_f64();
+    let p99 = pct(&mut lat, 0.99);
+    assert!(
+        throughput >= a.min_throughput,
+        "performance gate: {throughput:.0} msg/s < {}",
+        a.min_throughput
+    );
+    assert!(
+        p99 <= a.max_p99_ms,
+        "performance gate: p99 {p99:.1}ms > {}ms",
+        a.max_p99_ms
+    );
 }
 
 async fn ack_log_mode(a: &Args, conv: &str, owner: &User, humans: &[User], path: &str) {
@@ -472,5 +510,90 @@ async fn verify_ack_log(addr: &str, path: &str) {
         "OK  all {} ACKed messages survived kill -9 ({} events in log, contiguous)",
         acked.len(),
         seqs.len()
+    );
+}
+
+/// Every client writes into its own conversation: measures the write path
+/// (group commit) without fan-out cost on either side.
+async fn solo_mode(a: &Args, tag: &str) {
+    let mut users = vec![];
+    for i in 0..a.clients {
+        users.push(create_user(&a.addr, &format!("lt-{tag}-solo{i}"), false, None).await);
+    }
+    let mut clients = vec![];
+    for u in &users {
+        let c = Client::connect(&a.addr, &u.token).await.unwrap();
+        let conv = c
+            .ok(json!({"op": "create_conv", "kind": "group", "title": "solo", "members": []}))
+            .await["conv_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        clients.push((Arc::new(c), conv, u.name.clone()));
+    }
+    let started = Instant::now();
+    let mut tasks = vec![];
+    for (c, conv, name) in &clients {
+        let (c, conv, name) = (c.clone(), conv.clone(), name.clone());
+        let n = a.messages;
+        tasks.push(tokio::spawn(async move {
+            let mut lat = vec![];
+            for i in 0..n {
+                let req = json!({"op": "send", "conv_id": conv, "client_msg_id": format!("{name}-{i}"), "text": format!("{name} #{i}")});
+                let t = Instant::now();
+                let r = c.ok(req.clone()).await;
+                lat.push(t.elapsed().as_secs_f64() * 1000.0);
+                if i % 5 == 0 {
+                    assert_eq!(c.ok(req).await["seq"], r["seq"], "retry must return the original seq");
+                }
+            }
+            lat
+        }));
+    }
+    let mut lat = vec![];
+    for t in tasks {
+        lat.extend(t.await.unwrap());
+    }
+    let elapsed = started.elapsed();
+    for (c, conv, _) in &clients {
+        let evs = c.pull_all(conv).await;
+        let seqs: Vec<i64> = evs.iter().map(|e| e["seq"].as_i64().unwrap()).collect();
+        assert_eq!(
+            seqs,
+            (1..=seqs.len() as i64).collect::<Vec<_>>(),
+            "contiguous"
+        );
+        assert_eq!(
+            evs.iter().filter(|e| e["type"] == "msg.created").count(),
+            a.messages,
+            "exactly once"
+        );
+    }
+    let total = a.clients * a.messages;
+    let throughput = total as f64 / elapsed.as_secs_f64();
+    println!(
+        "OK  solo write path: {} clients x {} messages (+{} retries) in {:.2}s",
+        a.clients,
+        a.messages,
+        a.clients * a.messages.div_ceil(5),
+        elapsed.as_secs_f64()
+    );
+    println!("    throughput: {throughput:.0} acked msg/s");
+    let p99 = pct(&mut lat, 0.99);
+    println!(
+        "    ack latency: p50 {:.2}ms  p99 {:.2}ms  max {:.2}ms",
+        pct(&mut lat, 0.5),
+        p99,
+        pct(&mut lat, 1.0)
+    );
+    assert!(
+        throughput >= a.min_throughput,
+        "performance gate: {throughput:.0} msg/s < {}",
+        a.min_throughput
+    );
+    assert!(
+        p99 <= a.max_p99_ms,
+        "performance gate: p99 {p99:.1}ms > {}ms",
+        a.max_p99_ms
     );
 }

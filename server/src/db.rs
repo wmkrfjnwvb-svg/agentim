@@ -1,0 +1,1280 @@
+//! All business SQL, written once for SQLite, PostgreSQL and MySQL.
+//!
+//! Functions never open or commit transactions: writes run inside the
+//! writer's batch transaction (one savepoint per command), reads run on a
+//! pooled connection or inside that same transaction.
+
+use serde_json::{Value, json};
+use sqlx::AnyConnection;
+use sqlx::Row;
+use sqlx::any::AnyRow;
+
+use crate::model::*;
+use crate::storage::{Dialect, TABLES, Ty};
+
+pub fn new_id() -> String {
+    uuid::Uuid::now_v7().simple().to_string()
+}
+
+pub struct Db<'a> {
+    pub c: &'a mut AnyConnection,
+    pub d: Dialect,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConvRow {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub unit_id: String,
+    pub last_seq: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct Draft {
+    pub draft_id: String,
+    pub conv_id: String,
+    pub agent_id: String,
+    pub content: String,
+    pub hop: i64,
+    pub causation_id: Option<String>,
+    pub reply_to: Option<String>,
+    pub state: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DirEntry {
+    pub conv_id: String,
+    pub database: String,
+    pub unit_id: String,
+    pub migrating: bool,
+}
+
+pub struct NewMsg<'a> {
+    pub conv_id: &'a str,
+    pub sender: &'a User,
+    pub client_msg_id: Option<&'a str>,
+    pub on_behalf_of: Option<String>,
+    pub kind: &'a str,
+    pub content: String,
+    pub state: &'a str,
+    pub hop: i64,
+    pub causation_id: Option<String>,
+    pub reply_to: Option<String>,
+    pub mentions: Vec<String>,
+}
+
+#[allow(clippy::large_enum_variant)]
+pub enum Committed {
+    New(Event),
+    /// Retry of an already committed client_msg_id: the original result.
+    Duplicate {
+        seq: i64,
+        msg_id: String,
+    },
+}
+
+/// One row of a per-conversation table, for migration between databases.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Cell {
+    S(Option<String>),
+    I(Option<i64>),
+}
+
+const MSG_COLS: &str = "msg_id, conv_id, created_seq, sender_id, sender_name, sender_type, on_behalf_of, kind, content,
+    version, state, state_reason, hop, causation_id, reply_to, mentions, created_at, updated_at";
+const MEMBER_COLS: &str = "user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq";
+const DRAFT_COLS: &str =
+    "draft_id, conv_id, agent_id, content, hop, causation_id, reply_to, state, created_at";
+
+fn row_user(r: &AnyRow) -> sqlx::Result<User> {
+    Ok(User {
+        id: r.try_get("id")?,
+        name: r.try_get("name")?,
+        kind: UserKind::parse(&r.try_get::<String, _>("kind")?),
+        owner_id: r.try_get("owner_id")?,
+        unit_id: r.try_get("unit_id")?,
+    })
+}
+
+fn row_msg(r: &AnyRow) -> sqlx::Result<MsgView> {
+    Ok(MsgView {
+        msg_id: r.try_get("msg_id")?,
+        conv_id: r.try_get("conv_id")?,
+        created_seq: r.try_get("created_seq")?,
+        sender_id: r.try_get("sender_id")?,
+        sender_name: r.try_get("sender_name")?,
+        sender_type: UserKind::parse(&r.try_get::<String, _>("sender_type")?),
+        on_behalf_of: r.try_get("on_behalf_of")?,
+        kind: r.try_get("kind")?,
+        content: r.try_get("content")?,
+        version: r.try_get("version")?,
+        state: r.try_get("state")?,
+        state_reason: r.try_get("state_reason")?,
+        hop: r.try_get("hop")?,
+        causation_id: r.try_get("causation_id")?,
+        reply_to: r.try_get("reply_to")?,
+        mentions: serde_json::from_str(&r.try_get::<String, _>("mentions")?).unwrap_or_default(),
+        created_at: r.try_get("created_at")?,
+        updated_at: r.try_get("updated_at")?,
+    })
+}
+
+fn row_member(r: &AnyRow) -> sqlx::Result<Member> {
+    Ok(Member {
+        user_id: r.try_get("user_id")?,
+        name: r.try_get("name")?,
+        kind: UserKind::parse(&r.try_get::<String, _>("kind")?),
+        owner_id: r.try_get("owner_id")?,
+        role: r.try_get("role")?,
+        trigger: Trigger::parse(&r.try_get::<String, _>("trigger_mode")?),
+        approval: r.try_get::<i64, _>("approval")? != 0,
+        join_seq: r.try_get("join_seq")?,
+    })
+}
+
+fn row_event(r: &AnyRow) -> sqlx::Result<Event> {
+    let payload: Value =
+        serde_json::from_str(&r.try_get::<String, _>("payload")?).unwrap_or(Value::Null);
+    Ok(Event {
+        conv_id: r.try_get("conv_id")?,
+        seq: r.try_get("seq")?,
+        kind: r.try_get("type")?,
+        actor_id: r.try_get("actor_id")?,
+        msg: serde_json::from_value(payload["msg"].clone()).ok(),
+        data: payload["data"].clone(),
+        created_at: r.try_get("created_at")?,
+    })
+}
+
+fn row_side(r: &AnyRow) -> sqlx::Result<SideEvent> {
+    Ok(SideEvent {
+        conv_id: r.try_get("conv_id")?,
+        side_seq: r.try_get("side_seq")?,
+        anchor_seq: r.try_get("anchor_seq")?,
+        audience: serde_json::from_str(&r.try_get::<String, _>("audience")?).unwrap_or_default(),
+        kind: r.try_get("type")?,
+        actor_id: r.try_get("actor_id")?,
+        data: serde_json::from_str(&r.try_get::<String, _>("payload")?).unwrap_or(Value::Null),
+        created_at: r.try_get("created_at")?,
+    })
+}
+
+fn row_draft(r: &AnyRow) -> sqlx::Result<Draft> {
+    Ok(Draft {
+        draft_id: r.try_get("draft_id")?,
+        conv_id: r.try_get("conv_id")?,
+        agent_id: r.try_get("agent_id")?,
+        content: r.try_get("content")?,
+        hop: r.try_get("hop")?,
+        causation_id: r.try_get("causation_id")?,
+        reply_to: r.try_get("reply_to")?,
+        state: r.try_get("state")?,
+        created_at: r.try_get("created_at")?,
+    })
+}
+
+impl Db<'_> {
+    // ===================================================== control database
+
+    pub async fn insert_user(&mut self, u: &User, token: &str) -> ApiResult<()> {
+        sqlx::query(self.d.q(
+            "INSERT INTO users (id, tenant_id, unit_id, name, kind, owner_id, token, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ))
+        .bind(&u.id)
+        .bind(TENANT_DEFAULT)
+        .bind(&u.unit_id)
+        .bind(&u.name)
+        .bind(u.kind.as_str())
+        .bind(&u.owner_id)
+        .bind(token)
+        .bind(now_ms())
+        .execute(&mut *self.c)
+        .await
+        .map_err(|e| ApiError::new("conflict", e.to_string()))?;
+        Ok(())
+    }
+
+    /// All users with their tokens (loaded into the in-memory directory).
+    pub async fn load_users(&mut self) -> ApiResult<Vec<(User, String)>> {
+        let rows = sqlx::query(
+            "SELECT id, name, kind, owner_id, unit_id, token FROM users ORDER BY created_at, id",
+        )
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(|r| Ok((row_user(r)?, r.try_get::<String, _>("token")?)))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn upsert_unit(&mut self, name: &str, database: &str) -> ApiResult<()> {
+        let exists = sqlx::query(self.d.q("SELECT id FROM units WHERE name = ?"))
+            .bind(name)
+            .fetch_optional(&mut *self.c)
+            .await?;
+        if exists.is_some() {
+            sqlx::query(
+                self.d
+                    .q("UPDATE units SET database_name = ? WHERE name = ?"),
+            )
+            .bind(database)
+            .bind(name)
+            .execute(&mut *self.c)
+            .await?;
+        } else {
+            sqlx::query(
+                self.d.q(
+                    "INSERT INTO units (id, name, database_name, created_at) VALUES (?, ?, ?, ?)",
+                ),
+            )
+            .bind(name)
+            .bind(name)
+            .bind(database)
+            .bind(now_ms())
+            .execute(&mut *self.c)
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn dir_all(&mut self) -> ApiResult<Vec<DirEntry>> {
+        let rows = sqlx::query("SELECT conv_id, database_name, unit_id, migrating FROM conv_dir")
+            .fetch_all(&mut *self.c)
+            .await?;
+        rows.iter()
+            .map(|r| {
+                Ok(DirEntry {
+                    conv_id: r.try_get("conv_id")?,
+                    database: r.try_get("database_name")?,
+                    unit_id: r.try_get("unit_id")?,
+                    migrating: r.try_get::<i64, _>("migrating")? != 0,
+                })
+            })
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn dir_put(&mut self, e: &DirEntry) -> ApiResult<()> {
+        let n = sqlx::query(self.d.q(
+            "UPDATE conv_dir SET database_name = ?, unit_id = ?, migrating = ? WHERE conv_id = ?",
+        ))
+        .bind(&e.database)
+        .bind(&e.unit_id)
+        .bind(e.migrating as i64)
+        .bind(&e.conv_id)
+        .execute(&mut *self.c)
+        .await?
+        .rows_affected();
+        if n == 0 {
+            sqlx::query(self.d.q("INSERT INTO conv_dir (conv_id, database_name, unit_id, migrating, created_at) VALUES (?, ?, ?, ?, ?)"))
+                .bind(&e.conv_id)
+                .bind(&e.database)
+                .bind(&e.unit_id)
+                .bind(e.migrating as i64)
+                .bind(now_ms())
+                .execute(&mut *self.c)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn dir_delete(&mut self, conv_id: &str) -> ApiResult<()> {
+        sqlx::query(self.d.q("DELETE FROM conv_dir WHERE conv_id = ?"))
+            .bind(conv_id)
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn member_index_add(&mut self, conv_id: &str, user_id: &str) -> ApiResult<()> {
+        let exists = sqlx::query(
+            self.d
+                .q("SELECT 1 FROM member_index WHERE conv_id = ? AND user_id = ?"),
+        )
+        .bind(conv_id)
+        .bind(user_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        if exists.is_none() {
+            sqlx::query(
+                self.d
+                    .q("INSERT INTO member_index (conv_id, user_id) VALUES (?, ?)"),
+            )
+            .bind(conv_id)
+            .bind(user_id)
+            .execute(&mut *self.c)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// (conv_id, user_id) pairs for any of the given users.
+    pub async fn member_index_for(
+        &mut self,
+        user_ids: &[String],
+    ) -> ApiResult<Vec<(String, String)>> {
+        let mut out = vec![];
+        for u in user_ids {
+            let rows = sqlx::query(
+                self.d
+                    .q("SELECT conv_id, user_id FROM member_index WHERE user_id = ?"),
+            )
+            .bind(u)
+            .fetch_all(&mut *self.c)
+            .await?;
+            for r in rows {
+                out.push((r.try_get("conv_id")?, r.try_get("user_id")?));
+            }
+        }
+        Ok(out)
+    }
+
+    // ============================================== conversation databases
+
+    pub async fn conv(&mut self, id: &str) -> ApiResult<Option<ConvRow>> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT id, kind, title, unit_id, last_seq FROM conversations WHERE id = ?"),
+        )
+        .bind(id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        Ok(match r {
+            Some(r) => Some(ConvRow {
+                id: r.try_get("id")?,
+                kind: r.try_get("kind")?,
+                title: r.try_get("title")?,
+                unit_id: r.try_get("unit_id")?,
+                last_seq: r.try_get("last_seq")?,
+            }),
+            None => None,
+        })
+    }
+
+    pub async fn conv_ids(&mut self) -> ApiResult<Vec<(String, String)>> {
+        let rows = sqlx::query("SELECT id, unit_id FROM conversations")
+            .fetch_all(&mut *self.c)
+            .await?;
+        rows.iter()
+            .map(|r| Ok((r.try_get("id")?, r.try_get("unit_id")?)))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    async fn next_seq(&mut self, conv_id: &str) -> ApiResult<i64> {
+        let n = sqlx::query(
+            self.d
+                .q("UPDATE conversations SET last_seq = last_seq + 1 WHERE id = ?"),
+        )
+        .bind(conv_id)
+        .execute(&mut *self.c)
+        .await?
+        .rows_affected();
+        if n == 0 {
+            return Err(ApiError::new("not_found", "conversation"));
+        }
+        let r = sqlx::query(self.d.q("SELECT last_seq FROM conversations WHERE id = ?"))
+            .bind(conv_id)
+            .fetch_one(&mut *self.c)
+            .await?;
+        Ok(r.try_get(0)?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn write_event(
+        &mut self,
+        conv_id: &str,
+        seq: i64,
+        kind: &str,
+        actor: Option<&str>,
+        msg: Option<MsgView>,
+        data: Value,
+        ts: i64,
+    ) -> ApiResult<Event> {
+        let payload = json!({"msg": msg, "data": data});
+        sqlx::query(self.d.q(
+            "INSERT INTO events (conv_id, seq, type, actor_id, msg_id, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ))
+        .bind(conv_id)
+        .bind(seq)
+        .bind(kind)
+        .bind(actor)
+        .bind(msg.as_ref().map(|m| m.msg_id.clone()))
+        .bind(payload.to_string())
+        .bind(ts)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(Event {
+            conv_id: conv_id.to_string(),
+            seq,
+            kind: kind.to_string(),
+            actor_id: actor.map(String::from),
+            msg,
+            data,
+            created_at: ts,
+        })
+    }
+
+    pub async fn append_event(
+        &mut self,
+        conv_id: &str,
+        kind: &str,
+        actor: Option<&str>,
+        msg: Option<MsgView>,
+        data: Value,
+    ) -> ApiResult<Event> {
+        let seq = self.next_seq(conv_id).await?;
+        self.write_event(conv_id, seq, kind, actor, msg, data, now_ms())
+            .await
+    }
+
+    pub async fn create_conv(
+        &mut self,
+        id: &str,
+        kind: &str,
+        title: &str,
+        unit_id: &str,
+        creator: &User,
+        members: &[User],
+    ) -> ApiResult<Vec<Event>> {
+        sqlx::query(self.d.q(
+            "INSERT INTO conversations (id, tenant_id, unit_id, kind, title, last_seq, side_seq, created_at) VALUES (?, ?, ?, ?, ?, 0, 0, ?)",
+        ))
+        .bind(id)
+        .bind(TENANT_DEFAULT)
+        .bind(unit_id)
+        .bind(kind)
+        .bind(title)
+        .bind(now_ms())
+        .execute(&mut *self.c)
+        .await?;
+        let mut events = vec![
+            self.append_event(
+                id,
+                "conv.created",
+                Some(&creator.id),
+                None,
+                json!({"kind": kind, "title": title}),
+            )
+            .await?,
+        ];
+        let mut all: Vec<&User> = vec![creator];
+        all.extend(members.iter().filter(|m| m.id != creator.id));
+        for u in all {
+            let role = if u.id == creator.id {
+                "owner"
+            } else {
+                "member"
+            };
+            events.push(self.add_member(id, kind, u, role, &creator.id).await?);
+        }
+        Ok(events)
+    }
+
+    pub async fn add_member(
+        &mut self,
+        conv_id: &str,
+        conv_kind: &str,
+        u: &User,
+        role: &str,
+        actor: &str,
+    ) -> ApiResult<Event> {
+        if self.member(conv_id, &u.id).await?.is_some() {
+            return Err(ApiError::new("conflict", "already a member"));
+        }
+        // Agents in groups only hear what is addressed to them by default.
+        let trigger = if u.kind == UserKind::Agent && conv_kind == "group" {
+            Trigger::Mention
+        } else {
+            Trigger::All
+        };
+        let ev = self
+            .append_event(
+                conv_id,
+                "member.joined",
+                Some(actor),
+                None,
+                json!({"user_id": u.id, "name": u.name, "kind": u.kind, "owner_id": u.owner_id, "role": role, "trigger": trigger}),
+            )
+            .await?;
+        sqlx::query(self.d.q(
+            "INSERT INTO members (conv_id, user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+        ))
+        .bind(conv_id)
+        .bind(&u.id)
+        .bind(&u.name)
+        .bind(u.kind.as_str())
+        .bind(&u.owner_id)
+        .bind(role)
+        .bind(trigger.as_str())
+        .bind(ev.seq)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(ev)
+    }
+
+    pub async fn members(&mut self, conv_id: &str) -> ApiResult<Vec<Member>> {
+        let rows = sqlx::query(self.d.q(&format!(
+            "SELECT {MEMBER_COLS} FROM members WHERE conv_id = ? ORDER BY join_seq"
+        )))
+        .bind(conv_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(row_member)
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn member(&mut self, conv_id: &str, user_id: &str) -> ApiResult<Option<Member>> {
+        let r = sqlx::query(self.d.q(&format!(
+            "SELECT {MEMBER_COLS} FROM members WHERE conv_id = ? AND user_id = ?"
+        )))
+        .bind(conv_id)
+        .bind(user_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        r.as_ref().map(row_member).transpose().map_err(Into::into)
+    }
+
+    pub async fn set_agent_policy(
+        &mut self,
+        conv_id: &str,
+        agent_id: &str,
+        approval: Option<bool>,
+        trigger: Option<Trigger>,
+        actor: &str,
+    ) -> ApiResult<Event> {
+        if let Some(a) = approval {
+            sqlx::query(
+                self.d
+                    .q("UPDATE members SET approval = ? WHERE conv_id = ? AND user_id = ?"),
+            )
+            .bind(a as i64)
+            .bind(conv_id)
+            .bind(agent_id)
+            .execute(&mut *self.c)
+            .await?;
+        }
+        if let Some(t) = trigger {
+            sqlx::query(
+                self.d
+                    .q("UPDATE members SET trigger_mode = ? WHERE conv_id = ? AND user_id = ?"),
+            )
+            .bind(t.as_str())
+            .bind(conv_id)
+            .bind(agent_id)
+            .execute(&mut *self.c)
+            .await?;
+        }
+        let m = self
+            .member(conv_id, agent_id)
+            .await?
+            .ok_or_else(|| ApiError::new("not_found", "member"))?;
+        self.append_event(
+            conv_id,
+            "member.policy",
+            Some(actor),
+            None,
+            json!({"user_id": agent_id, "approval": m.approval, "trigger": m.trigger}),
+        )
+        .await
+    }
+
+    // ------------------------------------------------------------ messages
+
+    /// Dedup + seq assignment + persistence; the caller's transaction makes
+    /// them atomic.
+    pub async fn commit_message(&mut self, m: NewMsg<'_>) -> ApiResult<Committed> {
+        if let Some(cid) = m.client_msg_id {
+            let prev = sqlx::query(self.d.q("SELECT result FROM dedup WHERE conv_id = ? AND sender_id = ? AND client_msg_id = ?"))
+                .bind(m.conv_id)
+                .bind(&m.sender.id)
+                .bind(cid)
+                .fetch_optional(&mut *self.c)
+                .await?;
+            if let Some(prev) = prev {
+                let v: Value =
+                    serde_json::from_str(&prev.try_get::<String, _>(0)?).unwrap_or(Value::Null);
+                return Ok(Committed::Duplicate {
+                    seq: v["seq"].as_i64().unwrap_or(0),
+                    msg_id: v["msg_id"].as_str().unwrap_or("").to_string(),
+                });
+            }
+        }
+        let seq = self.next_seq(m.conv_id).await?;
+        let ts = now_ms();
+        let view = MsgView {
+            msg_id: format!("m_{}", new_id()),
+            conv_id: m.conv_id.to_string(),
+            created_seq: seq,
+            sender_id: m.sender.id.clone(),
+            sender_name: m.sender.name.clone(),
+            sender_type: m.sender.kind,
+            on_behalf_of: m.on_behalf_of,
+            kind: m.kind.to_string(),
+            content: m.content,
+            version: 1,
+            state: m.state.to_string(),
+            state_reason: None,
+            hop: m.hop,
+            causation_id: m.causation_id,
+            reply_to: m.reply_to,
+            mentions: m.mentions,
+            created_at: ts,
+            updated_at: ts,
+        };
+        sqlx::query(self.d.q(&format!(
+            "INSERT INTO messages ({MSG_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )))
+        .bind(&view.msg_id)
+        .bind(&view.conv_id)
+        .bind(seq)
+        .bind(&view.sender_id)
+        .bind(&view.sender_name)
+        .bind(view.sender_type.as_str())
+        .bind(&view.on_behalf_of)
+        .bind(&view.kind)
+        .bind(&view.content)
+        .bind(view.version)
+        .bind(&view.state)
+        .bind(&view.state_reason)
+        .bind(view.hop)
+        .bind(&view.causation_id)
+        .bind(&view.reply_to)
+        .bind(serde_json::to_string(&view.mentions).unwrap())
+        .bind(ts)
+        .bind(ts)
+        .execute(&mut *self.c)
+        .await?;
+        if let Some(cid) = m.client_msg_id {
+            sqlx::query(self.d.q("INSERT INTO dedup (conv_id, sender_id, client_msg_id, result, created_at) VALUES (?, ?, ?, ?, ?)"))
+                .bind(m.conv_id)
+                .bind(&m.sender.id)
+                .bind(cid)
+                .bind(json!({"seq": seq, "msg_id": view.msg_id}).to_string())
+                .bind(ts)
+                .execute(&mut *self.c)
+                .await?;
+        }
+        let sender_id = view.sender_id.clone();
+        let ev = self
+            .write_event(
+                m.conv_id,
+                seq,
+                "msg.created",
+                Some(&sender_id),
+                Some(view),
+                json!({}),
+                ts,
+            )
+            .await?;
+        Ok(Committed::New(ev))
+    }
+
+    pub async fn message(&mut self, msg_id: &str) -> ApiResult<Option<MsgView>> {
+        let r = sqlx::query(
+            self.d
+                .q(&format!("SELECT {MSG_COLS} FROM messages WHERE msg_id = ?")),
+        )
+        .bind(msg_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        r.as_ref().map(row_msg).transpose().map_err(Into::into)
+    }
+
+    /// Applies a change to a message and announces it with a new event
+    /// (`msg.updated` or `msg.recalled`).
+    pub async fn update_message(
+        &mut self,
+        msg_id: &str,
+        kind: &str,
+        actor: &str,
+        content: Option<&str>,
+        state: Option<&str>,
+        reason: Option<&str>,
+    ) -> ApiResult<Event> {
+        sqlx::query(self.d.q(
+            "UPDATE messages SET content = COALESCE(?, content), state = COALESCE(?, state),
+             state_reason = COALESCE(?, state_reason), version = version + 1, updated_at = ? WHERE msg_id = ?",
+        ))
+        .bind(content)
+        .bind(state)
+        .bind(reason)
+        .bind(now_ms())
+        .bind(msg_id)
+        .execute(&mut *self.c)
+        .await?;
+        let view = self
+            .message(msg_id)
+            .await?
+            .ok_or_else(|| ApiError::new("not_found", "message"))?;
+        let conv_id = view.conv_id.clone();
+        self.append_event(&conv_id, kind, Some(actor), Some(view), json!({}))
+            .await
+    }
+
+    /// Streaming checkpoint: overwrites partial content without an event.
+    pub async fn checkpoint(&mut self, msg_id: &str, content: &str) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("UPDATE messages SET content = ?, updated_at = ? WHERE msg_id = ?"),
+        )
+        .bind(content)
+        .bind(now_ms())
+        .bind(msg_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn streaming_messages(&mut self) -> ApiResult<Vec<MsgView>> {
+        let rows = sqlx::query(
+            self.d
+                .q(&format!("SELECT {MSG_COLS} FROM messages WHERE state = ?")),
+        )
+        .bind("streaming")
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(row_msg)
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn latest_other_message(
+        &mut self,
+        conv_id: &str,
+        user_id: &str,
+    ) -> ApiResult<Option<MsgView>> {
+        let r = sqlx::query(self.d.q(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE conv_id = ? AND sender_id <> ? ORDER BY created_seq DESC LIMIT 1"
+        )))
+        .bind(conv_id)
+        .bind(user_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        r.as_ref().map(row_msg).transpose().map_err(Into::into)
+    }
+
+    pub async fn recent_contents(
+        &mut self,
+        conv_id: &str,
+        sender_id: &str,
+        n: i64,
+    ) -> ApiResult<Vec<String>> {
+        let rows = sqlx::query(self.d.q(
+            "SELECT content FROM messages WHERE conv_id = ? AND sender_id = ? ORDER BY created_seq DESC LIMIT ?",
+        ))
+        .bind(conv_id)
+        .bind(sender_id)
+        .bind(n)
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(|r| r.try_get(0))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn msg_conv(&mut self, msg_id: &str) -> ApiResult<Option<String>> {
+        let r = sqlx::query(self.d.q("SELECT conv_id FROM messages WHERE msg_id = ?"))
+            .bind(msg_id)
+            .fetch_optional(&mut *self.c)
+            .await?;
+        r.map(|r| r.try_get(0)).transpose().map_err(Into::into)
+    }
+
+    // ------------------------------------------------------------- reading
+
+    pub async fn pull(
+        &mut self,
+        conv_id: &str,
+        after_seq: i64,
+        limit: i64,
+    ) -> ApiResult<Vec<Event>> {
+        let rows = sqlx::query(self.d.q(
+            "SELECT conv_id, seq, type, actor_id, payload, created_at FROM events WHERE conv_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+        ))
+        .bind(conv_id)
+        .bind(after_seq)
+        .bind(limit)
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(row_event)
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn pull_side(&mut self, conv_id: &str, after: i64) -> ApiResult<Vec<SideEvent>> {
+        let rows = sqlx::query(self.d.q(
+            "SELECT conv_id, side_seq, anchor_seq, audience, type, actor_id, payload, created_at FROM side_events
+             WHERE conv_id = ? AND side_seq > ? ORDER BY side_seq",
+        ))
+        .bind(conv_id)
+        .bind(after)
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(row_side)
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn set_read(&mut self, conv_id: &str, user_id: &str, seq: i64) -> ApiResult<()> {
+        let cur = self.read_seq(conv_id, user_id).await?;
+        if seq <= cur {
+            return Ok(());
+        }
+        let n = sqlx::query(
+            self.d
+                .q("UPDATE read_cursors SET read_seq = ? WHERE conv_id = ? AND user_id = ?"),
+        )
+        .bind(seq)
+        .bind(conv_id)
+        .bind(user_id)
+        .execute(&mut *self.c)
+        .await?
+        .rows_affected();
+        if n == 0 {
+            sqlx::query(
+                self.d
+                    .q("INSERT INTO read_cursors (conv_id, user_id, read_seq) VALUES (?, ?, ?)"),
+            )
+            .bind(conv_id)
+            .bind(user_id)
+            .bind(seq)
+            .execute(&mut *self.c)
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn read_seq(&mut self, conv_id: &str, user_id: &str) -> ApiResult<i64> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT read_seq FROM read_cursors WHERE conv_id = ? AND user_id = ?"),
+        )
+        .bind(conv_id)
+        .bind(user_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        Ok(r.map(|r| r.try_get(0)).transpose()?.unwrap_or(0))
+    }
+
+    /// Unread counts only new messages from others (not edits, recalls or
+    /// system events).
+    pub async fn unread(&mut self, conv_id: &str, user_id: &str) -> ApiResult<i64> {
+        let read = self.read_seq(conv_id, user_id).await?;
+        let r = sqlx::query(self.d.q(
+            "SELECT COUNT(*) FROM messages WHERE conv_id = ? AND created_seq > ? AND sender_id <> ? AND state <> ?",
+        ))
+        .bind(conv_id)
+        .bind(read)
+        .bind(user_id)
+        .bind("recalled")
+        .fetch_one(&mut *self.c)
+        .await?;
+        Ok(r.try_get(0)?)
+    }
+
+    // -------------------------------------------------------- side channel
+
+    pub async fn append_side(
+        &mut self,
+        conv_id: &str,
+        audience: &[String],
+        kind: &str,
+        actor: Option<&str>,
+        data: Value,
+    ) -> ApiResult<SideEvent> {
+        sqlx::query(
+            self.d
+                .q("UPDATE conversations SET side_seq = side_seq + 1 WHERE id = ?"),
+        )
+        .bind(conv_id)
+        .execute(&mut *self.c)
+        .await?;
+        let r = sqlx::query(
+            self.d
+                .q("SELECT side_seq, last_seq FROM conversations WHERE id = ?"),
+        )
+        .bind(conv_id)
+        .fetch_one(&mut *self.c)
+        .await?;
+        let (side_seq, anchor): (i64, i64) = (r.try_get(0)?, r.try_get(1)?);
+        let ts = now_ms();
+        sqlx::query(self.d.q(
+            "INSERT INTO side_events (conv_id, side_seq, anchor_seq, audience, type, actor_id, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ))
+        .bind(conv_id)
+        .bind(side_seq)
+        .bind(anchor)
+        .bind(serde_json::to_string(audience).unwrap())
+        .bind(kind)
+        .bind(actor)
+        .bind(data.to_string())
+        .bind(ts)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(SideEvent {
+            conv_id: conv_id.to_string(),
+            side_seq,
+            anchor_seq: anchor,
+            audience: audience.to_vec(),
+            kind: kind.to_string(),
+            actor_id: actor.map(String::from),
+            data,
+            created_at: ts,
+        })
+    }
+
+    // -------------------------------------------------------------- drafts
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_draft(
+        &mut self,
+        draft_id: &str,
+        conv_id: &str,
+        agent: &User,
+        content: &str,
+        hop: i64,
+        causation_id: Option<String>,
+        reply_to: Option<String>,
+        audience: &[String],
+    ) -> ApiResult<(Draft, SideEvent)> {
+        let d = Draft {
+            draft_id: draft_id.to_string(),
+            conv_id: conv_id.to_string(),
+            agent_id: agent.id.clone(),
+            content: content.to_string(),
+            hop,
+            causation_id,
+            reply_to,
+            state: "pending".into(),
+            created_at: now_ms(),
+        };
+        sqlx::query(self.d.q(&format!(
+            "INSERT INTO drafts ({DRAFT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )))
+        .bind(&d.draft_id)
+        .bind(&d.conv_id)
+        .bind(&d.agent_id)
+        .bind(&d.content)
+        .bind(d.hop)
+        .bind(&d.causation_id)
+        .bind(&d.reply_to)
+        .bind(&d.state)
+        .bind(d.created_at)
+        .execute(&mut *self.c)
+        .await?;
+        let side = self
+            .append_side(
+                conv_id,
+                audience,
+                "draft.created",
+                Some(&agent.id),
+                json!({"draft_id": d.draft_id, "agent_id": agent.id, "agent_name": agent.name, "content": content}),
+            )
+            .await?;
+        Ok((d, side))
+    }
+
+    pub async fn draft(&mut self, id: &str) -> ApiResult<Option<Draft>> {
+        let r = sqlx::query(self.d.q(&format!(
+            "SELECT {DRAFT_COLS} FROM drafts WHERE draft_id = ?"
+        )))
+        .bind(id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        r.as_ref().map(row_draft).transpose().map_err(Into::into)
+    }
+
+    pub async fn pending_drafts_for(&mut self, agent_ids: &[String]) -> ApiResult<Vec<Draft>> {
+        let mut out = vec![];
+        for a in agent_ids {
+            let rows = sqlx::query(self.d.q(&format!("SELECT {DRAFT_COLS} FROM drafts WHERE agent_id = ? AND state = ? ORDER BY created_at")))
+                .bind(a)
+                .bind("pending")
+                .fetch_all(&mut *self.c)
+                .await?;
+            for r in rows {
+                out.push(row_draft(&r)?);
+            }
+        }
+        out.sort_by_key(|d| d.created_at);
+        Ok(out)
+    }
+
+    pub async fn decide_draft(
+        &mut self,
+        id: &str,
+        state: &str,
+        by: &str,
+        audience: &[String],
+        conv_id: &str,
+    ) -> ApiResult<SideEvent> {
+        let n = sqlx::query(self.d.q("UPDATE drafts SET state = ?, decided_by = ?, decided_at = ? WHERE draft_id = ? AND state = ?"))
+            .bind(state)
+            .bind(by)
+            .bind(now_ms())
+            .bind(id)
+            .bind("pending")
+            .execute(&mut *self.c)
+            .await?
+            .rows_affected();
+        if n == 0 {
+            return Err(ApiError::new("conflict", "draft already decided"));
+        }
+        self.append_side(
+            conv_id,
+            audience,
+            "draft.decided",
+            Some(by),
+            json!({"draft_id": id, "state": state}),
+        )
+        .await
+    }
+
+    // ----------------------------------------------------------- takeovers
+
+    pub async fn takeover(&mut self, conv_id: &str, agent_id: &str) -> ApiResult<Option<String>> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT by_user FROM takeovers WHERE conv_id = ? AND agent_id = ?"),
+        )
+        .bind(conv_id)
+        .bind(agent_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        r.map(|r| r.try_get(0)).transpose().map_err(Into::into)
+    }
+
+    pub async fn set_takeover(
+        &mut self,
+        conv_id: &str,
+        agent_id: &str,
+        by: Option<&str>,
+    ) -> ApiResult<Event> {
+        sqlx::query(
+            self.d
+                .q("DELETE FROM takeovers WHERE conv_id = ? AND agent_id = ?"),
+        )
+        .bind(conv_id)
+        .bind(agent_id)
+        .execute(&mut *self.c)
+        .await?;
+        if let Some(u) = by {
+            sqlx::query(self.d.q(
+                "INSERT INTO takeovers (conv_id, agent_id, by_user, since) VALUES (?, ?, ?, ?)",
+            ))
+            .bind(conv_id)
+            .bind(agent_id)
+            .bind(u)
+            .bind(now_ms())
+            .execute(&mut *self.c)
+            .await?;
+        }
+        let state = if by.is_some() { "taken_over" } else { "active" };
+        let actor = by.unwrap_or(agent_id);
+        self.append_event(
+            conv_id,
+            "agent.state",
+            Some(actor),
+            None,
+            json!({"agent_id": agent_id, "state": state, "by": by}),
+        )
+        .await
+    }
+
+    // --------------------------------------------------------------- audit
+
+    pub async fn audit(
+        &mut self,
+        actor: Option<&str>,
+        action: &str,
+        conv_id: Option<&str>,
+        target: Option<&str>,
+        detail: Value,
+    ) -> ApiResult<()> {
+        sqlx::query(self.d.q("INSERT INTO audit (id, ts, actor_id, action, conv_id, target, detail) VALUES (?, ?, ?, ?, ?, ?, ?)"))
+            .bind(new_id())
+            .bind(now_ms())
+            .bind(actor)
+            .bind(action)
+            .bind(conv_id)
+            .bind(target)
+            .bind(detail.to_string())
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn audit_log(&mut self, limit: i64) -> ApiResult<Vec<Value>> {
+        let rows = sqlx::query(self.d.q("SELECT ts, actor_id, action, conv_id, target, detail FROM audit ORDER BY id DESC LIMIT ?"))
+            .bind(limit)
+            .fetch_all(&mut *self.c)
+            .await?;
+        rows.iter()
+            .map(|r| {
+                Ok(json!({
+                    "ts": r.try_get::<i64, _>("ts")?,
+                    "actor_id": r.try_get::<Option<String>, _>("actor_id")?,
+                    "action": r.try_get::<String, _>("action")?,
+                    "conv_id": r.try_get::<Option<String>, _>("conv_id")?,
+                    "target": r.try_get::<Option<String>, _>("target")?,
+                    "detail": serde_json::from_str::<Value>(&r.try_get::<String, _>("detail")?).unwrap_or(Value::Null),
+                }))
+            })
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn counts(&mut self) -> ApiResult<Value> {
+        let mut out = serde_json::Map::new();
+        for (k, sql) in [
+            ("conversations", "SELECT COUNT(*) FROM conversations"),
+            ("events", "SELECT COUNT(*) FROM events"),
+            ("messages", "SELECT COUNT(*) FROM messages"),
+            (
+                "agent_messages",
+                "SELECT COUNT(*) FROM messages WHERE sender_type = 'agent'",
+            ),
+            ("side_events", "SELECT COUNT(*) FROM side_events"),
+            (
+                "pending_drafts",
+                "SELECT COUNT(*) FROM drafts WHERE state = 'pending'",
+            ),
+        ] {
+            let v: i64 = sqlx::query(sql).fetch_one(&mut *self.c).await?.try_get(0)?;
+            out.insert(k.into(), json!(v));
+        }
+        Ok(Value::Object(out))
+    }
+
+    /// Dedup records older than `before` (ms) are dropped; a retry after the
+    /// TTL is treated as a new message.
+    pub async fn dedup_gc(&mut self, before: i64) -> ApiResult<u64> {
+        Ok(
+            sqlx::query(self.d.q("DELETE FROM dedup WHERE created_at < ?"))
+                .bind(before)
+                .execute(&mut *self.c)
+                .await?
+                .rows_affected(),
+        )
+    }
+
+    // ----------------------------------------------- migration between DBs
+
+    /// Every row of every per-conversation table for one conversation.
+    pub async fn export_conv(
+        &mut self,
+        conv_id: &str,
+    ) -> ApiResult<Vec<(&'static str, Vec<Vec<Cell>>)>> {
+        let mut out = vec![];
+        for t in TABLES.iter().filter(|t| t.conv_key.is_some()) {
+            let cols: Vec<&str> = t.cols.iter().map(|c| c.name).collect();
+            let sql = format!(
+                "SELECT {} FROM {} WHERE {} = ? ORDER BY {}",
+                cols.join(", "),
+                t.name,
+                t.conv_key.unwrap(),
+                t.pk.join(", ")
+            );
+            let rows = sqlx::query(self.d.q(&sql))
+                .bind(conv_id)
+                .fetch_all(&mut *self.c)
+                .await?;
+            let mut data = vec![];
+            for r in rows {
+                let mut cells = vec![];
+                for (i, c) in t.cols.iter().enumerate() {
+                    cells.push(match c.ty {
+                        Ty::Big => Cell::I(r.try_get::<Option<i64>, _>(i)?),
+                        _ => Cell::S(r.try_get::<Option<String>, _>(i)?),
+                    });
+                }
+                data.push(cells);
+            }
+            out.push((t.name, data));
+        }
+        Ok(out)
+    }
+
+    pub async fn delete_conv(&mut self, conv_id: &str) -> ApiResult<()> {
+        for t in TABLES.iter().filter(|t| t.conv_key.is_some()) {
+            sqlx::query(self.d.q(&format!(
+                "DELETE FROM {} WHERE {} = ?",
+                t.name,
+                t.conv_key.unwrap()
+            )))
+            .bind(conv_id)
+            .execute(&mut *self.c)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Replaces whatever copy of the conversation exists here with `rows`.
+    pub async fn import_conv(
+        &mut self,
+        conv_id: &str,
+        rows: &[(&'static str, Vec<Vec<Cell>>)],
+    ) -> ApiResult<()> {
+        self.delete_conv(conv_id).await?;
+        for (name, data) in rows {
+            let t = TABLES
+                .iter()
+                .find(|t| t.name == *name)
+                .ok_or_else(|| ApiError::new("internal", "unknown table"))?;
+            let cols: Vec<&str> = t.cols.iter().map(|c| c.name).collect();
+            let sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                t.name,
+                cols.join(", "),
+                vec!["?"; cols.len()].join(", ")
+            );
+            for row in data {
+                let mut q = sqlx::query(self.d.q(&sql));
+                for cell in row {
+                    q = match cell {
+                        Cell::S(v) => q.bind(v.clone()),
+                        Cell::I(v) => q.bind(*v),
+                    };
+                }
+                q.execute(&mut *self.c).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Content fingerprint of an exported conversation, used to verify a
+/// migration before switching the directory.
+pub fn fingerprint(rows: &[(&'static str, Vec<Vec<Cell>>)]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for (name, data) in rows {
+        h.update(name.as_bytes());
+        for row in data {
+            for cell in row {
+                match cell {
+                    Cell::S(Some(s)) => {
+                        h.update(b"s");
+                        h.update(s.as_bytes());
+                    }
+                    Cell::I(Some(i)) => {
+                        h.update(b"i");
+                        h.update(i.to_le_bytes());
+                    }
+                    _ => h.update(b"n"),
+                }
+                h.update([0]);
+            }
+        }
+    }
+    hex::encode(h.finalize())
+}

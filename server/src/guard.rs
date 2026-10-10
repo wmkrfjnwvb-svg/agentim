@@ -2,6 +2,7 @@
 //! per-conversation rate limit and per-agent daily budget.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -48,16 +49,19 @@ struct Bucket {
 }
 
 #[derive(Default)]
-struct Budget {
+pub struct Budget {
     day: i64,
     messages: u64,
     chars: u64,
 }
 
+pub type Budgets = Arc<Mutex<HashMap<String, Budget>>>;
+
 pub struct Guards {
     pub cfg: GuardConfig,
     buckets: HashMap<(String, String), Bucket>,
-    budgets: HashMap<String, Budget>,
+    /// Daily budgets are per agent across all databases, so they are shared.
+    budgets: Budgets,
     tripped: HashMap<(String, String), (Instant, String)>,
 }
 
@@ -70,10 +74,14 @@ pub fn normalize(s: &str) -> String {
 
 impl Guards {
     pub fn new(cfg: GuardConfig) -> Self {
+        Self::with_budgets(cfg, Budgets::default())
+    }
+
+    pub fn with_budgets(cfg: GuardConfig, budgets: Budgets) -> Self {
         Guards {
             cfg,
             buckets: HashMap::new(),
-            budgets: HashMap::new(),
+            budgets,
             tripped: HashMap::new(),
         }
     }
@@ -149,7 +157,8 @@ impl Guards {
         }
         // Daily budget per agent.
         let day = crate::model::now_ms() / 86_400_000;
-        let bud = self.budgets.entry(agent.to_string()).or_default();
+        let mut all = self.budgets.lock().unwrap_or_else(|e| e.into_inner());
+        let bud = all.entry(agent.to_string()).or_default();
         if bud.day != day {
             *bud = Budget {
                 day,
@@ -169,7 +178,8 @@ impl Guards {
     /// Accounts streamed characters against the daily budget.
     pub fn charge_chars(&mut self, agent: &str, chars: u64) -> bool {
         let day = crate::model::now_ms() / 86_400_000;
-        let bud = self.budgets.entry(agent.to_string()).or_default();
+        let mut all = self.budgets.lock().unwrap_or_else(|e| e.into_inner());
+        let bud = all.entry(agent.to_string()).or_default();
         if bud.day != day {
             *bud = Budget {
                 day,
