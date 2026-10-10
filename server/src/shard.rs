@@ -248,9 +248,16 @@ impl Writer {
             Vec::with_capacity(n);
         let mut outs: Vec<Out> = Vec::new();
         let result: Result<(), String> = async {
-            let mut tx = Connection::begin(&mut self.conn)
-                .await
-                .map_err(|e| e.to_string())?;
+            // SQLite: take the write lock when the batch starts. A deferred
+            // transaction that has read and then must write fails at once
+            // (SQLITE_BUSY) if another connection committed in between;
+            // IMMEDIATE waits for the busy timeout instead.
+            let mut tx = if self.dialect == Dialect::Sqlite {
+                Connection::begin_with(&mut self.conn, "BEGIN IMMEDIATE").await
+            } else {
+                Connection::begin(&mut self.conn).await
+            }
+            .map_err(|e| e.to_string())?;
             for job in batch {
                 let mut sp = Connection::begin(&mut *tx)
                     .await

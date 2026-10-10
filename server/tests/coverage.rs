@@ -857,3 +857,78 @@ async fn unsafe_postgres_durability_is_refused_unless_allowed() {
         "an explicit override is honoured"
     );
 }
+
+/// SQLite: a server starting while another connection is writing (an old
+/// process still shutting down) waits for the lock instead of failing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn startup_waits_for_a_concurrent_sqlite_writer() {
+    use sqlx::Connection;
+    for round in 0..5 {
+        let db = new_db(Backend::Sqlite).await.unwrap();
+        let hub = open(single(&db.url)).await;
+        user(&hub, "seed", UserKind::Human, None).await;
+        drop(hub);
+        let mut other = sqlx::AnyConnection::connect(&db.url).await.unwrap();
+        sqlx::query("PRAGMA busy_timeout = 5000")
+            .execute(&mut other)
+            .await
+            .unwrap();
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut other)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE meta SET v = v WHERE k = 'schema_version'")
+            .execute(&mut other)
+            .await
+            .unwrap();
+        let opening = tokio::spawn({
+            let url = db.url.clone();
+            async move { Hub::open(single(&url), hub_cfg()).await.map(|_| ()) }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sqlx::query("COMMIT").execute(&mut other).await.unwrap();
+        let res = opening.await.unwrap();
+        assert!(
+            res.is_ok(),
+            "round {round}: startup failed: {:?}",
+            res.err()
+        );
+    }
+}
+
+/// SQLite: when another connection writes while the server's writer has
+/// already read (e.g. an old process finishing during a restart), the batch
+/// waits for the lock instead of failing with SQLITE_BUSY.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn writes_wait_for_a_concurrent_sqlite_writer() {
+    use sqlx::Connection;
+    for round in 0..5 {
+        let db = new_db(Backend::Sqlite).await.unwrap();
+        let hub = open(single(&db.url)).await;
+        let alice = user(&hub, "alice", UserKind::Human, None).await;
+        let a = Arc::new(Conn::new(&hub, &alice));
+        let conv = a.group(&[]).await;
+        let mut other = sqlx::AnyConnection::connect(&db.url).await.unwrap();
+        sqlx::query("PRAGMA busy_timeout = 5000")
+            .execute(&mut other)
+            .await
+            .unwrap();
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut other)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE meta SET v = v WHERE k = 'schema_version'")
+            .execute(&mut other)
+            .await
+            .unwrap();
+        let sending = tokio::spawn({
+            let (a, conv) = (a.clone(), conv.clone());
+            async move { a.send(&conv, "while someone else writes").await }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sqlx::query("COMMIT").execute(&mut other).await.unwrap();
+        let r = sending.await.unwrap();
+        assert_eq!(r["ok"], true, "round {round}: {r}");
+        assert!(hub.storage_failed().is_none());
+    }
+}

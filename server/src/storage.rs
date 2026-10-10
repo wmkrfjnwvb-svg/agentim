@@ -85,9 +85,9 @@ pub async fn open_writer(url: &str, d: Dialect) -> ApiResult<AnyConnection> {
         // secure_delete: deleted content (e.g. a conversation moved to another
         // database) is overwritten instead of lingering in free pages.
         for p in [
+            "PRAGMA busy_timeout = 5000",
             "PRAGMA journal_mode = WAL",
             "PRAGMA synchronous = FULL",
-            "PRAGMA busy_timeout = 5000",
             "PRAGMA foreign_keys = ON",
             "PRAGMA secure_delete = ON",
         ] {
@@ -479,15 +479,26 @@ pub fn table_ddl(d: Dialect, t: &Table) -> Vec<String> {
 /// Creates the schema on an empty database, or checks the version of an
 /// existing one. Migrations are forward-only and versioned.
 pub async fn ensure_schema(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
-    let mut tx = Connection::begin(&mut *c).await?;
+    // SQLite: take the write lock up front (see the writer in shard.rs).
+    let mut tx = if d == Dialect::Sqlite {
+        Connection::begin_with(&mut *c, "BEGIN IMMEDIATE").await?
+    } else {
+        Connection::begin(&mut *c).await?
+    };
+    apply_schema(&mut tx, d).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn apply_schema(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
     for t in TABLES {
         for stmt in table_ddl(d, t) {
-            sqlx::query(AssertSqlSafe(stmt)).execute(&mut *tx).await?;
+            sqlx::query(AssertSqlSafe(stmt)).execute(&mut *c).await?;
         }
     }
     let v: Option<String> = sqlx::query(d.q("SELECT v FROM meta WHERE k = ?"))
         .bind("schema_version")
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *c)
         .await?
         .map(|r| r.try_get(0))
         .transpose()?;
@@ -496,7 +507,7 @@ pub async fn ensure_schema(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
             sqlx::query(d.q("INSERT INTO meta (k, v) VALUES (?, ?)"))
                 .bind("schema_version")
                 .bind(SCHEMA_VERSION.to_string())
-                .execute(&mut *tx)
+                .execute(&mut *c)
                 .await?;
         }
         Some(v) if v == SCHEMA_VERSION.to_string() => {}
@@ -507,7 +518,6 @@ pub async fn ensure_schema(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
             ));
         }
     }
-    tx.commit().await?;
     Ok(())
 }
 
