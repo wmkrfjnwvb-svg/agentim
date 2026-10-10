@@ -31,6 +31,9 @@ pub struct Health {
     depth: AtomicUsize,
     /// Fault injection for tests: the next N commits fail.
     pub fail_next_commits: AtomicU32,
+    /// Fault injection for tests: the next N commands fail inside the
+    /// transaction (their savepoint is rolled back, the batch commits).
+    pub fail_next_jobs: AtomicU32,
     pub jobs: AtomicU64,
     pub batches: AtomicU64,
     pub max_batch: AtomicU64,
@@ -253,8 +256,18 @@ impl Writer {
                         idx: self.idx,
                         commit_on_error: false,
                     };
-                    let res = ctx.run(job.op).await;
-                    let keep = ctx.commit_on_error;
+                    let injected = !job.op.is_tick()
+                        && self
+                            .health
+                            .fail_next_jobs
+                            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                            .is_ok();
+                    let res = if injected {
+                        Err(ApiError::new("storage", "injected statement failure"))
+                    } else {
+                        ctx.run(job.op).await
+                    };
+                    let keep = ctx.commit_on_error && !injected;
                     (res, keep)
                 };
                 if res.is_ok() || keep {

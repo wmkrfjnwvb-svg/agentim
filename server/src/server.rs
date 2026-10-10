@@ -119,6 +119,9 @@ async fn stats(State(st): State<AppState>, headers: HeaderMap) -> Response {
     {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    if !st.hub.stats_open() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     match st.hub.stats().await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (

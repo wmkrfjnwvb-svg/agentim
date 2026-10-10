@@ -81,6 +81,7 @@ async fn main() {
     };
     let hub_cfg = HubConfig {
         stream_idle: Duration::from_secs(args.stream_idle_secs),
+        open_stats: args.demo,
         ..Default::default()
     };
     let hub = match Hub::open(cfg, hub_cfg).await {

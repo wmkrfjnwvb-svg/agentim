@@ -162,3 +162,78 @@ impl Config {
             .unwrap_or(self.storage.control.as_str())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(dbs: &[&str], control: &str, units: &[(&str, &str)]) -> Config {
+        Config {
+            storage: StorageConfig {
+                control: control.into(),
+                databases: dbs
+                    .iter()
+                    .map(|n| DatabaseConfig {
+                        name: n.to_string(),
+                        url: sqlite_url(&format!("{n}.db")),
+                        read_pool: None,
+                        unsafe_durability: false,
+                    })
+                    .collect(),
+            },
+            units: units
+                .iter()
+                .map(|(u, d)| UnitConfig {
+                    name: u.to_string(),
+                    database: d.to_string(),
+                })
+                .collect(),
+            writer: WriterConfig::default(),
+        }
+    }
+
+    #[test]
+    fn invalid_configurations_are_refused_with_a_reason() {
+        assert!(cfg(&["main"], "main", &[]).validate().is_ok());
+        let cases = [
+            (cfg(&[], "main", &[]), "empty"),
+            (cfg(&["a", "a"], "a", &[]), "duplicate database name a"),
+            (cfg(&["a"], "main", &[]), "storage.control = main"),
+            (
+                cfg(&["main"], "main", &[("u", "elsewhere")]),
+                "unit u uses unknown database elsewhere",
+            ),
+        ];
+        for (c, want) in cases {
+            let e = c.validate().unwrap_err();
+            assert!(e.contains(want), "{e} should mention {want}");
+        }
+        let mut c = cfg(&["main"], "main", &[]);
+        c.writer.max_batch = 0;
+        assert!(c.validate().is_err());
+        let mut c = cfg(&["main"], "main", &[]);
+        c.writer.queue_capacity = 0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn units_default_to_the_control_database() {
+        let c = cfg(&["main", "eu"], "main", &[("acme-eu", "eu")]);
+        assert_eq!(c.unit_database("acme-eu"), "eu");
+        assert_eq!(c.unit_database("default"), "main");
+        assert_eq!(c.unit_database("unconfigured"), "main");
+    }
+
+    #[test]
+    fn configuration_files_are_parsed_and_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.toml");
+        std::fs::write(&p, "[storage]\ncontrol = \"main\"\n[[storage.databases]]\nname = \"main\"\nurl = \"sqlite://x.db\"\n").unwrap();
+        assert!(Config::load(&p).is_ok());
+        std::fs::write(&p, "[storage]\ncontrol = \"nope\"\n[[storage.databases]]\nname = \"main\"\nurl = \"sqlite://x.db\"\n").unwrap();
+        assert!(Config::load(&p).unwrap_err().contains("storage.control"));
+        std::fs::write(&p, "not = [valid").unwrap();
+        assert!(Config::load(&p).is_err());
+        assert!(Config::load(&dir.path().join("missing.toml")).is_err());
+    }
+}

@@ -20,7 +20,6 @@ use crate::registry::{Out, Recip, Registry};
 
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 const MODERATED_PLACEHOLDER: &str = "[该内容已被策略移除 / removed by policy]";
-const DEDUP_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 
 #[derive(Debug, Clone)]
 pub struct HubConfig {
@@ -32,6 +31,13 @@ pub struct HubConfig {
     pub guards: GuardConfig,
     pub human_queue: usize,
     pub agent_queue: usize,
+    /// How long retries are deduplicated (`client_msg_id`), and how often
+    /// expired records are removed.
+    pub dedup_ttl: Duration,
+    pub gc_every: Duration,
+    /// `stats` (global counts, online users, audit) for every user. Only
+    /// for the demo; operators get it from the admin API.
+    pub open_stats: bool,
 }
 
 impl Default for HubConfig {
@@ -45,6 +51,9 @@ impl Default for HubConfig {
             guards: GuardConfig::default(),
             human_queue: 1024,
             agent_queue: 4096,
+            dedup_ttl: Duration::from_secs(7 * 24 * 3600),
+            gc_every: Duration::from_secs(600),
+            open_stats: false,
         }
     }
 }
@@ -177,6 +186,7 @@ pub struct ShardState {
     last_flush: Instant,
     last_checkpoint: Instant,
     last_gc: Instant,
+    gc_every: Duration,
 }
 
 impl ShardState {
@@ -190,13 +200,14 @@ impl ShardState {
             last_flush: now,
             last_checkpoint: now,
             last_gc: now,
+            gc_every: sh.cfg.gc_every,
         }
     }
 
     /// Whether a tick has database work (otherwise the writer skips the
     /// transaction entirely).
     pub fn tick_needs_db(&self) -> bool {
-        !self.streams.is_empty() || self.last_gc.elapsed() > Duration::from_secs(600)
+        !self.streams.is_empty() || self.last_gc.elapsed() > self.gc_every
     }
 
     pub fn active_streams(&self) -> Vec<Value> {
@@ -694,6 +705,9 @@ impl Ctx<'_, '_> {
             ClientMsg::ResetGuard { conv_id, agent_id } => {
                 let agent = self.owned_agent(me, &agent_id)?;
                 self.require_member(&conv_id, &agent.id).await?;
+                if self.st.guards.is_tripped(&agent.id, &conv_id).is_none() {
+                    return Err(err("conflict", "the agent's guard is not tripped"));
+                }
                 let ev = self
                     .db
                     .append_event(
@@ -1995,9 +2009,11 @@ impl Ctx<'_, '_> {
             self.finish_stream(&id, state, Some(reason), &sender)
                 .await?;
         }
-        if self.st.last_gc.elapsed() > Duration::from_secs(600) {
+        if self.st.last_gc.elapsed() > self.sh.cfg.gc_every {
             self.st.last_gc = now;
-            self.db.dedup_gc(now_ms() - DEDUP_TTL_MS).await?;
+            self.db
+                .dedup_gc(now_ms() - self.sh.cfg.dedup_ttl.as_millis() as i64)
+                .await?;
         }
         Ok(())
     }
@@ -2054,6 +2070,12 @@ impl Ctx<'_, '_> {
         let agent = self.owned_agent(me, &d.agent_id)?;
         if d.state != "pending" {
             return Err(err("conflict", "draft already decided"));
+        }
+        if self.db.takeover(&d.conv_id, &agent.id).await?.is_some() {
+            return Err(err(
+                "conflict",
+                "the agent is taken over; release it before publishing its drafts",
+            ));
         }
         let audience = Self::agent_audience(&agent);
         let side = self

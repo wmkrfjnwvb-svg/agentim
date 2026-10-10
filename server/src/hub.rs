@@ -761,6 +761,10 @@ impl Hub {
                 list.sort_by_key(|(t, _)| *t);
                 Ok(json!({"drafts": list.into_iter().map(|(_, v)| v).collect::<Vec<_>>()}))
             }
+            ClientMsg::Stats if !self.inner.sh.cfg.open_stats => Err(err(
+                "forbidden",
+                "stats are available to operators through the admin API",
+            )),
             ClientMsg::Stats => self.stats().await,
         }
     }
@@ -1209,6 +1213,16 @@ impl Hub {
     }
 
     /// Fault injection for tests: the next `n` commits of `database` fail.
+    pub fn inject_job_failures(&self, database: &str, n: u32) {
+        if let Some(s) = self.inner.shards.iter().find(|s| s.name == database) {
+            s.health.fail_next_jobs.store(n, Ordering::SeqCst);
+        }
+    }
+
+    pub fn stats_open(&self) -> bool {
+        self.inner.sh.cfg.open_stats
+    }
+
     pub fn inject_commit_failures(&self, database: &str, n: u32) {
         if let Some(s) = self.inner.shards.iter().find(|s| s.name == database) {
             s.health.fail_next_commits.store(n, Ordering::SeqCst);
