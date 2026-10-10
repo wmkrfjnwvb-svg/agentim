@@ -295,7 +295,7 @@ cargo run --release -- --demo          # 打开 http://127.0.0.1:8080，选 alic
            agentim（Rust 服务端）──► 数据库
 ```
 
-- **Rust 服务端**提供管理 API（`/admin/v1`，默认只监听内网地址，用单独的管理令牌或 mTLS 认证）。所有修改都经过服务端的业务逻辑和写线程，所以管理操作同样有序、有审计，不会绕过权限和不变量。**管理系统不直接读写数据库**。
+- **Rust 服务端**提供管理 API（`/admin/v1`，只用于运维和管理这套系统本身；给开发者操作 IM 数据的是另一套开放 API，见 [07](07-open-api.md)。管理 API 默认只监听内网地址，用单独的管理令牌或 mTLS 认证）。所有修改都经过服务端的业务逻辑和写线程，所以管理操作同样有序、有审计，不会绕过权限和不变量。**管理系统不直接读写数据库**。
 - **Go 管理端**（`agentim-console`）：用 `go:embed` 把 React 前端打包进二进制；负责管理员账号（密码 + TOTP，企业版接 SSO）、角色（超级管理员、单元管理员、审计员）、调用管理 API。接口用 OpenAPI 描述，Go 和 TypeScript 的客户端代码从 OpenAPI 生成，两边不会对不上。
 - **一键启动**：`agentim-console --with-server` 会顺带启动并守护本机的 `agentim` 进程，用户只需要运行一个命令；也提供 Docker Compose 和 systemd 单元。
 
