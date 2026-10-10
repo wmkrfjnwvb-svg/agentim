@@ -71,6 +71,7 @@ Nightly CI on a standard GitHub runner adds 20,000 connections with a reconnect 
 | [05 运维、测试与客户端](docs/05-operations.md) | 部署、日志、指标、测试矩阵与结果、SDK 与客户端、管理系统 |
 | [06 迭代计划](docs/06-plan.md) | 已确认和待确认的决策、MVP 实施顺序 |
 | [调研：市场与竞品](docs/research/market-and-competitors.md) | 平台动向、竞品功能与分层 |
+| [调研：开发者需求](docs/research/developer-needs.md) | IM 开发者需要什么、同行提供了哪些开发者支持、对照现状和对 MVP 的调整 |
 
 ## License
 
