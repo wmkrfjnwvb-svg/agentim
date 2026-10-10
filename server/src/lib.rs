@@ -12,3 +12,4 @@ pub mod registry;
 pub mod server;
 pub mod shard;
 pub mod storage;
+pub mod webhook;

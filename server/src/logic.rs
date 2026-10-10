@@ -238,6 +238,14 @@ pub enum Op {
     },
     Tick,
     Recover,
+    /// A webhook handled the outbox up to `upto`; `dropped` gave up.
+    WebhookAck {
+        name: String,
+        upto: i64,
+        dropped: Vec<String>,
+        /// Every configured webhook, to clean up rows all of them handled.
+        all: Vec<String>,
+    },
     AgentGone(String),
     Barrier,
     // control database
@@ -324,6 +332,7 @@ impl Op {
             Op::Client { msg, .. } => msg.name(),
             Op::Tick => "tick",
             Op::Recover => "recover",
+            Op::WebhookAck { .. } => "webhook_ack",
             Op::AgentGone(_) => "agent_gone",
             Op::Barrier => "barrier",
             Op::CreateUser { .. } => "create_user",
@@ -449,6 +458,26 @@ impl Ctx<'_, '_> {
             Op::Client { sess, msg } => self.client(&sess, msg).await,
             Op::Tick => {
                 self.tick().await?;
+                Ok(json!({}))
+            }
+            Op::WebhookAck {
+                name,
+                upto,
+                dropped,
+                all,
+            } => {
+                for id in &dropped {
+                    self.db
+                        .audit(
+                            None,
+                            "webhook.dropped",
+                            None,
+                            Some(id),
+                            json!({"webhook": name}),
+                        )
+                        .await?;
+                }
+                self.db.webhook_ack(&name, upto, &all).await?;
                 Ok(json!({}))
             }
             Op::Recover => {

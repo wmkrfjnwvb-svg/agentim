@@ -122,7 +122,7 @@ Message {
 
 还没做：弃用提示、上一版 SDK 的兼容性测试（SDK 发布后加入 CI）、AsyncAPI 文档。
 
-### 2.6 扩展机制（D20，自定义消息和信号已实现）
+### 2.6 扩展机制（D20，MVP 1 部分已实现）
 
 **目标**：开发者不改服务端代码，就能加入自己的消息类型和功能，而且不破坏顺序、权限、审计、加密这些核心保证。
 
@@ -151,6 +151,27 @@ Message {
 **已实现：信号**
 
 `signal {conv_id, kind, data?}`：`kind` 是内置的 `typing` 或带命名空间的自定义类型；`data` 是不超过 4 KiB 的 JSON 对象。只推给此刻在线的其他成员（同一用户的所有连接，包括 Agent），不推回发送者；不落库、不占 seq、不进侧信道，之后连上的人也收不到。非成员 `forbidden`，会话不存在 `not_found`，单聊里任一方拉黑了对方 `blocked`（群聊不受影响）。每个连接每秒最多 20 个，超出 `rate_limited`。推送帧：`{"type": "signal", "conv_id", "kind", "from", "data"}`。
+
+**已实现：Webhook**（测试见 `tests/webhooks.rs`；业内参考：Standard Webhooks 规范、Stripe、Svix 的 outbox 做法）
+
+| 方面 | 行为 |
+|---|---|
+| 配置 | `[[webhooks]]`：`name`、`url`、`secret`（至少 16 字节）、`events`（`msg.created` 这样的精确类型、`msg.*` 前缀或 `*`）、`max_attempts`（默认 8）、`timeout_ms`、`backoff_ms`。开放 API 做好后改为按应用管理 |
+| 不丢 | 订阅的事件和事件本身在**同一个事务**里写进 `webhook_outbox`（每批一条多行 INSERT）。没提交的写入、被拒绝的请求都不会发出去 |
+| 有序 | 每个 Webhook 在每个数据库上有一个投递任务，按提交顺序一条一条发；前一条没成功不会发下一条 |
+| 至少一次 | 成功后通过写线程移动游标（`meta` 里的 `webhook:<name>`）。重启后从游标继续；接收方用 `webhook-id` 去重 |
+| 签名 | 请求头 `webhook-id`、`webhook-timestamp`、`webhook-signature: v1,<base64(HMAC-SHA256(id.timestamp.body))>`，和 Standard Webhooks 一致，现成的验签库可以直接用 |
+| 请求体 | `{"type", "timestamp", "database", "data": {"conv_id", "seq", "event"}}` |
+| 重试 | 非 2xx 或超时就按指数退避重试（最长 5 分钟一次）；超过 `max_attempts` 次后放弃这一条，写审计 `webhook.dropped`，计入 `agentim_webhook_dropped_total`，然后继续发后面的。接收方可以用 `pull` 按 seq 补齐 |
+| 清理 | 所有 Webhook 都处理过的行立即删除 |
+| 新增 Webhook | 从当前位置开始，不重放历史 |
+| 多库 | 每个库有自己的 outbox 和投递任务，`database` 字段标明来源 |
+
+**已实现：发送前拦截**
+
+`[before_send]`：`url`、`secret`、`timeout_ms`（默认 2000）、`on_error`（`allow` 或 `reject`）。每条 `send` 在进入写线程**之前**同步调用（不占写线程，组提交不受影响），请求带同样的签名头，内容为 `{"type": "message.before_send", "conv_id", "client_msg_id", "kind", "text", "payload", "reply_to", "to_user", "sender"}`。回复 `{"action": "allow"}`、`{"action": "reject", "reason"}`（返回 `policy_blocked` 和这个原因）或 `{"action": "replace", "text", "payload"}`（替换后照常校验，非法就 `bad_request`）。超时、非 2xx、不是 JSON、未知的 action 都按 `on_error` 处理。格式不对的请求先被拒绝，不会发给钩子；成员、拉黑等规则在钩子之后照常检查。编辑和流式消息不经过钩子。
+
+**改到 M3**：用户和会话的自定义字段，和开放 API 的 `PATCH /v1/users`、`PATCH /v1/conversations` 一起做（[07 §3.4](07-open-api.md)）。
 
 **扩展也要守住核心保证**：自定义消息走同一条写入路径（单写者、组提交），所以同样不丢、有序；内容大小和信号频率都有上限；端到端加密的会话里，自定义内容整体加密，服务端只校验大小；扩展类型的版本放在类型的内容里（例如 `schema_version`），兼容规则和 §2.5 相同。
 

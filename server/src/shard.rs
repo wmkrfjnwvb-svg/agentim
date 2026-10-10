@@ -13,16 +13,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use sqlx::{AnyConnection, AnyPool, Connection};
+use sqlx::{AnyConnection, AnyPool, Connection, Row};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::config::{DatabaseConfig, WriterConfig};
+use crate::config::{DatabaseConfig, WebhookConfig, WriterConfig};
 use crate::db::Db;
 use crate::logic::{Ctx, Op, ShardState, Shared};
 use crate::metrics as m;
 use crate::model::*;
 use crate::registry::Out;
 use crate::storage::{self, Dialect};
+use crate::webhook::Wake;
 
 #[derive(Default)]
 pub struct Health {
@@ -83,6 +84,7 @@ struct Job {
     reply: oneshot::Sender<ApiResult<Value>>,
 }
 
+#[derive(Clone)]
 pub struct Shard {
     pub idx: usize,
     pub name: String,
@@ -99,7 +101,8 @@ impl Shard {
         cfg: &DatabaseConfig,
         wcfg: &WriterConfig,
         shared: Arc<Shared>,
-    ) -> ApiResult<Shard> {
+        webhooks: &[WebhookConfig],
+    ) -> ApiResult<(Shard, Wake)> {
         let dialect = Dialect::from_url(&cfg.url).map_err(|e| ApiError::new("config", e))?;
         let mut conn = storage::open_writer(&cfg.url, dialect).await?;
         storage::ensure_schema(&mut conn, dialect).await?;
@@ -118,6 +121,28 @@ impl Shard {
             }
         }
         let read = storage::open_pool(&cfg.url, dialect, cfg.read_pool.unwrap_or(8)).await?;
+        // Webhook outbox: next id, and cursors for webhooks new to this
+        // database start at the end (no replay of history).
+        let max: Option<i64> = sqlx::query("SELECT MAX(id) FROM webhook_outbox")
+            .fetch_one(&mut conn)
+            .await?
+            .try_get(0)?;
+        let max = max.unwrap_or(0);
+        for w in webhooks {
+            let key = crate::webhook::cursor_key(&w.name);
+            let have = sqlx::query(dialect.q("SELECT v FROM meta WHERE k = ?"))
+                .bind(key.clone())
+                .fetch_optional(&mut conn)
+                .await?;
+            if have.is_none() {
+                sqlx::query(dialect.q("INSERT INTO meta (k, v) VALUES (?, ?)"))
+                    .bind(key)
+                    .bind(max.to_string())
+                    .execute(&mut conn)
+                    .await?;
+            }
+        }
+        let wake: Wake = Arc::new(tokio::sync::watch::channel(max).0);
         let (tx, rx) = mpsc::channel(wcfg.queue_capacity);
         let health = Arc::new(Health::default());
         metrics::gauge!(m::STORAGE_HEALTHY, "database" => cfg.name.clone()).set(1.0);
@@ -129,6 +154,9 @@ impl Shard {
             shared,
             health: health.clone(),
             cfg: wcfg.clone(),
+            outbox_next: max + 1,
+            outbox_patterns: webhooks.iter().flat_map(|w| w.events.clone()).collect(),
+            wake: wake.clone(),
         };
         tokio::spawn(w.run(rx));
         tracing::info!(
@@ -136,15 +164,18 @@ impl Shard {
             dialect = dialect.as_str(),
             "database writer started"
         );
-        Ok(Shard {
-            idx,
-            name: cfg.name.clone(),
-            dialect,
-            read,
-            health,
-            queue_capacity: wcfg.queue_capacity,
-            tx,
-        })
+        Ok((
+            Shard {
+                idx,
+                name: cfg.name.clone(),
+                dialect,
+                read,
+                health,
+                queue_capacity: wcfg.queue_capacity,
+                tx,
+            },
+            wake,
+        ))
     }
 
     /// Queues a command and waits for its result (ACK after commit).
@@ -202,6 +233,11 @@ struct Writer {
     shared: Arc<Shared>,
     health: Arc<Health>,
     cfg: WriterConfig,
+    /// Next webhook outbox id (only this writer inserts).
+    outbox_next: i64,
+    /// Union of all webhooks' event patterns; empty = no outbox rows.
+    outbox_patterns: Vec<String>,
+    wake: Wake,
 }
 
 impl Writer {
@@ -247,7 +283,7 @@ impl Writer {
         let mut replies: Vec<(oneshot::Sender<ApiResult<Value>>, ApiResult<Value>)> =
             Vec::with_capacity(n);
         let mut outs: Vec<Out> = Vec::new();
-        let result: Result<(), String> = async {
+        let result: Result<Option<i64>, String> = async {
             // SQLite: take the write lock when the batch starts. A deferred
             // transaction that has read and then must write fails at once
             // (SQLITE_BUSY) if another connection committed in between;
@@ -297,6 +333,16 @@ impl Writer {
                 }
                 replies.push((job.reply, res));
             }
+            let queued = queue_outbox(
+                &mut self.outbox_next,
+                &self.outbox_patterns,
+                &self.name,
+                self.dialect,
+                &mut tx,
+                &outs,
+            )
+            .await
+            .map_err(|e| e.message)?;
             if self.health.fail_next_commits.load(Ordering::SeqCst) > 0 {
                 self.health.fail_next_commits.fetch_sub(1, Ordering::SeqCst);
                 let _ = tx.rollback().await;
@@ -306,17 +352,20 @@ impl Writer {
             tx.commit().await.map_err(|e| e.to_string())?;
             metrics::histogram!(m::COMMIT_DURATION, "database" => self.name.clone())
                 .record(t.elapsed().as_secs_f64());
-            Ok(())
+            Ok(queued)
         }
         .await;
 
         match result {
-            Ok(()) => {
+            Ok(queued) => {
                 self.health.jobs.fetch_add(n as u64, Ordering::Relaxed);
                 self.health.batches.fetch_add(1, Ordering::Relaxed);
                 self.health.max_batch.fetch_max(n as u64, Ordering::Relaxed);
                 metrics::histogram!(m::COMMIT_BATCH_SIZE).record(n as f64);
                 // Durable now: deliver, then acknowledge.
+                if let Some(last) = queued {
+                    self.wake.send_replace(last);
+                }
                 self.shared.reg.deliver(outs);
                 for (r, res) in replies {
                     let _ = r.send(res);
@@ -337,4 +386,53 @@ impl Writer {
             }
         }
     }
+}
+
+/// Writes the batch's subscribed events to the webhook outbox, inside
+/// the batch transaction. Returns the last id written.
+async fn queue_outbox(
+    next: &mut i64,
+    patterns: &[String],
+    db: &str,
+    dialect: Dialect,
+    tx: &mut AnyConnection,
+    outs: &[Out],
+) -> ApiResult<Option<i64>> {
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+    let rows: Vec<&crate::model::Event> = outs
+        .iter()
+        .filter_map(|o| match o {
+            Out::Event { ev, .. } if crate::webhook::matches(patterns, &ev.kind) => Some(ev),
+            _ => None,
+        })
+        .collect();
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let first = *next;
+    let now = now_ms();
+    for chunk in rows.chunks(200) {
+        let marks = vec!["(?, ?, ?, ?, ?)"; chunk.len()].join(", ");
+        let sql = format!(
+            "INSERT INTO webhook_outbox (id, conv_id, type, body, created_at) VALUES {marks}"
+        );
+        let mut q = sqlx::query(dialect.q(&sql));
+        for ev in chunk {
+            q = q
+                .bind(*next)
+                .bind(ev.conv_id.clone())
+                .bind(ev.kind.clone())
+                .bind(crate::webhook::event_body(db, ev).to_string())
+                .bind(now);
+            *next += 1;
+        }
+        if let Err(e) = q.execute(&mut *tx).await {
+            // Ids are only reused if nothing was committed with them.
+            *next = first;
+            return Err(e.into());
+        }
+    }
+    Ok(Some(*next - 1))
 }

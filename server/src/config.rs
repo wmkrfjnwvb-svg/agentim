@@ -30,6 +30,67 @@ pub struct Config {
     pub writer: WriterConfig,
     #[serde(default)]
     pub clients: ClientsConfig,
+    /// Event webhooks (docs/02-architecture.md §2.6).
+    #[serde(default)]
+    pub webhooks: Vec<WebhookConfig>,
+    /// Synchronous hook asked before a message is sent.
+    #[serde(default)]
+    pub before_send: Option<BeforeSendConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookConfig {
+    pub name: String,
+    pub url: String,
+    /// HMAC key for the `webhook-signature` header (at least 16 bytes).
+    pub secret: String,
+    /// Event types to deliver: exact (`msg.created`), a prefix (`msg.*`) or `*`.
+    #[serde(default = "all_events")]
+    pub events: Vec<String>,
+    /// Attempts per event before it is dropped (and audited).
+    #[serde(default = "default_attempts")]
+    pub max_attempts: u32,
+    #[serde(default = "default_webhook_timeout")]
+    pub timeout_ms: u64,
+    /// First retry delay; doubles per attempt, at most 5 minutes.
+    #[serde(default = "default_backoff")]
+    pub backoff_ms: u64,
+}
+
+fn all_events() -> Vec<String> {
+    vec!["*".into()]
+}
+fn default_attempts() -> u32 {
+    8
+}
+fn default_webhook_timeout() -> u64 {
+    5000
+}
+fn default_backoff() -> u64 {
+    1000
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BeforeSendConfig {
+    pub url: String,
+    pub secret: String,
+    #[serde(default = "default_hook_timeout")]
+    pub timeout_ms: u64,
+    /// What to do when the hook cannot be reached or answers badly.
+    #[serde(default)]
+    pub on_error: HookFailure,
+}
+
+fn default_hook_timeout() -> u64 {
+    2000
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HookFailure {
+    #[default]
+    Allow,
+    Reject,
 }
 
 /// Client compatibility (docs/02-architecture.md §2.5).
@@ -119,6 +180,8 @@ impl Config {
             units: vec![],
             writer: WriterConfig::default(),
             clients: Default::default(),
+            webhooks: vec![],
+            before_send: None,
         }
     }
 
@@ -160,6 +223,52 @@ impl Config {
         }
         if self.writer.max_batch == 0 || self.writer.queue_capacity == 0 {
             return Err("writer.max_batch and writer.queue_capacity must be > 0".into());
+        }
+        let http = |u: &str| u.starts_with("http://") || u.starts_with("https://");
+        for (i, w) in self.webhooks.iter().enumerate() {
+            let ok_name = !w.name.is_empty()
+                && w.name.len() <= 64
+                && w.name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_-".contains(c));
+            if !ok_name {
+                return Err(format!("webhooks: bad name {:?}", w.name));
+            }
+            if self.webhooks[..i].iter().any(|o| o.name == w.name) {
+                return Err(format!("webhooks: duplicate name {}", w.name));
+            }
+            if !http(&w.url) {
+                return Err(format!("webhooks.{}: url must be http(s)", w.name));
+            }
+            if w.secret.len() < 16 {
+                return Err(format!(
+                    "webhooks.{}: secret must be at least 16 bytes",
+                    w.name
+                ));
+            }
+            if w.events.is_empty() || w.events.iter().any(|e| !crate::webhook::valid_pattern(e)) {
+                return Err(format!(
+                    "webhooks.{}: events must be like msg.created, msg.* or *",
+                    w.name
+                ));
+            }
+            if w.max_attempts == 0 || w.timeout_ms == 0 {
+                return Err(format!(
+                    "webhooks.{}: max_attempts and timeout_ms must be > 0",
+                    w.name
+                ));
+            }
+        }
+        if let Some(b) = &self.before_send {
+            if !http(&b.url) {
+                return Err("before_send.url must be http(s)".into());
+            }
+            if b.secret.len() < 16 {
+                return Err("before_send.secret must be at least 16 bytes".into());
+            }
+            if b.timeout_ms == 0 {
+                return Err("before_send.timeout_ms must be > 0".into());
+            }
         }
         for (name, v) in &self.clients.min_versions {
             if name.is_empty() || name.len() > 64 {
@@ -212,6 +321,8 @@ mod tests {
                 .collect(),
             writer: WriterConfig::default(),
             clients: Default::default(),
+            webhooks: vec![],
+            before_send: None,
         }
     }
 

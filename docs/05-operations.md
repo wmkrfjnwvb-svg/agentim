@@ -32,6 +32,7 @@
 | 推送 | `agentim_push_total`、`agentim_push_dropped_total`、`agentim_resync_total`、`agentim_stream_deltas_total` | 每个连接的队列深度 |
 | 流式 | `agentim_streams_active`、`agentim_streams_finished_total{state,reason}` | 首个增量的延迟 |
 | AI 治理 | `agentim_guard_trips_total{reason}`、`agentim_guard_rejects_total{code}`、`agentim_policy_blocks_total{hook}`、`agentim_inbound_flags_total{flag}`、`agentim_drafts_total{state}`、`agentim_approval_latency_seconds`、`agentim_takeovers_total{action}` | 待审批数量（gauge）、工具调用（P3） |
+| 扩展 | `agentim_webhook_deliveries_total{webhook,result}`、`agentim_webhook_dropped_total{webhook}`、`agentim_before_send_total{result}` | 投递延迟、积压数量 |
 | 存储 | `agentim_storage_healthy{database}`、`agentim_storage_errors_total{kind}`、`agentim_conversation_migrations_total{result}` | 连接池、加密与 KMS（P2） |
 | 进程 | | CPU、内存、文件描述符 |
 
@@ -62,6 +63,7 @@
 | 覆盖排查补充（`tests/coverage.rs`，18 项 × 3 种数据库 + 1 项 PostgreSQL + 2 项 SQLite） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 见 §5.5 |
 | HTTP 与 WebSocket 接口（`tests/http.rs`，5 项） | ✅ | ✅ | 见 §5.5 |
 | 表结构迁移（`tests/schema.rs`，6 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 新库直接是最新结构；老库带数据升级后内容不变、seq 连续、可继续写；DDL 做完但版本未更新时重启补完；4 个进程同时启动只迁移一次（3 轮）；较新但兼容的库照常使用且版本不被降低；不兼容或损坏的版本号拒绝启动且不改动库 |
+| Webhook 与发送前拦截（`tests/webhooks.rs`，12 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 按日志顺序投递且签名正确、ID 唯一；事件类型过滤；失败重试后顺序不变；超过次数后放弃、写审计、不阻塞后面的；被拒绝的请求和提交失败的写入不发；重启后不丢不重；新 Webhook 不重放历史；全部投递后 outbox 清空，有一个没投递就保留；多库；4 个会话并发各发 25 条全部恰好一次；发送前拦截的放行、拒绝、替换（含 payload）、替换后不合法、格式错误不发给钩子、钩子后仍检查成员；超时、坏 JSON、未知 action、500、连不上分别按 `allow` 和 `reject` 处理。变异检查：游标不保存会让重启测试失败 |
 | 扩展（`tests/extensions.rs`，8 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 自定义类型的推送、拉取、去重、重启；类型名和 payload 的边界（64 字节、32 KiB、非对象、保留命名空间、缺降级文本）且拒绝不留痕迹；编辑替换或保留 payload；撤回后事件和数据库行里都不留 payload；仅某人可见和审批草稿带上类型和 payload；DLP 和注入检测看 payload；编辑与撤回竞争 20 轮；信号只到在线的其他成员且不落库；信号的类型、大小、成员、拉黑、限速。变异检查：撤回不清数据库里的 payload、注入检测不看 payload，都会让测试失败 |
 | 协议版本（`tests/protocol.rs`，7 项 × 3 种数据库 + 4 项 WebSocket） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 老客户端不带协商照常工作；协商选最新的共同版本，没有时 `unsupported_protocol`；最低版本的边界（相等、次版本 10 > 9、预发布、缺版本号、未配置的客户端）；名称、版本、功能数量的上限；重复和被拒绝的 `hello` 对连接状态的影响；`unknown_op` 与 `bad_request` 的区分且不留痕迹；忽略未知字段；连接参数 `v` 的各种取值；`client_too_old` 后以 1008 断开而其他拒绝不断开；指标标签不含原始输入。变异检查：去掉 `unknown_op` 判断、去掉断开都会让测试失败；`OPS` 少一项会让单元测试失败 |
 | 配置校验（`src/config.rs` 单元测试，3 项） | ✅ | ✅ | 见 §5.5 |

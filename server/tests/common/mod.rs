@@ -93,6 +93,8 @@ pub fn single(url: &str) -> Config {
         units: vec![],
         writer: WriterConfig::default(),
         clients: Default::default(),
+        webhooks: vec![],
+        before_send: None,
     }
 }
 
@@ -122,6 +124,8 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
         }],
         writer: WriterConfig::default(),
         clients: Default::default(),
+        webhooks: vec![],
+        before_send: None,
     }
 }
 

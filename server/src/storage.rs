@@ -402,6 +402,20 @@ pub const TABLES: &[Table] = &[
         indexes: &[],
         conv_key: Some("conv_id"),
     },
+    // v2: events waiting for webhook delivery, in commit order.
+    Table {
+        name: "webhook_outbox",
+        cols: &[
+            c("id", Big),
+            c("conv_id", Id),
+            c("type", Id),
+            c("body", Text),
+            c("created_at", Big),
+        ],
+        pk: &["id"],
+        indexes: &[],
+        conv_key: None,
+    },
     Table {
         name: "audit",
         cols: &[
@@ -506,7 +520,7 @@ pub struct Migration {
 pub const MIGRATIONS: &[Migration] = &[Migration {
     version: 2,
     compat: 1,
-    about: "custom message kinds: messages.payload, drafts.kind, drafts.payload",
+    about: "custom message kinds (messages.payload, drafts.kind, drafts.payload) and the webhook outbox",
     steps: &[
         Step::AddColumn {
             table: "messages",

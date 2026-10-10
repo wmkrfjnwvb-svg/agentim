@@ -1305,6 +1305,44 @@ impl Db<'_> {
 
     // --------------------------------------------------------------- audit
 
+    /// Moves a webhook cursor forward and deletes outbox rows every
+    /// configured webhook has handled.
+    pub async fn webhook_ack(&mut self, name: &str, upto: i64, all: &[String]) -> ApiResult<()> {
+        let key = crate::webhook::cursor_key(name);
+        let cur = self.meta_i64(&key).await?.unwrap_or(0);
+        if upto > cur {
+            sqlx::query(self.d.q("UPDATE meta SET v = ? WHERE k = ?"))
+                .bind(upto.to_string())
+                .bind(key)
+                .execute(&mut *self.c)
+                .await?;
+        }
+        let mut min = i64::MAX;
+        for w in all {
+            min = min.min(
+                self.meta_i64(&crate::webhook::cursor_key(w))
+                    .await?
+                    .unwrap_or(0),
+            );
+        }
+        if min != i64::MAX && min > 0 {
+            sqlx::query(self.d.q("DELETE FROM webhook_outbox WHERE id <= ?"))
+                .bind(min)
+                .execute(&mut *self.c)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn meta_i64(&mut self, k: &str) -> ApiResult<Option<i64>> {
+        let r = sqlx::query(self.d.q("SELECT v FROM meta WHERE k = ?"))
+            .bind(k.to_string())
+            .fetch_optional(&mut *self.c)
+            .await?;
+        Ok(r.and_then(|r| r.try_get::<String, _>(0).ok())
+            .and_then(|v| v.parse().ok()))
+    }
+
     pub async fn audit(
         &mut self,
         actor: Option<&str>,

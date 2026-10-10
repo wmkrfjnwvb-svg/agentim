@@ -40,3 +40,19 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 # clients are refused in `hello` with "client_too_old" and disconnected.
 # [clients.min_versions]
 # agentim-js = "1.2.0"
+
+# Event webhooks (docs/02-architecture.md §2.6): signed like Standard Webhooks,
+# delivered in order, at least once.
+# [[webhooks]]
+# name = "backend"
+# url = "https://example.com/agentim/events"
+# secret = "change-me-to-a-long-random-secret"
+# events = ["msg.*", "member.*"]
+# max_attempts = 8
+
+# Asked before every message is sent: allow, reject or replace.
+# [before_send]
+# url = "https://example.com/agentim/before-send"
+# secret = "change-me-to-a-long-random-secret"
+# timeout_ms = 2000
+# on_error = "allow"      # or "reject"

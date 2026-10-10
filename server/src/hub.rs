@@ -31,6 +31,17 @@ struct Inner {
     tickers: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Serialises direct-conversation creation so a pair gets only one.
     dm_lock: tokio::sync::Mutex<()>,
+    /// Webhook delivery tasks; they hold only their database, not the hub.
+    deliverers: Vec<tokio::task::JoinHandle<()>>,
+    http: reqwest::Client,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        for d in &self.deliverers {
+            d.abort();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -100,8 +111,26 @@ impl Hub {
             blocks: Default::default(),
         });
         let mut shards = Vec::new();
+        let mut wakes = Vec::new();
         for (i, d) in cfg.storage.databases.iter().enumerate() {
-            shards.push(Shard::open(i, d, &cfg.writer, sh.clone()).await?);
+            let (s, w) = Shard::open(i, d, &cfg.writer, sh.clone(), &cfg.webhooks).await?;
+            shards.push(s);
+            wakes.push(w);
+        }
+        let http = crate::webhook::client();
+        // One delivery task per webhook and database.
+        let names: Vec<String> = cfg.webhooks.iter().map(|w| w.name.clone()).collect();
+        let mut deliverers = Vec::new();
+        for (s, w) in shards.iter().zip(&wakes) {
+            for wh in &cfg.webhooks {
+                deliverers.push(tokio::spawn(crate::webhook::deliver_loop(
+                    s.clone(),
+                    wh.clone(),
+                    names.clone(),
+                    w.subscribe(),
+                    http.clone(),
+                )));
+            }
         }
         let hub = Hub {
             inner: Arc::new(Inner {
@@ -109,6 +138,8 @@ impl Hub {
                 shards,
                 cfg,
                 tickers: Mutex::new(vec![]),
+                deliverers,
+                http,
                 dm_lock: tokio::sync::Mutex::new(()),
             }),
         };
@@ -734,6 +765,14 @@ impl Hub {
                     Ok(json!({}))
                 }
             },
+            ClientMsg::Send { .. } if self.inner.cfg.before_send.is_some() => {
+                let msg = self.before_send(me, msg).await?;
+                let ClientMsg::Send { ref conv_id, .. } = msg else {
+                    unreachable!()
+                };
+                let c = conv_id.clone();
+                self.on_conv(sess, &c, msg).await
+            }
             ClientMsg::Send { ref conv_id, .. }
             | ClientMsg::Read { ref conv_id, .. }
             | ClientMsg::StreamStart { ref conv_id, .. }
@@ -829,6 +868,50 @@ impl Hub {
                 data,
             } => self.signal(sess, &conv_id, &kind, data).await,
         }
+    }
+
+    /// Asks the configured before-send hook; it may allow, reject or replace
+    /// the content. Invalid requests are refused first and never reach it.
+    async fn before_send(&self, me: &User, msg: ClientMsg) -> ApiResult<ClientMsg> {
+        let Some(cfg) = &self.inner.cfg.before_send else {
+            return Ok(msg);
+        };
+        let ClientMsg::Send {
+            conv_id,
+            client_msg_id,
+            mut text,
+            kind,
+            mut payload,
+            reply_to,
+            causation_id,
+            on_behalf_of,
+            to_user,
+        } = msg
+        else {
+            return Ok(msg);
+        };
+        crate::logic::check_text(&text)?;
+        crate::logic::check_kind(kind.clone(), &payload)?;
+        let req = json!({"conv_id": conv_id, "client_msg_id": client_msg_id, "kind": kind.as_deref().unwrap_or("text"), "text": text, "payload": payload, "reply_to": reply_to, "to_user": to_user});
+        if let crate::webhook::Verdict::Replace {
+            text: t,
+            payload: p,
+        } = crate::webhook::before_send(&self.inner.http, cfg, me, req).await?
+        {
+            text = t;
+            payload = p;
+        }
+        Ok(ClientMsg::Send {
+            conv_id,
+            client_msg_id,
+            text,
+            kind,
+            payload,
+            reply_to,
+            causation_id,
+            on_behalf_of,
+            to_user,
+        })
     }
 
     /// Ephemeral event to the members online now (docs/02-architecture.md
