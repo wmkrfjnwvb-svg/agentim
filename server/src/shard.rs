@@ -66,6 +66,18 @@ impl Health {
     }
 }
 
+/// Decrements a fault-injection counter if it is above zero.
+fn take_one(n: &AtomicU32) -> bool {
+    let mut cur = n.load(Ordering::SeqCst);
+    while cur > 0 {
+        match n.compare_exchange(cur, cur - 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(now) => cur = now,
+        }
+    }
+    false
+}
+
 struct Job {
     op: Op,
     reply: oneshot::Sender<ApiResult<Value>>,
@@ -256,12 +268,7 @@ impl Writer {
                         idx: self.idx,
                         commit_on_error: false,
                     };
-                    let injected = !job.op.is_tick()
-                        && self
-                            .health
-                            .fail_next_jobs
-                            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                            .is_ok();
+                    let injected = !job.op.is_tick() && take_one(&self.health.fail_next_jobs);
                     let res = if injected {
                         Err(ApiError::new("storage", "injected statement failure"))
                     } else {
