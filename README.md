@@ -23,13 +23,13 @@
 
 | Doc | Content |
 |---|---|
-| [01 产品需求](docs/01-product-requirements.md) | 定位、目标用户、核心需求、非功能指标 |
-| [02 架构设计](docs/02-architecture.md) | 消息模型、可靠性与顺序、群聊扩散、整体分层、容量估算 |
-| [03 AI 原生能力](docs/03-ai-native.md) | Agent 身份、流式消息、人工介入、过滤、监控、安全护栏 |
-| [04 版本划分](docs/04-editions.md) | 社区版与企业版的功能边界、开源核心原则 |
-| [调研：市场与竞品](docs/research/market-and-competitors.md) | 海外 IM + AI 需求、竞品功能与分层对比 |
-| [05 需求与架构评审](docs/05-review.md) | 调研核实、P0/P1/P2 修订项、v0.2 消息模型、实施路线 |
-| [06 单机版](docs/06-standalone.md) | 单机版设计、协议、测试与实测结果 |
+| [01 产品](docs/01-product.md) | 定位、首要场景、核心保证 G1–G6、功能需求与状态、指标、版本划分 |
+| [02 架构](docs/02-architecture.md) | 消息模型（事件日志 + 侧信道）、可靠性、**组提交方案（待确认）**、存储抽象、集群 |
+| [03 AI 原生](docs/03-ai-native.md) | Agent 身份、信任模型、流式、介入、**审批 v2、工具网关（待确认）**、护栏 |
+| [04 安全与合规](docs/04-security-compliance.md) | 身份、TLS、静态加密与密钥层级、E2EE 立场、海外法规对照 |
+| [05 运维、测试与客户端](docs/05-operations.md) | 部署、日志规范、指标、Linux/Windows 测试矩阵、客户端路线、演示与协议 |
+| [06 迭代计划](docs/06-plan.md) | 待确认事项 D1–D9、实施顺序、P0 进度 |
+| [调研：市场与竞品](docs/research/market-and-competitors.md) | 平台动向、竞品功能与分层（已核实） |
 
 ## Status / 状态
 

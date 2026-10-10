@@ -20,4 +20,4 @@ Options: `--addr`, `--db` (SQLite file, default `agentim.db`), `--demo`, `--stre
 | `web/index.html` | Demo web client |
 | `examples/agent.mjs` | External agent over the WebSocket protocol |
 
-Design, protocol and test results: [docs/06-standalone.md](../docs/06-standalone.md).
+Design, protocol and test results: [docs/05-operations.md](../docs/05-operations.md) §7 and [docs/02-architecture.md](../docs/02-architecture.md).
