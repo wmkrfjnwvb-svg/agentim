@@ -789,6 +789,46 @@ impl Db<'_> {
 
     // ------------------------------------------------------------- reading
 
+    /// Blanks a message's content in every event that embeds a snapshot of
+    /// it (used by recall: the content must not stay readable in the history).
+    pub async fn scrub_message(
+        &mut self,
+        conv_id: &str,
+        msg_id: &str,
+        from_seq: i64,
+    ) -> ApiResult<()> {
+        // The LIKE only narrows the scan; the JSON check below decides.
+        let pattern = format!("%\"msg_id\":\"{msg_id}\"%");
+        let rows = sqlx::query(self.d.q(
+            "SELECT seq, payload FROM events WHERE conv_id = ? AND seq >= ? AND payload LIKE ?",
+        ))
+        .bind(conv_id)
+        .bind(from_seq)
+        .bind(pattern)
+        .fetch_all(&mut *self.c)
+        .await?;
+        for r in rows {
+            let seq: i64 = r.try_get(0)?;
+            let mut p: Value =
+                serde_json::from_str(&r.try_get::<String, _>(1)?).unwrap_or(Value::Null);
+            if p["msg"]["msg_id"] != msg_id {
+                continue;
+            }
+            p["msg"]["content"] = json!("");
+            p["msg"]["mentions"] = json!([]);
+            sqlx::query(
+                self.d
+                    .q("UPDATE events SET payload = ? WHERE conv_id = ? AND seq = ?"),
+            )
+            .bind(p.to_string())
+            .bind(conv_id)
+            .bind(seq)
+            .execute(&mut *self.c)
+            .await?;
+        }
+        Ok(())
+    }
+
     pub async fn pull(
         &mut self,
         conv_id: &str,

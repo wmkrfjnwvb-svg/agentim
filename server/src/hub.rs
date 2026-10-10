@@ -887,18 +887,27 @@ impl Hub {
         if kind != "dm" && kind != "group" {
             return Err(err("bad_request", "kind must be dm or group"));
         }
-        if title.is_empty() || title.len() > 255 {
+        if title.is_empty() || title.len() > 255 || title.contains('\0') {
             return Err(err("bad_request", "title must be 1..255 bytes"));
         }
         let sh = &self.inner.sh;
-        let users = members
-            .iter()
-            .map(|k| {
-                sh.user(k)
-                    .or_else(|| sh.user_by_name(k))
-                    .ok_or_else(|| err("not_found", format!("user {k}")))
-            })
-            .collect::<ApiResult<Vec<_>>>()?;
+        let mut users: Vec<User> = vec![];
+        for k in members {
+            let u = sh
+                .user(k)
+                .or_else(|| sh.user_by_name(k))
+                .ok_or_else(|| err("not_found", format!("user {k}")))?;
+            // The creator and repeated entries are not added twice.
+            if u.id != me.id && !users.iter().any(|x| x.id == u.id) {
+                users.push(u);
+            }
+        }
+        if kind == "dm" && users.len() != 1 {
+            return Err(err(
+                "bad_request",
+                "a direct conversation has exactly one other member",
+            ));
+        }
         // New conversations live in the database of the creator's unit.
         let db_name = self.inner.cfg.unit_database(&me.unit_id).to_string();
         let idx = sh.db_names.iter().position(|n| *n == db_name).unwrap();

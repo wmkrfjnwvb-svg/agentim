@@ -292,6 +292,17 @@ fn err(code: &'static str, msg: impl Into<String>) -> ApiError {
     ApiError::new(code, msg)
 }
 
+/// Message text: 1..64KB, and no NUL (PostgreSQL cannot store it).
+pub fn check_text(text: &str) -> ApiResult<()> {
+    if text.is_empty() || text.len() > MAX_MESSAGE_BYTES {
+        return Err(err("bad_request", "text must be 1..64KB"));
+    }
+    if text.contains('\0') {
+        return Err(err("bad_request", "text must not contain NUL"));
+    }
+    Ok(())
+}
+
 pub struct Ctx<'a, 'c> {
     pub db: Db<'c>,
     pub st: &'a mut ShardState,
@@ -489,19 +500,33 @@ impl Ctx<'_, '_> {
             ClientMsg::Recall { msg_id } => self.recall(me, &msg_id).await,
             ClientMsg::Read { conv_id, seq } => {
                 self.require_member(&conv_id, &me.id).await?;
-                self.db.set_read(&conv_id, &me.id, seq).await?;
+                // A cursor past the head would hide messages that arrive later.
+                let head = self
+                    .db
+                    .conv(&conv_id)
+                    .await?
+                    .map(|c| c.last_seq)
+                    .unwrap_or(0);
+                self.db.set_read(&conv_id, &me.id, seq.min(head)).await?;
                 Ok(json!({}))
             }
             ClientMsg::Focus {
                 conv_id: Some(c), ..
             } => {
                 // Late joiners get the accumulated content of in-flight streams.
-                for st in self
+                // Pending text is flushed first, so the next delta continues
+                // after this snapshot instead of repeating part of it.
+                let ids: Vec<String> = self
                     .st
                     .streams
                     .values()
                     .filter(|s| s.conv_id == c && matches!(s.target, Target::Main))
-                {
+                    .map(|s| s.msg_id.clone())
+                    .collect();
+                for id in &ids {
+                    self.flush_one(id);
+                }
+                for st in ids.iter().filter_map(|id| self.st.streams.get(id)) {
                     self.out.push(Out::ToSession {
                         sid: sess.sid,
                         frame: json!({"type": "delta", "conv_id": st.conv_id, "msg_id": st.msg_id, "reset": true, "text": st.buf}),
@@ -577,6 +602,7 @@ impl Ctx<'_, '_> {
             }
             ClientMsg::ResetGuard { conv_id, agent_id } => {
                 let agent = self.owned_agent(me, &agent_id)?;
+                self.require_member(&conv_id, &agent.id).await?;
                 let ev = self
                     .db
                     .append_event(
@@ -764,14 +790,23 @@ impl Ctx<'_, '_> {
         Ok(())
     }
 
+    /// Members named after an `@`. At each `@` the longest matching name
+    /// wins, so `@bobby` mentions bobby and not bob.
     async fn mentions(&mut self, conv_id: &str, text: &str) -> ApiResult<Vec<String>> {
-        Ok(self
-            .members(conv_id)
-            .await?
-            .iter()
-            .filter(|m| text.contains(&format!("@{}", m.name)))
-            .map(|m| m.user_id.clone())
-            .collect())
+        let members = self.members(conv_id).await?;
+        let mut out: Vec<String> = vec![];
+        for (i, _) in text.match_indices('@') {
+            let rest = &text[i + 1..];
+            if let Some(m) = members
+                .iter()
+                .filter(|m| !m.name.is_empty() && rest.starts_with(m.name.as_str()))
+                .max_by_key(|m| m.name.len())
+                && !out.contains(&m.user_id)
+            {
+                out.push(m.user_id.clone());
+            }
+        }
+        Ok(out)
     }
 
     /// Causation and hop are computed by the server; agent-supplied values
@@ -928,9 +963,7 @@ impl Ctx<'_, '_> {
         to_user: Option<String>,
     ) -> ApiResult<Value> {
         let member = self.require_member(conv_id, &me.id).await?;
-        if text.is_empty() || text.len() > MAX_MESSAGE_BYTES {
-            return Err(err("bad_request", "message must be 1..64KB"));
-        }
+        check_text(text)?;
         if let Some(o) = &on_behalf_of {
             // Community rule: an agent may only speak on behalf of its owner.
             if me.kind != UserKind::Agent || me.owner_id.as_deref() != Some(o.as_str()) {
@@ -1081,9 +1114,7 @@ impl Ctx<'_, '_> {
         if msg.state == "streaming" || msg.state == "recalled" {
             return Err(err("conflict", format!("message is {}", msg.state)));
         }
-        if text.is_empty() || text.len() > MAX_MESSAGE_BYTES {
-            return Err(err("bad_request", "message must be 1..64KB"));
-        }
+        check_text(text)?;
         if me.kind == UserKind::Agent
             && let Some((_, reason)) = self.sh.policy.outbound(text)
         {
@@ -1119,6 +1150,9 @@ impl Ctx<'_, '_> {
         if !self.can_modify(me, &msg, true).await? {
             return Err(err("forbidden", "cannot recall this message"));
         }
+        if msg.state == "recalled" {
+            return Err(err("conflict", "message is already recalled"));
+        }
         if msg.state == "streaming" {
             self.finish_stream(msg_id, "cancelled", Some("recalled"), &me.id)
                 .await?;
@@ -1133,6 +1167,10 @@ impl Ctx<'_, '_> {
                 Some("recalled"),
                 None,
             )
+            .await?;
+        // Earlier events embed the content; recalled means gone from history.
+        self.db
+            .scrub_message(&msg.conv_id, msg_id, msg.created_seq)
             .await?;
         if msg.sender_id != me.id {
             self.db
@@ -1263,17 +1301,30 @@ impl Ctx<'_, '_> {
         if idx < st.next_idx {
             return Ok(json!({"duplicate": true}));
         }
+        if text.contains('\0') {
+            return Err(err("bad_request", "text must not contain NUL"));
+        }
         if idx > st.next_idx {
             return Err(err(
                 "out_of_order",
                 format!("expected chunk {}", st.next_idx),
             ));
         }
+        if st.buf.len() + text.len() > max_bytes {
+            // The chunk that would pass the limit is not kept: a stored
+            // message never exceeds it.
+            self.finish_stream(msg_id, "complete", Some("size_limit"), &me.id)
+                .await?;
+            self.commit_on_error = true;
+            return Err(err(
+                "size_limit",
+                "stream reached the maximum size and was closed",
+            ));
+        }
         st.next_idx += 1;
         st.last_append = Instant::now();
         st.buf.push_str(text);
         st.pending.push_str(text);
-        let over = st.buf.len() > max_bytes;
         let buf = st.buf.clone();
         let conv_id = st.conv_id.clone();
         if !self
@@ -1301,15 +1352,6 @@ impl Ctx<'_, '_> {
             self.moderate_stream(msg_id, &reason).await?;
             self.commit_on_error = true;
             return Err(err("policy_blocked", reason));
-        }
-        if over {
-            self.finish_stream(msg_id, "complete", Some("size_limit"), &me.id)
-                .await?;
-            self.commit_on_error = true;
-            return Err(err(
-                "size_limit",
-                "stream exceeded the maximum size and was closed",
-            ));
         }
         Ok(json!({}))
     }
@@ -1588,9 +1630,7 @@ impl Ctx<'_, '_> {
     ) -> ApiResult<Value> {
         let agent = self.owned_agent(me, agent_id)?;
         self.require_member(conv_id, &agent.id).await?;
-        if text.is_empty() || text.len() > MAX_MESSAGE_BYTES {
-            return Err(err("bad_request", "whisper must be 1..64KB"));
-        }
+        check_text(text)?;
         let audience = vec![agent.id.clone(), me.id.clone()];
         let side = self
             .db
@@ -1637,6 +1677,9 @@ impl Ctx<'_, '_> {
             .db
             .decide_draft(draft_id, "approved", &me.id, &audience, &d.conv_id)
             .await?;
+        if let Some(t) = &text {
+            check_text(t)?;
+        }
         let content = text.unwrap_or(d.content.clone());
         let mentions = self.mentions(&d.conv_id, &content).await?;
         let res = self
