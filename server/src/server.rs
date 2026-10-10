@@ -40,6 +40,49 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// `scheme://host[:port]` with nothing after it.
+pub fn valid_origin(o: &str) -> bool {
+    let rest = o
+        .strip_prefix("https://")
+        .or_else(|| o.strip_prefix("http://"));
+    rest.is_some_and(|r| {
+        !r.is_empty()
+            && r.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-.:[]".contains(c))
+    })
+}
+
+/// Browsers send `Origin`; a page on another site must not use a visitor's
+/// session (cross-site WebSocket hijacking). Requests without `Origin`
+/// (apps, SDKs, agents) are not affected.
+fn origin_allowed(st: &AppState, headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) else {
+        return true;
+    };
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let same = ["http://", "https://"]
+        .iter()
+        .any(|s| origin.eq_ignore_ascii_case(&format!("{s}{host}")));
+    same || st
+        .hub
+        .config()
+        .server
+        .allowed_origins
+        .iter()
+        .any(|a| a.eq_ignore_ascii_case(origin))
+}
+
+fn origin_refused() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({"error": {"code": "forbidden", "message": "origin not allowed"}})),
+    )
+        .into_response()
+}
+
 async fn index() -> Html<&'static str> {
     Html(include_str!("../web/index.html"))
 }
@@ -49,7 +92,14 @@ struct LoginReq {
     name: String,
 }
 
-async fn login(State(st): State<AppState>, Json(req): Json<LoginReq>) -> Response {
+async fn login(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<LoginReq>,
+) -> Response {
+    if !origin_allowed(&st, &headers) {
+        return origin_refused();
+    }
     if !st.demo_login {
         return (
             StatusCode::FORBIDDEN,
@@ -195,8 +245,12 @@ fn ws_protocol(v: Option<&str>) -> Result<u32, Box<Response>> {
 async fn ws(
     State(st): State<AppState>,
     Query(q): Query<WsQuery>,
+    headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
+    if !origin_allowed(&st, &headers) {
+        return origin_refused();
+    }
     let Some((user, device)) = st.hub.authenticate_device(&q.token) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };

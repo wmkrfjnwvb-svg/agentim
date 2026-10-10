@@ -96,6 +96,7 @@ pub fn single(url: &str) -> Config {
         webhooks: vec![],
         before_send: None,
         open_api: Default::default(),
+        server: Default::default(),
     }
 }
 
@@ -128,6 +129,7 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
         webhooks: vec![],
         before_send: None,
         open_api: Default::default(),
+        server: Default::default(),
     }
 }
 

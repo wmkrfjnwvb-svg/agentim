@@ -56,3 +56,9 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 # secret = "change-me-to-a-long-random-secret"
 # timeout_ms = 2000
 # on_error = "allow"      # or "reject"
+
+# [server]
+# allowed_origins = ["https://app.example.com"]   # browser pages on other sites
+# [server.tls]                                    # serve HTTPS / WSS directly
+# cert = "/etc/agentim/cert.pem"
+# key = "/etc/agentim/key.pem"

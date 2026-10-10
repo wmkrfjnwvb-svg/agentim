@@ -204,6 +204,13 @@ async fn main() {
             }
         });
     }
+    let tls = hub.config().server.tls.as_ref().map(|t| {
+        agentim::tls::server_config(&t.cert, &t.key).unwrap_or_else(|e| {
+            tracing::error!(error = e, "tls");
+            std::process::exit(2)
+        })
+    });
+    let scheme = if tls.is_some() { "https" } else { "http" };
     let app = router(AppState {
         hub,
         demo_login: args.demo,
@@ -215,20 +222,26 @@ async fn main() {
             tracing::error!(error = %e, "bind failed");
             std::process::exit(1)
         });
-    // Small request/response frames: Nagle + delayed ACK would add ~40ms per round trip.
-    let listener = listener.tap_io(|tcp| {
-        let _ = tcp.set_nodelay(true);
-    });
     tracing::info!(addr = %args.addr, demo = args.demo, "AgentIM listening");
-    println!("AgentIM listening on http://{}", args.addr);
+    println!("AgentIM listening on {scheme}://{}", args.addr);
     if args.demo {
         println!("Demo mode: open the URL above and log in as alice, bob or carol.");
     }
     // Client addresses feed the open API's address rules.
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await
-    .expect("serve");
+    match tls {
+        Some(cfg) => {
+            let l = agentim::tls::TlsListener::new(listener, cfg).expect("tls listener");
+            let app = app.into_make_service_with_connect_info::<agentim::tls::PeerAddr>();
+            axum::serve(l, app).await.expect("serve")
+        }
+        None => {
+            // Small request/response frames: Nagle + delayed ACK would add
+            // ~40ms per round trip.
+            let l = listener.tap_io(|tcp| {
+                let _ = tcp.set_nodelay(true);
+            });
+            let app = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+            axum::serve(l, app).await.expect("serve")
+        }
+    }
 }

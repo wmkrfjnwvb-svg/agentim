@@ -172,9 +172,19 @@ fn client_ip(hub: &Hub, req: &Request) -> Option<IpAddr> {
     {
         return Some(ip);
     }
+    peer_ip(req)
+}
+
+/// The TCP peer, from either kind of connect info.
+fn peer_ip(req: &Request) -> Option<IpAddr> {
     req.extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0.ip())
+        .or_else(|| {
+            req.extensions()
+                .get::<ConnectInfo<crate::tls::PeerAddr>>()
+                .map(|c| c.0.0.ip())
+        })
 }
 
 // -------------------------------------------------------- rate limiting
@@ -224,13 +234,11 @@ async fn guard(State(st): State<AppState>, req: Request, next: Next) -> Response
 async fn guard_inner(st: AppState, req: Request, next: Next) -> Result<Response, Response> {
     let hub = &st.hub;
     let cfg = hub.open_api_config().clone();
-    let peer = req
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|c| c.0.ip());
+    let peer = peer_ip(&req);
     // There is no built-in TLS yet: plaintext only from this machine, or
     // behind a TLS-terminating proxy.
-    if !cfg.behind_proxy && !peer.is_some_and(|p| p.is_loopback()) {
+    let tls = hub.config().server.tls.is_some();
+    if !tls && !cfg.behind_proxy && !peer.is_some_and(|p| p.is_loopback()) {
         return Err(Problem::new(
             StatusCode::FORBIDDEN,
             "https_required",

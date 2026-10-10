@@ -38,6 +38,26 @@ pub struct Config {
     pub before_send: Option<BeforeSendConfig>,
     #[serde(default)]
     pub open_api: OpenApiConfig,
+    #[serde(default)]
+    pub server: ServerConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ServerConfig {
+    /// Browser origins allowed besides the server's own, e.g.
+    /// `https://app.example.com` (docs/04-security-compliance.md §1).
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+    /// Serve HTTPS / WSS directly.
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsConfig {
+    /// PEM certificate chain and private key files.
+    pub cert: String,
+    pub key: String,
 }
 
 /// Open API transport and limits (docs/07-open-api.md §5).
@@ -207,6 +227,7 @@ impl Config {
             webhooks: vec![],
             before_send: None,
             open_api: Default::default(),
+            server: Default::default(),
         }
     }
 
@@ -295,6 +316,13 @@ impl Config {
                 return Err("before_send.timeout_ms must be > 0".into());
             }
         }
+        for o in &self.server.allowed_origins {
+            if !crate::server::valid_origin(o) {
+                return Err(format!(
+                    "server.allowed_origins: {o:?} is not like https://host[:port]"
+                ));
+            }
+        }
         if !(self.open_api.rate_per_second > 0.0 && self.open_api.burst >= 1.0) {
             return Err("open_api.rate_per_second must be > 0 and burst >= 1".into());
         }
@@ -352,6 +380,7 @@ mod tests {
             webhooks: vec![],
             before_send: None,
             open_api: Default::default(),
+            server: Default::default(),
         }
     }
 

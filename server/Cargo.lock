@@ -23,6 +23,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite 0.30.0",
  "toml",
  "tracing",

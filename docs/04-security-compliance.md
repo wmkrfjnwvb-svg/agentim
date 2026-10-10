@@ -9,6 +9,8 @@
 | 人类账号 | 账号密码，用 argon2id 哈希（m=19MiB、t=2、p=1）；可选 TOTP 二次验证；登录失败限流 | OWASP Password Storage Cheat Sheet 的最低建议参数 |
 | 第三方登录 | OIDC（Google、Microsoft、GitHub）放社区版；SAML、SCIM 放企业版 | |
 | Agent 凭据 | API Key，格式为"前缀 + 随机密钥"，可以设置权限范围、轮换和吊销；之后支持 OAuth client credentials | MCP 2025-11-25 授权规范 |
+| Origin 校验 | 浏览器访问 `/ws` 和登录接口时，`Origin` 必须是本站或 `server.allowed_origins` 里的地址，防止跨站 WebSocket 劫持；App、SDK、Agent 不带 `Origin`，不受影响 | ✅ 已实现 |
+| 内置 TLS | `[server.tls] cert/key`（PEM）后服务端直接提供 HTTPS 和 WSS（rustls + ring）；握手在接受循环之外进行、10 秒超时；也可以放在 TLS 反向代理之后（`open_api.behind_proxy`） | ✅ 已实现 |
 | 会话令牌 | 256 位随机数；数据库里**只存 SHA-256 哈希**；有过期时间，可以吊销 | ✅ 已实现（`atk_` 前缀，老库升级时转为哈希） |
 | 开发者后端签发令牌 | 开发者的后端用开放 API 给自己的用户签发客户端令牌（[07 §3.4](07-open-api.md)）；内置账号密码是给独立部署用的另一种方式 | Stream、腾讯云 IM 都是这样做 |
 | 演示登录 | 只在 `--demo` 下可用；默认关闭（现状已经如此） | |
