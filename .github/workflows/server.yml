@@ -146,3 +146,26 @@ jobs:
         with:
           name: ui-screenshots-${{ matrix.os }}
           path: server/screenshots
+
+  sdk:
+    name: server SDK smoke tests (Node, Python, Go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: cargo build --bins
+      - run: (cd ../sdk/go && gofmt -l . | (! grep .) && go vet ./...)
+      - run: bash ../sdk/smoke.sh server/target/debug/agentim
