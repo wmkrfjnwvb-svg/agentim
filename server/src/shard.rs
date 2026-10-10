@@ -93,6 +93,8 @@ pub struct Shard {
     pub health: Arc<Health>,
     pub queue_capacity: usize,
     tx: mpsc::Sender<Job>,
+    /// Encryption at rest of this database.
+    pub crypto: Arc<crate::crypto::Crypto>,
 }
 
 impl Shard {
@@ -102,6 +104,7 @@ impl Shard {
         wcfg: &WriterConfig,
         shared: Arc<Shared>,
         webhooks: &[WebhookConfig],
+        master_key: Option<&str>,
     ) -> ApiResult<(Shard, Wake)> {
         let dialect = Dialect::from_url(&cfg.url).map_err(|e| ApiError::new("config", e))?;
         let mut conn = storage::open_writer(&cfg.url, dialect).await?;
@@ -120,6 +123,7 @@ impl Shard {
                 ));
             }
         }
+        let crypto = Arc::new(open_crypto(&mut conn, dialect, &cfg.name, master_key).await?);
         let read = storage::open_pool(&cfg.url, dialect, cfg.read_pool.unwrap_or(8)).await?;
         // Webhook outbox: next id, and cursors for webhooks new to this
         // database start at the end (no replay of history).
@@ -157,6 +161,7 @@ impl Shard {
             outbox_next: max + 1,
             outbox_patterns: webhooks.iter().flat_map(|w| w.events.clone()).collect(),
             wake: wake.clone(),
+            crypto: crypto.clone(),
         };
         tokio::spawn(w.run(rx));
         tracing::info!(
@@ -173,6 +178,7 @@ impl Shard {
                 health,
                 queue_capacity: wcfg.queue_capacity,
                 tx,
+                crypto,
             },
             wake,
         ))
@@ -238,6 +244,7 @@ struct Writer {
     /// Union of all webhooks' event patterns; empty = no outbox rows.
     outbox_patterns: Vec<String>,
     wake: Wake,
+    crypto: Arc<crate::crypto::Crypto>,
 }
 
 impl Writer {
@@ -299,11 +306,13 @@ impl Writer {
                     .await
                     .map_err(|e| e.to_string())?;
                 let mut out = Vec::new();
+                let mark = self.crypto.mark();
                 let (res, keep) = {
                     let mut ctx = Ctx {
                         db: Db {
                             c: &mut sp,
                             d: self.dialect,
+                            cx: &self.crypto,
                         },
                         st,
                         sh: &self.shared,
@@ -325,6 +334,8 @@ impl Writer {
                     outs.extend(out);
                 } else {
                     sp.rollback().await.map_err(|e| e.to_string())?;
+                    // Data keys created by the rolled-back job do not exist.
+                    self.crypto.rollback_to(mark);
                 }
                 if let Err(e) = &res
                     && e.code == "storage"
@@ -338,6 +349,7 @@ impl Writer {
                 &self.outbox_patterns,
                 &self.name,
                 self.dialect,
+                &self.crypto,
                 &mut tx,
                 &outs,
             )
@@ -358,6 +370,7 @@ impl Writer {
 
         match result {
             Ok(queued) => {
+                self.crypto.commit();
                 self.health.jobs.fetch_add(n as u64, Ordering::Relaxed);
                 self.health.batches.fetch_add(1, Ordering::Relaxed);
                 self.health.max_batch.fetch_max(n as u64, Ordering::Relaxed);
@@ -378,6 +391,7 @@ impl Writer {
                 );
             }
             Err(e) => {
+                self.crypto.abort();
                 metrics::counter!(m::STORAGE_ERRORS, "kind" => "commit").increment(1);
                 self.health.fail(&self.name, e.clone());
                 for (r, _) in replies {
@@ -395,6 +409,7 @@ async fn queue_outbox(
     patterns: &[String],
     db: &str,
     dialect: Dialect,
+    crypto: &crate::crypto::Crypto,
     tx: &mut AnyConnection,
     outs: &[Out],
 ) -> ApiResult<Option<i64>> {
@@ -413,6 +428,24 @@ async fn queue_outbox(
     }
     let first = *next;
     let now = now_ms();
+    // Bodies hold message content: encrypted with the database's data key.
+    let mut bodies = Vec::with_capacity(rows.len());
+    {
+        let mut d = Db {
+            c: &mut *tx,
+            d: dialect,
+            cx: crypto,
+        };
+        for (i, ev) in rows.iter().enumerate() {
+            let id = *next + i as i64;
+            let body = crate::webhook::event_body(db, ev).to_string();
+            bodies.push(
+                d.seal("", &format!("webhook_outbox.body:{id}"), &body)
+                    .await?,
+            );
+        }
+    }
+    let mut bodies = bodies.into_iter();
     for chunk in rows.chunks(200) {
         let marks = vec!["(?, ?, ?, ?, ?)"; chunk.len()].join(", ");
         let sql = format!(
@@ -424,7 +457,7 @@ async fn queue_outbox(
                 .bind(*next)
                 .bind(ev.conv_id.clone())
                 .bind(ev.kind.clone())
-                .bind(crate::webhook::event_body(db, ev).to_string())
+                .bind(bodies.next().unwrap())
                 .bind(now);
             *next += 1;
         }
@@ -435,4 +468,51 @@ async fn queue_outbox(
         }
     }
     Ok(Some(*next - 1))
+}
+
+/// Opens the database's encryption: refuses a database whose content is
+/// encrypted with another master key, or encrypted while encryption is off.
+async fn open_crypto(
+    conn: &mut AnyConnection,
+    d: Dialect,
+    name: &str,
+    master_key: Option<&str>,
+) -> ApiResult<crate::crypto::Crypto> {
+    let keys: i64 = sqlx::query("SELECT COUNT(*) FROM data_keys")
+        .fetch_one(&mut *conn)
+        .await?
+        .try_get(0)?;
+    let fp: Option<String> = sqlx::query(d.q("SELECT v FROM meta WHERE k = ?"))
+        .bind("kek_fingerprint")
+        .fetch_optional(&mut *conn)
+        .await?
+        .map(|r| r.try_get(0))
+        .transpose()?;
+    let Some(mk) = master_key else {
+        if keys > 0 {
+            return Err(ApiError::new(
+                "config",
+                format!("database {name} holds encrypted content; configure its master key"),
+            ));
+        }
+        return Ok(crate::crypto::Crypto::new(None));
+    };
+    let kek = crate::crypto::Kek::from_base64(mk).map_err(|e| ApiError::new("config", e))?;
+    match fp {
+        Some(f) if f != kek.fingerprint => {
+            return Err(ApiError::new(
+                "config",
+                format!("database {name} was encrypted with a different master key"),
+            ));
+        }
+        Some(_) => {}
+        None => {
+            sqlx::query(d.q("INSERT INTO meta (k, v) VALUES (?, ?)"))
+                .bind("kek_fingerprint")
+                .bind(kek.fingerprint.clone())
+                .execute(&mut *conn)
+                .await?;
+        }
+    }
+    Ok(crate::crypto::Crypto::new(Some(kek)))
 }

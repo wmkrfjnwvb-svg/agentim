@@ -8,7 +8,7 @@
 - **AI agents as first-class members**: server-assigned sender types (an agent cannot pose as a human), streaming replies with an explicit state machine, owner approval of drafts, whispers, interruption, takeover, recall, and guardrails (hop limit, loop breaker, rate limits, budgets, prompt-injection flags, DLP).
 - **Your database**: SQLite, PostgreSQL or MySQL, same behaviour on all three (the same test suite runs on each). Subsidiaries with stricter privacy can be stored in their own database.
 - **For developers**: an open API (`/v1`, OpenAPI 3.1 at `/v1/openapi.json`) for your backend: create users with your own ids, issue login tokens, manage conversations, send as a user or as the system, batch send, audited history. API keys with scopes, idempotency keys, rate limits, RFC 9457 errors. Server SDKs for [Node, Python and Go](sdk/README.md). Webhooks (signed, ordered, at-least-once) and a before-send hook; custom message kinds with a plain-text fallback; protocol version negotiation.
-- **Accounts and security**: hashed tokens with per-device logout, built-in passwords (Argon2id) with TOTP two-factor login, built-in TLS, Origin checks.
+- **Accounts and security**: encryption at rest on by default (AES-256-GCM, per-conversation keys, crypto-shredding on delete), hashed tokens with per-device logout, built-in passwords (Argon2id) with TOTP two-factor login, built-in TLS, Origin checks.
 - **Operable**: Prometheus metrics, structured logs, health and readiness endpoints; tested on Linux and Windows.
 
 Status: **single-node edition**, under active development towards an MVP. See the [plan](docs/06-plan.md).
@@ -61,6 +61,8 @@ Measured with [`server/bench/single-node.sh`](server/bench/single-node.sh) — r
 | Restart after `kill -9`, process start to ready | 236 ms | 128 ms | 131 ms |
 
 Nightly CI on a standard GitHub runner adds 20,000 connections with a reconnect storm (all back in 2.3 s, p99 7 ms) and a 2,000-member group (12M deliveries, p99 43 ms); see [docs/05 §5.4](docs/05-operations.md).
+
+**Encryption at rest costs about 2%.** It is on by default (AES-256-GCM, envelope keys). Same machine, SQLite, write path (`loadtest --solo --clients 50 --messages 400`, two runs each): **818 msg/s off, 800 msg/s on**, ack p50 53 ms in both, p99 91–109 ms vs 94–98 ms.
 
 **Where the limit is.** Write throughput tops out around 1,300 msg/s per database today. fsync is no longer the bottleneck (group commit puts up to hundreds of messages in one commit); the cost is the fixed overhead per SQL statement — about nine per message. Planned optimisations (fewer statements per message, fan-out off the writer thread, several writers per database) are described in [docs/02 §4.8](docs/02-architecture.md); the target is 10,000 msg/s per node.
 

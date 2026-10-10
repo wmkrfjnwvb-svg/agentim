@@ -42,6 +42,117 @@ pub struct Config {
     pub server: ServerConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub encryption: EncryptionConfig,
+}
+
+/// Encryption at rest (docs/04-security-compliance.md §2.6). On by default.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EncryptionConfig {
+    #[serde(default)]
+    pub mode: EncryptionMode,
+    /// File holding the base64 master key.
+    #[serde(default)]
+    pub key_file: Option<String>,
+    /// The base64 master key itself (tests; prefer key_file or the
+    /// AGENTIM_MASTER_KEY environment variable).
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EncryptionMode {
+    #[default]
+    Managed,
+    Off,
+}
+
+impl Config {
+    /// The master key, in order: `key`, `key_file`, `AGENTIM_MASTER_KEY`, and
+    /// for a single SQLite database a generated `<database>.key` next to it.
+    /// None when encryption is off.
+    pub fn master_key(&self) -> Result<Option<String>, String> {
+        let e = &self.encryption;
+        if e.mode == EncryptionMode::Off {
+            return Ok(None);
+        }
+        if let Some(k) = &e.key {
+            return Ok(Some(k.clone()));
+        }
+        if let Some(f) = &e.key_file {
+            return std::fs::read_to_string(f)
+                .map(|s| Some(s.trim().to_string()))
+                .map_err(|err| format!("encryption.key_file {f}: {err}"));
+        }
+        if let Ok(k) = std::env::var("AGENTIM_MASTER_KEY")
+            && !k.trim().is_empty()
+        {
+            return Ok(Some(k.trim().to_string()));
+        }
+        if let [db] = self.storage.databases.as_slice()
+            && let Some(path) = sqlite_path(&db.url)
+        {
+            if path == ":memory:" {
+                return Ok(Some(crate::crypto::Kek::generate_base64()));
+            }
+            let f = format!("{path}.key");
+            if let Ok(s) = std::fs::read_to_string(&f) {
+                return Ok(Some(s.trim().to_string()));
+            }
+            let k = crate::crypto::Kek::generate_base64();
+            write_private(&f, &k).map_err(|err| format!("{f}: {err}"))?;
+            tracing::warn!(
+                file = f,
+                "generated the master key for encryption at rest; back it up together with the database"
+            );
+            return Ok(Some(k));
+        }
+        Err("encryption is on (the default) but no master key is configured: set encryption.key_file or AGENTIM_MASTER_KEY, or encryption.mode = \"off\"".into())
+    }
+}
+
+/// The file path of a `sqlite:` URL.
+fn sqlite_path(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("sqlite:")?;
+    let rest = rest.strip_prefix("//").unwrap_or(rest);
+    let path = rest.split('?').next().unwrap_or(rest);
+    let path = percent_decode(path);
+    (!path.is_empty()).then_some(path)
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(v);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Writes a secret readable only by this user (on Unix).
+fn write_private(path: &str, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    let mut f = o.open(path)?;
+    f.write_all(content.as_bytes())?;
+    f.sync_all()
 }
 
 /// Built-in accounts (docs/04-security-compliance.md §1).
@@ -252,6 +363,7 @@ impl Config {
             open_api: Default::default(),
             server: Default::default(),
             auth: Default::default(),
+            encryption: Default::default(),
         }
     }
 
@@ -409,6 +521,7 @@ mod tests {
             open_api: Default::default(),
             server: Default::default(),
             auth: Default::default(),
+            encryption: Default::default(),
         }
     }
 

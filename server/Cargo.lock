@@ -18,6 +18,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "regex",
  "reqwest",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

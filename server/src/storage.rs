@@ -250,6 +250,21 @@ pub const TABLES: &[Table] = &[
         indexes: &[],
         conv_key: None,
     },
+    // v2: data keys for encryption at rest, wrapped by the master key.
+    // conv_id is the scope: a conversation, or "" for database-wide content.
+    Table {
+        name: "data_keys",
+        cols: &[
+            c("key_id", Id),
+            c("conv_id", Id),
+            c("period", Big),
+            c("wrapped", Text),
+            c("created_at", Big),
+        ],
+        pk: &["key_id"],
+        indexes: &[("data_keys_scope", &["conv_id", "period"], false)],
+        conv_key: Some("conv_id"),
+    },
     // v2: open API keys.
     Table {
         name: "api_keys",
@@ -598,7 +613,7 @@ pub struct Migration {
 pub const MIGRATIONS: &[Migration] = &[Migration {
     version: 2,
     compat: 1,
-    about: "custom message kinds, webhook outbox, hashed tokens and devices, open API keys, profiles and custom fields",
+    about: "custom message kinds, webhook outbox, hashed tokens and devices, open API keys, profiles and custom fields, passwords, encryption keys",
     steps: &[
         Step::AddColumn {
             table: "messages",

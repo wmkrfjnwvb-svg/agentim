@@ -19,6 +19,38 @@ pub fn new_id() -> String {
 pub struct Db<'a> {
     pub c: &'a mut AnyConnection,
     pub d: Dialect,
+    /// Encryption at rest of this database (docs/04 §2.6).
+    pub cx: &'a crate::crypto::Crypto,
+}
+
+/// Decrypts a column of a fetched row (keys must be preloaded).
+fn dec(cx: &crate::crypto::Crypto, r: &AnyRow, col: &str, aad: &str) -> sqlx::Result<String> {
+    let v: String = r.try_get(col)?;
+    cx.open(aad, &v).map_err(|e| sqlx::Error::Decode(e.into()))
+}
+
+fn dec_opt(
+    cx: &crate::crypto::Crypto,
+    r: &AnyRow,
+    col: &str,
+    aad: &str,
+) -> sqlx::Result<Option<String>> {
+    match r.try_get::<Option<String>, _>(col)? {
+        None => Ok(None),
+        Some(v) => cx
+            .open(aad, &v)
+            .map(Some)
+            .map_err(|e| sqlx::Error::Decode(e.into())),
+    }
+}
+
+fn dec_json(
+    cx: &crate::crypto::Crypto,
+    r: &AnyRow,
+    col: &str,
+    aad: &str,
+) -> sqlx::Result<Option<Value>> {
+    Ok(dec_opt(cx, r, col, aad)?.and_then(|s| serde_json::from_str(&s).ok()))
 }
 
 #[derive(Debug, Clone)]
@@ -191,9 +223,12 @@ fn row_user(r: &AnyRow) -> sqlx::Result<User> {
     })
 }
 
-fn row_msg(r: &AnyRow) -> sqlx::Result<MsgView> {
+fn row_msg(r: &AnyRow, cx: &crate::crypto::Crypto) -> sqlx::Result<MsgView> {
+    let id: String = r.try_get("msg_id")?;
     Ok(MsgView {
-        msg_id: r.try_get("msg_id")?,
+        content: dec(cx, r, "content", &format!("messages.content:{id}"))?,
+        payload: dec_json(cx, r, "payload", &format!("messages.payload:{id}"))?,
+        msg_id: id,
         conv_id: r.try_get("conv_id")?,
         created_seq: r.try_get("created_seq")?,
         sender_id: r.try_get("sender_id")?,
@@ -201,8 +236,6 @@ fn row_msg(r: &AnyRow) -> sqlx::Result<MsgView> {
         sender_type: UserKind::parse(&r.try_get::<String, _>("sender_type")?),
         on_behalf_of: r.try_get("on_behalf_of")?,
         kind: r.try_get("kind")?,
-        content: r.try_get("content")?,
-        payload: json_col(r, "payload")?,
         version: r.try_get("version")?,
         state: r.try_get("state")?,
         state_reason: r.try_get("state_reason")?,
@@ -228,12 +261,14 @@ fn row_member(r: &AnyRow) -> sqlx::Result<Member> {
     })
 }
 
-fn row_event(r: &AnyRow) -> sqlx::Result<Event> {
+fn row_event(r: &AnyRow, cx: &crate::crypto::Crypto) -> sqlx::Result<Event> {
+    let conv: String = r.try_get("conv_id")?;
+    let seq: i64 = r.try_get("seq")?;
     let payload: Value =
-        serde_json::from_str(&r.try_get::<String, _>("payload")?).unwrap_or(Value::Null);
+        dec_json(cx, r, "payload", &format!("events.payload:{conv}:{seq}"))?.unwrap_or(Value::Null);
     Ok(Event {
-        conv_id: r.try_get("conv_id")?,
-        seq: r.try_get("seq")?,
+        conv_id: conv,
+        seq,
         kind: r.try_get("type")?,
         actor_id: r.try_get("actor_id")?,
         msg: serde_json::from_value(payload["msg"].clone()).ok(),
@@ -242,25 +277,35 @@ fn row_event(r: &AnyRow) -> sqlx::Result<Event> {
     })
 }
 
-fn row_side(r: &AnyRow) -> sqlx::Result<SideEvent> {
+fn row_side(r: &AnyRow, cx: &crate::crypto::Crypto) -> sqlx::Result<SideEvent> {
+    let conv: String = r.try_get("conv_id")?;
+    let side_seq: i64 = r.try_get("side_seq")?;
     Ok(SideEvent {
-        conv_id: r.try_get("conv_id")?,
-        side_seq: r.try_get("side_seq")?,
+        data: dec_json(
+            cx,
+            r,
+            "payload",
+            &format!("side_events.payload:{conv}:{side_seq}"),
+        )?
+        .unwrap_or(Value::Null),
+        conv_id: conv,
+        side_seq,
         anchor_seq: r.try_get("anchor_seq")?,
         audience: serde_json::from_str(&r.try_get::<String, _>("audience")?).unwrap_or_default(),
         kind: r.try_get("type")?,
         actor_id: r.try_get("actor_id")?,
-        data: serde_json::from_str(&r.try_get::<String, _>("payload")?).unwrap_or(Value::Null),
         created_at: r.try_get("created_at")?,
     })
 }
 
-fn row_draft(r: &AnyRow) -> sqlx::Result<Draft> {
+fn row_draft(r: &AnyRow, cx: &crate::crypto::Crypto) -> sqlx::Result<Draft> {
+    let id: String = r.try_get("draft_id")?;
     Ok(Draft {
-        draft_id: r.try_get("draft_id")?,
+        content: dec(cx, r, "content", &format!("drafts.content:{id}"))?,
+        payload: dec_json(cx, r, "payload", &format!("drafts.payload:{id}"))?,
+        draft_id: id,
         conv_id: r.try_get("conv_id")?,
         agent_id: r.try_get("agent_id")?,
-        content: r.try_get("content")?,
         hop: r.try_get("hop")?,
         causation_id: r.try_get("causation_id")?,
         reply_to: r.try_get("reply_to")?,
@@ -269,11 +314,212 @@ fn row_draft(r: &AnyRow) -> sqlx::Result<Draft> {
         kind: r
             .try_get::<Option<String>, _>("kind")?
             .unwrap_or_else(|| "text".into()),
-        payload: json_col(r, "payload")?,
     })
 }
 
 impl Db<'_> {
+    // ========================================================= encryption
+
+    /// The data key for new content of a scope (a conversation, or "" for
+    /// the database), creating it in this transaction when needed.
+    async fn key_for(&mut self, scope: &str) -> ApiResult<String> {
+        let period = crate::crypto::period(now_ms());
+        if let Some(k) = self.cx.current(scope, period) {
+            return Ok(k);
+        }
+        let r = sqlx::query(self.d.q("SELECT key_id, wrapped FROM data_keys WHERE conv_id = ? AND period = ? ORDER BY created_at LIMIT 1"))
+            .bind(scope)
+            .bind(period)
+            .fetch_optional(&mut *self.c)
+            .await?;
+        if let Some(r) = r {
+            let (id, w): (String, String) = (r.try_get(0)?, r.try_get(1)?);
+            self.cx.load(&id, &w)?;
+            self.cx.set_current(scope, period, &id);
+            return Ok(id);
+        }
+        let (id, wrapped) = self.cx.create(scope, period)?;
+        sqlx::query(self.d.q("INSERT INTO data_keys (key_id, conv_id, period, wrapped, created_at) VALUES (?, ?, ?, ?, ?)"))
+            .bind(&id)
+            .bind(scope)
+            .bind(period)
+            .bind(wrapped)
+            .bind(now_ms())
+            .execute(&mut *self.c)
+            .await?;
+        Ok(id)
+    }
+
+    /// Encrypts content (empty strings stay empty; off = plaintext).
+    pub async fn seal(&mut self, scope: &str, aad: &str, plain: &str) -> ApiResult<String> {
+        if plain.is_empty() || !self.cx.enabled() {
+            return Ok(plain.to_string());
+        }
+        let k = self.key_for(scope).await?;
+        self.cx.seal(&k, aad, plain)
+    }
+
+    async fn seal_json(
+        &mut self,
+        scope: &str,
+        aad: &str,
+        v: Option<&Value>,
+    ) -> ApiResult<Option<String>> {
+        match v {
+            None => Ok(None),
+            Some(v) => Ok(Some(self.seal(scope, aad, &v.to_string()).await?)),
+        }
+    }
+
+    /// Loads the data keys the given rows' columns are encrypted with.
+    pub async fn preload(&mut self, rows: &[AnyRow], cols: &[&str]) -> ApiResult<()> {
+        let mut need = std::collections::BTreeSet::new();
+        for r in rows {
+            for c in cols {
+                if let Ok(Some(v)) = r.try_get::<Option<String>, _>(*c)
+                    && let Some((k, _)) = crate::crypto::parse(&v)
+                    && !self.cx.has_key(k)
+                {
+                    need.insert(k.to_string());
+                }
+            }
+        }
+        for k in need {
+            let r = sqlx::query(self.d.q("SELECT wrapped FROM data_keys WHERE key_id = ?"))
+                .bind(&k)
+                .fetch_optional(&mut *self.c)
+                .await?;
+            // A value naming a key this database never had is plaintext.
+            if let Some(r) = r {
+                self.cx.load(&k, &r.try_get::<String, _>(0)?)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Encrypts up to `limit` plaintext values of one table (written before
+    /// encryption was on). Returns how many rows changed.
+    pub async fn encrypt_existing(&mut self, table: &str, limit: i64) -> ApiResult<u64> {
+        // (key columns, scope column or "", encrypted columns)
+        let (keys, scope, cols): (&[&str], &str, &[&str]) = match table {
+            "messages" => (&["msg_id"], "conv_id", &["content", "payload"]),
+            "events" => (&["conv_id", "seq"], "conv_id", &["payload"]),
+            "side_events" => (&["conv_id", "side_seq"], "conv_id", &["payload"]),
+            "drafts" => (&["draft_id"], "conv_id", &["content", "payload"]),
+            "audit" => (&["id"], "", &["detail"]),
+            "webhook_outbox" => (&["id"], "", &["body"]),
+            _ => {
+                return Err(ApiError::new(
+                    "bad_request",
+                    format!("unknown table {table}"),
+                ));
+            }
+        };
+        if !self.cx.enabled() {
+            return Err(ApiError::new("conflict", "encryption is off"));
+        }
+        let plain = cols
+            .iter()
+            .map(|c| format!("({c} IS NOT NULL AND {c} <> '' AND {c} NOT LIKE 'enc:v1:%')"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let mut select: Vec<&str> = keys.to_vec();
+        if !scope.is_empty() && !keys.contains(&scope) {
+            select.push(scope);
+        }
+        select.extend_from_slice(cols);
+        let rows = sqlx::query(self.d.q(&format!(
+            "SELECT {} FROM {table} WHERE {plain} LIMIT ?",
+            select.join(", ")
+        )))
+        .bind(limit)
+        .fetch_all(&mut *self.c)
+        .await?;
+        let mut n = 0;
+        for r in rows {
+            let key_vals: Vec<String> = keys
+                .iter()
+                .map(|k| {
+                    r.try_get::<String, _>(*k)
+                        .or_else(|_| r.try_get::<i64, _>(*k).map(|v| v.to_string()))
+                })
+                .collect::<sqlx::Result<_>>()?;
+            let sc: String = if scope.is_empty() {
+                String::new()
+            } else {
+                r.try_get(scope)?
+            };
+            let mut sets = vec![];
+            let mut vals = vec![];
+            for c in cols {
+                let Some(v) = r.try_get::<Option<String>, _>(*c)? else {
+                    continue;
+                };
+                if v.is_empty() || v.starts_with(crate::crypto::PREFIX) {
+                    continue;
+                }
+                let aad = format!("{table}.{c}:{}", key_vals.join(":"));
+                vals.push(self.seal(&sc, &aad, &v).await?);
+                sets.push(format!("{c} = ?"));
+            }
+            let wh = keys
+                .iter()
+                .map(|k| format!("{k} = ?"))
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            let sql = format!("UPDATE {table} SET {} WHERE {wh}", sets.join(", "));
+            let mut q = sqlx::query(self.d.q(&sql));
+            for v in vals {
+                q = q.bind(v);
+            }
+            for (k, v) in keys.iter().zip(&key_vals) {
+                q = if *k == "seq" || *k == "side_seq" || (table == "webhook_outbox" && *k == "id")
+                {
+                    q.bind(v.parse::<i64>().unwrap_or(0))
+                } else {
+                    q.bind(v.clone())
+                };
+            }
+            q.execute(&mut *self.c).await?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// Re-wraps every data key with a new master key; content is untouched.
+    pub async fn rewrap_keys(&mut self, new: &crate::crypto::Kek) -> ApiResult<u64> {
+        let old = self
+            .cx
+            .kek
+            .as_ref()
+            .ok_or_else(|| ApiError::new("conflict", "encryption is off"))?;
+        let rows = sqlx::query("SELECT key_id, wrapped FROM data_keys")
+            .fetch_all(&mut *self.c)
+            .await?;
+        let mut n = 0;
+        for r in rows {
+            let (id, w): (String, String) = (r.try_get(0)?, r.try_get(1)?);
+            let dek = old
+                .unwrap(&id, &w)
+                .ok_or_else(|| ApiError::new("storage", format!("data key {id} does not open")))?;
+            sqlx::query(
+                self.d
+                    .q("UPDATE data_keys SET wrapped = ? WHERE key_id = ?"),
+            )
+            .bind(new.wrap(&id, &dek))
+            .bind(&id)
+            .execute(&mut *self.c)
+            .await?;
+            n += 1;
+        }
+        sqlx::query(self.d.q("UPDATE meta SET v = ? WHERE k = ?"))
+            .bind(new.fingerprint.clone())
+            .bind("kek_fingerprint")
+            .execute(&mut *self.c)
+            .await?;
+        Ok(n)
+    }
+
     // ===================================================== control database
 
     pub async fn insert_user(&mut self, u: &User) -> ApiResult<()> {
@@ -804,7 +1050,14 @@ impl Db<'_> {
         data: Value,
         ts: i64,
     ) -> ApiResult<Event> {
-        let payload = json!({"msg": msg, "data": data});
+        let payload = json!({"msg": msg, "data": data}).to_string();
+        let payload = self
+            .seal(
+                conv_id,
+                &format!("events.payload:{conv_id}:{seq}"),
+                &payload,
+            )
+            .await?;
         sqlx::query(self.d.q(
             "INSERT INTO events (conv_id, seq, type, actor_id, msg_id, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         ))
@@ -813,7 +1066,7 @@ impl Db<'_> {
         .bind(kind)
         .bind(actor)
         .bind(msg.as_ref().map(|m| m.msg_id.clone()))
-        .bind(payload.to_string())
+        .bind(payload)
         .bind(ts)
         .execute(&mut *self.c)
         .await?;
@@ -1149,6 +1402,20 @@ impl Db<'_> {
             created_at: ts,
             updated_at: ts,
         };
+        let sealed_content = self
+            .seal(
+                m.conv_id,
+                &format!("messages.content:{}", view.msg_id),
+                &view.content,
+            )
+            .await?;
+        let sealed_payload = self
+            .seal_json(
+                m.conv_id,
+                &format!("messages.payload:{}", view.msg_id),
+                view.payload.as_ref(),
+            )
+            .await?;
         sqlx::query(self.d.q(&format!(
             "INSERT INTO messages ({MSG_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )))
@@ -1160,7 +1427,7 @@ impl Db<'_> {
         .bind(view.sender_type.as_str())
         .bind(&view.on_behalf_of)
         .bind(&view.kind)
-        .bind(&view.content)
+        .bind(&sealed_content)
         .bind(view.version)
         .bind(&view.state)
         .bind(&view.state_reason)
@@ -1170,7 +1437,7 @@ impl Db<'_> {
         .bind(serde_json::to_string(&view.mentions).unwrap())
         .bind(ts)
         .bind(ts)
-        .bind(view.payload.as_ref().map(|p| p.to_string()))
+        .bind(sealed_payload)
         .execute(&mut *self.c)
         .await?;
         if let Some(cid) = m.client_msg_id {
@@ -1206,7 +1473,11 @@ impl Db<'_> {
         .bind(msg_id)
         .fetch_optional(&mut *self.c)
         .await?;
-        r.as_ref().map(row_msg).transpose().map_err(Into::into)
+        self.preload(r.as_slice(), &["content", "payload"]).await?;
+        r.as_ref()
+            .map(|x| row_msg(x, self.cx))
+            .transpose()
+            .map_err(Into::into)
     }
 
     /// Applies a change to a message and announces it with a new event
@@ -1220,6 +1491,16 @@ impl Db<'_> {
         state: Option<&str>,
         reason: Option<&str>,
     ) -> ApiResult<Event> {
+        let content = match content {
+            Some(c) => {
+                let conv = self.msg_conv(msg_id).await?.unwrap_or_default();
+                Some(
+                    self.seal(&conv, &format!("messages.content:{msg_id}"), c)
+                        .await?,
+                )
+            }
+            None => None,
+        };
         sqlx::query(self.d.q(
             "UPDATE messages SET content = COALESCE(?, content), state = COALESCE(?, state),
              state_reason = COALESCE(?, state_reason), version = version + 1, updated_at = ? WHERE msg_id = ?",
@@ -1242,8 +1523,12 @@ impl Db<'_> {
 
     /// Replaces a custom kind's payload (before `update_message` announces it).
     pub async fn set_payload(&mut self, msg_id: &str, payload: Option<&Value>) -> ApiResult<()> {
+        let conv = self.msg_conv(msg_id).await?.unwrap_or_default();
+        let sealed = self
+            .seal_json(&conv, &format!("messages.payload:{msg_id}"), payload)
+            .await?;
         sqlx::query(self.d.q("UPDATE messages SET payload = ? WHERE msg_id = ?"))
-            .bind(payload.map(|p| p.to_string()))
+            .bind(sealed)
             .bind(msg_id)
             .execute(&mut *self.c)
             .await?;
@@ -1252,11 +1537,15 @@ impl Db<'_> {
 
     /// Streaming checkpoint: overwrites partial content without an event.
     pub async fn checkpoint(&mut self, msg_id: &str, content: &str) -> ApiResult<()> {
+        let conv = self.msg_conv(msg_id).await?.unwrap_or_default();
+        let content = self
+            .seal(&conv, &format!("messages.content:{msg_id}"), content)
+            .await?;
         sqlx::query(
             self.d
                 .q("UPDATE messages SET content = ?, updated_at = ? WHERE msg_id = ?"),
         )
-        .bind(content)
+        .bind(&content)
         .bind(now_ms())
         .bind(msg_id)
         .execute(&mut *self.c)
@@ -1272,8 +1561,9 @@ impl Db<'_> {
         .bind("streaming")
         .fetch_all(&mut *self.c)
         .await?;
+        self.preload(&rows, &["content", "payload"]).await?;
         rows.iter()
-            .map(row_msg)
+            .map(|x| row_msg(x, self.cx))
             .collect::<sqlx::Result<_>>()
             .map_err(Into::into)
     }
@@ -1290,7 +1580,11 @@ impl Db<'_> {
         .bind(user_id)
         .fetch_optional(&mut *self.c)
         .await?;
-        r.as_ref().map(row_msg).transpose().map_err(Into::into)
+        self.preload(r.as_slice(), &["content", "payload"]).await?;
+        r.as_ref()
+            .map(|x| row_msg(x, self.cx))
+            .transpose()
+            .map_err(Into::into)
     }
 
     pub async fn recent_contents(
@@ -1300,15 +1594,19 @@ impl Db<'_> {
         n: i64,
     ) -> ApiResult<Vec<String>> {
         let rows = sqlx::query(self.d.q(
-            "SELECT content FROM messages WHERE conv_id = ? AND sender_id = ? ORDER BY created_seq DESC LIMIT ?",
+            "SELECT msg_id, content FROM messages WHERE conv_id = ? AND sender_id = ? ORDER BY created_seq DESC LIMIT ?",
         ))
         .bind(conv_id)
         .bind(sender_id)
         .bind(n)
         .fetch_all(&mut *self.c)
         .await?;
+        self.preload(&rows, &["content"]).await?;
         rows.iter()
-            .map(|r| r.try_get(0))
+            .map(|r| {
+                let id: String = r.try_get("msg_id")?;
+                dec(self.cx, r, "content", &format!("messages.content:{id}"))
+            })
             .collect::<sqlx::Result<_>>()
             .map_err(Into::into)
     }
@@ -1331,31 +1629,33 @@ impl Db<'_> {
         msg_id: &str,
         from_seq: i64,
     ) -> ApiResult<()> {
-        // The LIKE only narrows the scan; the JSON check below decides.
-        let pattern = format!("%\"msg_id\":\"{msg_id}\"%");
-        let rows = sqlx::query(self.d.q(
-            "SELECT seq, payload FROM events WHERE conv_id = ? AND seq >= ? AND payload LIKE ?",
-        ))
+        let rows = sqlx::query(
+            self.d
+                .q("SELECT seq, payload FROM events WHERE conv_id = ? AND seq >= ? AND msg_id = ?"),
+        )
         .bind(conv_id)
         .bind(from_seq)
-        .bind(pattern)
+        .bind(msg_id)
         .fetch_all(&mut *self.c)
         .await?;
+        self.preload(&rows, &["payload"]).await?;
         for r in rows {
             let seq: i64 = r.try_get(0)?;
+            let aad = format!("events.payload:{conv_id}:{seq}");
             let mut p: Value =
-                serde_json::from_str(&r.try_get::<String, _>(1)?).unwrap_or(Value::Null);
+                serde_json::from_str(&dec(self.cx, &r, "payload", &aad)?).unwrap_or(Value::Null);
             if p["msg"]["msg_id"] != msg_id {
                 continue;
             }
             p["msg"]["content"] = json!("");
             p["msg"]["payload"] = Value::Null;
             p["msg"]["mentions"] = json!([]);
+            let sealed = self.seal(conv_id, &aad, &p.to_string()).await?;
             sqlx::query(
                 self.d
                     .q("UPDATE events SET payload = ? WHERE conv_id = ? AND seq = ?"),
             )
-            .bind(p.to_string())
+            .bind(sealed)
             .bind(conv_id)
             .bind(seq)
             .execute(&mut *self.c)
@@ -1378,8 +1678,9 @@ impl Db<'_> {
         .bind(limit)
         .fetch_all(&mut *self.c)
         .await?;
+        self.preload(&rows, &["payload"]).await?;
         rows.iter()
-            .map(row_event)
+            .map(|x| row_event(x, self.cx))
             .collect::<sqlx::Result<_>>()
             .map_err(Into::into)
     }
@@ -1393,8 +1694,9 @@ impl Db<'_> {
         .bind(after)
         .fetch_all(&mut *self.c)
         .await?;
+        self.preload(&rows, &["payload"]).await?;
         rows.iter()
-            .map(row_side)
+            .map(|x| row_side(x, self.cx))
             .collect::<sqlx::Result<_>>()
             .map_err(Into::into)
     }
@@ -1482,6 +1784,13 @@ impl Db<'_> {
         .await?;
         let (side_seq, anchor): (i64, i64) = (r.try_get(0)?, r.try_get(1)?);
         let ts = now_ms();
+        let sealed = self
+            .seal(
+                conv_id,
+                &format!("side_events.payload:{conv_id}:{side_seq}"),
+                &data.to_string(),
+            )
+            .await?;
         sqlx::query(self.d.q(
             "INSERT INTO side_events (conv_id, side_seq, anchor_seq, audience, type, actor_id, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         ))
@@ -1491,7 +1800,7 @@ impl Db<'_> {
         .bind(serde_json::to_string(audience).unwrap())
         .bind(kind)
         .bind(actor)
-        .bind(data.to_string())
+        .bind(sealed)
         .bind(ts)
         .execute(&mut *self.c)
         .await?;
@@ -1536,20 +1845,34 @@ impl Db<'_> {
             kind: kind.to_string(),
             payload,
         };
+        let sealed_content = self
+            .seal(
+                conv_id,
+                &format!("drafts.content:{}", d.draft_id),
+                &d.content,
+            )
+            .await?;
+        let sealed_payload = self
+            .seal_json(
+                conv_id,
+                &format!("drafts.payload:{}", d.draft_id),
+                d.payload.as_ref(),
+            )
+            .await?;
         sqlx::query(self.d.q(&format!(
             "INSERT INTO drafts ({DRAFT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )))
         .bind(&d.draft_id)
         .bind(&d.conv_id)
         .bind(&d.agent_id)
-        .bind(&d.content)
+        .bind(&sealed_content)
         .bind(d.hop)
         .bind(&d.causation_id)
         .bind(&d.reply_to)
         .bind(&d.state)
         .bind(d.created_at)
         .bind(&d.kind)
-        .bind(d.payload.as_ref().map(|p| p.to_string()))
+        .bind(sealed_payload)
         .execute(&mut *self.c)
         .await?;
         let side = self
@@ -1571,7 +1894,11 @@ impl Db<'_> {
         .bind(id)
         .fetch_optional(&mut *self.c)
         .await?;
-        r.as_ref().map(row_draft).transpose().map_err(Into::into)
+        self.preload(r.as_slice(), &["content", "payload"]).await?;
+        r.as_ref()
+            .map(|x| row_draft(x, self.cx))
+            .transpose()
+            .map_err(Into::into)
     }
 
     pub async fn pending_drafts_for(&mut self, agent_ids: &[String]) -> ApiResult<Vec<Draft>> {
@@ -1582,8 +1909,9 @@ impl Db<'_> {
                 .bind("pending")
                 .fetch_all(&mut *self.c)
                 .await?;
+            self.preload(&rows, &["content", "payload"]).await?;
             for r in rows {
-                out.push(row_draft(&r)?);
+                out.push(row_draft(&r, self.cx)?);
             }
         }
         out.sort_by_key(|d| d.created_at);
@@ -1719,24 +2047,29 @@ impl Db<'_> {
         target: Option<&str>,
         detail: Value,
     ) -> ApiResult<()> {
+        let id = new_id();
+        let detail = self
+            .seal("", &format!("audit.detail:{id}"), &detail.to_string())
+            .await?;
         sqlx::query(self.d.q("INSERT INTO audit (id, ts, actor_id, action, conv_id, target, detail) VALUES (?, ?, ?, ?, ?, ?, ?)"))
-            .bind(new_id())
+            .bind(&id)
             .bind(now_ms())
             .bind(actor)
             .bind(action)
             .bind(conv_id)
             .bind(target)
-            .bind(detail.to_string())
+            .bind(&detail)
             .execute(&mut *self.c)
             .await?;
         Ok(())
     }
 
     pub async fn audit_log(&mut self, limit: i64) -> ApiResult<Vec<Value>> {
-        let rows = sqlx::query(self.d.q("SELECT ts, actor_id, action, conv_id, target, detail FROM audit ORDER BY id DESC LIMIT ?"))
+        let rows = sqlx::query(self.d.q("SELECT id, ts, actor_id, action, conv_id, target, detail FROM audit ORDER BY id DESC LIMIT ?"))
             .bind(limit)
             .fetch_all(&mut *self.c)
             .await?;
+        self.preload(&rows, &["detail"]).await?;
         rows.iter()
             .map(|r| {
                 Ok(json!({
@@ -1745,7 +2078,7 @@ impl Db<'_> {
                     "action": r.try_get::<String, _>("action")?,
                     "conv_id": r.try_get::<Option<String>, _>("conv_id")?,
                     "target": r.try_get::<Option<String>, _>("target")?,
-                    "detail": serde_json::from_str::<Value>(&r.try_get::<String, _>("detail")?).unwrap_or(Value::Null),
+                    "detail": serde_json::from_str::<Value>(&dec(self.cx, r, "detail", &format!("audit.detail:{}", r.try_get::<String, _>("id")?))?).unwrap_or(Value::Null),
                 }))
             })
             .collect::<sqlx::Result<_>>()

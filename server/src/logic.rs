@@ -307,6 +307,13 @@ pub enum Op {
         user_id: String,
         change: CredChange,
     },
+    EncryptExisting {
+        table: String,
+        limit: i64,
+    },
+    RewrapKeys {
+        new_key: String,
+    },
     CreateApiKey(crate::db::ApiKeyRow),
     RevokeApiKey {
         key_id: String,
@@ -407,6 +414,8 @@ impl Op {
             Op::UpdateUser { .. } => "update_user",
             Op::SetDeactivated { .. } => "set_deactivated",
             Op::Credentials { .. } => "credentials",
+            Op::EncryptExisting { .. } => "encrypt_existing",
+            Op::RewrapKeys { .. } => "rewrap_keys",
             Op::CreateApiKey(_) => "create_api_key",
             Op::RevokeApiKey { .. } => "revoke_api_key",
             Op::IdemPut { .. } => "idem_put",
@@ -676,6 +685,16 @@ impl Ctx<'_, '_> {
                 };
                 self.db.put_credentials(&user_id, &c).await?;
                 Ok(v)
+            }
+            Op::EncryptExisting { table, limit } => {
+                let n = self.db.encrypt_existing(&table, limit).await?;
+                Ok(json!({"changed": n}))
+            }
+            Op::RewrapKeys { new_key } => {
+                let k =
+                    crate::crypto::Kek::from_base64(&new_key).map_err(|e| err("bad_request", e))?;
+                let n = self.db.rewrap_keys(&k).await?;
+                Ok(json!({"rewrapped": n}))
             }
             Op::CreateApiKey(k) => {
                 self.db.insert_api_key(&k).await?;
@@ -1675,7 +1694,9 @@ impl Ctx<'_, '_> {
             )
             .await?;
         self.emit(ev).await?;
+        // The conversation's data keys go too (crypto-shredding).
         self.db.delete_conv_content(conv_id).await?;
+        self.db.cx.drop_scope(conv_id);
         if self.idx == self.sh.control {
             self.db.forget_conv(conv_id).await?;
         }

@@ -118,9 +118,18 @@ impl Hub {
             blocks: Default::default(),
         });
         let mut shards = Vec::new();
+        let master = cfg.master_key().map_err(|e| err("config", e))?;
         let mut wakes = Vec::new();
         for (i, d) in cfg.storage.databases.iter().enumerate() {
-            let (s, w) = Shard::open(i, d, &cfg.writer, sh.clone(), &cfg.webhooks).await?;
+            let (s, w) = Shard::open(
+                i,
+                d,
+                &cfg.writer,
+                sh.clone(),
+                &cfg.webhooks,
+                master.as_deref(),
+            )
+            .await?;
             shards.push(s);
             wakes.push(w);
         }
@@ -375,6 +384,7 @@ impl Hub {
         let mut db = Db {
             c: &mut c,
             d: shard.dialect,
+            cx: &shard.crypto,
         };
         f(&mut db).await
     }
@@ -423,6 +433,56 @@ impl Hub {
         for s in &self.inner.shards {
             let _ = s.call(Op::Tick).await;
         }
+    }
+
+    // ------------------------------------------------- encryption at rest
+
+    /// Encrypts content written before encryption was on, in batches, in
+    /// every database. Safe to run again. Returns rows changed per database.
+    pub async fn encrypt_existing(&self) -> ApiResult<Value> {
+        let mut out = json!({});
+        for s in &self.inner.shards {
+            let mut total = 0;
+            for t in [
+                "messages",
+                "events",
+                "side_events",
+                "drafts",
+                "audit",
+                "webhook_outbox",
+            ] {
+                loop {
+                    let v = s
+                        .call(Op::EncryptExisting {
+                            table: t.into(),
+                            limit: 500,
+                        })
+                        .await?;
+                    let n = v["changed"].as_u64().unwrap_or(0);
+                    total += n;
+                    if n == 0 {
+                        break;
+                    }
+                }
+            }
+            out[&s.name] = json!(total);
+        }
+        Ok(out)
+    }
+
+    /// Re-wraps all data keys with a new master key (then restart with it).
+    pub async fn rotate_master_key(&self, new_key: &str) -> ApiResult<Value> {
+        crate::crypto::Kek::from_base64(new_key).map_err(|e| err("bad_request", e))?;
+        let mut out = json!({});
+        for s in &self.inner.shards {
+            let v = s
+                .call(Op::RewrapKeys {
+                    new_key: new_key.to_string(),
+                })
+                .await?;
+            out[&s.name] = v["rewrapped"].clone();
+        }
+        Ok(out)
     }
 
     // ------------------------------------------------------- built-in login

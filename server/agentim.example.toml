@@ -68,3 +68,14 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 # open_registration = false   # anyone may sign up at /api/auth/register
 # max_failures = 10           # failed logins before the account locks
 # lock_minutes = 15
+
+# Encryption at rest (docs/04-security-compliance.md §2.6) is on by default.
+# The master key comes from key_file, else AGENTIM_MASTER_KEY; a single
+# SQLite database without either gets <database>.key generated next to it.
+# Back the key up with the database: without it the content is unreadable.
+#   agentim encryption generate-key            # a new random key
+#   agentim encryption encrypt-existing        # encrypt data from before
+#   agentim encryption rotate-key --new-key-file new.key
+# [encryption]
+# mode = "managed"            # or "off"
+# key_file = "/etc/agentim/master.key"

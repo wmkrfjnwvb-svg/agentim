@@ -51,6 +51,11 @@ enum Cmd {
         #[arg(long)]
         unit: String,
     },
+    /// Encryption at rest (docs/04-security-compliance.md §2.6).
+    Encryption {
+        #[command(subcommand)]
+        action: EncCmd,
+    },
     /// Built-in accounts.
     User {
         #[command(subcommand)]
@@ -61,6 +66,22 @@ enum Cmd {
         #[command(subcommand)]
         action: KeyCmd,
     },
+}
+
+#[derive(Subcommand)]
+enum EncCmd {
+    /// Encrypts content stored before encryption was on. Run while the
+    /// server is stopped; safe to repeat.
+    EncryptExisting,
+    /// Re-wraps the data keys with a new master key, then prints what to
+    /// change. Run while the server is stopped.
+    RotateKey {
+        /// File with the new base64 master key; created when missing.
+        #[arg(long)]
+        new_key_file: String,
+    },
+    /// Prints a new random master key (base64).
+    GenerateKey,
 }
 
 #[derive(Subcommand)]
@@ -120,6 +141,13 @@ async fn main() {
         }),
         None => Config::single_sqlite(&args.db),
     };
+    if let Some(Cmd::Encryption {
+        action: EncCmd::GenerateKey,
+    }) = &args.cmd
+    {
+        println!("{}", agentim::crypto::Kek::generate_base64());
+        return;
+    }
     let hub_cfg = HubConfig {
         stream_idle: Duration::from_secs(args.stream_idle_secs),
         open_stats: args.demo,
@@ -132,6 +160,38 @@ async fn main() {
             std::process::exit(1)
         }
     };
+
+    if let Some(Cmd::Encryption { action }) = &args.cmd {
+        let r = match action {
+            EncCmd::GenerateKey => unreachable!("handled before opening"),
+            EncCmd::EncryptExisting => hub.encrypt_existing().await,
+            EncCmd::RotateKey { new_key_file } => {
+                let key = match std::fs::read_to_string(new_key_file) {
+                    Ok(k) => k.trim().to_string(),
+                    Err(_) => {
+                        let k = agentim::crypto::Kek::generate_base64();
+                        if let Err(e) = std::fs::write(new_key_file, &k) {
+                            eprintln!("{new_key_file}: {e}");
+                            std::process::exit(1)
+                        }
+                        k
+                    }
+                };
+                hub.rotate_master_key(&key).await.map(|mut v| {
+                    v["next"] = serde_json::json!(format!("set encryption.key_file = {new_key_file:?} (or replace the old key file with it) before starting the server"));
+                    v
+                })
+            }
+        };
+        match r {
+            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+            Err(e) => {
+                eprintln!("encryption: {} {}", e.code, e.message);
+                std::process::exit(1)
+            }
+        }
+        return;
+    }
 
     if let Some(Cmd::User {
         action: UserCmd::SetPassword { name },

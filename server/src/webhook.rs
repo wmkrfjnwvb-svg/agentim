@@ -130,19 +130,9 @@ pub async fn deliver_loop(
     };
     let timeout = Duration::from_millis(wh.timeout_ms);
     loop {
-        let rows = sqlx::query(
-            shard
-                .dialect
-                .q("SELECT id, type, body FROM webhook_outbox WHERE id > ? ORDER BY id LIMIT 100"),
-        )
-        .bind(cursor)
-        .fetch_all(&shard.read)
-        .await;
+        let rows = outbox_page(&shard, cursor).await;
         let rows: Vec<(i64, String, String)> = match rows {
-            Ok(rows) => rows
-                .iter()
-                .filter_map(|r| Some((r.try_get(0).ok()?, r.try_get(1).ok()?, r.try_get(2).ok()?)))
-                .collect(),
+            Ok(rows) => rows,
             Err(_) => {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
@@ -198,6 +188,40 @@ pub async fn deliver_loop(
         }
         cursor = ack(&shard, &wh.name, upto, &dropped, &all).await;
     }
+}
+
+/// The next undelivered outbox rows, decrypted.
+async fn outbox_page(shard: &Shard, cursor: i64) -> ApiResult<Vec<(i64, String, String)>> {
+    let mut c = shard
+        .read
+        .acquire()
+        .await
+        .map_err(|e| ApiError::new("storage_unavailable", e.to_string()))?;
+    let rows = sqlx::query(
+        shard
+            .dialect
+            .q("SELECT id, type, body FROM webhook_outbox WHERE id > ? ORDER BY id LIMIT 100"),
+    )
+    .bind(cursor)
+    .fetch_all(&mut *c)
+    .await?;
+    let mut db = crate::db::Db {
+        c: &mut c,
+        d: shard.dialect,
+        cx: &shard.crypto,
+    };
+    db.preload(&rows, &["body"]).await?;
+    rows.iter()
+        .map(|r| {
+            let id: i64 = r.try_get(0)?;
+            let body: String = r.try_get(2)?;
+            let body = shard
+                .crypto
+                .open(&format!("webhook_outbox.body:{id}"), &body)
+                .map_err(|e| ApiError::new("storage", e))?;
+            Ok((id, r.try_get(1)?, body))
+        })
+        .collect()
 }
 
 /// Moves the cursor through the writer (retrying until it sticks).

@@ -113,6 +113,16 @@ pub fn hub_cfg() -> HubConfig {
     }
 }
 
+/// A fixed master key, so reopening a test database finds its content.
+pub const TEST_MASTER_KEY: &str = "dGVzdC1tYXN0ZXIta2V5LWZvci1hZ2VudGltLXRlc3Q=";
+
+pub fn test_encryption() -> agentim::config::EncryptionConfig {
+    agentim::config::EncryptionConfig {
+        key: Some(TEST_MASTER_KEY.into()),
+        ..Default::default()
+    }
+}
+
 pub fn single(url: &str) -> Config {
     Config {
         storage: StorageConfig {
@@ -132,6 +142,7 @@ pub fn single(url: &str) -> Config {
         open_api: Default::default(),
         server: Default::default(),
         auth: Default::default(),
+        encryption: test_encryption(),
     }
 }
 
@@ -166,6 +177,7 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
         open_api: Default::default(),
         server: Default::default(),
         auth: Default::default(),
+        encryption: test_encryption(),
     }
 }
 

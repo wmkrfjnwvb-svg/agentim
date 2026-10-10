@@ -53,9 +53,12 @@ async fn unit_conversations_live_only_in_their_database() {
     let main_bytes = raw(&main);
     let secret_bytes = raw(&secret);
     // Content and metadata of unit B (message text, conversation title) never reach the shared database.
+    // The title is stored in plaintext (docs/04 §2.6), so it shows where
+    // the conversation lives; the message text is encrypted everywhere.
+    assert!(contains(&secret_bytes, "B-internal-project-name"));
     assert!(
-        contains(&secret_bytes, "TOP-SECRET-merger-plan")
-            && contains(&secret_bytes, "B-internal-project-name")
+        !contains(&secret_bytes, "TOP-SECRET-merger-plan"),
+        "encrypted at rest"
     );
     assert!(
         !contains(&main_bytes, "TOP-SECRET-merger-plan"),
@@ -68,7 +71,7 @@ async fn unit_conversations_live_only_in_their_database() {
     // The shared database only routes: it knows the conversation id and its database.
     assert!(contains(&main_bytes, &conv_b));
     assert!(
-        contains(&main_bytes, "ordinary-chatter") && !contains(&secret_bytes, "ordinary-chatter")
+        !contains(&main_bytes, "ordinary-chatter") && !contains(&secret_bytes, "ordinary-chatter")
     );
 }
 
@@ -128,11 +131,17 @@ async fn cross_database_membership_listing_and_side_channel_work() {
     assert!(a.pull(&conv, 0).await.to_string().contains("hello from B"));
 }
 
+/// Byte-level checks of where content lives need plaintext.
+fn plain(mut c: agentim::config::Config) -> agentim::config::Config {
+    c.encryption.mode = agentim::config::EncryptionMode::Off;
+    c
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn migrate_unit_moves_conversations_without_losing_order() {
     let (main, secret) = two_sqlite().await;
     // Unit b starts in the shared database...
-    let hub = open(two(&main.url, &secret.url, "main")).await;
+    let hub = open(plain(two(&main.url, &secret.url, "main"))).await;
     let carol = user_in(&hub, "carol", "b").await;
     let bot = user(&hub, "bot", UserKind::Agent, Some(&carol)).await;
     let c = Conn::new(&hub, &carol);
@@ -148,7 +157,7 @@ async fn migrate_unit_moves_conversations_without_losing_order() {
     assert!(contains(&raw(&main), "before-move-7"));
 
     // ...then the configuration moves it to its own database.
-    let hub = open(two(&main.url, &secret.url, "secret")).await;
+    let hub = open(plain(two(&main.url, &secret.url, "secret"))).await;
     let r = hub.migrate_unit("b").await.unwrap();
     assert_eq!(r["moved"], 1, "{r}");
     let c = Conn::new(&hub, &carol);
@@ -196,7 +205,7 @@ async fn migrate_unit_moves_conversations_without_losing_order() {
     );
     assert!(contains(&raw(&secret), "before-move-7"));
     // Restart after the move.
-    let hub = open(two(&main.url, &secret.url, "secret")).await;
+    let hub = open(plain(two(&main.url, &secret.url, "secret"))).await;
     let c = Conn::new(&hub, &carol);
     assert_eq!(
         c.pull(&conv, 0).await["events"].as_array().unwrap().len(),
