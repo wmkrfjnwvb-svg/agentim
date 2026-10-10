@@ -7,6 +7,8 @@
 - **Messaging core**: one-to-one and group conversations with a gap-free, per-conversation event log. A message is acknowledged only after it is durably committed (fsync). Pushes are a hint; pulling by sequence number is the source of truth.
 - **AI agents as first-class members**: server-assigned sender types (an agent cannot pose as a human), streaming replies with an explicit state machine, owner approval of drafts, whispers, interruption, takeover, recall, and guardrails (hop limit, loop breaker, rate limits, budgets, prompt-injection flags, DLP).
 - **Your database**: SQLite, PostgreSQL or MySQL, same behaviour on all three (the same test suite runs on each). Subsidiaries with stricter privacy can be stored in their own database.
+- **For developers**: an open API (`/v1`, OpenAPI 3.1 at `/v1/openapi.json`) for your backend: create users with your own ids, issue login tokens, manage conversations, send as a user or as the system, batch send, audited history. API keys with scopes, idempotency keys, rate limits, RFC 9457 errors. Server SDKs for [Node, Python and Go](sdk/README.md). Webhooks (signed, ordered, at-least-once) and a before-send hook; custom message kinds with a plain-text fallback; protocol version negotiation.
+- **Accounts and security**: hashed tokens with per-device logout, built-in passwords (Argon2id) with TOTP two-factor login, built-in TLS, Origin checks.
 - **Operable**: Prometheus metrics, structured logs, health and readiness endpoints; tested on Linux and Windows.
 
 Status: **single-node edition**, under active development towards an MVP. See the [plan](docs/06-plan.md).
@@ -18,7 +20,9 @@ cd server
 cargo run --release -- --demo          # open http://127.0.0.1:8080 and log in as alice, bob or carol
 ```
 
-Configuration (databases, organisation units, writer settings): [`server/agentim.example.toml`](server/agentim.example.toml). More commands: [`server/README.md`](server/README.md).
+Open API: `agentim api-key create --name backend --scopes users:write,tokens:issue,messages:write` prints a key; see [docs/07-open-api.md](docs/07-open-api.md).
+
+Configuration (databases, organisation units, writer settings, webhooks, TLS, accounts): [`server/agentim.example.toml`](server/agentim.example.toml). More commands: [`server/README.md`](server/README.md).
 
 ## Guarantees and how they are tested
 
@@ -26,7 +30,7 @@ Configuration (databases, organisation units, writer settings): [`server/agentim
 |---|---|---|
 | No loss | An acknowledged message survives `kill -9` and restarts | Real process killed mid-traffic on Linux and Windows; failed commits inject faults and must not acknowledge |
 | Order | Every member sees the same gap-free sequence | Every test checks contiguous sequence numbers and in-order pushes |
-| Correct business rules | Permissions, visibility, approval, deduplication are enforced by the server | 29 business scenarios and 12 concurrency races × SQLite, PostgreSQL, MySQL |
+| Correct business rules | Permissions, visibility, approval, deduplication are enforced by the server, for clients and the open API alike | Business scenarios, membership, extensions, webhooks, devices, accounts and open API suites plus concurrency races × SQLite, PostgreSQL, MySQL ([coverage](docs/05-operations.md#5-测试)) |
 | Slow clients cannot hurt others | A client that stops reading loses only its own pushes and is told to resync | Scale tests in CI, nightly |
 | Scale | Tens of thousands of connections per node, large groups | 20,000 connections with a reconnect storm, 2,000-member groups, nightly in CI |
 
