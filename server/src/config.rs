@@ -36,6 +36,30 @@ pub struct Config {
     /// Synchronous hook asked before a message is sent.
     #[serde(default)]
     pub before_send: Option<BeforeSendConfig>,
+    #[serde(default)]
+    pub open_api: OpenApiConfig,
+}
+
+/// Open API transport and limits (docs/07-open-api.md §5).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct OpenApiConfig {
+    /// Behind a TLS-terminating proxy: accept plain HTTP from anywhere and
+    /// take the client address from `X-Forwarded-For`.
+    pub behind_proxy: bool,
+    /// Requests per second per key, and the burst allowed.
+    pub rate_per_second: f64,
+    pub burst: f64,
+}
+
+impl Default for OpenApiConfig {
+    fn default() -> Self {
+        OpenApiConfig {
+            behind_proxy: false,
+            rate_per_second: 100.0,
+            burst: 200.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -182,6 +206,7 @@ impl Config {
             clients: Default::default(),
             webhooks: vec![],
             before_send: None,
+            open_api: Default::default(),
         }
     }
 
@@ -270,6 +295,9 @@ impl Config {
                 return Err("before_send.timeout_ms must be > 0".into());
             }
         }
+        if !(self.open_api.rate_per_second > 0.0 && self.open_api.burst >= 1.0) {
+            return Err("open_api.rate_per_second must be > 0 and burst >= 1".into());
+        }
         for (name, v) in &self.clients.min_versions {
             if name.is_empty() || name.len() > 64 {
                 return Err(format!("clients.min_versions: bad client name {name:?}"));
@@ -323,6 +351,7 @@ mod tests {
             clients: Default::default(),
             webhooks: vec![],
             before_send: None,
+            open_api: Default::default(),
         }
     }
 

@@ -51,6 +51,32 @@ enum Cmd {
         #[arg(long)]
         unit: String,
     },
+    /// Open API keys (docs/07-open-api.md §5).
+    ApiKey {
+        #[command(subcommand)]
+        action: KeyCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeyCmd {
+    /// Creates a key and prints it once.
+    Create {
+        #[arg(long)]
+        name: String,
+        /// Comma separated, e.g. users:write,messages:write
+        #[arg(long)]
+        scopes: String,
+        /// Addresses or networks allowed to use the key, comma separated.
+        #[arg(long)]
+        ip_allow: Option<String>,
+        #[arg(long)]
+        ttl_days: Option<i64>,
+    },
+    List,
+    Revoke {
+        key_id: String,
+    },
 }
 
 fn init_logging(format: &str) {
@@ -91,6 +117,57 @@ async fn main() {
             std::process::exit(1)
         }
     };
+
+    if let Some(Cmd::ApiKey { action }) = &args.cmd {
+        let split = |s: &str| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<_>>()
+        };
+        let out = match action {
+            KeyCmd::Create {
+                name,
+                scopes,
+                ip_allow,
+                ttl_days,
+            } => hub
+                .create_api_key(
+                    name,
+                    &split(scopes),
+                    ttl_days.map(|d| d * 86_400_000),
+                    ip_allow.as_deref().map(split),
+                )
+                .await
+                .map(|(secret, row)| {
+                    let mut v = row.view();
+                    v["key"] = serde_json::json!(secret);
+                    v["note"] = serde_json::json!("store the key now; it is not shown again");
+                    v
+                }),
+            KeyCmd::List => Ok(serde_json::json!(
+                hub.api_keys().iter().map(|k| k.view()).collect::<Vec<_>>()
+            )),
+            KeyCmd::Revoke { key_id } => hub.revoke_api_key(key_id).await.and_then(|ok| {
+                if ok {
+                    Ok(serde_json::json!({"revoked": key_id}))
+                } else {
+                    Err(agentim::model::ApiError::new(
+                        "not_found",
+                        "no such active key",
+                    ))
+                }
+            }),
+        };
+        match out {
+            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+            Err(e) => {
+                eprintln!("api-key: {} {}", e.code, e.message);
+                std::process::exit(1)
+            }
+        }
+        return;
+    }
 
     if let Some(Cmd::MigrateUnit { unit }) = args.cmd {
         match hub.migrate_unit(&unit).await {
@@ -147,5 +224,11 @@ async fn main() {
     if args.demo {
         println!("Demo mode: open the URL above and log in as alice, bob or carol.");
     }
-    axum::serve(listener, app).await.expect("serve");
+    // Client addresses feed the open API's address rules.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("serve");
 }

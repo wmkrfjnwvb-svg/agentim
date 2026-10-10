@@ -28,6 +28,7 @@ pub struct ConvRow {
     pub title: String,
     pub unit_id: String,
     pub last_seq: i64,
+    pub fields: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +50,42 @@ pub struct Draft {
 fn json_col(r: &AnyRow, col: &str) -> sqlx::Result<Option<Value>> {
     Ok(r.try_get::<Option<String>, _>(col)?
         .and_then(|s| serde_json::from_str(&s).ok()))
+}
+
+/// An open API key (only its hash is stored).
+#[derive(Debug, Clone)]
+pub struct ApiKeyRow {
+    pub key_id: String,
+    pub app_id: String,
+    pub hash: String,
+    pub name: String,
+    pub scopes: Vec<String>,
+    pub ip_allow: Option<Vec<String>>,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+impl ApiKeyRow {
+    pub fn view(&self) -> Value {
+        json!({"key_id": self.key_id, "name": self.name, "scopes": self.scopes, "ip_allow": self.ip_allow, "created_at": self.created_at, "expires_at": self.expires_at, "revoked": self.revoked_at.is_some()})
+    }
+}
+
+fn row_api_key(r: &AnyRow) -> sqlx::Result<ApiKeyRow> {
+    Ok(ApiKeyRow {
+        key_id: r.try_get("key_id")?,
+        app_id: r.try_get("app_id")?,
+        hash: r.try_get("hash")?,
+        name: r.try_get("name")?,
+        scopes: serde_json::from_str(&r.try_get::<String, _>("scopes")?).unwrap_or_default(),
+        ip_allow: r
+            .try_get::<Option<String>, _>("ip_allow")?
+            .and_then(|s| serde_json::from_str(&s).ok()),
+        created_at: r.try_get("created_at")?,
+        expires_at: r.try_get("expires_at")?,
+        revoked_at: r.try_get("revoked_at")?,
+    })
 }
 
 /// One client token = one device.
@@ -315,6 +352,96 @@ impl Db<'_> {
         Ok(hashes)
     }
 
+    pub async fn insert_api_key(&mut self, k: &ApiKeyRow) -> ApiResult<()> {
+        sqlx::query(self.d.q("INSERT INTO api_keys (key_id, app_id, hash, name, scopes, ip_allow, created_at, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"))
+            .bind(&k.key_id)
+            .bind(&k.app_id)
+            .bind(&k.hash)
+            .bind(&k.name)
+            .bind(json!(k.scopes).to_string())
+            .bind(k.ip_allow.as_ref().map(|v| json!(v).to_string()))
+            .bind(k.created_at)
+            .bind(k.expires_at)
+            .bind(k.revoked_at)
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn revoke_api_key(&mut self, key_id: &str) -> ApiResult<u64> {
+        let r = sqlx::query(
+            self.d
+                .q("UPDATE api_keys SET revoked_at = ? WHERE key_id = ? AND revoked_at IS NULL"),
+        )
+        .bind(now_ms())
+        .bind(key_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(r.rows_affected())
+    }
+
+    pub async fn api_keys(&mut self) -> ApiResult<Vec<ApiKeyRow>> {
+        let rows = sqlx::query("SELECT key_id, app_id, hash, name, scopes, ip_allow, created_at, expires_at, revoked_at FROM api_keys ORDER BY created_at, key_id")
+            .fetch_all(&mut *self.c)
+            .await?;
+        rows.iter()
+            .map(row_api_key)
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    /// Stores an Idempotency-Key result; drops results older than a day.
+    pub async fn idem_put(
+        &mut self,
+        key_id: &str,
+        idem_key: &str,
+        request_hash: &str,
+        status: i64,
+        response: &str,
+    ) -> ApiResult<()> {
+        let now = now_ms();
+        sqlx::query(self.d.q("DELETE FROM idempotency WHERE created_at < ?"))
+            .bind(now - 24 * 3600 * 1000)
+            .execute(&mut *self.c)
+            .await?;
+        sqlx::query(
+            self.d
+                .q("DELETE FROM idempotency WHERE key_id = ? AND idem_key = ?"),
+        )
+        .bind(key_id)
+        .bind(idem_key)
+        .execute(&mut *self.c)
+        .await?;
+        sqlx::query(self.d.q("INSERT INTO idempotency (key_id, idem_key, request_hash, status, response, created_at) VALUES (?, ?, ?, ?, ?, ?)"))
+            .bind(key_id)
+            .bind(idem_key)
+            .bind(request_hash)
+            .bind(status)
+            .bind(response)
+            .bind(now)
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
+    }
+
+    /// `(request_hash, status, response)` of a stored result younger than a day.
+    pub async fn idem_get(
+        &mut self,
+        key_id: &str,
+        idem_key: &str,
+    ) -> ApiResult<Option<(String, i64, String)>> {
+        let r = sqlx::query(self.d.q("SELECT request_hash, status, response FROM idempotency WHERE key_id = ? AND idem_key = ? AND created_at >= ?"))
+            .bind(key_id)
+            .bind(idem_key)
+            .bind(now_ms() - 24 * 3600 * 1000)
+            .fetch_optional(&mut *self.c)
+            .await?;
+        Ok(match r {
+            Some(r) => Some((r.try_get(0)?, r.try_get(1)?, r.try_get(2)?)),
+            None => None,
+        })
+    }
+
     pub async fn touch_token(&mut self, hash: &str) -> ApiResult<()> {
         sqlx::query(self.d.q("UPDATE tokens SET last_seen = ? WHERE hash = ?"))
             .bind(now_ms())
@@ -568,10 +695,9 @@ impl Db<'_> {
     // ============================================== conversation databases
 
     pub async fn conv(&mut self, id: &str) -> ApiResult<Option<ConvRow>> {
-        let r = sqlx::query(
-            self.d
-                .q("SELECT id, kind, title, unit_id, last_seq FROM conversations WHERE id = ?"),
-        )
+        let r = sqlx::query(self.d.q(
+            "SELECT id, kind, title, unit_id, last_seq, fields FROM conversations WHERE id = ?",
+        ))
         .bind(id)
         .fetch_optional(&mut *self.c)
         .await?;
@@ -582,6 +708,7 @@ impl Db<'_> {
                 title: r.try_get("title")?,
                 unit_id: r.try_get("unit_id")?,
                 last_seq: r.try_get("last_seq")?,
+                fields: json_col(&r, "fields")?,
             }),
             None => None,
         })
@@ -786,6 +913,74 @@ impl Db<'_> {
                 .await?;
         }
         Ok(())
+    }
+
+    pub async fn update_conv(
+        &mut self,
+        id: &str,
+        title: Option<&str>,
+        fields: Option<&Value>,
+    ) -> ApiResult<()> {
+        sqlx::query(self.d.q(
+            "UPDATE conversations SET title = COALESCE(?, title), fields = COALESCE(?, fields) WHERE id = ?",
+        ))
+        .bind(title)
+        .bind(fields.map(|f| f.to_string()))
+        .bind(id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    /// Profile and custom fields of a user (control database).
+    pub async fn update_user(
+        &mut self,
+        id: &str,
+        display_name: Option<&str>,
+        avatar: Option<&str>,
+        fields: Option<&Value>,
+    ) -> ApiResult<()> {
+        sqlx::query(self.d.q(
+            "UPDATE users SET display_name = COALESCE(?, display_name), avatar = COALESCE(?, avatar), fields = COALESCE(?, fields) WHERE id = ?",
+        ))
+        .bind(display_name)
+        .bind(avatar)
+        .bind(fields.map(|f| f.to_string()))
+        .bind(id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn set_deactivated(&mut self, id: &str, on: bool) -> ApiResult<()> {
+        sqlx::query(self.d.q("UPDATE users SET deactivated_at = ? WHERE id = ?"))
+            .bind(on.then(now_ms))
+            .bind(id)
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
+    }
+
+    /// `{id, name, kind, owner_id, display_name, avatar, fields, deactivated_at, created_at}`.
+    pub async fn user_profile(&mut self, id: &str) -> ApiResult<Option<Value>> {
+        let r = sqlx::query(self.d.q(
+            "SELECT id, name, kind, owner_id, unit_id, display_name, avatar, fields, deactivated_at, created_at FROM users WHERE id = ?",
+        ))
+        .bind(id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        let Some(r) = r else { return Ok(None) };
+        Ok(Some(json!({
+            "id": r.try_get::<String, _>("name")?,
+            "kind": r.try_get::<String, _>("kind")?,
+            "owner": r.try_get::<Option<String>, _>("owner_id")?,
+            "unit": r.try_get::<String, _>("unit_id")?,
+            "display_name": r.try_get::<Option<String>, _>("display_name")?,
+            "avatar": r.try_get::<Option<String>, _>("avatar")?,
+            "fields": json_col(&r, "fields")?,
+            "deactivated": r.try_get::<Option<i64>, _>("deactivated_at")?.is_some(),
+            "created_at": r.try_get::<i64, _>("created_at")?,
+        })))
     }
 
     pub async fn set_role(&mut self, conv_id: &str, user_id: &str, role: &str) -> ApiResult<()> {

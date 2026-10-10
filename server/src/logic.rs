@@ -21,6 +21,16 @@ use crate::registry::{Out, Recip, Registry};
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 /// Serialized payload of a custom message kind.
 pub const MAX_PAYLOAD_BYTES: usize = 32 * 1024;
+/// Serialized custom fields of a user or conversation.
+pub const MAX_FIELDS_BYTES: usize = 4 * 1024;
+
+pub fn check_title(t: &str) -> ApiResult<()> {
+    if t.is_empty() || t.len() > 255 || t.contains('\0') {
+        return Err(err("bad_request", "title must be 1..255 bytes"));
+    }
+    Ok(())
+}
+
 /// Serialized data of a signal.
 pub const MAX_SIGNAL_BYTES: usize = 4 * 1024;
 const MODERATED_PLACEHOLDER: &str = "[该内容已被策略移除 / removed by policy]";
@@ -271,6 +281,27 @@ pub enum Op {
     TouchToken {
         hash: String,
     },
+    UpdateUser {
+        user_id: String,
+        display_name: Option<String>,
+        avatar: Option<String>,
+        fields: Option<Value>,
+    },
+    SetDeactivated {
+        user_id: String,
+        on: bool,
+    },
+    CreateApiKey(crate::db::ApiKeyRow),
+    RevokeApiKey {
+        key_id: String,
+    },
+    IdemPut {
+        key_id: String,
+        idem_key: String,
+        request_hash: String,
+        status: i64,
+        response: String,
+    },
     UpsertUnit {
         name: String,
         database: String,
@@ -357,6 +388,11 @@ impl Op {
             Op::IssueToken(_) => "issue_token",
             Op::RevokeTokens { .. } => "revoke_tokens",
             Op::TouchToken { .. } => "touch_token",
+            Op::UpdateUser { .. } => "update_user",
+            Op::SetDeactivated { .. } => "set_deactivated",
+            Op::CreateApiKey(_) => "create_api_key",
+            Op::RevokeApiKey { .. } => "revoke_api_key",
+            Op::IdemPut { .. } => "idem_put",
             Op::UpsertUnit { .. } => "upsert_unit",
             Op::RegisterConv { .. } => "register_conv",
             Op::MemberIndexAdd { .. } => "member_index_add",
@@ -553,6 +589,46 @@ impl Ctx<'_, '_> {
                 self.db.touch_token(&hash).await?;
                 Ok(json!({}))
             }
+            Op::UpdateUser {
+                user_id,
+                display_name,
+                avatar,
+                fields,
+            } => {
+                self.db
+                    .update_user(
+                        &user_id,
+                        display_name.as_deref(),
+                        avatar.as_deref(),
+                        fields.as_ref(),
+                    )
+                    .await?;
+                Ok(json!({}))
+            }
+            Op::SetDeactivated { user_id, on } => {
+                self.db.set_deactivated(&user_id, on).await?;
+                Ok(json!({}))
+            }
+            Op::CreateApiKey(k) => {
+                self.db.insert_api_key(&k).await?;
+                Ok(json!({}))
+            }
+            Op::RevokeApiKey { key_id } => {
+                let n = self.db.revoke_api_key(&key_id).await?;
+                Ok(json!({"revoked": n}))
+            }
+            Op::IdemPut {
+                key_id,
+                idem_key,
+                request_hash,
+                status,
+                response,
+            } => {
+                self.db
+                    .idem_put(&key_id, &idem_key, &request_hash, status, &response)
+                    .await?;
+                Ok(json!({}))
+            }
             Op::UpsertUnit { name, database } => {
                 self.db.upsert_unit(&name, &database).await?;
                 Ok(json!({}))
@@ -683,7 +759,7 @@ impl Ctx<'_, '_> {
                     .audit(
                         Some(&actor),
                         &action,
-                        Some(&conv_id),
+                        Some(conv_id.as_str()).filter(|c| !c.is_empty()),
                         target.as_deref(),
                         detail,
                     )
@@ -848,6 +924,47 @@ impl Ctx<'_, '_> {
                 user_id,
                 role,
             } => self.set_role(me, &conv_id, &user_id, &role).await,
+            ClientMsg::UpdateConv {
+                conv_id,
+                title,
+                fields,
+            } => {
+                let mine = self.require_member(&conv_id, &me.id).await?;
+                if !is_manager(&mine.role) {
+                    return Err(err(
+                        "forbidden",
+                        "only the owner or an admin changes the conversation",
+                    ));
+                }
+                if title.is_none() && fields.is_none() {
+                    return Err(err("bad_request", "nothing to change"));
+                }
+                if let Some(t) = &title {
+                    check_title(t)?;
+                }
+                if let Some(f) = &fields {
+                    check_json_object(f, "fields", MAX_FIELDS_BYTES)?;
+                }
+                if self.is_dm(&conv_id).await? && title.is_some() {
+                    return Err(err("bad_request", "a direct conversation has no title"));
+                }
+                self.db
+                    .update_conv(&conv_id, title.as_deref(), fields.as_ref())
+                    .await?;
+                let ev = self
+                    .db
+                    .append_event(
+                        &conv_id,
+                        "conv.updated",
+                        Some(&me.id),
+                        None,
+                        json!({"title": title, "fields": fields}),
+                    )
+                    .await?;
+                let seq = ev.seq;
+                self.emit(ev).await?;
+                Ok(json!({"seq": seq}))
+            }
             ClientMsg::TransferOwner { conv_id, user_id } => {
                 self.transfer_owner(me, &conv_id, &user_id).await
             }
@@ -915,6 +1032,12 @@ impl Ctx<'_, '_> {
     }
 
     async fn require_member(&mut self, conv_id: &str, user_id: &str) -> ApiResult<Member> {
+        if user_id == SYSTEM_ID {
+            return match self.db.conv(conv_id).await? {
+                Some(_) => Ok(system_member()),
+                None => Err(err("not_found", "conversation")),
+            };
+        }
         self.members(conv_id)
             .await?
             .iter()
@@ -1257,6 +1380,12 @@ impl Ctx<'_, '_> {
             ));
         }
         let leaving = me.id == u.id;
+        if me.kind == UserKind::System && target.role == "owner" {
+            return Err(err(
+                "conflict",
+                "transfer ownership before removing the owner",
+            ));
+        }
         if leaving {
             if target.role == "owner" {
                 return Err(err(
@@ -1398,7 +1527,19 @@ impl Ctx<'_, '_> {
             return Err(err("bad_request", "only a person can own a conversation"));
         }
         self.db.set_role(conv_id, &u.id, "owner").await?;
-        self.db.set_role(conv_id, &me.id, "admin").await?;
+        // The system is not a member: the previous owner becomes an admin.
+        let previous = if me.kind == UserKind::System {
+            self.members(conv_id)
+                .await?
+                .iter()
+                .find(|m| m.role == "owner")
+                .map(|m| m.user_id.clone())
+        } else {
+            Some(me.id.clone())
+        };
+        if let Some(p) = previous {
+            self.db.set_role(conv_id, &p, "admin").await?;
+        }
         let ev = self
             .db
             .append_event(
@@ -1639,6 +1780,10 @@ impl Ctx<'_, '_> {
     /// owner of the sending agent while the agent is still a member, or
     /// (recall only) an owner or admin of the conversation.
     async fn can_modify(&mut self, me: &User, msg: &MsgView, recall: bool) -> ApiResult<bool> {
+        if me.kind == UserKind::System {
+            // Moderation: the system recalls anything, and edits its own.
+            return Ok(recall || msg.sender_id == me.id);
+        }
         let members = self.members(&msg.conv_id).await?;
         let member = |id: &str| members.iter().find(|m| m.user_id == id);
         let sender_present = member(&msg.sender_id).is_some();

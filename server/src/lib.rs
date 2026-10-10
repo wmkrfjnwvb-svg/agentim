@@ -7,6 +7,7 @@ pub mod hub;
 pub mod logic;
 pub mod metrics;
 pub mod model;
+pub mod open_api;
 pub mod policy;
 pub mod protocol;
 pub mod registry;

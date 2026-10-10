@@ -8,6 +8,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const TENANT_DEFAULT: &str = "default";
+/// The app's system identity (open API `"as": "system"`, docs/07 §3.2).
+pub const SYSTEM_ID: &str = "u_system";
+pub const SYSTEM_NAME: &str = "_system";
+
+/// Stands in for the system user where a membership is required: it may
+/// manage any conversation of the app without being a member.
+pub fn system_member() -> Member {
+    Member {
+        user_id: SYSTEM_ID.into(),
+        name: SYSTEM_NAME.into(),
+        kind: UserKind::System,
+        owner_id: None,
+        role: "owner".into(),
+        trigger: Trigger::Mention,
+        approval: false,
+        join_seq: 0,
+    }
+}
 pub const UNIT_DEFAULT: &str = "default";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,6 +340,14 @@ pub enum ClientMsg {
     },
     ListDrafts,
     Stats,
+    /// Rename a conversation or replace its custom fields (owner, admin).
+    UpdateConv {
+        conv_id: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        fields: Option<Value>,
+    },
     /// This user's devices (one per client token).
     ListDevices,
     /// Revokes one device's token and disconnects it (also this device).
@@ -368,6 +394,7 @@ impl ClientMsg {
             ClientMsg::ListDrafts => "list_drafts",
             ClientMsg::Stats => "stats",
             ClientMsg::ListDevices => "list_devices",
+            ClientMsg::UpdateConv { .. } => "update_conv",
             ClientMsg::LogoutDevice { .. } => "logout_device",
         }
     }
@@ -383,6 +410,7 @@ impl ClientMsg {
             | ClientMsg::Dissolve { conv_id }
             | ClientMsg::Send { conv_id, .. }
             | ClientMsg::Signal { conv_id, .. }
+            | ClientMsg::UpdateConv { conv_id, .. }
             | ClientMsg::Pull { conv_id, .. }
             | ClientMsg::PullSide { conv_id, .. }
             | ClientMsg::Read { conv_id, .. }

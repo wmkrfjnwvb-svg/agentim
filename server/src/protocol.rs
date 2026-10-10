@@ -38,6 +38,7 @@ pub const OPS: &[&str] = &[
     "set_role",
     "transfer_owner",
     "dissolve",
+    "update_conv",
     "block",
     "unblock",
     "list_blocks",

@@ -34,6 +34,10 @@ struct Inner {
     /// Webhook delivery tasks; they hold only their database, not the hub.
     deliverers: Vec<tokio::task::JoinHandle<()>>,
     http: reqwest::Client,
+    /// Open API keys by hash.
+    api_keys: std::sync::RwLock<HashMap<String, crate::db::ApiKeyRow>>,
+    /// Unknown keys reload from the database at most once a second.
+    keys_reloaded: Mutex<Option<Instant>>,
 }
 
 impl Drop for Inner {
@@ -143,6 +147,8 @@ impl Hub {
                 tickers: Mutex::new(vec![]),
                 deliverers,
                 http,
+                api_keys: Default::default(),
+                keys_reloaded: Mutex::new(None),
                 dm_lock: tokio::sync::Mutex::new(()),
             }),
         };
@@ -176,6 +182,31 @@ impl Hub {
                     expires_at: t.expires_at,
                 },
             );
+        }
+        for k in self
+            .read(control, |db| Box::pin(async move { db.api_keys().await }))
+            .await?
+        {
+            self.inner
+                .api_keys
+                .write()
+                .unwrap()
+                .insert(k.hash.clone(), k);
+        }
+        if sh.user(SYSTEM_ID).is_none() {
+            let system = User {
+                id: SYSTEM_ID.into(),
+                name: SYSTEM_NAME.into(),
+                kind: UserKind::System,
+                owner_id: None,
+                unit_id: UNIT_DEFAULT.into(),
+            };
+            control
+                .call(Op::CreateUser {
+                    user: system.clone(),
+                })
+                .await?;
+            sh.users.write().unwrap().insert(system.id.clone(), system);
         }
         let blocks = self
             .read(control, |db| Box::pin(async move { db.blocks_all().await }))
@@ -362,6 +393,17 @@ impl Hub {
 
     /// Periodic work per database: coalesced deltas, checkpoints, watchdog.
     pub fn spawn_background(&self) {
+        let hub = self.clone();
+        self.inner
+            .tickers
+            .lock()
+            .unwrap()
+            .push(tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    let _ = hub.reload_api_keys().await;
+                }
+            }));
         let every = (self.inner.sh.cfg.coalesce / 2).max(std::time::Duration::from_millis(10));
         let mut t = self.inner.tickers.lock().unwrap();
         for i in 0..self.inner.shards.len() {
@@ -381,6 +423,300 @@ impl Hub {
         for s in &self.inner.shards {
             let _ = s.call(Op::Tick).await;
         }
+    }
+
+    // ------------------------------------------------------------ open API
+
+    /// Creates an API key; the secret is returned once (docs/07 §5).
+    pub async fn create_api_key(
+        &self,
+        name: &str,
+        scopes: &[String],
+        ttl_ms: Option<i64>,
+        ip_allow: Option<Vec<String>>,
+    ) -> ApiResult<(String, crate::db::ApiKeyRow)> {
+        if name.is_empty() || name.len() > 64 {
+            return Err(err("bad_request", "name must be 1..64 bytes"));
+        }
+        if scopes.is_empty() {
+            return Err(err("bad_request", "at least one scope"));
+        }
+        if let Some(s) = scopes
+            .iter()
+            .find(|s| !crate::open_api::SCOPES.contains(&s.as_str()))
+        {
+            return Err(err("bad_request", format!("unknown scope {s}")));
+        }
+        if let Some(ips) = &ip_allow
+            && let Some(bad) = ips.iter().find(|i| crate::open_api::parse_net(i).is_none())
+        {
+            return Err(err("bad_request", format!("bad address {bad}")));
+        }
+        if ttl_ms.is_some_and(|t| t <= 0) {
+            return Err(err("bad_request", "ttl must be positive"));
+        }
+        let key_id = format!("k{}", &new_id()[..16]);
+        let secret = format!("ak_{key_id}_{}", &crate::auth::new_secret("x")[2..]);
+        let now = now_ms();
+        let mut scopes = scopes.to_vec();
+        scopes.sort();
+        scopes.dedup();
+        let row = crate::db::ApiKeyRow {
+            key_id,
+            app_id: TENANT_DEFAULT.into(),
+            hash: crate::auth::hash(&secret),
+            name: name.into(),
+            scopes,
+            ip_allow,
+            created_at: now,
+            expires_at: ttl_ms.map(|t| now.saturating_add(t)),
+            revoked_at: None,
+        };
+        self.control().call(Op::CreateApiKey(row.clone())).await?;
+        self.inner
+            .api_keys
+            .write()
+            .unwrap()
+            .insert(row.hash.clone(), row.clone());
+        Ok((secret, row))
+    }
+
+    pub async fn revoke_api_key(&self, key_id: &str) -> ApiResult<bool> {
+        let v = self
+            .control()
+            .call(Op::RevokeApiKey {
+                key_id: key_id.into(),
+            })
+            .await?;
+        let mut keys = self.inner.api_keys.write().unwrap();
+        for k in keys.values_mut() {
+            if k.key_id == key_id && k.revoked_at.is_none() {
+                k.revoked_at = Some(now_ms());
+            }
+        }
+        Ok(v["revoked"].as_u64() == Some(1))
+    }
+
+    pub fn api_keys(&self) -> Vec<crate::db::ApiKeyRow> {
+        let mut v: Vec<_> = self
+            .inner
+            .api_keys
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| (a.created_at, &a.key_id).cmp(&(b.created_at, &b.key_id)));
+        v
+    }
+
+    /// A valid (not revoked, not expired) key. Keys created by another
+    /// process (the `api-key` command) are found in the database.
+    pub async fn api_key(&self, secret: &str) -> Option<crate::db::ApiKeyRow> {
+        let hash = crate::auth::hash(secret);
+        let cached = self.inner.api_keys.read().unwrap().get(&hash).cloned();
+        let k = match cached {
+            Some(k) => k,
+            None => {
+                {
+                    let mut at = self.inner.keys_reloaded.lock().unwrap();
+                    if at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
+                        return None;
+                    }
+                    *at = Some(Instant::now());
+                }
+                self.reload_api_keys().await.ok()?;
+                self.inner.api_keys.read().unwrap().get(&hash).cloned()?
+            }
+        };
+        (k.revoked_at.is_none() && !k.expires_at.is_some_and(|e| e <= now_ms())).then_some(k)
+    }
+
+    /// Re-reads the keys (new keys and revocations from other processes).
+    pub async fn reload_api_keys(&self) -> ApiResult<()> {
+        let keys = self
+            .read(self.control(), |db| {
+                Box::pin(async move { db.api_keys().await })
+            })
+            .await?;
+        let mut m = self.inner.api_keys.write().unwrap();
+        m.clear();
+        for k in keys {
+            m.insert(k.hash.clone(), k);
+        }
+        Ok(())
+    }
+
+    pub fn open_api_config(&self) -> &crate::config::OpenApiConfig {
+        &self.inner.cfg.open_api
+    }
+
+    /// Runs a client request as `user` without a connection: the same rules,
+    /// deduplication, pushes and audit as a client (docs/07 §3.2).
+    pub async fn act_as(&self, user: &User, msg: ClientMsg) -> ApiResult<Value> {
+        if self.inner.sh.deactivated.read().unwrap().contains(&user.id) {
+            return Err(err("forbidden", "the user is deactivated"));
+        }
+        let sess = Session {
+            hub: self.clone(),
+            sid: 0,
+            user: user.clone(),
+            device_id: None,
+            kicked: Arc::new(tokio::sync::Notify::new()),
+            client: std::sync::Mutex::new(ClientState {
+                protocol: protocol::PROTOCOL_VERSIONS[0],
+                info: None,
+                features: Vec::new(),
+            }),
+            signals: std::sync::Mutex::new((Instant::now(), 0)),
+        };
+        self.dispatch(&sess, msg).await
+    }
+
+    pub fn system_user(&self) -> User {
+        self.inner.sh.user(SYSTEM_ID).expect("system user")
+    }
+
+    pub fn user_by_name(&self, name: &str) -> Option<User> {
+        self.inner.sh.user_by_name(name)
+    }
+
+    pub fn is_deactivated(&self, user_id: &str) -> bool {
+        self.inner.sh.deactivated.read().unwrap().contains(user_id)
+    }
+
+    pub async fn user_profile(&self, user_id: &str) -> ApiResult<Option<Value>> {
+        let u = user_id.to_string();
+        self.read(self.control(), move |db| {
+            Box::pin(async move { db.user_profile(&u).await })
+        })
+        .await
+    }
+
+    pub async fn update_user(
+        &self,
+        user_id: &str,
+        display_name: Option<String>,
+        avatar: Option<String>,
+        fields: Option<Value>,
+    ) -> ApiResult<()> {
+        self.control()
+            .call(Op::UpdateUser {
+                user_id: user_id.into(),
+                display_name,
+                avatar,
+                fields,
+            })
+            .await
+            .map(|_| ())
+    }
+
+    /// Deactivating also revokes every token and disconnects the user.
+    pub async fn set_deactivated(&self, user_id: &str, on: bool) -> ApiResult<()> {
+        self.control()
+            .call(Op::SetDeactivated {
+                user_id: user_id.into(),
+                on,
+            })
+            .await?;
+        if on {
+            self.inner
+                .sh
+                .deactivated
+                .write()
+                .unwrap()
+                .insert(user_id.into());
+            self.revoke_tokens(user_id, None).await?;
+        } else {
+            self.inner.sh.deactivated.write().unwrap().remove(user_id);
+        }
+        Ok(())
+    }
+
+    /// Conversation row and members, for the open API.
+    pub async fn conv_detail(&self, conv_id: &str) -> ApiResult<Value> {
+        let shard = self.conv_shard(conv_id)?;
+        let c = conv_id.to_string();
+        let (row, members) = self
+            .read(shard, move |db| {
+                Box::pin(async move { Ok((db.conv(&c).await?, db.members(&c).await?)) })
+            })
+            .await?;
+        let row = row.ok_or_else(|| err("not_found", "conversation"))?;
+        let sh = &self.inner.sh;
+        let members: Vec<Value> = members
+            .iter()
+            .map(|m| {
+                let name = sh.user(&m.user_id).map(|u| u.name).unwrap_or_default();
+                json!({"user": name, "kind": m.kind, "role": m.role})
+            })
+            .collect();
+        Ok(
+            json!({"id": row.id, "kind": row.kind, "title": row.title, "fields": row.fields, "last_seq": row.last_seq, "members": members}),
+        )
+    }
+
+    pub async fn idem_get(
+        &self,
+        key_id: &str,
+        idem: &str,
+    ) -> ApiResult<Option<(String, i64, String)>> {
+        let (k, i) = (key_id.to_string(), idem.to_string());
+        self.read(self.control(), move |db| {
+            Box::pin(async move { db.idem_get(&k, &i).await })
+        })
+        .await
+    }
+
+    pub async fn idem_put(
+        &self,
+        key_id: &str,
+        idem: &str,
+        hash: &str,
+        status: i64,
+        response: String,
+    ) -> ApiResult<()> {
+        self.control()
+            .call(Op::IdemPut {
+                key_id: key_id.into(),
+                idem_key: idem.into(),
+                request_hash: hash.into(),
+                status,
+                response,
+            })
+            .await
+            .map(|_| ())
+    }
+
+    /// One audit record per open API call that changes or reads content.
+    pub async fn audit_api(
+        &self,
+        key_id: &str,
+        actor: &str,
+        action: &str,
+        target: Option<&str>,
+        detail: Value,
+    ) {
+        let mut d = detail;
+        d["key_id"] = json!(key_id);
+        let _ = self
+            .control()
+            .call(Op::Audit {
+                actor: actor.into(),
+                action: format!("api.{action}"),
+                conv_id: String::new(),
+                target: target.map(String::from),
+                detail: d,
+            })
+            .await;
+    }
+
+    /// Latest audit records of the control database, newest first.
+    pub async fn audit_log(&self, limit: i64) -> ApiResult<Vec<Value>> {
+        self.read(self.control(), move |db| {
+            Box::pin(async move { db.audit_log(limit).await })
+        })
+        .await
     }
 
     pub fn shutdown(&self) {
@@ -543,6 +879,9 @@ impl Hub {
         if unit != UNIT_DEFAULT && !self.inner.cfg.units.iter().any(|u| u.name == unit) {
             return Err(err("bad_request", format!("unknown unit {unit}")));
         }
+        if name.starts_with('_') {
+            return Err(err("bad_request", "names starting with _ are reserved"));
+        }
         if self.inner.sh.user_by_name(name).is_some() {
             return Err(err("conflict", "name taken"));
         }
@@ -586,6 +925,7 @@ impl Hub {
             .read()
             .unwrap()
             .values()
+            .filter(|u| u.kind != UserKind::System)
             .cloned()
             .collect();
         v.sort_by(|a, b| a.id.cmp(&b.id));
@@ -901,7 +1241,8 @@ impl Hub {
             | ClientMsg::SetAgentPolicy { ref conv_id, .. }
             | ClientMsg::SetRole { ref conv_id, .. }
             | ClientMsg::TransferOwner { ref conv_id, .. }
-            | ClientMsg::ResetGuard { ref conv_id, .. } => {
+            | ClientMsg::ResetGuard { ref conv_id, .. }
+            | ClientMsg::UpdateConv { ref conv_id, .. } => {
                 let c = conv_id.clone();
                 self.on_conv(sess, &c, msg).await
             }
@@ -1147,6 +1488,9 @@ impl Hub {
             None => me.id.clone(),
         };
         let conv = conv.to_string();
+        if who == SYSTEM_ID {
+            return Ok(system_member());
+        }
         self.read(shard, move |db| {
             Box::pin(async move { db.member(&conv, &who).await })
         })
