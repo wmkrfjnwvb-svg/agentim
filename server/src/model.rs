@@ -1,0 +1,290 @@
+//! Wire protocol and shared data types.
+//!
+//! Every client frame is a JSON object `{"op": "...", "rid": <optional u64>, ...}`.
+//! Server frames are JSON objects with a `type` field. Responses to a request
+//! echo its `rid`.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub const TENANT_DEFAULT: &str = "default";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserKind {
+    Human,
+    Agent,
+    System,
+}
+
+impl UserKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UserKind::Human => "human",
+            UserKind::Agent => "agent",
+            UserKind::System => "system",
+        }
+    }
+    pub fn parse(s: &str) -> UserKind {
+        match s {
+            "agent" => UserKind::Agent,
+            "system" => UserKind::System,
+            _ => UserKind::Human,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct User {
+    pub id: String,
+    pub name: String,
+    pub kind: UserKind,
+    pub owner_id: Option<String>,
+}
+
+/// How an agent member is triggered in a conversation, which also bounds what
+/// it can read (see docs/05-review.md §4.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Trigger {
+    /// Receives every visible event.
+    All,
+    /// Receives only events that mention it, reply to it, or are its own.
+    Mention,
+}
+
+impl Trigger {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Trigger::All => "all",
+            Trigger::Mention => "mention",
+        }
+    }
+    pub fn parse(s: &str) -> Trigger {
+        if s == "all" {
+            Trigger::All
+        } else {
+            Trigger::Mention
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Member {
+    pub user_id: String,
+    pub name: String,
+    pub kind: UserKind,
+    pub owner_id: Option<String>,
+    pub role: String,
+    pub trigger: Trigger,
+    pub approval: bool,
+    pub join_seq: i64,
+}
+
+/// Snapshot of a message at a given version. Embedded in every `msg.*` event so
+/// that a pulled event range is self-contained.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgView {
+    pub msg_id: String,
+    pub conv_id: String,
+    pub created_seq: i64,
+    pub sender_id: String,
+    pub sender_name: String,
+    /// Written by the server from the authenticated identity; cannot be forged.
+    pub sender_type: UserKind,
+    pub on_behalf_of: Option<String>,
+    pub kind: String,
+    pub content: String,
+    pub version: i64,
+    /// committed | streaming | complete | cancelled | failed | recalled
+    pub state: String,
+    pub state_reason: Option<String>,
+    pub hop: i64,
+    pub causation_id: Option<String>,
+    pub reply_to: Option<String>,
+    pub mentions: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// One entry of the main conversation log. `seq` is gap-free per conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Event {
+    pub conv_id: String,
+    pub seq: i64,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub actor_id: Option<String>,
+    pub msg: Option<MsgView>,
+    pub data: Value,
+    pub created_at: i64,
+}
+
+/// One entry of a conversation's side channel: content with targeted
+/// visibility (whispers, ephemeral messages, approval drafts, guard notices).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SideEvent {
+    pub conv_id: String,
+    pub side_seq: i64,
+    /// Latest main-log seq when this was produced; used to merge both logs.
+    pub anchor_seq: i64,
+    pub audience: Vec<String>,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub actor_id: Option<String>,
+    pub data: Value,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Envelope {
+    pub rid: Option<u64>,
+    #[serde(flatten)]
+    pub msg: ClientMsg,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ClientMsg {
+    Hello,
+    ListConvs,
+    CreateConv {
+        kind: String,
+        title: String,
+        members: Vec<String>,
+    },
+    AddMember {
+        conv_id: String,
+        user_id: String,
+    },
+    Send {
+        conv_id: String,
+        client_msg_id: String,
+        text: String,
+        #[serde(default)]
+        reply_to: Option<String>,
+        #[serde(default)]
+        causation_id: Option<String>,
+        #[serde(default)]
+        on_behalf_of: Option<String>,
+        /// Ephemeral: visible only to this user (plus the sender and, for an
+        /// agent, its owner). Goes to the side channel, takes no conv_seq.
+        #[serde(default)]
+        to_user: Option<String>,
+    },
+    Edit {
+        msg_id: String,
+        text: String,
+    },
+    Recall {
+        msg_id: String,
+    },
+    Pull {
+        conv_id: String,
+        #[serde(default)]
+        after_seq: i64,
+        #[serde(default)]
+        limit: Option<i64>,
+        /// Owner observing through one of their agents.
+        #[serde(default)]
+        as_agent: Option<String>,
+    },
+    PullSide {
+        conv_id: String,
+        #[serde(default)]
+        after_side_seq: i64,
+    },
+    Read {
+        conv_id: String,
+        seq: i64,
+    },
+    Focus {
+        conv_id: Option<String>,
+        #[serde(default)]
+        as_agent: Option<String>,
+    },
+    StreamStart {
+        conv_id: String,
+        client_msg_id: String,
+        #[serde(default)]
+        reply_to: Option<String>,
+        #[serde(default)]
+        causation_id: Option<String>,
+    },
+    StreamAppend {
+        msg_id: String,
+        idx: u64,
+        text: String,
+    },
+    StreamEnd {
+        msg_id: String,
+    },
+    StreamCancel {
+        msg_id: String,
+    },
+    Whisper {
+        conv_id: String,
+        agent_id: String,
+        text: String,
+    },
+    Approve {
+        draft_id: String,
+        #[serde(default)]
+        text: Option<String>,
+    },
+    Reject {
+        draft_id: String,
+    },
+    Takeover {
+        conv_id: String,
+        agent_id: String,
+    },
+    Release {
+        conv_id: String,
+        agent_id: String,
+    },
+    SetAgentPolicy {
+        conv_id: String,
+        agent_id: String,
+        #[serde(default)]
+        approval: Option<bool>,
+        #[serde(default)]
+        trigger: Option<Trigger>,
+    },
+    ResetGuard {
+        conv_id: String,
+        agent_id: String,
+    },
+    ListDrafts,
+    Stats,
+}
+
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl ApiError {
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        ApiError {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<rusqlite::Error> for ApiError {
+    fn from(e: rusqlite::Error) -> Self {
+        ApiError::new("storage", e.to_string())
+    }
+}
+
+pub type ApiResult<T> = Result<T, ApiError>;

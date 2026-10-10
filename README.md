@@ -28,8 +28,10 @@
 | [03 AI 原生能力](docs/03-ai-native.md) | Agent 身份、流式消息、人工介入、过滤、监控、安全护栏 |
 | [04 版本划分](docs/04-editions.md) | 社区版与企业版的功能边界、开源核心原则 |
 | [调研：市场与竞品](docs/research/market-and-competitors.md) | 海外 IM + AI 需求、竞品功能与分层对比 |
+| [05 需求与架构评审](docs/05-review.md) | 调研核实、P0/P1/P2 修订项、v0.2 消息模型、实施路线 |
+| [06 单机版](docs/06-standalone.md) | 单机版设计、协议、测试与实测结果 |
 
 ## Status / 状态
 
-Requirements & architecture phase. No code yet.
-需求与架构设计阶段，尚无代码。
+Single-node edition available in [`server/`](server) (validates the v0.2 model; not yet optimized for scale).
+单机版已可运行（`cd server && cargo run --release -- --demo`），用于验证 v0.2 消息模型与 AI 介入模型，尚未做规模优化。
