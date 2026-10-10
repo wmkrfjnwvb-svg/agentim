@@ -231,6 +231,8 @@ async fn guard(State(st): State<AppState>, req: Request, next: Next) -> Response
     }
 }
 
+// Err is an early answer, not a failure; boxing it buys nothing here.
+#[allow(clippy::result_large_err)]
 async fn guard_inner(st: AppState, req: Request, next: Next) -> Result<Response, Response> {
     let hub = &st.hub;
     let cfg = hub.open_api_config().clone();
@@ -326,6 +328,7 @@ async fn guard_inner(st: AppState, req: Request, next: Next) -> Result<Response,
 
 /// Same key + same request = the first result; a different request with the
 /// same key is refused (422); a duplicate while the first runs gets 409.
+#[allow(clippy::result_large_err)]
 async fn idempotent(
     hub: &Hub,
     key: &ApiKeyRow,
