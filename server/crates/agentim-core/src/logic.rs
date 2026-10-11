@@ -18,6 +18,8 @@ use crate::model::*;
 use crate::policy::PolicyChain;
 use crate::registry::{Out, Recip, Registry};
 
+mod ai;
+mod cards;
 mod history;
 mod lifecycle;
 mod requests;
@@ -139,6 +141,8 @@ pub struct Shared {
     pub stopped: std::sync::RwLock<HashSet<String>>,
     /// Agents their owners destroyed (tombstones).
     pub destroyed: std::sync::RwLock<HashSet<String>>,
+    /// Progress reports per (agent, conversation): tokens and when.
+    pub progress_buckets: std::sync::Mutex<HashMap<(String, String), (f64, std::time::Instant)>>,
     pub dir: std::sync::RwLock<HashMap<String, DirInfo>>,
     /// Active stream (or streamed draft) id → database index.
     pub stream_index: std::sync::Mutex<HashMap<String, usize>>,
@@ -682,6 +686,14 @@ pub fn check_kind(kind: Option<String>, payload: &Option<Value>) -> ApiResult<St
             }
             Ok("text".into())
         }
+        Some(cards::KIND) => {
+            cards::check_card(
+                payload
+                    .as_ref()
+                    .ok_or_else(|| err("bad_request", "a card needs a payload"))?,
+            )?;
+            Ok(cards::KIND.to_string())
+        }
         Some(k) => {
             check_custom_kind(k)?;
             if let Some(p) = payload {
@@ -1221,6 +1233,7 @@ impl Ctx<'_, '_> {
                 topics,
                 intent,
                 refs,
+                sources,
             } => {
                 check_client_msg_id(&client_msg_id)?;
                 self.send(
@@ -1238,6 +1251,7 @@ impl Ctx<'_, '_> {
                         topics,
                         intent,
                         refs,
+                        sources,
                     },
                 )
                 .await
@@ -1392,6 +1406,33 @@ impl Ctx<'_, '_> {
                 note,
             } => self.update_task(me, &conv_id, state, assignee, note).await,
             ClientMsg::Claim { msg_id } => self.claim(me, &msg_id).await,
+            ClientMsg::Progress {
+                conv_id,
+                msg_id,
+                kind,
+                text,
+                data,
+            } => {
+                self.progress(me, &conv_id, msg_id, &kind, &text, data)
+                    .await
+            }
+            ClientMsg::Feedback {
+                msg_id,
+                rating,
+                reason,
+            } => self.feedback(me, &msg_id, rating, reason).await,
+            ClientMsg::Respond {
+                msg_id,
+                block_id,
+                action,
+                values,
+            } => self.respond(me, &msg_id, &block_id, action, values).await,
+            ClientMsg::Handoff { conv_id, to, note } => self.handoff(me, &conv_id, to, &note).await,
+            ClientMsg::Handback {
+                conv_id,
+                agent_id,
+                note,
+            } => self.handback(me, &conv_id, &agent_id, note).await,
             ClientMsg::PutSummary {
                 conv_id,
                 from_seq,
@@ -2447,6 +2488,9 @@ impl Ctx<'_, '_> {
                 return Err(err("bad_request", "text messages have no payload"));
             }
             check_json_object(p, "payload", MAX_PAYLOAD_BYTES)?;
+            if msg.kind == cards::KIND {
+                cards::check_card(p)?;
+            }
         }
         let scanned = payload.as_ref().or(msg.payload.as_ref());
         if me.kind == UserKind::Agent

@@ -555,6 +555,38 @@ pub const TABLES: &[Table] = &[
         indexes: &[],
         conv_key: None,
     },
+    // v3: who responded to which card (docs/03 §9.6.1.1).
+    Table {
+        name: "card_responses",
+        cols: &[
+            c("msg_id", Id),
+            c("user_id", Id),
+            c("conv_id", Id),
+            c("created_at", Big),
+        ],
+        pk: &["msg_id", "user_id"],
+        indexes: &[("card_responses_conv", &["conv_id"], false)],
+        conv_key: Some("conv_id"),
+    },
+    // v3: people's feedback on agent messages (docs/03 §9.6.1.1).
+    Table {
+        name: "feedback",
+        cols: &[
+            c("msg_id", Id),
+            c("user_id", Id),
+            c("conv_id", Id),
+            c("agent_id", Id),
+            c("rating", Id),
+            n("reason", Text),
+            c("created_at", Big),
+        ],
+        pk: &["msg_id", "user_id"],
+        indexes: &[
+            ("feedback_conv", &["conv_id"], false),
+            ("feedback_agent", &["agent_id", "created_at"], false),
+        ],
+        conv_key: Some("conv_id"),
+    },
     // v3: summaries agents write of conversations (docs/09 §11.1).
     Table {
         name: "summaries",
@@ -647,6 +679,8 @@ pub const TABLES: &[Table] = &[
             c("agent_id", Id),
             c("by_user", Id),
             c("since", Big),
+            // v3: the agent's handover note when it handed off (docs/03 §9.6.1.1).
+            n("note", Text),
         ],
         pk: &["conv_id", "agent_id"],
         indexes: &[],

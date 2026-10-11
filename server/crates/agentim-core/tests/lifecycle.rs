@@ -194,7 +194,8 @@ async fn a_stopped_agent_can_do_nothing(db: TestDb) {
         (me["stopped"].clone(), me["destroyed"].clone()),
         (json!(true), json!(false))
     );
-    // People and other agents carry on.
+    // People and other agents carry on; the stopped agent is not woken.
+    assert_eq!(a.send(&g2, "@bot are you there").await["wake"], json!([]));
     a.send(&g1, "people talk").await;
     Conn::new(&hub, &peer).ok(say(&g1, "peer talks")).await;
     // Resume: everything works again; the claim and draft are still its.
@@ -207,6 +208,10 @@ async fn a_stopped_agent_can_do_nothing(db: TestDb) {
     }
     g.ok(json!({"op": "release_claim", "msg_id": req})).await;
     a.ok(json!({"op": "approve", "draft_id": draft})).await;
+    assert_eq!(
+        a.send(&g2, "@bot welcome back").await["wake"],
+        json!([bot.id])
+    );
     assert_eq!(
         g.ok(json!({"op": "state_get", "key": "k"})).await["value"],
         1

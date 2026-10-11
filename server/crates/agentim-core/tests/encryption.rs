@@ -124,10 +124,26 @@ async fn everything(hub: &Hub, alice: &User, bob: &User, bot: &User) -> String {
     let last = *seqs(&a.pull(&conv, 0).await).last().unwrap();
     g.ok(json!({"op": "put_summary", "conv_id": conv, "from_seq": 1, "to_seq": last, "text": format!("{MARK} summary")}))
         .await;
+    // Feedback with a reason (docs/03 §9.6.1.1).
+    let rated = g.reply(&conv, "rated answer", &q).await["draft_id"].clone();
+    let rated = a.ok(json!({"op": "approve", "draft_id": rated})).await;
+    let log = a.pull(&conv, 0).await;
+    let rated_id = log["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["event"]["seq"] == rated["seq"])
+        .unwrap()["event"]["msg"]["msg_id"]
+        .clone();
+    a.ok(json!({"op": "feedback", "msg_id": rated_id, "rating": "down", "reason": format!("{MARK} reason")}))
+        .await;
     // A checkpoint, with an older version (docs/09 §11.2).
     g.ok(json!({"op": "state_put", "key": "plan", "value": {"v": format!("{MARK} state 1")}, "version": 0}))
         .await;
     g.ok(json!({"op": "state_put", "key": "plan", "value": {"v": format!("{MARK} state 2")}, "version": 1}))
+        .await;
+    // A handoff with its note, still open.
+    g.ok(json!({"op": "handoff", "conv_id": conv, "note": format!("{MARK} handoff")}))
         .await;
     conv
 }
@@ -161,6 +177,16 @@ async fn check(hub: &Hub, alice: &User, bob: &User, conv: &str) {
             .await;
         assert_eq!(s["value"]["v"], json!(format!("{MARK} state {v}")));
     }
+    let inbox = Conn::new(hub, alice)
+        .ok(json!({"op": "inbox"}))
+        .await
+        .to_string();
+    assert!(inbox.contains(&format!("{MARK} handoff")), "{inbox}");
+    let fb = Conn::new(hub, alice)
+        .ok(json!({"op": "list_feedback", "agent_id": bot.id}))
+        .await
+        .to_string();
+    assert!(fb.contains(&format!("{MARK} reason")), "{fb}");
     let audit = hub.audit_log(100).await.unwrap();
     assert!(
         format!("{audit:?}").contains(&format!("{MARK} draft")),

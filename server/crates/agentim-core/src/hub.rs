@@ -138,6 +138,7 @@ impl Hub {
             deactivated: Default::default(),
             stopped: Default::default(),
             destroyed: Default::default(),
+            progress_buckets: Default::default(),
             dir: Default::default(),
             stream_index: Default::default(),
             policy: PolicyChain::default_chain(),
@@ -487,6 +488,8 @@ impl Hub {
                 "drafts",
                 "requests",
                 "summaries",
+                "takeovers",
+                "feedback",
                 "agent_state",
                 "audit",
                 "webhook_outbox",
@@ -1139,6 +1142,38 @@ impl Hub {
         }
     }
 
+    /// A user by id or name; one unknown to memory (created by another
+    /// process, e.g. `agentim agent create`) is read from the database.
+    pub(crate) async fn user_or_load(&self, key: &str) -> ApiResult<Option<User>> {
+        let sh = &self.inner.sh;
+        if let Some(u) = sh.user(key).or_else(|| sh.user_by_name(key)) {
+            return Ok(Some(u));
+        }
+        let k = key.to_string();
+        let found = self
+            .read(self.control(), move |db| {
+                Box::pin(async move {
+                    match db.user_by_id(&k).await? {
+                        Some(u) => Ok(Some(u)),
+                        None => db.user_by_name(&k).await,
+                    }
+                })
+            })
+            .await?;
+        let Some((u, off)) = found else {
+            return Ok(None);
+        };
+        if off {
+            sh.deactivated.write().unwrap().insert(u.id.clone());
+        }
+        sh.users
+            .write()
+            .unwrap()
+            .entry(u.id.clone())
+            .or_insert_with(|| u.clone());
+        Ok(Some(u))
+    }
+
     /// Like `authenticate_device`, and a token unknown to memory is looked
     /// up in the database: issued by another process (the `agent` command)
     /// or another node. At most one lookup per second, so made-up tokens
@@ -1618,10 +1653,8 @@ impl Hub {
             }
             ClientMsg::RemoveMember { conv_id, user_id } => {
                 let user = self
-                    .inner
-                    .sh
-                    .user(&user_id)
-                    .or_else(|| self.inner.sh.user_by_name(&user_id))
+                    .user_or_load(&user_id)
+                    .await?
                     .ok_or_else(|| err("not_found", "user"))?;
                 self.remove_member(me, &conv_id, user).await
             }
@@ -1668,10 +1701,8 @@ impl Hub {
                 history,
             } => {
                 let user = self
-                    .inner
-                    .sh
-                    .user(&user_id)
-                    .or_else(|| self.inner.sh.user_by_name(&user_id))
+                    .user_or_load(&user_id)
+                    .await?
                     .ok_or_else(|| err("not_found", "user"))?;
                 if me.kind == UserKind::Agent {
                     let owner = me
@@ -1796,7 +1827,10 @@ impl Hub {
             | ClientMsg::UpdateTask { ref conv_id, .. }
             | ClientMsg::FloorGrant { ref conv_id, .. }
             | ClientMsg::FloorRelease { ref conv_id }
-            | ClientMsg::PutSummary { ref conv_id, .. } => {
+            | ClientMsg::PutSummary { ref conv_id, .. }
+            | ClientMsg::Handoff { ref conv_id, .. }
+            | ClientMsg::Handback { ref conv_id, .. }
+            | ClientMsg::Progress { ref conv_id, .. } => {
                 let c = conv_id.clone();
                 self.on_conv(sess, &c, msg).await
             }
@@ -1853,12 +1887,17 @@ impl Hub {
                 self.stop_agent(me, &agent_id, reason).await
             }
             ClientMsg::ResumeAgent { agent_id } => self.resume_agent(me, &agent_id).await,
+            ClientMsg::ListFeedback { agent_id, limit } => {
+                self.list_feedback(me, &agent_id, limit).await
+            }
             ClientMsg::DestroyAgent { agent_id, confirm } => {
                 self.destroy_agent(me, &agent_id, &confirm).await
             }
             ClientMsg::Edit { ref msg_id, .. }
             | ClientMsg::Recall { ref msg_id, .. }
             | ClientMsg::Claim { ref msg_id }
+            | ClientMsg::Respond { ref msg_id, .. }
+            | ClientMsg::Feedback { ref msg_id, .. }
             | ClientMsg::ReleaseClaim { ref msg_id } => {
                 let id = msg_id.clone();
                 let conv = self
@@ -2009,6 +2048,7 @@ impl Hub {
             topics,
             intent,
             refs,
+            sources,
         } = msg
         else {
             return Ok(msg);
@@ -2038,6 +2078,7 @@ impl Hub {
             topics,
             intent,
             refs,
+            sources,
         })
     }
 
@@ -2400,9 +2441,9 @@ impl Hub {
         let sh = &self.inner.sh;
         let mut users: Vec<User> = vec![];
         for k in members {
-            let u = sh
-                .user(k)
-                .or_else(|| sh.user_by_name(k))
+            let u = self
+                .user_or_load(k)
+                .await?
                 .ok_or_else(|| err("not_found", format!("user {k}")))?;
             // The creator and repeated entries are not added twice.
             if u.id != me.id && !users.iter().any(|x| x.id == u.id) {

@@ -1242,6 +1242,7 @@ async fn send_as(
                 topics: None,
                 intent: None,
                 refs: None,
+                sources: None,
             },
         )
         .await?;

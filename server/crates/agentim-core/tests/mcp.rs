@@ -31,6 +31,7 @@ backend_tests!(
     agents_read_their_history,
     agents_keep_checkpoints,
     stopped_and_destroyed_agents_are_refused,
+    agents_use_cards_progress_sources_and_handoff,
 );
 
 const V: &str = "2026-07-28";
@@ -1631,4 +1632,97 @@ async fn stopped_and_destroyed_agents_are_refused(db: TestDb) {
         )
         .await;
     assert_eq!(st, 401);
+}
+
+/// Cards, progress, sources and handing off through the tools (docs/03
+/// §9.6.1.1).
+async fn agents_use_cards_progress_sources_and_handoff(db: TestDb) {
+    let mut cfg = single(&db.url);
+    cfg.mcp.burst = 1000.0;
+    let m = serve(cfg).await;
+    let (alice, _helper, key, conv) = setup(&m).await;
+    let a = Conn::new(&m.hub, &alice);
+    m.ok(&key, "get_updates", json!({})).await;
+    let card = json!({"blocks": [{"type": "buttons", "id": "go", "options": [{"id": "yes", "label": "Yes"}, {"id": "no", "label": "No"}]}]});
+    let r = m
+        .tool(
+            &key,
+            "send_card",
+            json!({"conv_id": conv, "text": "Deploy now? (yes/no)", "card": card}),
+        )
+        .await;
+    let msg = r["structuredContent"]["msg_id"].clone();
+    assert!(
+        r["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Card sent")
+    );
+    a.ok(json!({"op": "respond", "msg_id": msg, "block_id": "go", "action": "yes"}))
+        .await;
+    let r = m.tool(&key, "get_updates", json!({})).await;
+    let text = r["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("→ for you") && text.contains("card.response") && text.contains("action=yes"),
+        "{text}"
+    );
+    m.ok(
+        &key,
+        "progress",
+        json!({"conv_id": conv, "kind": "tool_call", "text": "deploy()", "data": {"env": "prod"}}),
+    )
+    .await;
+    let sent = m
+        .ok(&key, "send_message", json!({"conv_id": conv, "text": "Deployed.", "sources": [{"title": "Run 7", "url": "https://ci.example.com/7"}]}))
+        .await;
+    let log = a.pull(&conv, 0).await;
+    let mm = msg_by_id(&log, sent["msg_id"].as_str().unwrap()).unwrap();
+    assert_eq!(mm["envelope"]["sources"][0]["title"], "Run 7");
+    for (tool, args, want) in [
+        (
+            "send_card",
+            json!({"conv_id": conv, "text": "x", "card": "no"}),
+            "bad_request",
+        ),
+        (
+            "send_card",
+            json!({"conv_id": conv, "text": "x", "card": {"blocks": []}}),
+            "bad_request",
+        ),
+        (
+            "progress",
+            json!({"conv_id": conv, "kind": "nap", "text": "x"}),
+            "bad_request",
+        ),
+        (
+            "send_message",
+            json!({"conv_id": conv, "text": "x", "sources": "https://x.org"}),
+            "bad_request",
+        ),
+        (
+            "send_message",
+            json!({"conv_id": conv, "text": "x", "sources": [{"title": "t", "url": "ftp://x"}]}),
+            "bad_request",
+        ),
+        ("handoff", json!({"conv_id": conv}), "bad_request"),
+    ] {
+        assert_eq!(
+            m.tool_err(&key, tool, args.clone()).await,
+            want,
+            "{tool} {args}"
+        );
+    }
+    let r = m
+        .ok(
+            &key,
+            "handoff",
+            json!({"conv_id": conv, "note": "needs a human"}),
+        )
+        .await;
+    assert_eq!(r["to"], json!(alice.id));
+    assert_eq!(
+        m.tool_err(&key, "send_message", json!({"conv_id": conv, "text": "x"}))
+            .await,
+        "taken_over"
+    );
 }

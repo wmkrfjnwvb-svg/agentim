@@ -404,6 +404,9 @@ pub const TOOLS: &[&str] = &[
     "state_put",
     "state_list",
     "state_delete",
+    "handoff",
+    "send_card",
+    "progress",
 ];
 
 fn tools() -> Value {
@@ -451,6 +454,7 @@ fn tools() -> Value {
                     "topics": {"type": "array", "items": {"type": "string", "pattern": "^[a-z0-9._-]{1,64}$"}, "minItems": 1, "maxItems": 10},
                     "intent": {"type": "string", "enum": ["request", "proposal", "answer", "status", "done"]},
                     "refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 256}, "minItems": 1, "maxItems": 20, "description": "References to documents, artifacts or messages."},
+                    "sources": {"type": "array", "minItems": 1, "maxItems": 20, "description": "Sources your answer is based on; people see them under the message.", "items": {"type": "object", "properties": {"title": {"type": "string", "minLength": 1, "maxLength": 200}, "url": {"type": "string", "format": "uri", "maxLength": 2048}, "excerpt": {"type": "string", "maxLength": 500}}, "required": ["title", "url"], "additionalProperties": false}},
                 },
                 "required": ["conv_id", "text"],
                 "additionalProperties": false,
@@ -795,6 +799,57 @@ fn tools() -> Value {
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
         },
+        {
+            "name": "handoff",
+            "title": "Hand off to a person",
+            "description": "Hands this conversation to a person (default: your owner) with a note on what they need to know. You are silent and not woken there until they hand it back; then you get their note.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "to": id("The person (name or id; default your owner)."),
+                    "note": {"type": "string", "minLength": 1, "maxLength": 4096},
+                },
+                "required": ["conv_id", "note"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "send_card",
+            "title": "Send a card",
+            "description": "Sends a card people answer by clicking a button or filling a form; their response comes back to you in get_updates. `card` is {title?, blocks: [...], once?}; a block is {type: text, text}, {type: buttons, id, options: [{id, label, style?: primary|danger}]} or {type: form, id, submit, fields: [{id, label, type: text|number|select|checkbox, required?, options?, max?}]}. Ids are a-z 0-9 _ -. `text` is what clients without cards show.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "text": {"type": "string", "minLength": 1, "description": "Fallback text."},
+                    "card": {"type": "object"},
+                    "reply_to": id("The message this answers (optional)."),
+                },
+                "required": ["conv_id", "text", "card"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "progress",
+            "title": "Report progress",
+            "description": "Shows people what you are doing (thinking, tool_call, tool_result, plan, step, error) next to the conversation without a message: nobody is woken and it is not part of the history. At most 10 a second.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "kind": {"type": "string", "enum": ["thinking", "tool_call", "tool_result", "plan", "step", "error"]},
+                    "text": {"type": "string", "minLength": 1, "maxLength": 4096},
+                    "msg_id": id("Your message (e.g. a streamed reply) this belongs to."),
+                    "data": {"description": "Any JSON, up to 8KB."},
+                },
+                "required": ["conv_id", "kind", "text"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
     ])
 }
 
@@ -932,6 +987,7 @@ async fn call_tool(
                     "topics",
                     "intent",
                     "refs",
+                    "sources",
                 ],
             )?;
             let cmid = arg_str(args, "client_msg_id", false)?
@@ -958,6 +1014,16 @@ async fn call_tool(
                             format!("{k} must be a list of strings"),
                         ));
                     }
+                }
+            }
+            match args.get("sources") {
+                None | Some(Value::Null) => {}
+                Some(Value::Array(a)) => m["sources"] = json!(a),
+                _ => {
+                    return Err(ApiError::new(
+                        "bad_request",
+                        "sources must be a list of {title, url, excerpt?}",
+                    ));
                 }
             }
             let v = run(m).await?;
@@ -1328,6 +1394,44 @@ async fn call_tool(
                     .await?;
             Ok(("Deleted.".into(), v))
         }
+        "handoff" => {
+            only(args, &["conv_id", "to", "note"])?;
+            let mut m = json!({"op": "handoff", "conv_id": need(args, "conv_id")?, "note": need(args, "note")?});
+            if let Some(t) = arg_str(args, "to", false)? {
+                m["to"] = json!(t);
+            }
+            let v = run(m).await?;
+            Ok(("Handed off: wait until it is handed back.".into(), v))
+        }
+        "send_card" => {
+            only(args, &["conv_id", "text", "card", "reply_to"])?;
+            let card = args
+                .get("card")
+                .filter(|c| c.is_object())
+                .ok_or_else(|| ApiError::new("bad_request", "card must be an object"))?;
+            let mut m = json!({"op": "send", "conv_id": need(args, "conv_id")?, "text": need(args, "text")?, "kind": "agentim.card", "payload": card, "client_msg_id": format!("mcp-{}", uuid::Uuid::new_v4().simple())});
+            if let Some(r) = arg_str(args, "reply_to", false)? {
+                m["reply_to"] = json!(r);
+            }
+            let v = run(m).await?;
+            let text = match v["draft_id"].as_str() {
+                Some(d) => format!("Waiting for your owner's approval (draft {d})."),
+                None => format!("Card sent as {}.", v["msg_id"].as_str().unwrap_or("")),
+            };
+            Ok((text, v))
+        }
+        "progress" => {
+            only(args, &["conv_id", "kind", "text", "msg_id", "data"])?;
+            let mut m = json!({"op": "progress", "conv_id": need(args, "conv_id")?, "kind": need(args, "kind")?, "text": need(args, "text")?});
+            if let Some(x) = arg_str(args, "msg_id", false)? {
+                m["msg_id"] = json!(x);
+            }
+            if let Some(d) = args.get("data").filter(|d| !d.is_null()) {
+                m["data"] = d.clone();
+            }
+            let v = run(m).await?;
+            Ok(("Shown.".into(), v))
+        }
         _ => Err(ApiError::new("bad_request", "unknown tool")),
     }
 }
@@ -1336,10 +1440,15 @@ async fn call_tool(
 /// a claim or the floor), as ` key=value` pairs.
 fn event_detail(data: &Value) -> String {
     let mut out = String::new();
-    for k in ["state", "assignee", "msg_id", "agent_id", "by", "note"] {
+    for k in [
+        "state", "assignee", "msg_id", "agent_id", "by", "note", "block_id", "action",
+    ] {
         if let Some(v) = data.get(k).and_then(Value::as_str) {
             out.push_str(&format!(" {k}={v}"));
         }
+    }
+    if let Some(v) = data.get("values").filter(|v| v.is_object()) {
+        out.push_str(&format!(" values={v}"));
     }
     out
 }

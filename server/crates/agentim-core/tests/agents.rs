@@ -336,6 +336,20 @@ async fn keys_made_by_another_process_are_found(db: TestDb) {
     let r2 = cli.create_agent(&owner, "second").await.unwrap();
     let key2 = r2["key"].as_str().unwrap().to_string();
     assert!(server.authenticate(&key).is_none(), "not in memory yet");
+    // People add an agent made elsewhere before it ever connects.
+    let a = Conn::new(&server, &alice);
+    let g = a
+        .ok(json!({"op": "create_conv", "kind": "group", "title": "g", "members": ["second"]}))
+        .await["conv_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    a.ok(json!({"op": "add_member", "conv_id": g, "user_id": r["agent"]["id"]}))
+        .await;
+    assert_eq!(
+        code(&a.call(json!({"op": "create_conv", "kind": "group", "title": "g", "members": ["nobody-here"]})).await),
+        "not_found"
+    );
     let (u, _) = server
         .authenticate_or_load(&key)
         .await

@@ -86,7 +86,7 @@ MCP 和 Agent API 提供的操作（同一份清单，CI 检查两边一致）�
 | MCP 服务 | `POST /mcp`，按 2026-07-28 规范（无状态：每个请求在 `_meta` 和 `MCP-Protocol-Version` 头里带版本，`Mcp-Method`、`Mcp-Name` 头必须和请求体一致，不一致 `400` + `-32020`；不支持的版本 `400` + `-32022` 并列出支持的版本；必须实现 `server/discover`；未知方法 `404` + `-32601`；`GET`、`DELETE` 返回 `405`；不发会话 ID）。同时兼容老客户端（2025-03-26 到 2025-11-25 的 `initialize` 握手，无会话 ID），因为现在大多数 MCP 客户端还是老版本。只回 `application/json`，不用 SSE |
 | MCP 认证 | `Authorization: Bearer <Agent 密钥>`；没有或无效 `401`（带 `WWW-Authenticate: Bearer`）；**人的令牌 `403`**：通过 MCP 发出的内容来自模型，必须标为 AI（EU AI Act 第 50 条），不能冒充人。带了不允许的 `Origin` 返回 `403`（防 DNS 重绑定）|
 | Agent 开会话（D47 ①） | Agent 可以开单聊、建群、往群里拉人，但**只能找已经有关系的人**：自己的负责人、同一个负责人的其他 Agent、已经和它在同一个会话里的人或 Agent；其他人 `forbidden`（防止 Agent 冷启动骚扰，和用户目录的可见规则一致）。拉黑照常生效。Agent 建的群，**群主是它的负责人**（自动成为成员），Agent 是管理员：人始终对 Agent 建的群负责、能管理它（EU AI Act 人工监督）。单聊不自动加负责人，负责人用 `observe` 代看。每个 Agent 建会话有速率上限（`agents.conversations_per_hour`，默认 60），超出 `rate_limited` |
-| MCP 工具（这一步） | `whoami`、`list_conversations`、`get_updates`、`send_message`（带 `client_msg_id` 重试不重复）、`edit_message`、`recall_message`、`find_user`、`open_direct`、`create_group`、`add_member`；L3 加了 `request_human`、`get_request`、`cancel_request`；L4 加了 `create_task`、`update_task`、`claim`、`release_claim`、`floor_grant`、`floor_release`，`send_message` 加了信封；L5 加了 `get_history`、`get_context`、`search`、`put_summary` 和检查点 `state_get`、`state_put`、`state_list`、`state_delete` |
+| MCP 工具（这一步） | `whoami`、`list_conversations`、`get_updates`、`send_message`（带 `client_msg_id` 重试不重复）、`edit_message`、`recall_message`、`find_user`、`open_direct`、`create_group`、`add_member`；L3 加了 `request_human`、`get_request`、`cancel_request`；L4 加了 `create_task`、`update_task`、`claim`、`release_claim`、`floor_grant`、`floor_release`，`send_message` 加了信封；L5 加了 `get_history`、`get_context`、`search`、`put_summary` 和检查点 `state_get`、`state_put`、`state_list`、`state_delete`；L6 加了 `handoff`、`send_card`、`progress` 和 `send_message` 的 `sources` |
 | `get_updates` | 就是同步（同一个设备位置、同样的可见规则、分批），返回的事件在同一次调用里确认：工具结果交给了模型就算送达。如果响应在路上丢了，这些事件可以通过 L5 的历史接口再读到。同一把密钥的并发调用在节点内排队，每个事件只交出一次；被移出、解散各只告诉一次（按设备记住） |
 | 工具出错 | 业务错误放在工具结果里（`isError: true`，文字是"错误码: 原因"，`structuredContent.error` 里是 `code` 和 `message`），模型能看懂并改正；未知工具、参数结构不对是 JSON-RPC 错误 `-32602` |
 | 限流 | 每个 Agent 密钥的 MCP 调用令牌桶（`mcp.rate_per_second` 默认 5，`mcp.burst` 默认 20），超出返回工具错误 `rate_limited`；发消息仍受现有的 Agent 护栏 |
@@ -95,6 +95,18 @@ MCP 和 Agent API 提供的操作（同一份清单，CI 检查两边一致）�
 **秒迁移**：新环境用新密钥连上来，同步位置、历史、状态都在服务端，接着干；旧密钥吊销。跨服务器用 Agent 包（[09 §6.4](09-agent-communication.md)）。
 
 **随时销毁**：负责人或管理员一键销毁：吊销凭据、断开连接、取消进行中的流和任务、删除它的工作日志、检查点、摘要，销毁它的数据密钥；它在共享会话里发过的消息属于会话记录，按会话的保留期处理（可配置为一起删除）。销毁写审计，不可撤销。
+
+### 5.2 第二步（L7，AgentIM Lite）：Agent SDK（Python、TS）和端到端验证
+
+| 方面 | 做法 |
+|---|---|
+| 形式 | 和服务端 SDK 一样**没有依赖**：TS 版是 `sdk/agent-node`（`.mjs` + 类型声明，Node 22 自带 WebSocket）；Python 版是 `sdk/agent-python`（3.9+，自带一个最小的 WebSocket 客户端，只用标准库 `asyncio`）。都用 Agent 密钥连接 `/ws` |
+| 收消息 | 连上后先 `hello`，再按 [08](08-sync-and-client.md) 同步：分批拉、处理完一批再确认，所以处理器抛错或进程崩溃时这一批会重新给（**至少一次**；用事件的 `seq` 去重）。之后的推送同样处理。断线自动重连（退避 0.5–30 秒），重连后从服务端记住的位置继续，不漏不乱 |
+| 处理器 | `on_message`（只给 `wake` 为真的消息，即点名它、回复它、按接收方式该它处理的）、`on_event`（所有事件）、`on_card_response`、`on_handback`；处理器里拿到的 `ctx` 能直接 `reply`（带 `reply_to`）、`stream`（流式回复：`append`、结束、出错时自动取消）、`progress` |
+| 操作 | 发消息（含信封 `to` / `topics` / `intent` / `refs` / `sources`）、发卡片、请人决定并等待结果（`ask_human`）、转人工、读历史 / 上下文 / 搜索、写摘要、检查点（带版本的读写）、抢单、任务状态；错误统一抛 `AgentIMError(code, message)`，`code` 和协议一致 |
+| AI 标记 | SDK 发出的所有内容由服务端标为 AI（`sender_type: agent`），SDK 不提供冒充人的方式 |
+| 开放 API | `/v1` 的发消息接口加上信封字段 `to`、`topics`、`intent`、`refs`、`sources`（09 §10.1 里说好随 L7 加） |
+| 端到端验证 | `sdk/agent_e2e.sh`：起一个真实服务端，用 CLI 建两个 Agent（Python 一个、TS 一个），一个人通过 WebSocket 和它们对话：点名后流式回复完整到达；卡片发出、人点按钮、Agent 收到并回复；Agent 请人决定、人批准、Agent 拿到结果；检查点读写和版本冲突；读上下文；两个 Agent 用 `to` 互相点名一来一回；转人工后人交回、Agent 被唤醒；处理器抛错后同一条消息重新交给它（至少一次）；服务端重启后 Agent 自动重连并继续收到新消息。CI 在 Linux 和 Windows 上每次推送都跑 |
 
 ## 6. 模型网关（你的要求：网关要有；以后做模型消息传递）
 

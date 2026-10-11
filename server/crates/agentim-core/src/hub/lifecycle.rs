@@ -215,3 +215,35 @@ impl Hub {
         Ok(())
     }
 }
+
+impl Hub {
+    /// Feedback people gave an agent's messages (docs/03 §9.6.1.1): totals
+    /// and the latest entries, for its owner.
+    pub(super) async fn list_feedback(
+        &self,
+        me: &User,
+        agent_id: &str,
+        limit: Option<i64>,
+    ) -> ApiResult<Value> {
+        let agent = self.live_agent(me, agent_id)?;
+        let limit = limit.unwrap_or(20);
+        if !(1..=100).contains(&limit) {
+            return Err(err("bad_request", "limit must be 1..100"));
+        }
+        let (mut up, mut down, mut items) = (0, 0, vec![]);
+        for s in &self.inner.shards {
+            let a = agent.id.clone();
+            let (u, d, it) = self
+                .read(s, move |db| {
+                    Box::pin(async move { db.feedback_of(&a, limit).await })
+                })
+                .await?;
+            up += u;
+            down += d;
+            items.extend(it);
+        }
+        items.sort_by(|a, b| b["created_at"].as_i64().cmp(&a["created_at"].as_i64()));
+        items.truncate(limit as usize);
+        Ok(json!({"agent_id": agent.id, "up": up, "down": down, "items": items}))
+    }
+}

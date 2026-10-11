@@ -327,6 +327,21 @@ AgentIM 自己作为一个 MCP 服务器，**按 2026-07-28 规范（无状态�
 | 引用来源 | Agent 消息可以带来源列表（标题、链接、摘录） | 各 AI 助手 |
 | 反馈 | 对 Agent 消息点赞 / 点踩 + 原因，关联追踪 ID，供评估使用 | 各 AI 助手、LangSmith |
 
+#### 9.6.1.1 实现（L6，AgentIM Lite，已实现）
+
+分五部分，每部分单独测试、提交。错误码按项目规则，被拒绝的请求不留痕迹。
+
+| 部分 | 做法 |
+|---|---|
+| L6a 转人工 | Agent 调用 `handoff {conv_id, to?, note}`：`to` 是会话里的一个人（默认它的负责人，负责人不在会话里时必须指定），`note` 是交接说明（1 字节–4KB）。效果和"接管"一样（复用同一个记录）：Agent 在这个会话里发消息、开始流式回复返回 `taken_over`，进行中的流式回复被取消，不再被唤醒；会话里出现 `agent.state`（`taken_over`，带 `handoff: true`、交接说明、接手的人），接手的人被唤醒、待办里能看到。接手的人或负责人用 `handback {conv_id, agent_id, note?}` 交回：`agent.state`（`active`，带说明），Agent 被唤醒。已经被接管时再转 `conflict`；人调用、`to` 不是会话里的人（不存在、不是成员、是 Agent）都是 `bad_request`。被停下、被接管、转人工的 Agent 都不被唤醒 |
+| L6b 结构化消息 | 消息类型 `agentim.card`（`agentim.` 前缀是保留的，别的自定义类型不能冒充），`text` 是不支持的客户端显示的降级文字（必填），`payload` 是声明式 JSON（不执行脚本）：`{title?, blocks: [...], once?}`，组件只有 `text`（文字）、`buttons`（1–10 个按钮，每个 `{id, label, style?: primary/danger}`）、`form`（1–10 个字段 `{id, label, type: text/number/select/checkbox, required?, options?, max?}` 和提交按钮文字）；最多 20 个组件、整张卡片 16KB、ID 是 1–64 个 `a-z0-9_-` 且在卡片内唯一、标签 1–100 字节。成员用 `respond {msg_id, block_id, action? | values?}` 回应：按钮给 `action`，表单给 `values`（必填项、数字、选项、长度都检查）；发卡片的人自己不能回应；每人每张卡片只能回应一次，`once: true` 时整张卡片只接受第一个回应（之后 `conflict`）；已撤回的卡片 `bad_request`。回应写进主日志（`card.response`），唤醒发卡片的 Agent |
+| L6c 进度 | Agent 用 `progress {conv_id, msg_id?, kind, text, data?}` 报告进度：`kind` 是 `thinking` / `tool_call` / `tool_result` / `plan` / `step` / `error`，`text` 1 字节–4KB，`data` 是 JSON（≤ 8KB），`msg_id` 可以挂在它自己的一条消息（通常是流式回复）上。写成侧信道事件（`progress`），会话成员都能收到、同步，但不算未读、不唤醒任何人、不进主日志；每个 Agent 每个会话每秒最多 10 条（超出 `rate_limited`） |
+| L6d 引用来源 | 发消息时信封可以带 `sources`（1–20 个 `{title, url, excerpt?}`：标题 1–200 字节，`url` 是 http / https 且 ≤ 2048 字节，摘录 ≤ 500 字节），加密存放、随消息下发，草稿保留 |
+| L6e 反馈 | 成员用 `feedback {msg_id, rating: up / down / null, reason?}` 对 **Agent 的消息**点赞、点踩或撤销（理由 ≤ 500 字节）；对人的消息、对自己的消息 `bad_request`；每人每条一个，改成别的会更新，和现在一样时什么都不做（不写事件）。反馈只通知 Agent 和它的负责人（侧信道 `feedback`），不进主日志；负责人用 `list_feedback {agent_id, limit?}`（1–100，默认 20）看汇总（赞、踩数）和最近的反馈；理由加密存放 |
+| AI 标记（§9.6.2） | 已有：`sender_type` 由服务端写，流式回复从开始就带，批准的草稿带批准人和是否修改。这一步只补测试；SDK 的默认 AI 标识随 L7 |
+| 网页 | 卡片（按钮、表单，回应过的变灰）、来源链接、进度、Agent 消息上的 👍 👎、转人工和交回的提示，接手的人在提示旁有"交回"按钮；演示里的 Aria 支持 `/card` |
+| MCP | `handoff`、`send_message` 的 `sources`、`send_card`（发卡片）、`progress`；回应和反馈是人做的，不给 Agent 工具；`get_updates` 里卡片回应标为"→ for you" |
+
 ### 9.6.2 AI 标记（EU AI Act 第 50 条，2026-08-02 已生效）
 
 - **现状**：每条消息的 `sender_type` 由服务端写入，Agent 不能冒充人；客户端协议、开放 API、Webhook 都带着它，满足"机器可读"的基本要求。

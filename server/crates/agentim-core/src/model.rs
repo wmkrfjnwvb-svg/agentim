@@ -314,6 +314,9 @@ pub enum ClientMsg {
         intent: Option<String>,
         #[serde(default)]
         refs: Option<Vec<String>>,
+        /// Sources an answer is based on (docs/03 §9.6.1.1).
+        #[serde(default)]
+        sources: Option<Vec<Value>>,
     },
     Edit {
         msg_id: String,
@@ -620,6 +623,53 @@ pub enum ClientMsg {
         agent_id: String,
         confirm: String,
     },
+    /// An agent hands the conversation to a person; that person or the
+    /// owner hands it back (docs/03 §9.6.1.1).
+    Handoff {
+        conv_id: String,
+        #[serde(default)]
+        to: Option<String>,
+        note: String,
+    },
+    Handback {
+        conv_id: String,
+        agent_id: String,
+        #[serde(default)]
+        note: Option<String>,
+    },
+    /// An agent's progress report (side channel).
+    Progress {
+        conv_id: String,
+        #[serde(default)]
+        msg_id: Option<String>,
+        kind: String,
+        text: String,
+        #[serde(default)]
+        data: Option<Value>,
+    },
+    /// Thumbs up / down / none on an agent's message.
+    Feedback {
+        msg_id: String,
+        #[serde(default)]
+        rating: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// An owner's view of the feedback on an agent.
+    ListFeedback {
+        agent_id: String,
+        #[serde(default)]
+        limit: Option<i64>,
+    },
+    /// A member's response to a card: a button or a filled form.
+    Respond {
+        msg_id: String,
+        block_id: String,
+        #[serde(default)]
+        action: Option<String>,
+        #[serde(default)]
+        values: Option<Value>,
+    },
 }
 
 impl ClientMsg {
@@ -697,6 +747,12 @@ impl ClientMsg {
             ClientMsg::StopAgent { .. } => "stop_agent",
             ClientMsg::ResumeAgent { .. } => "resume_agent",
             ClientMsg::DestroyAgent { .. } => "destroy_agent",
+            ClientMsg::Handoff { .. } => "handoff",
+            ClientMsg::Handback { .. } => "handback",
+            ClientMsg::Respond { .. } => "respond",
+            ClientMsg::Progress { .. } => "progress",
+            ClientMsg::Feedback { .. } => "feedback",
+            ClientMsg::ListFeedback { .. } => "list_feedback",
         }
     }
 
@@ -717,6 +773,9 @@ impl ClientMsg {
             | ClientMsg::History { conv_id, .. }
             | ClientMsg::Context { conv_id, .. }
             | ClientMsg::PutSummary { conv_id, .. }
+            | ClientMsg::Handoff { conv_id, .. }
+            | ClientMsg::Handback { conv_id, .. }
+            | ClientMsg::Progress { conv_id, .. }
             | ClientMsg::Signal { conv_id, .. }
             | ClientMsg::UpdateConv { conv_id, .. }
             | ClientMsg::Pull { conv_id, .. }

@@ -171,6 +171,18 @@ async fn run_agent(hub: Hub, user: User, behavior: Behavior) {
                         .unwrap()
                         .insert(v["msg_id"].as_str().unwrap_or("").into());
                 }
+                // A card answered (docs/03 §9.6.1.1): thank them, with sources.
+                Some("event")
+                    if v["event"]["type"] == "card.response"
+                        && v["event"]["data"]["to"] == json!(client.me().id) =>
+                {
+                    let d = &v["event"]["data"];
+                    let choice = d["action"]
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| d["values"].to_string());
+                    client.call(json!({"op": "send", "conv_id": v["event"]["conv_id"], "client_msg_id": uuid::Uuid::new_v4().to_string(), "text": format!("收到你的选择：{choice}"), "sources": [{"title": "AgentIM 卡片说明", "url": "https://github.com/wmkrfjnwvb-svg/agentim", "excerpt": "声明式卡片，没有脚本"}]})).await;
+                }
                 Some("event") if v["event"]["type"] == "msg.created" => {
                     let msg: MsgView = match serde_json::from_value(v["event"]["msg"].clone()) {
                         Ok(m) => m,
@@ -263,6 +275,13 @@ async fn assistant(
         stream_text(&c, &msg, &t, 120, &cancelled).await;
         return;
     }
+    if text.contains("/card") {
+        c.call(json!({"op": "progress", "conv_id": msg.conv_id, "kind": "thinking", "text": "准备一张卡片"}))
+            .await;
+        c.call(json!({"op": "send", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "reply_to": msg.msg_id, "text": "要继续吗？（是 / 否）", "kind": "agentim.card", "payload": {"title": "要继续吗？", "blocks": [{"type": "text", "text": "选一个，结果会发回给我。"}, {"type": "buttons", "id": "go", "options": [{"id": "yes", "label": "继续", "style": "primary"}, {"id": "no", "label": "算了"}]}]}}))
+            .await;
+        return;
+    }
     if text.contains("/secret") {
         let t = "好的，测试用卡号是 4111 1111 1111 1111，请妥善保管。这段话本应继续很长……";
         stream_text(&c, &msg, t, 60, &cancelled).await;
@@ -302,7 +321,7 @@ async fn assistant(
     if let Some(w) = whisper {
         reply.push_str(&format!("（已收到主人的耳语提示：{w}）"));
     }
-    reply.push_str(" 这条回复是流式生成的：首个片段立即下发，后续片段在服务端按窗口合并推送；生成结束后同一条消息版本号 +1。可以试试 /long、/secret、/stall、/crash。");
+    reply.push_str(" 这条回复是流式生成的：首个片段立即下发，后续片段在服务端按窗口合并推送；生成结束后同一条消息版本号 +1。可以试试 /long、/card、/secret、/stall、/crash。");
     stream_text(&c, &msg, &reply, 45, &cancelled).await;
 }
 

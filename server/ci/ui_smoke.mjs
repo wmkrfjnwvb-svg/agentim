@@ -106,6 +106,20 @@ await shot(bob, '08-group-mention');
 await conv(bob, 'Bob · Aria');
 await say(bob, '私聊 Aria 一句');
 await bob.waitForSelector('.msg.agent.complete', { timeout: 20000 });
+// A card: progress shows on the side, a button answers, the agent replies
+// with a source; feedback on its answer.
+await say(bob, '/card');
+await bob.waitForSelector('button:has-text("继续")', { timeout: 15000 });
+check((await bob.textContent('#msgs')).includes('⚙'), 'agent progress is shown');
+await shot(bob, '08b-card');
+await bob.click('button:has-text("继续")');
+await bob.waitForFunction(() => document.querySelector('#msgs').textContent.includes('收到你的选择：yes'), null, { timeout: 15000 });
+check(await bob.locator('.msg.agent a:has-text("AgentIM 卡片说明")').count() === 1, 'the answer carries its source');
+check(await bob.locator('button:has-text("继续")').last().isDisabled(), 'an answered card cannot be answered again');
+await bob.locator('.msg.agent').last().hover();
+await bob.locator('.msg.agent').last().locator('button:has-text("👍")').click();
+await bob.waitForTimeout(500);
+await shot(bob, '08c-card-answered');
 await conv(alice, 'Bob · Aria');
 check(await alice.isVisible('#observing') && !(await alice.isVisible('#composer')), 'owner observes through the agent read-only');
 await shot(alice, '09-observe');

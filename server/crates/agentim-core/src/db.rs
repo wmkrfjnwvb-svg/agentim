@@ -530,6 +530,8 @@ impl Db<'_> {
                 &["title", "context", "response"],
             ),
             "summaries" => (&["summary_id"], "conv_id", &["text"]),
+            "takeovers" => (&["conv_id", "agent_id"], "conv_id", &["note"]),
+            "feedback" => (&["msg_id", "user_id"], "conv_id", &["reason"]),
             "agent_state" => (
                 &["agent_id", "state_key", "version"],
                 "agent_id",
@@ -897,6 +899,21 @@ impl Db<'_> {
             .bind(id)
             .fetch_optional(&mut *self.c)
             .await?;
+        let Some(r) = r else { return Ok(None) };
+        Ok(Some((
+            row_user(&r)?,
+            r.try_get::<Option<i64>, _>("deactivated_at")?.is_some(),
+        )))
+    }
+
+    /// One user by name and whether it is deactivated.
+    pub async fn user_by_name(&mut self, name: &str) -> ApiResult<Option<(User, bool)>> {
+        let r = sqlx::query(self.d.q(
+            "SELECT id, name, kind, owner_id, unit_id, deactivated_at FROM users WHERE name = ?",
+        ))
+        .bind(name)
+        .fetch_optional(&mut *self.c)
+        .await?;
         let Some(r) = r else { return Ok(None) };
         Ok(Some((
             row_user(&r)?,
@@ -2881,6 +2898,20 @@ impl Db<'_> {
         agent_id: &str,
         by: Option<&str>,
     ) -> ApiResult<Event> {
+        self.set_takeover_with(conv_id, agent_id, by, None, json!({}))
+            .await
+    }
+
+    /// Takes over (`by` Some) or releases an agent in a conversation;
+    /// `note` marks an agent's own handoff. `extra` joins the event data.
+    pub async fn set_takeover_with(
+        &mut self,
+        conv_id: &str,
+        agent_id: &str,
+        by: Option<&str>,
+        note: Option<&str>,
+        extra: Value,
+    ) -> ApiResult<Event> {
         sqlx::query(
             self.d
                 .q("DELETE FROM takeovers WHERE conv_id = ? AND agent_id = ?"),
@@ -2890,26 +2921,55 @@ impl Db<'_> {
         .execute(&mut *self.c)
         .await?;
         if let Some(u) = by {
+            let note = match note {
+                Some(n) => Some(
+                    self.seal(conv_id, &format!("takeovers.note:{conv_id}:{agent_id}"), n)
+                        .await?,
+                ),
+                None => None,
+            };
             sqlx::query(self.d.q(
-                "INSERT INTO takeovers (conv_id, agent_id, by_user, since) VALUES (?, ?, ?, ?)",
+                "INSERT INTO takeovers (conv_id, agent_id, by_user, since, note) VALUES (?, ?, ?, ?, ?)",
             ))
             .bind(conv_id)
             .bind(agent_id)
             .bind(u)
             .bind(now_ms())
+            .bind(note)
             .execute(&mut *self.c)
             .await?;
         }
         let state = if by.is_some() { "taken_over" } else { "active" };
         let actor = by.unwrap_or(agent_id);
-        self.append_event(
-            conv_id,
-            "agent.state",
-            Some(actor),
-            None,
-            json!({"agent_id": agent_id, "state": state, "by": by}),
-        )
-        .await
+        let mut data = json!({"agent_id": agent_id, "state": state, "by": by});
+        if let (Some(d), Some(x)) = (data.as_object_mut(), extra.as_object()) {
+            for (k, v) in x {
+                d.insert(k.clone(), v.clone());
+            }
+        }
+        self.append_event(conv_id, "agent.state", Some(actor), None, data)
+            .await
+    }
+
+    /// Handoffs waiting for a person: (conv, agent, since, note).
+    pub async fn handoffs_to(
+        &mut self,
+        user_id: &str,
+    ) -> ApiResult<Vec<(String, String, i64, String)>> {
+        let rows = sqlx::query(self.d.q(
+            "SELECT conv_id, agent_id, since, note FROM takeovers WHERE by_user = ? AND note IS NOT NULL ORDER BY since",
+        ))
+        .bind(user_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        self.preload(&rows, &["note"]).await?;
+        let mut out = vec![];
+        for r in &rows {
+            let (c, a): (String, String) = (r.try_get(0)?, r.try_get(1)?);
+            let note = dec(self.cx, r, "note", &format!("takeovers.note:{c}:{a}"))?;
+            out.push((c, a, r.try_get(2)?, note));
+        }
+        Ok(out)
     }
 
     // --------------------------------------------------------------- audit
@@ -3202,6 +3262,170 @@ impl Db<'_> {
         Ok((out, more))
     }
 
+    // ------------------------------------- cards (docs/03 §9.6.1.1)
+
+    pub async fn card_responses(&mut self, msg_id: &str) -> ApiResult<i64> {
+        Ok(sqlx::query(
+            self.d
+                .q("SELECT COUNT(*) FROM card_responses WHERE msg_id = ?"),
+        )
+        .bind(msg_id)
+        .fetch_one(&mut *self.c)
+        .await?
+        .try_get(0)?)
+    }
+
+    /// Records a member's response; false when they already responded.
+    pub async fn put_card_response(
+        &mut self,
+        msg_id: &str,
+        conv_id: &str,
+        user_id: &str,
+    ) -> ApiResult<bool> {
+        let seen = sqlx::query(
+            self.d
+                .q("SELECT 1 FROM card_responses WHERE msg_id = ? AND user_id = ?"),
+        )
+        .bind(msg_id)
+        .bind(user_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        if seen.is_some() {
+            return Ok(false);
+        }
+        sqlx::query(self.d.q(
+            "INSERT INTO card_responses (msg_id, user_id, conv_id, created_at) VALUES (?, ?, ?, ?)",
+        ))
+        .bind(msg_id)
+        .bind(user_id)
+        .bind(conv_id)
+        .bind(now_ms())
+        .execute(&mut *self.c)
+        .await?;
+        Ok(true)
+    }
+
+    // ----------------------------------- feedback (docs/03 §9.6.1.1)
+
+    /// A person's current feedback on a message: (rating, reason).
+    pub async fn feedback(
+        &mut self,
+        msg_id: &str,
+        user_id: &str,
+    ) -> ApiResult<Option<(String, Option<String>)>> {
+        let rows = sqlx::query(
+            self.d
+                .q("SELECT rating, reason FROM feedback WHERE msg_id = ? AND user_id = ?"),
+        )
+        .bind(msg_id)
+        .bind(user_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        self.preload(&rows, &["reason"]).await?;
+        let Some(r) = rows.first() else {
+            return Ok(None);
+        };
+        Ok(Some((
+            r.try_get(0)?,
+            dec_opt(
+                self.cx,
+                r,
+                "reason",
+                &format!("feedback.reason:{msg_id}:{user_id}"),
+            )?,
+        )))
+    }
+
+    /// Sets (Some) or clears (None) a person's feedback on a message.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_feedback(
+        &mut self,
+        msg_id: &str,
+        user_id: &str,
+        conv_id: &str,
+        agent_id: &str,
+        rating: Option<&str>,
+        reason: Option<&str>,
+    ) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("DELETE FROM feedback WHERE msg_id = ? AND user_id = ?"),
+        )
+        .bind(msg_id)
+        .bind(user_id)
+        .execute(&mut *self.c)
+        .await?;
+        if let Some(r) = rating {
+            let reason = match reason {
+                Some(x) => Some(
+                    self.seal(conv_id, &format!("feedback.reason:{msg_id}:{user_id}"), x)
+                        .await?,
+                ),
+                None => None,
+            };
+            sqlx::query(self.d.q(
+                "INSERT INTO feedback (msg_id, user_id, conv_id, agent_id, rating, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ))
+            .bind(msg_id)
+            .bind(user_id)
+            .bind(conv_id)
+            .bind(agent_id)
+            .bind(r)
+            .bind(reason)
+            .bind(now_ms())
+            .execute(&mut *self.c)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// An agent's feedback in this database: counts (up, down) and the
+    /// latest `limit` entries.
+    pub async fn feedback_of(
+        &mut self,
+        agent_id: &str,
+        limit: i64,
+    ) -> ApiResult<(i64, i64, Vec<Value>)> {
+        let counts = sqlx::query(
+            self.d
+                .q("SELECT rating, COUNT(*) FROM feedback WHERE agent_id = ? GROUP BY rating"),
+        )
+        .bind(agent_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        let (mut up, mut down) = (0, 0);
+        for r in counts {
+            let k: String = r.try_get(0)?;
+            let n: i64 = r.try_get(1)?;
+            if k == "up" {
+                up = n;
+            } else {
+                down = n;
+            }
+        }
+        let rows = sqlx::query(self.d.q(
+            "SELECT msg_id, user_id, conv_id, rating, reason, created_at FROM feedback WHERE agent_id = ? ORDER BY created_at DESC, msg_id DESC LIMIT ?",
+        ))
+        .bind(agent_id)
+        .bind(limit)
+        .fetch_all(&mut *self.c)
+        .await?;
+        self.preload(&rows, &["reason"]).await?;
+        let mut out = vec![];
+        for r in &rows {
+            let (m, u): (String, String) = (r.try_get(0)?, r.try_get(1)?);
+            out.push(json!({
+                "msg_id": m,
+                "by": u,
+                "conv_id": r.try_get::<String, _>(2)?,
+                "rating": r.try_get::<String, _>(3)?,
+                "reason": dec_opt(self.cx, r, "reason", &format!("feedback.reason:{m}:{u}"))?,
+                "created_at": r.try_get::<i64, _>(5)?,
+            }));
+        }
+        Ok((up, down, out))
+    }
+
     // --------------------- stopping and destroying agents (docs/09 §11.3)
 
     /// Stops or resumes an agent; false when it already was so.
@@ -3271,6 +3495,7 @@ impl Db<'_> {
             ("claims", "user_id"),
             ("summaries", "agent_id"),
             ("floors", "agent_id"),
+            ("takeovers", "agent_id"),
         ] {
             sqlx::query(
                 self.d

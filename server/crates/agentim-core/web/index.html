@@ -288,6 +288,8 @@ function sysText(ev) {
     case 'member.joined': return d.kind === 'agent' ? `🤖 AI Agent「${d.name}」加入了会话（所有者 ${name(d.owner_id)}，读取范围 trigger=${d.trigger}）` : `${d.name} 加入了会话`;
     case 'member.policy': return `${name(d.user_id)} 策略更新：审批=${d.approval ? '开' : '关'}，trigger=${d.trigger}`;
     case 'agent.state':
+      if (d.state === 'taken_over' && d.handoff) return `🙋 ${name(d.from)} 把会话转给了 ${name(d.by)}：${d.note}`;
+      if (d.handback) return `▶ ${name(d.by)} 把会话交回给 ${name(d.agent_id)}${d.note ? '：' + d.note : ''}`;
       if (d.state === 'taken_over') return `🧑‍💼 ${name(d.by)} 接管了 ${name(d.agent_id)}，Agent 暂停发言`;
       if (d.state === 'tripped') return `⛔ 护栏熔断：${name(d.agent_id)}（${d.reason}：${d.detail}）`;
       if (d.state === 'stopped') return `⛔ Agent 已停下：${name(d.agent_id)}（${d.reason}：${d.detail}），等人发言后继续`;
@@ -298,6 +300,7 @@ function sysText(ev) {
     }
     case 'member.removed': return `${name(d.user_id) || d.name} 被移出了会话${d.reason === 'destroyed' ? '（Agent 已销毁）' : ''}`;
     case 'member.left': return `${d.name || name(d.user_id)} 退出了会话`;
+    case 'card.response': return `🗳 ${name(d.by)} 回应了卡片：${d.action || JSON.stringify(d.values)}`;
     case 'msg.claimed': return `✋ ${name(d.by)} 接下了一个请求`;
     case 'msg.released': return `${name(d.by)} 放弃了一个请求`;
     case 'floor.granted': return `🎙 ${name(d.by)} 把发言权给了 ${name(d.agent_id)}`;
@@ -313,11 +316,17 @@ function render() {
   log.order.forEach(id => items.push({ k: log.msgs.get(id).created_seq, s: 0, m: log.msgs.get(id) }));
   log.sys.forEach(ev => items.push({ k: ev.seq, s: 0, sys: ev }));
   // Side-channel items are merged into the timeline by their anchor seq.
-  (S.side[c] || []).filter(e => e.type === 'whisper' || e.type === 'ephemeral').forEach(e => items.push({ k: e.anchor_seq + 0.5, s: e.side_seq, side: e }));
+  (S.side[c] || []).filter(e => e.type === 'whisper' || e.type === 'ephemeral' || e.type === 'progress').forEach(e => items.push({ k: e.anchor_seq + 0.5, s: e.side_seq, side: e }));
   items.sort((a, b) => a.k - b.k || a.s - b.s);
   const mine = (m) => m.sender_id === S.me.id || S.myAgents.some(a => a.id === m.sender_id);
   $('msgs').innerHTML = items.map(it => {
+    if (it.sys && it.sys.type === 'agent.state' && it.sys.data.handoff && it.sys.data.by === S.me.id && takenOver(c, it.sys.data.agent_id, it.sys.seq))
+      return `<div class="sys warn">${esc(sysText(it.sys))} <button class="small" onclick="call({op:'handback',conv_id:'${c}',agent_id:'${esc(it.sys.data.agent_id)}'})">交回</button></div>`;
     if (it.sys) return `<div class="sys ${it.sys.data && (it.sys.data.state === 'tripped' || it.sys.data.state === 'stopped') ? 'warn' : ''}">${esc(sysText(it.sys))}${dbg ? ` <span class="debug">seq ${it.sys.seq}</span>` : ''}</div>`;
+    if (it.side && it.side.type === 'progress') {
+      const d = it.side.data;
+      return `<div class="sys">⚙ ${esc(name(d.agent_id))} · ${esc(d.kind)}：${esc(d.text)}</div>`;
+    }
     if (it.side) {
       const e = it.side, d = e.data;
       const label = e.type === 'whisper' ? `🤫 耳语 → ${esc(name(d.to))}（会话其他人不可见）` : `👁 仅 ${esc(name(d.to))} 可见`;
@@ -330,15 +339,56 @@ function render() {
       acts.push(`<button class="small" onclick="editMsg('${m.msg_id}')">修订</button>`);
       acts.push(`<button class="small" onclick="call({op:'recall',msg_id:'${m.msg_id}'})">撤回</button>`);
     }
+    if (isAgent && !mine(m) && m.state !== 'recalled' && m.state !== 'streaming' && !S.cur.observer_via) {
+      acts.push(`<button class="small" onclick="call({op:'feedback',msg_id:'${m.msg_id}',rating:'up'})">👍</button>`);
+      acts.push(`<button class="small" onclick="call({op:'feedback',msg_id:'${m.msg_id}',rating:'down'})">👎</button>`);
+    }
     const revised = m.version > 1 && !['complete', 'streaming', 'failed', 'cancelled', 'recalled'].includes(m.state);
     return `<div class="msg ${isAgent ? 'agent' : ''} ${m.sender_id === S.me.id ? 'me' : ''} ${m.state}">
       <div class="meta"><b>${esc(m.sender_name)}</b>${isAgent ? '<span class="tag ai">AI</span>' : ''}${st ? `<span class="tag ${st[1]}">${st[0]}${m.state_reason ? '：' + esc(m.state_reason) : ''}</span>` : ''}${revised ? '<span class="tag">已修订</span>' : ''}
       ${dbg ? `<span class="debug">seq ${m.created_seq} · v${m.version} · hop ${m.hop}</span>` : ''}</div>
-      <div class="bubble ${m.state === 'streaming' ? 'cursor' : ''}">${m.state === 'recalled' ? '消息已撤回' : esc(m.content)}</div>
+      <div class="bubble ${m.state === 'streaming' ? 'cursor' : ''}">${m.state === 'recalled' ? '消息已撤回' : (m.kind === 'agentim.card' && m.payload ? cardHtml(m, mine(m)) : esc(m.content))}</div>
+      ${m.envelope && m.envelope.sources && m.state !== 'recalled' ? `<div class="meta">来源：${m.envelope.sources.map(x => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer" title="${esc(x.excerpt || '')}">${esc(x.title)}</a>`).join(' · ')}</div>` : ''}
       <div class="acts">${acts.join('')}</div></div>`;
   }).join('');
   const w = $('msgs-wrap'); if (w.scrollHeight - w.scrollTop - w.clientHeight < 200) w.scrollTop = w.scrollHeight;
   renderPanel();
+}
+
+// Cards are declarative (docs/03 §9.6.1.1): only these components, no scripts.
+function cardHtml(m, own) {
+  const p = m.payload, id = m.msg_id;
+  const answered = (S.logs[S.cur.conv_id].sys || []).filter(e => e.type === 'card.response' && e.data.msg_id === id);
+  const done = answered.some(e => e.data.by === S.me.id) || (p.once && answered.length > 0) || own;
+  const blocks = (p.blocks || []).map(b => {
+    if (b.type === 'text') return `<div>${esc(b.text)}</div>`;
+    if (b.type === 'buttons') return `<div>${b.options.map(o => `<button class="small ${o.style === 'danger' ? 'warn' : ''}" ${done ? 'disabled' : ''} onclick="call({op:'respond',msg_id:'${id}',block_id:'${esc(b.id)}',action:'${esc(o.id)}'})">${esc(o.label)}</button>`).join(' ')}</div>`;
+    if (b.type === 'form') return `<div>${b.fields.map(f => {
+      const fid = `f-${id}-${b.id}-${f.id}`;
+      const input = f.type === 'select' ? `<select id="${fid}"><option value=""></option>${f.options.map(o => `<option>${esc(o)}</option>`).join('')}</select>`
+        : f.type === 'checkbox' ? `<input type="checkbox" id="${fid}">`
+        : `<input id="${fid}" type="${f.type === 'number' ? 'number' : 'text'}" ${f.max ? `maxlength="${f.max}"` : ''}>`;
+      return `<label>${esc(f.label)}${f.required ? ' *' : ''} ${input}</label>`;
+    }).join('<br>')}<br><button class="small" ${done ? 'disabled' : ''} onclick="submitForm('${id}','${esc(b.id)}')">${esc(b.submit)}</button></div>`;
+    return '';
+  }).join('');
+  return `${p.title ? `<b>${esc(p.title)}</b>` : ''}${blocks}${answered.length ? `<div class="meta">已回应 ${answered.length} 次</div>` : ''}`;
+}
+
+async function submitForm(id, block) {
+  const m = S.logs[S.cur.conv_id].msgs.get(id), b = m.payload.blocks.find(x => x.id === block), values = {};
+  for (const f of b.fields) {
+    const el = $(`f-${id}-${block}-${f.id}`);
+    if (f.type === 'checkbox') values[f.id] = el.checked;
+    else if (el.value === '') continue;
+    else values[f.id] = f.type === 'number' ? Number(el.value) : el.value;
+  }
+  await call({ op: 'respond', msg_id: id, block_id: block, values });
+}
+
+// Still handed off: no later agent.state for that agent.
+function takenOver(c, agent, seq) {
+  return !(S.logs[c].sys || []).some(e => e.type === 'agent.state' && e.data.agent_id === agent && e.seq > seq);
 }
 
 async function editMsg(id) {
@@ -384,8 +434,8 @@ function renderPanelInner() {
       <textarea id="d-${d.draft_id}">${esc(d.content)}</textarea>
       <div class="row"><button class="small primary" onclick="approve('${d.draft_id}')">批准发送</button><button class="small" onclick="reject('${d.draft_id}')">拒绝</button></div>
     </div>`).join('') : '<div class="muted">暂无。草稿不占 conv_seq，会话里的其他人看不到。</div>'}</div>`);
-  const notes = conv ? (S.side[conv.conv_id] || []).filter(e => !['whisper', 'ephemeral'].includes(e.type)).slice(-8).reverse() : [];
-  if (notes.length) parts.push(`<div class="section"><h3>侧信道通知（仅你可见）</h3>${notes.map(e => `<div class="log"><b>${esc(e.type)}</b> ${esc(e.data.reason || e.data.code || e.data.state || e.data.content || '')}</div>`).join('')}</div>`);
+  const notes = conv ? (S.side[conv.conv_id] || []).filter(e => !['whisper', 'ephemeral', 'progress'].includes(e.type)).slice(-8).reverse() : [];
+  if (notes.length) parts.push(`<div class="section"><h3>侧信道通知（仅你可见）</h3>${notes.map(e => `<div class="log"><b>${esc(e.type)}</b> ${esc(e.data.reason || e.data.code || e.data.state || e.data.content || e.data.note || e.data.rating || '')}</div>`).join('')}</div>`);
   parts.push(`<div class="section muted"><h3>可以试试</h3>
     · 「Alice · Aria」里随便说一句，看流式回复；发 <code>/long</code> 后点 ■ 停止<br>
     · 发 <code>/secret</code>：流式过程中命中 DLP，整条被替换<br>

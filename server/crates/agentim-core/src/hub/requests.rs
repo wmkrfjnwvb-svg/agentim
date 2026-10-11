@@ -81,15 +81,23 @@ impl Hub {
         let mut items: Vec<(i64, String, Value)> = vec![];
         for s in &self.inner.shards {
             let (a, me_id) = (agents.clone(), me.id.clone());
-            let (requests, drafts) = self
+            let (requests, drafts, handoffs) = self
                 .read(s, move |db| {
                     Box::pin(async move {
                         let q = db.pending_requests_for(&me_id, &a).await?;
                         let d = db.pending_drafts_for(&a).await?;
-                        Ok((q, d))
+                        let h = db.handoffs_to(&me_id).await?;
+                        Ok((q, d, h))
                     })
                 })
                 .await?;
+            for (conv_id, agent_id, since, note) in handoffs {
+                items.push((
+                    since,
+                    format!("{conv_id}/{agent_id}"),
+                    json!({"type": "handoff", "conv_id": conv_id, "agent_id": agent_id, "note": note, "created_at": since}),
+                ));
+            }
             for q in requests {
                 if q.expires_at <= now_ms() {
                     continue;

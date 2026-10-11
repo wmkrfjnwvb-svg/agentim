@@ -101,6 +101,12 @@ pub const OPS: &[&str] = &[
     "stop_agent",
     "resume_agent",
     "destroy_agent",
+    "handoff",
+    "handback",
+    "respond",
+    "progress",
+    "feedback",
+    "list_feedback",
 ];
 
 pub const MAX_CLIENT_FEATURES: usize = 100;

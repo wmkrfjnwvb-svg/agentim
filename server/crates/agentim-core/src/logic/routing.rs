@@ -22,11 +22,16 @@ pub struct EnvelopeIn {
     pub topics: Option<Vec<String>>,
     pub intent: Option<String>,
     pub refs: Option<Vec<String>>,
+    pub sources: Option<Vec<Value>>,
 }
 
 impl EnvelopeIn {
     fn is_empty(&self) -> bool {
-        self.to.is_none() && self.topics.is_none() && self.intent.is_none() && self.refs.is_none()
+        self.to.is_none()
+            && self.topics.is_none()
+            && self.intent.is_none()
+            && self.refs.is_none()
+            && self.sources.is_none()
     }
 }
 
@@ -40,6 +45,48 @@ pub fn valid_topic(t: &str) -> bool {
 
 fn bad(msg: impl Into<String>) -> ApiError {
     err("bad_request", msg)
+}
+
+const MAX_SOURCES: usize = 20;
+
+/// Sources an answer is based on: 1..20 of {title, url, excerpt?}.
+fn check_sources(s: &[Value]) -> ApiResult<Vec<Value>> {
+    let bad_src = || {
+        bad(
+            "sources are 1..20 of {title: 1..200 bytes, url: http(s) up to 2048 bytes, excerpt?: up to 500 bytes}",
+        )
+    };
+    if s.is_empty() || s.len() > MAX_SOURCES {
+        return Err(bad_src());
+    }
+    let mut out = vec![];
+    for x in s {
+        let o = x.as_object().ok_or_else(bad_src)?;
+        if o.keys()
+            .any(|k| !["title", "url", "excerpt"].contains(&k.as_str()))
+        {
+            return Err(bad_src());
+        }
+        let title = o.get("title").and_then(Value::as_str).unwrap_or("");
+        let url = o.get("url").and_then(Value::as_str).unwrap_or("");
+        let excerpt = o.get("excerpt");
+        let ok = !title.is_empty()
+            && title.len() <= 200
+            && !title.contains('\0')
+            && (url.starts_with("https://") || url.starts_with("http://"))
+            && url.len() > 8
+            && url.len() <= 2048
+            && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+            && excerpt.is_none_or(|e| {
+                e.as_str()
+                    .is_some_and(|e| e.len() <= 500 && !e.contains('\0'))
+            });
+        if !ok {
+            return Err(bad_src());
+        }
+        out.push(x.clone());
+    }
+    Ok(out)
 }
 
 impl Ctx<'_, '_> {
@@ -94,6 +141,9 @@ impl Ctx<'_, '_> {
             }
             out["refs"] = json!(r);
         }
+        if let Some(s) = e.sources {
+            out["sources"] = json!(check_sources(&s)?);
+        }
         Ok(Some(out))
     }
 
@@ -126,6 +176,12 @@ impl Ctx<'_, '_> {
                 continue;
             }
             if !wakes(m, mentions, envelope, replied_to.as_deref(), &to) {
+                continue;
+            }
+            // Stopped, taken over or handed off: it is not to act now.
+            if self.sh.stopped.read().unwrap().contains(&m.user_id)
+                || self.db.takeover(conv_id, &m.user_id).await?.is_some()
+            {
                 continue;
             }
             let rank = match to.iter().position(|x| *x == m.user_id) {
