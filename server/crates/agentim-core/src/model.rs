@@ -607,6 +607,19 @@ pub enum ClientMsg {
         key: String,
         version: i64,
     },
+    /// An owner's emergency stop, resume and destroy (docs/09 §11.3).
+    StopAgent {
+        agent_id: String,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    ResumeAgent {
+        agent_id: String,
+    },
+    DestroyAgent {
+        agent_id: String,
+        confirm: String,
+    },
 }
 
 impl ClientMsg {
@@ -681,6 +694,9 @@ impl ClientMsg {
             ClientMsg::StatePut { .. } => "state_put",
             ClientMsg::StateList { .. } => "state_list",
             ClientMsg::StateDelete { .. } => "state_delete",
+            ClientMsg::StopAgent { .. } => "stop_agent",
+            ClientMsg::ResumeAgent { .. } => "resume_agent",
+            ClientMsg::DestroyAgent { .. } => "destroy_agent",
         }
     }
 

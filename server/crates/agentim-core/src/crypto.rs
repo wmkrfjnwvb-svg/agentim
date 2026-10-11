@@ -221,6 +221,14 @@ impl Crypto {
         self.current.lock().unwrap().retain(|(s, _), _| s != scope);
     }
 
+    /// Evicts unwrapped data keys from the cache (after they were deleted).
+    pub fn evict(&self, key_ids: &[String]) {
+        let mut d = self.deks.write().unwrap();
+        for k in key_ids {
+            d.remove(k);
+        }
+    }
+
     pub fn seal(&self, key_id: &str, aad: &str, plain: &str) -> ApiResult<String> {
         let k = self
             .deks

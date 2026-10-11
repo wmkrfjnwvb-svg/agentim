@@ -30,6 +30,7 @@ backend_tests!(
     agents_work_on_tasks,
     agents_read_their_history,
     agents_keep_checkpoints,
+    stopped_and_destroyed_agents_are_refused,
 );
 
 const V: &str = "2026-07-28";
@@ -1579,4 +1580,55 @@ async fn agents_keep_checkpoints(db: TestDb) {
             "{tool} {args}"
         );
     }
+}
+
+/// An owner's stop and destroy reach the MCP endpoint (docs/09 §11.3).
+async fn stopped_and_destroyed_agents_are_refused(db: TestDb) {
+    let mut cfg = single(&db.url);
+    cfg.mcp.burst = 1000.0;
+    let m = serve(cfg).await;
+    let (alice, helper, key, conv) = setup(&m).await;
+    let a = Conn::new(&m.hub, &alice);
+    m.ok(
+        &key,
+        "send_message",
+        json!({"conv_id": conv, "text": "working"}),
+    )
+    .await;
+    a.ok(json!({"op": "stop_agent", "agent_id": helper.id}))
+        .await;
+    for (tool, args) in [
+        ("send_message", json!({"conv_id": conv, "text": "still?"})),
+        ("get_updates", json!({})),
+        ("state_get", json!({"key": "k"})),
+    ] {
+        assert_eq!(m.tool_err(&key, tool, args).await, "conflict", "{tool}");
+    }
+    // It can still ask why.
+    let r = m.tool(&key, "whoami", json!({})).await;
+    assert_eq!(r["structuredContent"]["stopped"], true);
+    assert!(
+        r["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("stopped you")
+    );
+    a.ok(json!({"op": "resume_agent", "agent_id": helper.id}))
+        .await;
+    m.ok(
+        &key,
+        "send_message",
+        json!({"conv_id": conv, "text": "back"}),
+    )
+    .await;
+    a.ok(json!({"op": "destroy_agent", "agent_id": helper.id, "confirm": "helper"}))
+        .await;
+    let (st, _) = m
+        .rpc(
+            &key,
+            "tools/call",
+            json!({"name": "whoami", "arguments": {}}),
+        )
+        .await;
+    assert_eq!(st, 401);
 }

@@ -864,8 +864,9 @@ async fn call_tool(
                 "owner": owner,
                 "limits": {"tool_calls_per_second": cfg.rate_per_second, "burst": cfg.burst},
                 "server": crate::protocol::server_info(hub.edition()),
+                "stopped": hub.is_stopped(&user.id),
             });
-            let text = format!(
+            let mut text = format!(
                 "You are {} ({}), owned by {}.",
                 user.name,
                 user.id,
@@ -874,6 +875,11 @@ async fn call_tool(
                     .and_then(|o| o["name"].as_str())
                     .unwrap_or("nobody")
             );
+            if hub.is_stopped(&user.id) {
+                text.push_str(
+                    " Your owner stopped you: every other tool fails until you are resumed.",
+                );
+            }
             Ok((text, v))
         }
         "list_conversations" => {

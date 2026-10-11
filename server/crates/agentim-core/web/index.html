@@ -296,6 +296,8 @@ function sysText(ev) {
       const st = { submitted: '已提交', working: '进行中', input_required: '等待输入', completed: '已完成', failed: '失败', canceled: '已取消' }[d.state] || d.state;
       return `📋 任务${st}${d.assignee ? '，负责人 ' + name(d.assignee) : ''}（${name(d.by)}）${d.note ? '：' + d.note : ''}`;
     }
+    case 'member.removed': return `${name(d.user_id) || d.name} 被移出了会话${d.reason === 'destroyed' ? '（Agent 已销毁）' : ''}`;
+    case 'member.left': return `${d.name || name(d.user_id)} 退出了会话`;
     case 'msg.claimed': return `✋ ${name(d.by)} 接下了一个请求`;
     case 'msg.released': return `${name(d.by)} 放弃了一个请求`;
     case 'floor.granted': return `🎙 ${name(d.by)} 把发言权给了 ${name(d.agent_id)}`;

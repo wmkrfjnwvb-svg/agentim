@@ -444,6 +444,26 @@ impl Db<'_> {
         Ok(id)
     }
 
+    /// Deletes a scope's data keys, also from the cache: what they sealed
+    /// can no longer be read (crypto-shredding).
+    pub async fn shred_scope(&mut self, scope: &str) -> ApiResult<()> {
+        let ids: Vec<String> =
+            sqlx::query(self.d.q("SELECT key_id FROM data_keys WHERE conv_id = ?"))
+                .bind(scope)
+                .fetch_all(&mut *self.c)
+                .await?
+                .iter()
+                .map(|r| r.try_get(0))
+                .collect::<sqlx::Result<_>>()?;
+        sqlx::query(self.d.q("DELETE FROM data_keys WHERE conv_id = ?"))
+            .bind(scope)
+            .execute(&mut *self.c)
+            .await?;
+        self.cx.drop_scope(scope);
+        self.cx.evict(&ids);
+        Ok(())
+    }
+
     /// Encrypts content (empty strings stay empty; off = plaintext).
     pub async fn seal(&mut self, scope: &str, aad: &str, plain: &str) -> ApiResult<String> {
         if plain.is_empty() || !self.cx.enabled() {
@@ -897,7 +917,7 @@ impl Db<'_> {
     pub async fn count_agents_of(&mut self, owner_id: &str) -> ApiResult<i64> {
         let r = sqlx::query(
             self.d
-                .q("SELECT COUNT(*) FROM users WHERE owner_id = ? AND kind = 'agent'"),
+                .q("SELECT COUNT(*) FROM users WHERE owner_id = ? AND kind = 'agent' AND destroyed_at IS NULL"),
         )
         .bind(owner_id)
         .fetch_one(&mut *self.c)
@@ -3180,6 +3200,88 @@ impl Db<'_> {
             out.push((key, r.try_get(1)?, r.try_get(2)?));
         }
         Ok((out, more))
+    }
+
+    // --------------------- stopping and destroying agents (docs/09 §11.3)
+
+    /// Stops or resumes an agent; false when it already was so.
+    pub async fn set_stopped(&mut self, agent_id: &str, on: bool) -> ApiResult<bool> {
+        let sql = if on {
+            "UPDATE users SET stopped_at = ? WHERE id = ? AND kind = 'agent' AND stopped_at IS NULL AND destroyed_at IS NULL"
+        } else {
+            "UPDATE users SET stopped_at = ? WHERE id = ? AND kind = 'agent' AND stopped_at IS NOT NULL AND destroyed_at IS NULL"
+        };
+        Ok(sqlx::query(self.d.q(sql))
+            .bind(on.then(now_ms))
+            .bind(agent_id)
+            .execute(&mut *self.c)
+            .await?
+            .rows_affected()
+            == 1)
+    }
+
+    /// Agents that are stopped or destroyed: (id, stopped, destroyed).
+    pub async fn agent_flags(&mut self) -> ApiResult<Vec<(String, bool, bool)>> {
+        let rows = sqlx::query(
+            "SELECT id, stopped_at, destroyed_at FROM users WHERE kind = 'agent' AND (stopped_at IS NOT NULL OR destroyed_at IS NOT NULL)",
+        )
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    r.try_get(0)?,
+                    r.try_get::<Option<i64>, _>(1)?.is_some(),
+                    r.try_get::<Option<i64>, _>(2)?.is_some(),
+                ))
+            })
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    /// Marks an agent destroyed (and deactivated); false when it already
+    /// was. Its checkpoints and their data keys are deleted.
+    pub async fn destroy_agent(&mut self, agent_id: &str) -> ApiResult<bool> {
+        let now = now_ms();
+        let n = sqlx::query(self.d.q(
+            "UPDATE users SET destroyed_at = ?, deactivated_at = ?, stopped_at = NULL WHERE id = ? AND kind = 'agent' AND destroyed_at IS NULL",
+        ))
+        .bind(now)
+        .bind(now)
+        .bind(agent_id)
+        .execute(&mut *self.c)
+        .await?
+        .rows_affected();
+        if n != 1 {
+            return Ok(false);
+        }
+        sqlx::query(self.d.q("DELETE FROM agent_state WHERE agent_id = ?"))
+            .bind(agent_id)
+            .execute(&mut *self.c)
+            .await?;
+        self.shred_scope(agent_id).await?;
+        Ok(true)
+    }
+
+    /// What a destroyed agent leaves in a conversation besides its
+    /// messages: drafts, claims, summaries and the floor.
+    pub async fn drop_agent_in_conv(&mut self, conv_id: &str, agent_id: &str) -> ApiResult<()> {
+        for (t, col) in [
+            ("drafts", "agent_id"),
+            ("claims", "user_id"),
+            ("summaries", "agent_id"),
+            ("floors", "agent_id"),
+        ] {
+            sqlx::query(
+                self.d
+                    .q(&format!("DELETE FROM {t} WHERE conv_id = ? AND {col} = ?")),
+            )
+            .bind(conv_id)
+            .bind(agent_id)
+            .execute(&mut *self.c)
+            .await?;
+        }
+        Ok(())
     }
 
     // ------------------------------------- agent history (docs/09 §11.1)

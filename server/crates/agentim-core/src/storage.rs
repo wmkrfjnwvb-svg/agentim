@@ -208,6 +208,9 @@ pub const TABLES: &[Table] = &[
             n("deactivated_at", Big),
             // v3: per-user settings (JSON), e.g. read on one device silences the others.
             n("prefs", Text),
+            // v3: an agent stopped or destroyed by its owner (docs/09 §11.3).
+            n("stopped_at", Big),
+            n("destroyed_at", Big),
         ],
         pk: &["id"],
         indexes: &[

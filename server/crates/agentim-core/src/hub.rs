@@ -25,6 +25,7 @@ type Bucket = (f64, Instant);
 
 mod agents;
 mod history;
+mod lifecycle;
 mod requests;
 mod state;
 pub use agents::MAX_AGENT_KEYS;
@@ -134,6 +135,8 @@ impl Hub {
             users: Default::default(),
             tokens: Default::default(),
             deactivated: Default::default(),
+            stopped: Default::default(),
+            destroyed: Default::default(),
             dir: Default::default(),
             stream_index: Default::default(),
             policy: PolicyChain::default_chain(),
@@ -193,6 +196,7 @@ impl Hub {
             }),
         };
         hub.load().await?;
+        hub.load_agent_flags().await?;
         Ok(hub)
     }
 
@@ -1542,6 +1546,13 @@ impl Hub {
 
     async fn dispatch(&self, sess: &Session, msg: ClientMsg) -> ApiResult<Value> {
         let me = &sess.user;
+        // A stopped agent may still say hello and learn why nothing works.
+        if !matches!(msg, ClientMsg::Hello { .. }) && self.is_stopped(&me.id) {
+            return Err(err(
+                "conflict",
+                "your owner stopped you; wait until you are resumed",
+            ));
+        }
         match msg {
             ClientMsg::Hello {
                 protocol: requested,
@@ -1837,6 +1848,13 @@ impl Hub {
                 limit,
             } => self.state_list(me, prefix, after, limit).await,
             ClientMsg::StateDelete { key, version } => self.state_delete(me, &key, version).await,
+            ClientMsg::StopAgent { agent_id, reason } => {
+                self.stop_agent(me, &agent_id, reason).await
+            }
+            ClientMsg::ResumeAgent { agent_id } => self.resume_agent(me, &agent_id).await,
+            ClientMsg::DestroyAgent { agent_id, confirm } => {
+                self.destroy_agent(me, &agent_id, &confirm).await
+            }
             ClientMsg::Edit { ref msg_id, .. }
             | ClientMsg::Recall { ref msg_id, .. }
             | ClientMsg::Claim { ref msg_id }

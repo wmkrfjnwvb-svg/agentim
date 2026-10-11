@@ -64,6 +64,8 @@ impl Hub {
             out.push(json!({
                 "agent": a,
                 "deactivated": self.is_deactivated(&a.id),
+                "stopped": self.is_stopped(&a.id),
+                "destroyed": self.is_destroyed(&a.id),
                 "keys": keys,
             }));
         }
@@ -76,7 +78,7 @@ impl Hub {
         agent_id: &str,
         revoke_others: bool,
     ) -> ApiResult<Value> {
-        let agent = self.owned_agent(me, agent_id)?;
+        let agent = self.live_agent(me, agent_id)?;
         if self.is_deactivated(&agent.id) {
             return Err(err("conflict", "the agent is deactivated"));
         }
@@ -112,7 +114,7 @@ impl Hub {
         agent_id: &str,
         device_id: &str,
     ) -> ApiResult<Value> {
-        let agent = self.owned_agent(me, agent_id)?;
+        let agent = self.live_agent(me, agent_id)?;
         if !self
             .devices(&agent.id)
             .await?
@@ -190,7 +192,7 @@ impl Hub {
 
     /// An agent the caller owns: unknown ids and people are `not_found`,
     /// somebody else's agent is `forbidden`.
-    fn owned_agent(&self, me: &User, agent_id: &str) -> ApiResult<User> {
+    pub(super) fn owned_agent(&self, me: &User, agent_id: &str) -> ApiResult<User> {
         let a = self
             .inner
             .sh

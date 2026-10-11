@@ -19,6 +19,7 @@ use crate::policy::PolicyChain;
 use crate::registry::{Out, Recip, Registry};
 
 mod history;
+mod lifecycle;
 mod requests;
 mod routing;
 mod state;
@@ -134,6 +135,10 @@ pub struct Shared {
     pub tokens: std::sync::RwLock<HashMap<String, TokenInfo>>,
     /// Users that may not log in or act (open API deactivation).
     pub deactivated: std::sync::RwLock<HashSet<String>>,
+    /// Agents their owners stopped (docs/09 §11.3).
+    pub stopped: std::sync::RwLock<HashSet<String>>,
+    /// Agents their owners destroyed (tombstones).
+    pub destroyed: std::sync::RwLock<HashSet<String>>,
     pub dir: std::sync::RwLock<HashMap<String, DirInfo>>,
     /// Active stream (or streamed draft) id → database index.
     pub stream_index: std::sync::Mutex<HashMap<String, usize>>,
@@ -381,6 +386,31 @@ pub enum Op {
         key: String,
         version: i64,
     },
+    /// The owner stops or resumes an agent (control database), then each
+    /// of its conversations records it (docs/09 §11.3).
+    SetStopped {
+        agent_id: String,
+        on: bool,
+        by: String,
+    },
+    AgentStopped {
+        conv_id: String,
+        agent: User,
+        on: bool,
+        by: String,
+        reason: Option<String>,
+    },
+    /// The owner destroys an agent (control database), then it is taken
+    /// out of each conversation.
+    Destroy {
+        agent_id: String,
+        by: String,
+    },
+    RemoveDestroyed {
+        conv_id: String,
+        agent: User,
+        by: String,
+    },
     /// Read-modify-write of a user's credentials in the writer, so
     /// concurrent logins count failures and TOTP steps exactly.
     Credentials {
@@ -536,6 +566,10 @@ impl Op {
             Op::SetDeactivated { .. } => "set_deactivated",
             Op::StatePut { .. } => "state_put",
             Op::StateDelete { .. } => "state_delete",
+            Op::SetStopped { .. } => "set_stopped",
+            Op::AgentStopped { .. } => "agent_stopped",
+            Op::Destroy { .. } => "destroy",
+            Op::RemoveDestroyed { .. } => "remove_destroyed",
             Op::Credentials { .. } => "credentials",
             Op::EncryptExisting { .. } => "encrypt_existing",
             Op::RewrapKeys { .. } => "rewrap_keys",
@@ -846,6 +880,21 @@ impl Ctx<'_, '_> {
                 self.state_put(&agent_id, &key, &value, version, max_keys)
                     .await
             }
+            Op::SetStopped { agent_id, on, by } => self.set_stopped(&agent_id, on, &by).await,
+            Op::AgentStopped {
+                conv_id,
+                agent,
+                on,
+                by,
+                reason,
+            } => {
+                self.agent_stopped(&conv_id, &agent, on, &by, reason.as_deref())
+                    .await
+            }
+            Op::Destroy { agent_id, by } => self.destroy(&agent_id, &by).await,
+            Op::RemoveDestroyed { conv_id, agent, by } => {
+                self.agent_gone(&conv_id, &agent, &by).await
+            }
             Op::StateDelete {
                 agent_id,
                 key,
@@ -1153,6 +1202,7 @@ impl Ctx<'_, '_> {
 
     async fn client(&mut self, sess: &SessCtx, msg: ClientMsg) -> ApiResult<Value> {
         let me = &sess.user;
+        self.agent_running(me)?;
         if let Some(conv) = msg.conv_id() {
             self.own_conv(conv)?;
         }
@@ -2145,8 +2195,8 @@ impl Ctx<'_, '_> {
             .await?;
         self.emit(ev).await?;
         // The conversation's data keys go too (crypto-shredding).
+        self.db.shred_scope(conv_id).await?;
         self.db.delete_conv_content(conv_id).await?;
-        self.db.cx.drop_scope(conv_id);
         if self.idx == self.sh.control {
             self.db.forget_conv(conv_id).await?;
             // Members' devices learn it is gone at their next sync.
@@ -3009,6 +3059,12 @@ impl Ctx<'_, '_> {
             return Err(err(
                 "conflict",
                 "the agent is taken over; release it before publishing its drafts",
+            ));
+        }
+        if self.sh.stopped.read().unwrap().contains(&agent.id) {
+            return Err(err(
+                "conflict",
+                "the agent is stopped; resume it before publishing its drafts",
             ));
         }
         // An ended task stays silent for agents, drafts included: reopen it

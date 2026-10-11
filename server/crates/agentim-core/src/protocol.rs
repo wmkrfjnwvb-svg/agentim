@@ -98,6 +98,9 @@ pub const OPS: &[&str] = &[
     "state_put",
     "state_list",
     "state_delete",
+    "stop_agent",
+    "resume_agent",
+    "destroy_agent",
 ];
 
 pub const MAX_CLIENT_FEATURES: usize = 100;
