@@ -668,6 +668,8 @@ async fn card_refusals_leave_no_trace(db: TestDb) {
 
 async fn progress_goes_on_the_side(db: TestDb) {
     let hub = open(single(&db.url)).await;
+    let mut slow = single(&db.url);
+    slow.agents.progress_per_second = 1;
     let alice = user(&hub, "alice", UserKind::Human, None).await;
     let bob = user(&hub, "bob", UserKind::Human, None).await;
     let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
@@ -718,20 +720,28 @@ async fn progress_goes_on_the_side(db: TestDb) {
         b.drain().iter().all(|f| f["type"] != "side"),
         "nothing for refusals"
     );
-    // At most 10 a second.
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    let mut limited = 0;
-    for _ in 0..12 {
-        if code(&g.call(p("step", "x")).await) == "rate_limited" {
-            limited += 1;
-        }
-    }
-    assert!(limited >= 1, "the 11th and 12th are refused");
     // 4KB text and 8KB of data are fine.
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let mut edge = p("step", &"x".repeat(4096));
     edge["data"] = json!("d".repeat(8 * 1024 - 2));
     g.ok(edge).await;
+    // The limit (agents.progress_per_second; here 1): the second report
+    // at once is refused and sends nothing, a second later it is fine.
+    drop((g, b));
+    drop(hub);
+    let hub = open(slow).await;
+    let g = Conn::new(&hub, &bot);
+    let mut b = Conn::new(&hub, &bob);
+    g.ok(p("step", "one")).await;
+    assert_eq!(code(&g.call(p("step", "two")).await), "rate_limited");
+    let got = b
+        .drain()
+        .into_iter()
+        .filter(|f| f["type"] == "side" && f["event"]["type"] == "progress")
+        .count();
+    assert_eq!(got, 1);
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    g.ok(p("step", "three")).await;
 }
 
 async fn sources_travel_with_the_message(db: TestDb) {

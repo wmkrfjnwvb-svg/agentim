@@ -139,6 +139,7 @@ impl Hub {
             stopped: Default::default(),
             destroyed: Default::default(),
             progress_buckets: Default::default(),
+            progress_per_second: cfg.agents.progress_per_second as f64,
             dir: Default::default(),
             stream_index: Default::default(),
             policy: PolicyChain::default_chain(),

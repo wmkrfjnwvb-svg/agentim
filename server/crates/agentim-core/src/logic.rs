@@ -141,6 +141,8 @@ pub struct Shared {
     pub stopped: std::sync::RwLock<HashSet<String>>,
     /// Agents their owners destroyed (tombstones).
     pub destroyed: std::sync::RwLock<HashSet<String>>,
+    /// Progress reports allowed per agent per conversation per second.
+    pub progress_per_second: f64,
     /// Progress reports per (agent, conversation): tokens and when.
     pub progress_buckets: std::sync::Mutex<HashMap<(String, String), (f64, std::time::Instant)>>,
     pub dir: std::sync::RwLock<HashMap<String, DirInfo>>,

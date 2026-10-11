@@ -160,7 +160,6 @@ const PROGRESS_KINDS: &[&str] = &[
     "step",
     "error",
 ];
-const PROGRESS_PER_SECOND: f64 = 10.0;
 const DATA_MAX: usize = 8 * 1024;
 const REASON_MAX: usize = 500;
 
@@ -209,14 +208,19 @@ impl Ctx<'_, '_> {
         {
             let now = std::time::Instant::now();
             let mut b = self.sh.progress_buckets.lock().unwrap();
+            let rate = self.sh.progress_per_second;
             let (tokens, at) = b
                 .entry((me.id.clone(), conv_id.to_string()))
-                .or_insert((PROGRESS_PER_SECOND, now));
-            *tokens = (*tokens + now.duration_since(*at).as_secs_f64() * PROGRESS_PER_SECOND)
-                .min(PROGRESS_PER_SECOND);
+                .or_insert((rate, now));
+            *tokens = (*tokens + now.duration_since(*at).as_secs_f64() * rate).min(rate);
             *at = now;
             if *tokens < 1.0 {
-                return Err(err("rate_limited", "at most 10 progress reports a second"));
+                return Err(err(
+                    "rate_limited",
+                    format!(
+                        "at most {rate} progress reports a second (agents.progress_per_second)"
+                    ),
+                ));
             }
             *tokens -= 1.0;
         }
