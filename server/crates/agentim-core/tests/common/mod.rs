@@ -155,6 +155,8 @@ pub fn single(url: &str) -> Config {
         encryption: test_encryption(),
         sync: Default::default(),
         retention: Default::default(),
+        agents: Default::default(),
+        mcp: Default::default(),
     }
 }
 
@@ -192,6 +194,8 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
         encryption: test_encryption(),
         sync: Default::default(),
         retention: Default::default(),
+        agents: Default::default(),
+        mcp: Default::default(),
     }
 }
 

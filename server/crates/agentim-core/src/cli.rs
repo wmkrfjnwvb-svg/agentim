@@ -68,6 +68,41 @@ enum Cmd {
         #[command(subcommand)]
         action: KeyCmd,
     },
+    /// Agents (docs/10-agent-ecosystem.md §5.1). Works while the server
+    /// runs; revoke keys in the app or the open API so connections close.
+    Agent {
+        #[command(subcommand)]
+        action: AgentCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCmd {
+    /// Creates an agent owned by a person and prints its key once, with
+    /// ready-to-paste MCP and WebSocket settings.
+    Create {
+        #[arg(long)]
+        name: String,
+        /// The person responsible for the agent (user name).
+        #[arg(long)]
+        owner: String,
+        /// How agents reach the server, e.g. https://im.example.com
+        /// (default: server.public_url).
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Issues another key for an agent (e.g. for a new environment).
+    Key {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Lists a person's agents and their keys (never the secrets).
+    List {
+        #[arg(long)]
+        owner: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -126,9 +161,13 @@ fn init_logging(format: &str) {
             .json()
             .flatten_event(true)
             .with_current_span(false)
+            .with_writer(std::io::stderr)
             .init();
     } else {
-        tracing_subscriber::fmt().with_env_filter(filter).init();
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init();
     }
 }
 
@@ -273,6 +312,61 @@ pub async fn run(edition: Edition) {
             Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
             Err(e) => {
                 eprintln!("api-key: {} {}", e.code, e.message);
+                std::process::exit(1)
+            }
+        }
+        return;
+    }
+
+    if let Some(Cmd::Agent { action }) = &args.cmd {
+        let owner_of = |name: &str| -> crate::model::ApiResult<crate::model::User> {
+            hub.user_by_name(name)
+                .filter(|u| u.kind == crate::model::UserKind::Human)
+                .ok_or_else(|| {
+                    crate::model::ApiError::new("not_found", format!("no person named {name}"))
+                })
+        };
+        let out = match action {
+            AgentCmd::Create { name, owner, url } => match owner_of(owner) {
+                Ok(o) => hub.create_agent(&o, name).await.map(|mut v| {
+                    v["connect"] =
+                        hub.connect_settings(v["key"].as_str().unwrap_or(""), url.as_deref());
+                    v["note"] = serde_json::json!("store the key now; it is not shown again");
+                    v
+                }),
+                Err(e) => Err(e),
+            },
+            AgentCmd::Key { name, url } => {
+                let agent = hub
+                    .user_by_name(name)
+                    .filter(|u| u.kind == crate::model::UserKind::Agent);
+                match agent.and_then(|a| {
+                    a.owner_id
+                        .clone()
+                        .and_then(|o| hub.user(&o))
+                        .map(|o| (a, o))
+                }) {
+                    Some((a, o)) => hub.agent_key(&o, &a.id, false).await.map(|mut v| {
+                        v["connect"] =
+                            hub.connect_settings(v["key"].as_str().unwrap_or(""), url.as_deref());
+                        v["note"] = serde_json::json!("store the key now; it is not shown again");
+                        v
+                    }),
+                    None => Err(crate::model::ApiError::new(
+                        "not_found",
+                        format!("no agent named {name}"),
+                    )),
+                }
+            }
+            AgentCmd::List { owner } => match owner_of(owner) {
+                Ok(o) => hub.list_agents(&o).await,
+                Err(e) => Err(e),
+            },
+        };
+        match out {
+            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+            Err(e) => {
+                eprintln!("agent: {} {}", e.code, e.message);
                 std::process::exit(1)
             }
         }

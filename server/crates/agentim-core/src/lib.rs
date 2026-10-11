@@ -8,6 +8,7 @@ pub mod edition;
 pub mod guard;
 pub mod hub;
 pub mod logic;
+pub mod mcp;
 pub mod metrics;
 pub mod model;
 pub mod open_api;

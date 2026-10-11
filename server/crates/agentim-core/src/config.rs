@@ -49,6 +49,46 @@ pub struct Config {
     pub sync: SyncFile,
     #[serde(default)]
     pub retention: RetentionFile,
+    /// Agent registration (docs/10-agent-ecosystem.md §5.1).
+    #[serde(default)]
+    pub agents: AgentsConfig,
+    /// The MCP endpoint `/mcp` (docs/10-agent-ecosystem.md §5.1).
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+/// `[agents]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AgentsConfig {
+    /// Agents one person may own.
+    pub max_per_owner: usize,
+}
+
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        AgentsConfig { max_per_owner: 20 }
+    }
+}
+
+/// `[mcp]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct McpConfig {
+    pub enabled: bool,
+    /// Tool calls per agent key (token bucket).
+    pub rate_per_second: f64,
+    pub burst: f64,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        McpConfig {
+            enabled: true,
+            rate_per_second: 5.0,
+            burst: 20.0,
+        }
+    }
 }
 
 /// `[sync]` in the configuration file; days and counts.
@@ -331,6 +371,10 @@ pub struct ServerConfig {
     /// Serve HTTPS / WSS directly.
     #[serde(default)]
     pub tls: Option<TlsConfig>,
+    /// How clients reach this server, e.g. `https://im.example.com`; used in
+    /// the connection settings printed for new agents.
+    #[serde(default)]
+    pub public_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -512,6 +556,8 @@ impl Config {
             encryption: Default::default(),
             sync: Default::default(),
             retention: Default::default(),
+            agents: Default::default(),
+            mcp: Default::default(),
         }
     }
 
@@ -653,6 +699,19 @@ impl Config {
                 "retention.days must be 0 (keep everything) or at least sync.window_days".into(),
             );
         }
+        if !(1..=10_000).contains(&self.agents.max_per_owner) {
+            return Err("agents.max_per_owner must be 1..10000".into());
+        }
+        if !(self.mcp.rate_per_second > 0.0 && self.mcp.burst >= 1.0) {
+            return Err("mcp.rate_per_second must be > 0 and burst >= 1".into());
+        }
+        if let Some(u) = &self.server.public_url
+            && !(u.starts_with("http://") || u.starts_with("https://"))
+        {
+            return Err(format!(
+                "server.public_url: {u:?} is not like https://host[:port]"
+            ));
+        }
         if !(self.open_api.rate_per_second > 0.0 && self.open_api.burst >= 1.0) {
             return Err("open_api.rate_per_second must be > 0 and burst >= 1".into());
         }
@@ -715,6 +774,8 @@ mod tests {
             encryption: Default::default(),
             sync: Default::default(),
             retention: Default::default(),
+            agents: Default::default(),
+            mcp: Default::default(),
         }
     }
 

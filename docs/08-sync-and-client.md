@@ -17,7 +17,7 @@
 | 一条通道 | 调用过 `sync` 的连接，实时推送只按顺序下发（seq 正好接上已下发的位置）；接不上的不推，改发 `resync`，由下一次 `sync` 补齐 | `registry.rs` `in_order` |
 | 起点规则 | 没有位置：设备存在之后加入的会话从可见起点开始，否则按新设备窗口；位置落后于保留期或超过 `max_gap`：重置，响应里带 `reset.from_seq` | `hub/sync.rs` |
 | 新成员历史 | 成员记录 `visible_from`；拉人时 `history` 可选带多少条（≤ `share_max`）；默认人带最近 `member_messages` 条（`member_days` 天内），Agent 不带 | `logic.rs` `add_member` |
-| 移出、解散 | 控制库表 `departures`：被移出的设备同步到移出事件为止；解散只报告一次 `dissolved: true`；重新加入时清除 | `logic.rs`、`hub/sync.rs` |
+| 移出、解散 | 控制库表 `departures`：被移出的设备同步到移出事件为止，`left` 报告到设备的位置越过移出事件为止；解散对每台设备只报告一次 `dissolved: true`（控制库里记下这台设备已知道）；重新加入时清除 | `logic.rs`、`hub/sync.rs` |
 | 设备下线、长期不在线 | 吊销令牌删除这台设备的全部位置；超过 `device_ttl_days` 没确认的位置由定时任务删除 | `hub.rs`、`logic.rs` 定时任务 |
 | 已读、免打扰 | 事件帧带 `notify`；用户设置 `read_silences_others`（默认开）；免打扰 `none / all / mentions`，可设到期时间，同步到用户其他设备（`mute` 帧） | `model.rs` `notified_by` |
 | 限流 | 每个连接的 `sync` 令牌桶，Agent 更严，超出返回 `rate_limited` | `hub/sync.rs` |

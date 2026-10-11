@@ -106,6 +106,16 @@ pub struct TokenInfo {
     pub expires_at: Option<i64>,
 }
 
+impl TokenInfo {
+    pub fn of(t: &crate::db::TokenRow) -> TokenInfo {
+        TokenInfo {
+            user_id: t.user_id.clone(),
+            device_id: t.device_id.clone(),
+            expires_at: t.expires_at,
+        }
+    }
+}
+
 pub struct Shared {
     pub reg: Registry,
     pub users: std::sync::RwLock<HashMap<String, User>>,
@@ -123,6 +133,23 @@ pub struct Shared {
     pub db_names: Vec<String>,
     /// (user, blocked user) pairs, loaded from the control database.
     pub blocks: std::sync::RwLock<std::collections::HashSet<(String, String)>>,
+}
+
+impl Shared {
+    /// Token cache changes of committed writes, in write order.
+    pub fn apply_tokens(&self, outs: &[Out]) {
+        for o in outs {
+            if let Out::Tokens { add, remove, .. } = o {
+                let mut t = self.tokens.write().unwrap();
+                for h in remove {
+                    t.remove(h);
+                }
+                for (h, info) in add {
+                    t.insert(h.clone(), info.clone());
+                }
+            }
+        }
+    }
 }
 
 impl Shared {
@@ -285,10 +312,26 @@ pub enum Op {
     AgentGone(String),
     Barrier,
     // control database
+    /// `owner_cap`: an agent is refused when its owner already has this
+    /// many (checked here, so concurrent creations cannot pass it).
     CreateUser {
         user: User,
+        owner_cap: Option<usize>,
     },
-    IssueToken(crate::db::TokenRow),
+    /// A new device token; `revoke_others` removes every other token of the
+    /// user in the same write (agent key rotation). Returns the revoked
+    /// device ids.
+    IssueToken {
+        row: crate::db::TokenRow,
+        revoke_others: bool,
+        /// Refused (`conflict`) when the user already has this many tokens.
+        max_devices: Option<usize>,
+    },
+    /// Looks up a token unknown to memory (issued by another process) and
+    /// adds it; returns it with its user.
+    LoadToken {
+        hash: String,
+    },
     /// All tokens of a user, or of one device. Returns the removed hashes.
     RevokeTokens {
         user_id: String,
@@ -377,6 +420,13 @@ pub enum Op {
         user_id: String,
         acks: Vec<(String, i64, i64)>,
     },
+    /// A device was told a conversation was dissolved (control database):
+    /// it is not told again.
+    DissolvedSeen {
+        device_id: String,
+        user_id: String,
+        conv_id: String,
+    },
     /// A device logged out (or every device of a user): their positions in
     /// this database go.
     DropDevice {
@@ -443,7 +493,8 @@ impl Op {
             Op::AgentGone(_) => "agent_gone",
             Op::Barrier => "barrier",
             Op::CreateUser { .. } => "create_user",
-            Op::IssueToken(_) => "issue_token",
+            Op::IssueToken { .. } => "issue_token",
+            Op::LoadToken { .. } => "load_token",
             Op::RevokeTokens { .. } => "revoke_tokens",
             Op::TouchToken { .. } => "touch_token",
             Op::UpdateUser { .. } => "update_user",
@@ -465,6 +516,7 @@ impl Op {
             Op::Dissolve { .. } => "dissolve",
             Op::MemberIndexRemove { .. } => "member_index_remove",
             Op::AckCursors { .. } => "ack_cursors",
+            Op::DissolvedSeen { .. } => "dissolved_seen",
             Op::DropDevice { .. } => "drop_device",
             Op::Departure { .. } => "departure",
             Op::Rejoined { .. } => "rejoined",
@@ -488,6 +540,18 @@ fn err(code: &'static str, msg: impl Into<String>) -> ApiError {
 /// Owners and admins manage members and moderate messages.
 fn is_manager(role: &str) -> bool {
     role == "owner" || role == "admin"
+}
+
+/// The sender's id of a message (retries reuse it): 1..128 bytes, as on
+/// the open API.
+pub fn check_client_msg_id(id: &str) -> ApiResult<()> {
+    if id.is_empty() || id.len() > 128 || id.contains('\0') {
+        return Err(ApiError::new(
+            "bad_request",
+            "client_msg_id must be 1..128 bytes",
+        ));
+    }
+    Ok(())
 }
 
 /// Message text: 1..64KB, and no NUL (PostgreSQL cannot store it).
@@ -636,19 +700,83 @@ impl Ctx<'_, '_> {
                 Ok(json!({}))
             }
             Op::Barrier => Ok(json!({})),
-            Op::CreateUser { user } => {
+            Op::CreateUser { user, owner_cap } => {
+                if self.db.name_taken(&user.name).await? {
+                    return Err(ApiError::new("conflict", "name taken"));
+                }
+                if let (Some(cap), Some(owner)) = (owner_cap, &user.owner_id)
+                    && user.kind == UserKind::Agent
+                    && self.db.count_agents_of(owner).await? >= cap as i64
+                {
+                    return Err(ApiError::new(
+                        "conflict",
+                        format!("the owner already has {cap} agents (agents.max_per_owner)"),
+                    ));
+                }
                 self.db.insert_user(&user).await?;
                 Ok(json!({}))
             }
-            Op::IssueToken(t) => {
-                self.db.insert_token(&t).await?;
-                Ok(json!({}))
+            Op::IssueToken {
+                row,
+                revoke_others,
+                max_devices,
+            } => {
+                if let Some(max) = max_devices
+                    && !revoke_others
+                    && self.db.devices(&row.user_id).await?.len() >= max
+                {
+                    return Err(ApiError::new(
+                        "conflict",
+                        format!("at most {max} keys; revoke one first"),
+                    ));
+                }
+                self.db.insert_token(&row).await?;
+                let mut remove = vec![];
+                let mut kick = vec![];
+                if revoke_others {
+                    for d in self.db.devices(&row.user_id).await? {
+                        if d.device_id != row.device_id {
+                            remove.extend(
+                                self.db
+                                    .delete_tokens(&row.user_id, Some(&d.device_id))
+                                    .await?,
+                            );
+                            kick.push((row.user_id.clone(), Some(d.device_id)));
+                        }
+                    }
+                }
+                let revoked: Vec<String> = kick.iter().filter_map(|k| k.1.clone()).collect();
+                self.out.push(Out::Tokens {
+                    add: vec![(row.hash.clone(), TokenInfo::of(&row))],
+                    remove,
+                    kick,
+                });
+                Ok(json!({"revoked": revoked}))
+            }
+            Op::LoadToken { hash } => {
+                let Some(t) = self.db.token_by_hash(&hash).await? else {
+                    return Err(ApiError::new("not_found", "token"));
+                };
+                let Some((user, off)) = self.db.user_by_id(&t.user_id).await? else {
+                    return Err(ApiError::new("not_found", "user"));
+                };
+                self.out.push(Out::Tokens {
+                    add: vec![(t.hash.clone(), TokenInfo::of(&t))],
+                    remove: vec![],
+                    kick: vec![],
+                });
+                Ok(json!({"user": user, "deactivated": off}))
             }
             Op::RevokeTokens { user_id, device_id } => {
                 let gone = self
                     .db
                     .delete_tokens(&user_id, device_id.as_deref())
                     .await?;
+                self.out.push(Out::Tokens {
+                    add: vec![],
+                    remove: gone.clone(),
+                    kick: vec![(user_id, device_id)],
+                });
                 Ok(json!({"hashes": gone}))
             }
             Op::TouchToken { hash } => {
@@ -823,6 +951,16 @@ impl Ctx<'_, '_> {
                 user,
             } => self.remove_member(&conv_id, &actor, &user).await,
             Op::Dissolve { conv_id, actor } => self.dissolve(&conv_id, &actor).await,
+            Op::DissolvedSeen {
+                device_id,
+                user_id,
+                conv_id,
+            } => {
+                self.db
+                    .ack_cursor(&device_id, &conv_id, &user_id, i64::MAX, 0)
+                    .await?;
+                Ok(json!({}))
+            }
             Op::AckCursors {
                 device_id,
                 user_id,
@@ -965,6 +1103,7 @@ impl Ctx<'_, '_> {
                 on_behalf_of,
                 to_user,
             } => {
+                check_client_msg_id(&client_msg_id)?;
                 self.send(
                     me,
                     &conv_id,
@@ -1062,6 +1201,7 @@ impl Ctx<'_, '_> {
                 reply_to,
                 causation_id,
             } => {
+                check_client_msg_id(&client_msg_id)?;
                 self.stream_start(me, &conv_id, &client_msg_id, reply_to, causation_id)
                     .await
             }

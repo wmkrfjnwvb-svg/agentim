@@ -215,7 +215,13 @@ impl Client {
     /// until nothing more is owed.
     async fn pull_all(&self, conv: &str) -> Vec<Value> {
         loop {
-            let r = self.ok(json!({"op": "sync"})).await;
+            let r = self.call(json!({"op": "sync"})).await.expect("sync");
+            if r["error"]["code"] == "rate_limited" {
+                // A client waits and syncs again.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            assert_eq!(r["ok"], true, "sync failed: {r}");
             let mut acks = vec![];
             for c in r["convs"].as_array().unwrap() {
                 for e in c["events"].as_array().unwrap() {

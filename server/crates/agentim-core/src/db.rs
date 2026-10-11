@@ -759,6 +759,52 @@ impl Db<'_> {
         Ok(())
     }
 
+    /// One token by hash (tokens issued by another process or node).
+    pub async fn token_by_hash(&mut self, hash: &str) -> ApiResult<Option<TokenRow>> {
+        let r = sqlx::query(self.d.q("SELECT hash, user_id, device_id, device_name, platform, issued_by, created_at, expires_at, last_seen FROM tokens WHERE hash = ?"))
+            .bind(hash)
+            .fetch_optional(&mut *self.c)
+            .await?;
+        Ok(r.as_ref().map(row_token).transpose()?)
+    }
+
+    /// One user and whether it is deactivated.
+    pub async fn user_by_id(&mut self, id: &str) -> ApiResult<Option<(User, bool)>> {
+        let r =
+            sqlx::query(self.d.q(
+                "SELECT id, name, kind, owner_id, unit_id, deactivated_at FROM users WHERE id = ?",
+            ))
+            .bind(id)
+            .fetch_optional(&mut *self.c)
+            .await?;
+        let Some(r) = r else { return Ok(None) };
+        Ok(Some((
+            row_user(&r)?,
+            r.try_get::<Option<i64>, _>("deactivated_at")?.is_some(),
+        )))
+    }
+
+    /// Whether a user name is taken.
+    pub async fn name_taken(&mut self, name: &str) -> ApiResult<bool> {
+        Ok(sqlx::query(self.d.q("SELECT id FROM users WHERE name = ?"))
+            .bind(name)
+            .fetch_optional(&mut *self.c)
+            .await?
+            .is_some())
+    }
+
+    /// Agents a person owns.
+    pub async fn count_agents_of(&mut self, owner_id: &str) -> ApiResult<i64> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT COUNT(*) FROM users WHERE owner_id = ? AND kind = 'agent'"),
+        )
+        .bind(owner_id)
+        .fetch_one(&mut *self.c)
+        .await?;
+        Ok(r.try_get::<i64, _>(0)?)
+    }
+
     pub async fn tokens_all(&mut self) -> ApiResult<Vec<TokenRow>> {
         let rows = sqlx::query("SELECT hash, user_id, device_id, device_name, platform, issued_by, created_at, expires_at, last_seen FROM tokens")
             .fetch_all(&mut *self.c)

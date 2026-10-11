@@ -51,7 +51,8 @@ impl Hub {
         let device_start = self.device_start(sess).await?;
         let silenced = self.read_silences(me).await?;
         let me_id = me.id.clone();
-        let (convs, departures) = self
+        let dev = sess.device_id.clone();
+        let (convs, departures, told) = self
             .read(self.control(), move |db| {
                 Box::pin(async move {
                     let ids = vec![me_id.clone()];
@@ -62,7 +63,16 @@ impl Hub {
                         .map(|(c, _)| c)
                         .collect();
                     let deps = db.departures(&me_id).await?;
-                    Ok((convs, deps))
+                    // Dissolutions this device was already told about.
+                    let mut told = std::collections::HashSet::new();
+                    if let Some(d) = &dev {
+                        for (c, _, dissolved) in &deps {
+                            if *dissolved && db.cursor(d, c).await?.is_some() {
+                                told.insert(c.clone());
+                            }
+                        }
+                    }
+                    Ok((convs, deps, told))
                 })
             })
             .await?;
@@ -73,8 +83,17 @@ impl Hub {
             convs.into_iter().map(|c| (c, None)).collect();
         for (conv, seq, dissolved) in departures {
             if dissolved {
-                if sh.reg.sync_sent(sess.sid, &conv).0 != Some(REPORTED) {
+                if sh.reg.sync_sent(sess.sid, &conv).0 != Some(REPORTED) && !told.contains(&conv) {
                     sh.reg.sync_mark(sess.sid, &conv, REPORTED, REPORTED);
+                    if let Some(d) = &sess.device_id {
+                        self.control()
+                            .call(Op::DissolvedSeen {
+                                device_id: d.clone(),
+                                user_id: me.id.clone(),
+                                conv_id: conv.clone(),
+                            })
+                            .await?;
+                    }
                     out.push(json!({"conv_id": conv, "dissolved": true}));
                 }
                 continue;
@@ -207,11 +226,14 @@ impl Hub {
             budget -= upto - (start - 1);
             let has_more = upto < head;
             more |= has_more;
+            // A departure is reported until the device's position passes it
+            // (acknowledged, or already sent on this connection).
+            let told = base.is_some_and(|b| b >= head);
             if events.is_empty()
                 && side.is_empty()
                 && reset.is_none()
                 && !has_more
-                && st.until.is_none()
+                && (st.until.is_none() || told)
             {
                 continue;
             }

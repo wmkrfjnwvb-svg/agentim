@@ -13,6 +13,7 @@ cargo run --release --bin agentim-lite -- --demo     # http://127.0.0.1:8080, lo
 cargo run --release --bin agentim -- --demo          # the same, as AgentIM
 cargo run --release --bin agentim -- --config agentim.toml   # databases and units, see agentim.example.toml
 cargo run --release --bin agentim -- --config agentim.toml migrate-unit --unit subsidiary-b
+cargo run --release --bin agentim -- --config agentim.toml agent create --name helper --owner alice   # key + MCP settings, also while the server runs
 cargo test                                           # unit, acceptance, scenarios, concurrency, multi-database, WebSocket, kill -9 on both binaries
 AGENTIM_TEST_EDITION=lite cargo test                 # the same suite as AgentIM Lite
 AGENTIM_TEST_PG=postgres://postgres@127.0.0.1 AGENTIM_TEST_MYSQL=mysql://user:pass@127.0.0.1 cargo test
@@ -28,7 +29,7 @@ binary.
 
 Options: `--config`, `--db` (single SQLite file), `--addr`, `--demo`, `--stream-idle-secs`,
 `--log-format text|json`, `--metrics-token`, `--no-exit-on-storage-failure`.
-Endpoints: `/ws`, `/metrics`, `/healthz`, `/readyz`, `/v1` (open API).
+Endpoints: `/ws`, `/mcp` (MCP for agent keys), `/metrics`, `/healthz`, `/readyz`, `/v1` (open API).
 
 | Path (in `crates/agentim-core`) | |
 |---|---|
@@ -41,6 +42,8 @@ Endpoints: `/ws`, `/metrics`, `/healthz`, `/readyz`, `/v1` (open API).
 | `src/edition.rs`, `src/cli.rs` | AgentIM Lite / AgentIM, the shared command line |
 | `src/metrics.rs` | Prometheus metrics |
 | `src/guard.rs`, `src/policy.rs` | Guardrails and policy hooks |
+| `src/hub/sync.rs` | Sync and acknowledgements per device |
+| `src/hub/agents.rs`, `src/mcp.rs` | Agent registration and keys, the MCP endpoint |
 | `src/server.rs`, `src/open_api.rs` | HTTP + WebSocket, open API |
 | `src/demo.rs`, `web/index.html` | Demo data, scripted agents, web client |
 | `examples/agent.mjs` | External agent over the WebSocket protocol |

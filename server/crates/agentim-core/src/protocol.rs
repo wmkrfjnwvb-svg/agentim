@@ -76,6 +76,10 @@ pub const OPS: &[&str] = &[
     "totp_setup",
     "totp_enable",
     "totp_disable",
+    "create_agent",
+    "list_agents",
+    "agent_key",
+    "revoke_agent_key",
 ];
 
 pub const MAX_CLIENT_FEATURES: usize = 100;

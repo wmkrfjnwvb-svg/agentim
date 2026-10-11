@@ -69,13 +69,13 @@ jobs:
         with:
           workspaces: server
       - name: same acceptance suite against every backend, plus mixed-backend units
-        run: cargo test --test editions --test hub --test multidb --test scenarios --test concurrency --test membership --test coverage --test protocol --test schema --test extensions --test webhooks --test devices --test open_api --test transport --test accounts --test encryption --test edges --test sync -- --nocapture 2>&1 | tee result.txt; test ${PIPESTATUS[0]} -eq 0
+        run: cargo test --test editions --test hub --test multidb --test scenarios --test concurrency --test membership --test coverage --test protocol --test schema --test extensions --test webhooks --test devices --test open_api --test transport --test accounts --test encryption --test edges --test sync --test agents --test mcp -- --nocapture 2>&1 | tee result.txt; test ${PIPESTATUS[0]} -eq 0
       - name: no test may be silently skipped here
         run: "! grep -q 'skipped:' result.txt"
       - name: the same suite as AgentIM Lite
         env:
           AGENTIM_TEST_EDITION: lite
-        run: cargo test --test editions --test hub --test multidb --test scenarios --test concurrency --test membership --test coverage --test protocol --test schema --test extensions --test webhooks --test devices --test open_api --test transport --test accounts --test encryption --test edges --test sync
+        run: cargo test --test editions --test hub --test multidb --test scenarios --test concurrency --test membership --test coverage --test protocol --test schema --test extensions --test webhooks --test devices --test open_api --test transport --test accounts --test encryption --test edges --test sync --test agents --test mcp
 
   load:
     name: load (${{ matrix.os }}, ${{ matrix.name }})

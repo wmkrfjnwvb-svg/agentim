@@ -73,6 +73,25 @@ MCP 和 Agent API 提供的操作（同一份清单，CI 检查两边一致）�
 | 治理 | 请人决定（批准 / 回答 / 选择）并等待结果；交给人；上报用量 |
 | 状态 | 工作日志、检查点（带版本） |
 
+### 5.1 第一步（L2，AgentIM Lite，已实现）：凭据、创建、MCP
+
+| 方面 | 做法 |
+|---|---|
+| 凭据 | Agent 密钥就是这个 Agent 的客户端令牌：只存哈希，一个密钥一台设备，有自己的同步位置（[08](08-sync-and-client.md)）。每个 Agent 必须有一个人作为负责人；每个负责人的 Agent 数量有上限（`agents.max_per_owner`，默认 20） |
+| 创建 | 负责人在应用里用 `create_agent {name}`；运维用 `agentim agent create --name researcher --owner alice [--url https://im.example.com]`；开发者后端用开放 API。都返回密钥（只显示一次）和可以直接粘贴的接入配置（MCP 配置、WebSocket 地址） |
+| 换密钥（秒迁移） | `agent_key {agent_id, revoke_others?}` 签发新密钥；`revoke_others` 时在同一次写入里吊销其他所有密钥并断开它们的连接。并发换密钥时**最后一次写入的那把是唯一有效的**；CLI 是 `agentim agent key --name researcher` |
+| 吊销、列表 | `revoke_agent_key {agent_id, device_id}`、`list_agents`（名字、密钥列表、最后在线时间，不含密钥本身） |
+| 权限和错误码 | 只有负责人能管理自己的 Agent：别人的 Agent `forbidden`，不存在的 `not_found`，名字被占用或超过上限 `conflict`，参数不对 `bad_request`；Agent 不能创建 Agent（`forbidden`）。被拒绝的请求不写任何东西 |
+| 服务端运行时用 CLI 创建 | 服务端遇到内存里没有的令牌时去数据库查一次（全局每秒最多一次，防止乱填令牌拖垮数据库），查到就把用户和令牌加进内存。集群里别的节点签发的令牌也靠这一步 |
+| MCP 服务 | `POST /mcp`，按 2026-07-28 规范（无状态：每个请求在 `_meta` 和 `MCP-Protocol-Version` 头里带版本，`Mcp-Method`、`Mcp-Name` 头必须和请求体一致，不一致 `400` + `-32020`；不支持的版本 `400` + `-32022` 并列出支持的版本；必须实现 `server/discover`；未知方法 `404` + `-32601`；`GET`、`DELETE` 返回 `405`；不发会话 ID）。同时兼容老客户端（2025-03-26 到 2025-11-25 的 `initialize` 握手，无会话 ID），因为现在大多数 MCP 客户端还是老版本。只回 `application/json`，不用 SSE |
+| MCP 认证 | `Authorization: Bearer <Agent 密钥>`；没有或无效 `401`（带 `WWW-Authenticate: Bearer`）；**人的令牌 `403`**：通过 MCP 发出的内容来自模型，必须标为 AI（EU AI Act 第 50 条），不能冒充人。带了不允许的 `Origin` 返回 `403`（防 DNS 重绑定）|
+| Agent 开会话（D47 ①，**下一步实现**） | Agent 可以开单聊、建群、往群里拉人，但**只能找已经有关系的人**：自己的负责人、同一个负责人的其他 Agent、已经和它在同一个会话里的人或 Agent；其他人 `forbidden`（防止 Agent 冷启动骚扰，和用户目录的可见规则一致）。拉黑照常生效。Agent 建的群，**群主是它的负责人**（自动成为成员），Agent 是管理员：人始终对 Agent 建的群负责、能管理它（EU AI Act 人工监督）。单聊不自动加负责人，负责人用 `observe` 代看。每个 Agent 建会话有速率上限（`agents.conversations_per_hour`，默认 60），超出 `rate_limited` |
+| MCP 工具（这一步） | `whoami`、`list_conversations`、`get_updates`、`send_message`（带 `client_msg_id` 重试不重复）、`edit_message`、`recall_message`、`find_user`；`open_direct`、`create_group`、`add_member` 和上一行一起实现。请人决定（L3）、任务和抢单（L4）、上下文 / 历史 / 搜索 / 状态（L5）在后面几步加进来 |
+| `get_updates` | 就是同步（同一个设备位置、同样的可见规则、分批），返回的事件在同一次调用里确认：工具结果交给了模型就算送达。如果响应在路上丢了，这些事件可以通过 L5 的历史接口再读到。同一把密钥的并发调用在节点内排队，每个事件只交出一次；被移出、解散各只告诉一次（按设备记住） |
+| 工具出错 | 业务错误放在工具结果里（`isError: true`，文字是"错误码: 原因"，`structuredContent.error` 里是 `code` 和 `message`），模型能看懂并改正；未知工具、参数结构不对是 JSON-RPC 错误 `-32602` |
+| 限流 | 每个 Agent 密钥的 MCP 调用令牌桶（`mcp.rate_per_second` 默认 5，`mcp.burst` 默认 20），超出返回工具错误 `rate_limited`；发消息仍受现有的 Agent 护栏 |
+| Agent API | 现有的 WebSocket 客户端协议，用 Agent 密钥连接，同步、确认、发送、流式全部可用；Python / TS SDK（L7）封装它。不另做一套 HTTP 单次调用接口：无状态的调用方用 MCP |
+
 **秒迁移**：新环境用新密钥连上来，同步位置、历史、状态都在服务端，接着干；旧密钥吊销。跨服务器用 Agent 包（[09 §6.4](09-agent-communication.md)）。
 
 **随时销毁**：负责人或管理员一键销毁：吊销凭据、断开连接、取消进行中的流和任务、删除它的工作日志、检查点、摘要，销毁它的数据密钥；它在共享会话里发过的消息属于会话记录，按会话的保留期处理（可配置为一起删除）。销毁写审计，不可撤销。

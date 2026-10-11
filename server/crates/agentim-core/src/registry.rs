@@ -56,6 +56,14 @@ pub enum Out {
         sender_id: String,
         audience: Option<Vec<String>>,
     },
+    /// Token cache changes, applied by the writer after commit in write
+    /// order (so a rotation and a revocation cannot be reordered), then
+    /// the connections of revoked devices (`None`: all of the user) closed.
+    Tokens {
+        add: Vec<(String, crate::logic::TokenInfo)>,
+        remove: Vec<String>,
+        kick: Vec<(String, Option<String>)>,
+    },
 }
 
 /// A conversation member as seen by fan-out for one event.
@@ -401,6 +409,17 @@ impl Registry {
                             e.focus = None;
                             if let Some(s) = g.by_focus.get_mut(&conv_id) {
                                 s.remove(&sid);
+                            }
+                        }
+                    }
+                }
+                Out::Tokens { kick, .. } => {
+                    for (user_id, device_id) in kick {
+                        for sid in g.by_user.get(&user_id).into_iter().flatten() {
+                            if let Some(e) = g.sessions.get(sid)
+                                && (device_id.is_none() || e.device_id == device_id)
+                            {
+                                e.kick.notify_one();
                             }
                         }
                     }

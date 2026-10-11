@@ -14,6 +14,7 @@ backend_tests!(
     refused_user_creation_and_tokens,
     a_failed_conversation_creation_leaves_no_trace,
     a_policy_hit_inside_a_streamed_draft_discards_it,
+    client_msg_id_limits,
 );
 
 fn code(v: &serde_json::Value) -> &str {
@@ -227,4 +228,34 @@ async fn a_policy_hit_inside_a_streamed_draft_discards_it(db: TestDb) {
         true
     );
     assert_eq!(a.pull(&conv, 0).await["upto_seq"].as_i64().unwrap(), head);
+}
+
+/// `client_msg_id` is 1..128 bytes on every path (as on the open API);
+/// refusals add nothing to the log.
+async fn client_msg_id_limits(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bot]).await;
+    let q = a.send(&conv, "@bot question").await["msg_id"].clone();
+    let head = seqs(&a.pull(&conv, 0).await).len();
+    let b = Conn::new(&hub, &bot);
+    for bad in [String::new(), "x".repeat(129), "a\0b".into()] {
+        let r = a
+            .call(json!({"op": "send", "conv_id": conv, "client_msg_id": bad, "text": "x"}))
+            .await;
+        assert_eq!(code(&r), "bad_request", "{bad:?}: {r}");
+        let r = b
+            .call(
+                json!({"op": "stream_start", "conv_id": conv, "client_msg_id": bad, "reply_to": q}),
+            )
+            .await;
+        assert_eq!(code(&r), "bad_request", "{bad:?}: {r}");
+    }
+    assert_eq!(seqs(&a.pull(&conv, 0).await).len(), head);
+    a.ok(json!({"op": "send", "conv_id": conv, "client_msg_id": "y".repeat(128), "text": "x"}))
+        .await;
+    b.ok(json!({"op": "stream_start", "conv_id": conv, "client_msg_id": "z".repeat(128), "reply_to": q}))
+        .await;
 }

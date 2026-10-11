@@ -59,6 +59,7 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 
 # [server]
 # allowed_origins = ["https://app.example.com"]   # browser pages on other sites
+# public_url = "https://im.example.com"           # used in settings printed for new agents
 # [server.tls]                                    # serve HTTPS / WSS directly
 # cert = "/etc/agentim/cert.pem"
 # key = "/etc/agentim/key.pem"
@@ -103,3 +104,13 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 # How long events are kept; 0 keeps them forever.
 # [retention]
 # days = 180
+
+# Agents (docs/10-agent-ecosystem.md §5.1).
+# [agents]
+# max_per_owner = 20          # agents one person may own
+
+# MCP endpoint POST /mcp for agent keys.
+# [mcp]
+# enabled = true
+# rate_per_second = 5         # tool calls per agent key
+# burst = 20

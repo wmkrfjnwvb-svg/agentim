@@ -20,6 +20,8 @@ use crate::protocol;
 use crate::registry::{Out, Pushes, Registry};
 use crate::shard::Shard;
 
+mod agents;
+pub use agents::MAX_AGENT_KEYS;
 mod sync;
 
 fn err(code: &'static str, msg: impl Into<String>) -> ApiError {
@@ -40,6 +42,12 @@ struct Inner {
     api_keys: std::sync::RwLock<HashMap<String, crate::db::ApiKeyRow>>,
     /// Unknown keys reload from the database at most once a second.
     keys_reloaded: Mutex<Option<Instant>>,
+    /// Last lookup of a token unknown to memory (at most one per second).
+    tokens_looked_up: Mutex<Option<Instant>>,
+    /// MCP tool calls per agent key: (tokens, last refill).
+    mcp_buckets: Mutex<HashMap<String, (f64, Instant)>>,
+    /// One stateless sync at a time per device (MCP `get_updates`).
+    device_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Drop for Inner {
@@ -165,6 +173,9 @@ impl Hub {
                 http,
                 api_keys: Default::default(),
                 keys_reloaded: Mutex::new(None),
+                tokens_looked_up: Mutex::new(None),
+                mcp_buckets: Mutex::default(),
+                device_locks: Mutex::default(),
                 dm_lock: tokio::sync::Mutex::new(()),
             }),
         };
@@ -220,6 +231,7 @@ impl Hub {
             control
                 .call(Op::CreateUser {
                     user: system.clone(),
+                    owner_cap: None,
                 })
                 .await?;
             sh.users.write().unwrap().insert(system.id.clone(), system);
@@ -894,6 +906,10 @@ impl Hub {
         self.inner.sh.user_by_name(name)
     }
 
+    pub fn user(&self, id: &str) -> Option<User> {
+        self.inner.sh.user(id)
+    }
+
     pub fn is_deactivated(&self, user_id: &str) -> bool {
         self.inner.sh.deactivated.read().unwrap().contains(user_id)
     }
@@ -1066,6 +1082,77 @@ impl Hub {
         Some((u, t.device_id))
     }
 
+    /// Serializes stateless syncs of one device: two concurrent calls would
+    /// both start at the stored position and return the same events.
+    pub async fn device_lock(&self, device_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let m = {
+            let mut locks = self.inner.device_locks.lock().unwrap();
+            if locks.len() > 10_000 {
+                locks.retain(|_, m| Arc::strong_count(m) > 1);
+            }
+            locks.entry(device_id.to_string()).or_default().clone()
+        };
+        m.lock_owned().await
+    }
+
+    /// Takes one MCP tool call from a key's token bucket (`[mcp]`).
+    pub fn mcp_allowed(&self, device_id: &str) -> bool {
+        let cfg = &self.inner.cfg.mcp;
+        let now = Instant::now();
+        let mut b = self.inner.mcp_buckets.lock().unwrap();
+        if b.len() > 100_000 {
+            // Forget keys whose bucket is full again.
+            b.retain(|_, (t, at)| {
+                *t + at.elapsed().as_secs_f64() * cfg.rate_per_second < cfg.burst
+            });
+        }
+        let (tokens, at) = b.entry(device_id.to_string()).or_insert((cfg.burst, now));
+        *tokens =
+            (*tokens + now.duration_since(*at).as_secs_f64() * cfg.rate_per_second).min(cfg.burst);
+        *at = now;
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Like `authenticate_device`, and a token unknown to memory is looked
+    /// up in the database: issued by another process (the `agent` command)
+    /// or another node. At most one lookup per second, so made-up tokens
+    /// cannot load the database.
+    pub async fn authenticate_or_load(&self, token: &str) -> Option<(User, String)> {
+        if let Some(found) = self.authenticate_device(token) {
+            return Some(found);
+        }
+        {
+            let mut at = self.inner.tokens_looked_up.lock().unwrap();
+            if at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
+                return None;
+            }
+            *at = Some(Instant::now());
+        }
+        let v = self
+            .control()
+            .call(Op::LoadToken {
+                hash: crate::auth::hash(token),
+            })
+            .await
+            .ok()?;
+        let user: User = serde_json::from_value(v["user"].clone()).ok()?;
+        let sh = &self.inner.sh;
+        if v["deactivated"] == true {
+            sh.deactivated.write().unwrap().insert(user.id.clone());
+        }
+        sh.users
+            .write()
+            .unwrap()
+            .entry(user.id.clone())
+            .or_insert(user);
+        self.authenticate_device(token)
+    }
+
     /// Issues a client token for a new device. `ttl_ms` None = no expiry.
     pub async fn issue_token(
         &self,
@@ -1075,6 +1162,32 @@ impl Hub {
         ttl_ms: Option<i64>,
         issued_by: &str,
     ) -> ApiResult<(String, crate::db::TokenRow)> {
+        self.issue_token_with(
+            user_id,
+            device_name,
+            platform,
+            ttl_ms,
+            issued_by,
+            false,
+            None,
+        )
+        .await
+        .map(|(t, row, _)| (t, row))
+    }
+
+    /// Like `issue_token`; `revoke_others` also revokes every other token of
+    /// the user in the same write and returns their device ids.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn issue_token_with(
+        &self,
+        user_id: &str,
+        device_name: Option<&str>,
+        platform: Option<&str>,
+        ttl_ms: Option<i64>,
+        issued_by: &str,
+        revoke_others: bool,
+        max_devices: Option<usize>,
+    ) -> ApiResult<(String, crate::db::TokenRow, Vec<String>)> {
         let user = self
             .inner
             .sh
@@ -1104,21 +1217,37 @@ impl Hub {
             expires_at: ttl_ms.map(|t| now.saturating_add(t)),
             last_seen: None,
         };
-        self.control().call(Op::IssueToken(row.clone())).await?;
-        self.inner.sh.tokens.write().unwrap().insert(
-            row.hash.clone(),
-            TokenInfo {
-                user_id: user.id.clone(),
-                device_id: row.device_id.clone(),
-                expires_at: row.expires_at,
-            },
-        );
+        let v = self
+            .control()
+            .call(Op::IssueToken {
+                row: row.clone(),
+                revoke_others,
+                max_devices,
+            })
+            .await?;
+        let revoked: Vec<String> = serde_json::from_value(v["revoked"].clone()).unwrap_or_default();
+        for d in &revoked {
+            self.drop_device(&user.id, Some(d)).await?;
+        }
         // The user's other devices are told (security notice).
         self.inner.sh.reg.deliver(vec![Out::ToUser {
             user_id: user.id.clone(),
             frame: json!({"type": "device.added", "device": row.view()}),
         }]);
-        Ok((token, row))
+        Ok((token, row, revoked))
+    }
+
+    /// A revoked device forgets its positions (a new login starts like a
+    /// new device).
+    async fn drop_device(&self, user_id: &str, device_id: Option<&str>) -> ApiResult<()> {
+        for s in &self.inner.shards {
+            s.call(Op::DropDevice {
+                user_id: user_id.to_string(),
+                device_id: device_id.map(String::from),
+            })
+            .await?;
+        }
+        Ok(())
     }
 
     /// Revokes a user's tokens (all, or one device) and disconnects them.
@@ -1132,22 +1261,7 @@ impl Hub {
             })
             .await?;
         let hashes: Vec<String> = serde_json::from_value(v["hashes"].clone()).unwrap_or_default();
-        {
-            let mut t = self.inner.sh.tokens.write().unwrap();
-            for h in &hashes {
-                t.remove(h);
-            }
-        }
-        self.inner.sh.reg.kick(user_id, device_id);
-        // The logged-out device forgets its positions (a new login starts
-        // like a new device).
-        for s in &self.inner.shards {
-            s.call(Op::DropDevice {
-                user_id: user_id.to_string(),
-                device_id: device_id.map(String::from),
-            })
-            .await?;
-        }
+        self.drop_device(user_id, device_id).await?;
         Ok(hashes.len())
     }
 
@@ -1217,7 +1331,10 @@ impl Hub {
             unit_id: unit,
         };
         self.control()
-            .call(Op::CreateUser { user: user.clone() })
+            .call(Op::CreateUser {
+                user: user.clone(),
+                owner_cap: Some(self.inner.cfg.agents.max_per_owner),
+            })
             .await?;
         self.inner
             .sh
@@ -1226,7 +1343,17 @@ impl Hub {
             .unwrap()
             .insert(user.id.clone(), user.clone());
         let (token, _) = self
-            .issue_token(&user.id, Some("first device"), None, None, "create")
+            .issue_token(
+                &user.id,
+                Some(if kind == UserKind::Agent {
+                    "agent key"
+                } else {
+                    "first device"
+                }),
+                None,
+                None,
+                "create",
+            )
             .await?;
         Ok((user, token))
     }
@@ -1284,10 +1411,16 @@ impl Hub {
         }
     }
 
-    pub async fn handle(&self, sess: &Session, env: Envelope) -> Value {
-        let op = env.msg.name();
+    /// One client request with metrics and logging (WebSocket, MCP).
+    pub async fn request(
+        &self,
+        sess: &Session,
+        rid: Option<u64>,
+        msg: ClientMsg,
+    ) -> ApiResult<Value> {
+        let op = msg.name();
         let t = Instant::now();
-        let res = self.dispatch(sess, env.msg).await;
+        let res = self.dispatch(sess, msg).await;
         let secs = t.elapsed().as_secs_f64();
         let code = match &res {
             Ok(_) => "ok",
@@ -1304,7 +1437,7 @@ impl Hub {
                     conn_id = sess.sid,
                     user_id = sess.user.id,
                     op,
-                    rid = env.rid,
+                    rid = rid,
                     error.code = e.code,
                     error = e.message,
                     "request failed"
@@ -1314,12 +1447,17 @@ impl Hub {
                 conn_id = sess.sid,
                 user_id = sess.user.id,
                 op,
-                rid = env.rid,
+                rid = rid,
                 result = code,
                 latency_ms = secs * 1000.0,
                 "request"
             ),
         }
+        res
+    }
+
+    pub async fn handle(&self, sess: &Session, env: Envelope) -> Value {
+        let res = self.request(sess, env.rid, env.msg).await;
         match res {
             Ok(mut v) => {
                 if !v.is_object() {
@@ -1734,6 +1872,16 @@ impl Hub {
                 let n = self.revoke_tokens(&me.id, Some(&device_id)).await?;
                 Ok(json!({"revoked": n}))
             }
+            ClientMsg::CreateAgent { name } => self.create_agent(me, &name).await,
+            ClientMsg::ListAgents => self.list_agents(me).await,
+            ClientMsg::AgentKey {
+                agent_id,
+                revoke_others,
+            } => self.agent_key(me, &agent_id, revoke_others).await,
+            ClientMsg::RevokeAgentKey {
+                agent_id,
+                device_id,
+            } => self.revoke_agent_key(me, &agent_id, &device_id).await,
         }
     }
 

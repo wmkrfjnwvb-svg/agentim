@@ -56,7 +56,7 @@ impl UserKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     pub id: String,
     pub name: String,
@@ -428,6 +428,25 @@ pub enum ClientMsg {
     LogoutDevice {
         device_id: String,
     },
+    /// A new agent owned by the caller, with its first key
+    /// (docs/10-agent-ecosystem.md §5.1).
+    CreateAgent {
+        name: String,
+    },
+    /// The caller's agents and their keys (never the secrets).
+    ListAgents,
+    /// A new key for one of the caller's agents; `revoke_others` revokes
+    /// every other key in the same write.
+    AgentKey {
+        agent_id: String,
+        #[serde(default)]
+        revoke_others: bool,
+    },
+    /// Revokes one key of one of the caller's agents.
+    RevokeAgentKey {
+        agent_id: String,
+        device_id: String,
+    },
 }
 
 impl ClientMsg {
@@ -480,6 +499,10 @@ impl ClientMsg {
             ClientMsg::TotpDisable { .. } => "totp_disable",
             ClientMsg::UpdateConv { .. } => "update_conv",
             ClientMsg::LogoutDevice { .. } => "logout_device",
+            ClientMsg::CreateAgent { .. } => "create_agent",
+            ClientMsg::ListAgents => "list_agents",
+            ClientMsg::AgentKey { .. } => "agent_key",
+            ClientMsg::RevokeAgentKey { .. } => "revoke_agent_key",
         }
     }
 

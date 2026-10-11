@@ -36,6 +36,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/register", post(register))
         .route("/api/stats", get(stats))
         .route("/api/dev/users", post(dev_create_user))
+        .route(
+            "/mcp",
+            post(crate::mcp::endpoint)
+                .get(|| async { StatusCode::METHOD_NOT_ALLOWED })
+                .delete(|| async { StatusCode::METHOD_NOT_ALLOWED }),
+        )
         .route("/metrics", get(metrics))
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readyz))
@@ -57,7 +63,7 @@ pub fn valid_origin(o: &str) -> bool {
 /// Browsers send `Origin`; a page on another site must not use a visitor's
 /// session (cross-site WebSocket hijacking). Requests without `Origin`
 /// (apps, SDKs, agents) are not affected.
-fn origin_allowed(st: &AppState, headers: &HeaderMap) -> bool {
+pub(crate) fn origin_allowed(st: &AppState, headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) else {
         return true;
     };
@@ -334,7 +340,7 @@ async fn ws(
     if !origin_allowed(&st, &headers) {
         return origin_refused();
     }
-    let Some((user, device)) = st.hub.authenticate_device(&q.token) else {
+    let Some((user, device)) = st.hub.authenticate_or_load(&q.token).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let version = match ws_protocol(q.v.as_deref()) {

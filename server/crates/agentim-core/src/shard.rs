@@ -379,6 +379,7 @@ impl Writer {
                 if let Some(last) = queued {
                     self.wake.send_replace(last);
                 }
+                self.shared.apply_tokens(&outs);
                 self.shared.reg.deliver(outs);
                 for (r, res) in replies {
                     let _ = r.send(res);
