@@ -171,6 +171,12 @@ async fn crash_round(crash_after: Duration) {
             }
         }));
     }
+    // Crash while traffic flows: the delay counts from the first
+    // acknowledgement, so a slow machine still crashes mid-traffic.
+    let t0 = std::time::Instant::now();
+    while acked.lock().unwrap().is_empty() && t0.elapsed() < Duration::from_secs(30) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     tokio::time::sleep(crash_after).await;
     child.kill().expect("kill server"); // SIGKILL on Unix, TerminateProcess on Windows
     let _ = child.wait();
