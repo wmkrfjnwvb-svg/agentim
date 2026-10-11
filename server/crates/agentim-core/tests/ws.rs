@@ -96,6 +96,29 @@ async fn req(ws: &mut Ws, rid: u64, v: Value) -> Value {
     recv_until(ws, |f| f["type"] == "res" && f["rid"] == rid).await
 }
 
+/// Syncs and acknowledges until nothing more is owed (docs/08): after
+/// that, live events arrive as pushes.
+async fn sync_up(ws: &mut Ws, mut rid: u64) {
+    loop {
+        let r = req(ws, rid, json!({"op": "sync", "limit": 5000})).await;
+        assert_eq!(r["ok"], true, "{r}");
+        let acks: Vec<Value> = r["convs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c.get("upto").is_some())
+            .map(|c| json!({"conv_id": c["conv_id"], "seq": c["upto"], "side_seq": c["side_upto"]}))
+            .collect();
+        if !acks.is_empty() {
+            req(ws, rid + 1, json!({"op": "ack", "acks": acks})).await;
+        }
+        rid += 2;
+        if r["more"] != true {
+            return;
+        }
+    }
+}
+
 #[tokio::test]
 async fn websocket_auth_request_response_and_push() {
     let (addr, _dir) = start(false).await;
@@ -129,6 +152,9 @@ async fn websocket_auth_request_response_and_push() {
     .unwrap();
     let w = recv_until(&mut a, |f| f["type"] == "welcome").await;
     assert_eq!(w["me"]["name"], "alice");
+    // Before its first sync a device is only told to sync; after it,
+    // live events are pushed.
+    sync_up(&mut b, 100).await;
     let convs = req(&mut a, 1, json!({"op": "list_convs"})).await;
     let group = convs["convs"]
         .as_array()
@@ -182,6 +208,7 @@ async fn demo_agent_streams_a_reply_with_coalesced_deltas() {
         .as_str()
         .unwrap()
         .to_string();
+    sync_up(&mut a, 100).await;
     req(&mut a, 2, json!({"op": "focus", "conv_id": dm})).await;
     req(
         &mut a,

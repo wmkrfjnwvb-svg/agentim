@@ -639,7 +639,7 @@ async fn main() {
         })
         .collect();
     let t = Instant::now();
-    let failed_connects = connect_all(&a, &users, &mut receivers, &totals, source).await;
+    let failed_connects = connect_all(&a, &users, &convs, &mut receivers, &totals, source).await;
     let connect_s = t.elapsed().as_secs_f64();
     let rss_conn = rss_mb(a.server_pid);
     println!(
@@ -734,7 +734,7 @@ async fn main() {
             r.conn = None; // abrupt close, like a network drop
             r.recv.view.lock().unwrap().reconnected = true;
         }
-        let failed = connect_all(&a, &users, &mut receivers, &totals, source).await;
+        let failed = connect_all(&a, &users, &convs, &mut receivers, &totals, source).await;
         let storm_s = t.elapsed().as_secs_f64();
         println!(
             "storm: {} connections dropped and re-opened in {:.1}s ({} failed) while senders kept writing",
@@ -1009,11 +1009,12 @@ async fn main() {
 async fn connect_all(
     a: &Args,
     users: &[User],
+    convs: &[String],
     receivers: &mut [Receiver],
     totals: &Arc<Totals>,
     source: impl Fn(usize) -> u8,
 ) -> usize {
-    let jobs: Vec<(usize, String, u8, Recv)> = receivers
+    let jobs: Vec<(usize, String, u8, Recv, String)> = receivers
         .iter()
         .enumerate()
         .filter(|(_, r)| r.conn.is_none())
@@ -1023,13 +1024,33 @@ async fn connect_all(
                 users[r.user].token.clone(),
                 source(r.user),
                 r.recv.clone(),
+                convs[r.group].clone(),
             )
         })
         .collect();
     let results: Vec<(usize, Result<Conn, String>)> = stream::iter(jobs)
-        .map(|(k, token, src, recv)| {
+        .map(|(k, token, src, recv, conv)| {
             let (addr, totals) = (a.addr.clone(), totals.clone());
-            async move { (k, open_retry(&addr, &token, src, Some(recv), totals).await) }
+            async move {
+                let view = recv.view.clone();
+                let c = open_retry(&addr, &token, src, Some(recv), totals).await;
+                // A device gets live events only after it has synced
+                // (docs/08): catch up first, keeping what it receives.
+                let c = match c {
+                    Ok(c) => match c.pull_seqs(&conv, 0).await {
+                        Ok((seqs, _)) => {
+                            let mut v = view.lock().unwrap();
+                            for s in seqs {
+                                v.mark(s);
+                            }
+                            Ok(c)
+                        }
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                };
+                (k, c)
+            }
         })
         .buffer_unordered(a.connect_concurrency)
         .collect()

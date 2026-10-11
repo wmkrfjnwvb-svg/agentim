@@ -1152,6 +1152,7 @@ impl Db<'_> {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_conv(
         &mut self,
         id: &str,
@@ -1160,6 +1161,7 @@ impl Db<'_> {
         unit_id: &str,
         creator: &User,
         members: &[User],
+        manager: Option<&User>,
     ) -> ApiResult<Vec<Event>> {
         sqlx::query(self.d.q(
             "INSERT INTO conversations (id, tenant_id, unit_id, kind, title, last_seq, side_seq, created_at) VALUES (?, ?, ?, ?, ?, 0, 0, ?)",
@@ -1184,9 +1186,14 @@ impl Db<'_> {
         ];
         let mut all: Vec<&User> = vec![creator];
         all.extend(members.iter().filter(|m| m.id != creator.id));
+        // A conversation an agent starts is owned by its person; the agent
+        // manages it as an admin.
+        let owner_id = manager.map(|m| m.id.as_str()).unwrap_or(&creator.id);
         for u in all {
-            let role = if u.id == creator.id {
+            let role = if u.id == owner_id {
                 "owner"
+            } else if u.id == creator.id {
+                "admin"
             } else {
                 "member"
             };

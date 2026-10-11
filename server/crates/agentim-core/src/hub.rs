@@ -48,6 +48,8 @@ struct Inner {
     mcp_buckets: Mutex<HashMap<String, (f64, Instant)>>,
     /// One stateless sync at a time per device (MCP `get_updates`).
     device_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Conversations agents started: (tokens, last refill) per agent.
+    conv_buckets: Mutex<HashMap<String, (f64, Instant)>>,
 }
 
 impl Drop for Inner {
@@ -176,6 +178,7 @@ impl Hub {
                 tokens_looked_up: Mutex::new(None),
                 mcp_buckets: Mutex::default(),
                 device_locks: Mutex::default(),
+                conv_buckets: Mutex::default(),
                 dm_lock: tokio::sync::Mutex::new(()),
             }),
         };
@@ -1641,6 +1644,14 @@ impl Hub {
                     .user(&user_id)
                     .or_else(|| self.inner.sh.user_by_name(&user_id))
                     .ok_or_else(|| err("not_found", "user"))?;
+                if me.kind == UserKind::Agent {
+                    let owner = me
+                        .owner_id
+                        .as_deref()
+                        .and_then(|o| self.inner.sh.user(o))
+                        .ok_or_else(|| err("forbidden", "an agent without an owner adds nobody"))?;
+                    self.agent_may_contact(me, &owner, &user).await?;
+                }
                 let mut attempt = 0;
                 let (v, shard) = loop {
                     let shard = self.conv_shard(&conv_id)?;
@@ -2275,9 +2286,22 @@ impl Hub {
         title: &str,
         members: &[String],
     ) -> ApiResult<Value> {
-        if me.kind != UserKind::Human {
-            return Err(err("forbidden", "only humans create conversations"));
-        }
+        // An agent's conversations belong to its person (docs/10 §5.1).
+        let agent_owner = match me.kind {
+            UserKind::Human => None,
+            UserKind::Agent => Some(
+                me.owner_id
+                    .as_deref()
+                    .and_then(|o| self.inner.sh.user(o))
+                    .ok_or_else(|| err("forbidden", "an agent without an owner starts nothing"))?,
+            ),
+            UserKind::System => {
+                return Err(err(
+                    "forbidden",
+                    "the system creates conversations through the open API",
+                ));
+            }
+        };
         if kind != "dm" && kind != "group" {
             return Err(err("bad_request", "kind must be dm or group"));
         }
@@ -2301,6 +2325,15 @@ impl Hub {
                 "bad_request",
                 "a direct conversation has exactly one other member",
             ));
+        }
+        if let Some(owner) = &agent_owner {
+            for u in &users {
+                self.agent_may_contact(me, owner, u).await?;
+            }
+            // In a group the person comes along as its owner.
+            if kind == "group" && !users.iter().any(|u| u.id == owner.id) {
+                users.push(owner.clone());
+            }
         }
         if let Some(u) = users.iter().find(|u| sh.blocked(&u.id, &me.id)) {
             return Err(err(
@@ -2332,6 +2365,13 @@ impl Hub {
         } else {
             None
         };
+        // Opening an existing direct conversation (above) costs nothing.
+        if agent_owner.is_some() && !self.agent_conversation_allowed(&me.id, false) {
+            return Err(err(
+                "rate_limited",
+                "too many new conversations (agents.conversations_per_hour)",
+            ));
+        }
         // New conversations live in the database of the creator's unit.
         let db_name = self.inner.cfg.unit_database(&me.unit_id).to_string();
         let idx = sh.db_names.iter().position(|n| *n == db_name).unwrap();
@@ -2353,6 +2393,7 @@ impl Hub {
                 unit: me.unit_id.clone(),
                 creator: me.clone(),
                 members: users.clone(),
+                manager: agent_owner.clone().filter(|_| kind == "group"),
             })
             .await;
         if let Err(e) = res {
@@ -2382,6 +2423,9 @@ impl Hub {
                     conv_id: id.clone(),
                 })
                 .await?;
+        }
+        if agent_owner.is_some() {
+            self.agent_conversation_allowed(&me.id, true);
         }
         Ok(json!({"conv_id": id}))
     }

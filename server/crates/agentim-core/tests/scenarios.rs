@@ -129,7 +129,7 @@ async fn conversation_creation_is_validated(db: TestDb) {
         code(&a.call(create("group", "t", vec!["nobody"])).await),
         "not_found"
     );
-    // Only humans create conversations.
+    // An agent starts conversations only with known contacts (tests/agents.rs).
     let g = Conn::new(&hub, &bot);
     assert_eq!(
         code(&g.call(create("group", "t", vec![&bob.id])).await),

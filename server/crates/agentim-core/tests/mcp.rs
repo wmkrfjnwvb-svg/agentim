@@ -540,6 +540,46 @@ async fn tools_follow_the_business_rules(db: TestDb) {
     let f = m.ok(&key, "find_user", json!({"name": "alice"})).await;
     assert_eq!(f["user"]["id"], json!(alice.id));
 
+    // Conversations: contacts only, the person owns the groups.
+    let d = m.ok(&key, "open_direct", json!({"user": "alice"})).await;
+    let d2 = m.ok(&key, "open_direct", json!({"user": alice.id})).await;
+    assert_eq!(d["conv_id"], d2["conv_id"]);
+    let g = m
+        .ok(
+            &key,
+            "create_group",
+            json!({"title": "plans", "members": []}),
+        )
+        .await;
+    let gid = g["conv_id"].as_str().unwrap().to_string();
+    let roles: Vec<(String, String)> = m.hub.conv_detail(&gid).await.unwrap()["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| {
+            (
+                x["user"].as_str().unwrap().into(),
+                x["role"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    assert!(
+        roles.contains(&("alice".into(), "owner".into())),
+        "{roles:?}"
+    );
+    assert!(
+        roles.contains(&("helper".into(), "admin".into())),
+        "{roles:?}"
+    );
+    let helper2 = user(&m.hub, "helper2", UserKind::Agent, Some(&alice)).await;
+    m.ok(
+        &key,
+        "add_member",
+        json!({"conv_id": gid, "user": "helper2", "history": 0}),
+    )
+    .await;
+    let _ = helper2;
+
     // Business refusals are tool errors with the protocol's codes, and leave
     // nothing in the log.
     let head = seqs(&a.pull(&conv, 0).await).last().copied().unwrap();
@@ -610,6 +650,49 @@ async fn tools_follow_the_business_rules(db: TestDb) {
         ("get_updates", json!({"limit": 0}), "bad_request"),
         ("get_updates", json!({"limit": 501}), "bad_request"),
         ("get_updates", json!({"limit": "ten"}), "bad_request"),
+        ("open_direct", json!({"user": "bob"}), "forbidden"),
+        ("open_direct", json!({"user": "nobody"}), "not_found"),
+        ("open_direct", json!({}), "bad_request"),
+        (
+            "create_group",
+            json!({"title": "x", "members": ["bob"]}),
+            "forbidden",
+        ),
+        (
+            "create_group",
+            json!({"title": "x", "members": "bob"}),
+            "bad_request",
+        ),
+        (
+            "create_group",
+            json!({"title": "x", "members": [""]}),
+            "bad_request",
+        ),
+        (
+            "create_group",
+            json!({"title": "", "members": []}),
+            "bad_request",
+        ),
+        (
+            "add_member",
+            json!({"conv_id": gid, "user": "bob"}),
+            "forbidden",
+        ),
+        (
+            "add_member",
+            json!({"conv_id": gid, "user": "alice"}),
+            "conflict",
+        ),
+        (
+            "add_member",
+            json!({"conv_id": gid, "user": "helper2", "history": "all"}),
+            "bad_request",
+        ),
+        (
+            "add_member",
+            json!({"conv_id": other, "user": "alice"}),
+            "forbidden",
+        ),
     ];
     for (tool, args, want) in cases {
         assert_eq!(

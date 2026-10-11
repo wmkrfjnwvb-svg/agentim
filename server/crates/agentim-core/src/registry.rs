@@ -82,10 +82,24 @@ pub struct Recip {
 
 /// Conversations a session must be told to resync. Shared between fan-out
 /// (which adds to it when the queue is full) and the session's [`Pushes`].
-type Owed = Arc<Mutex<HashSet<String>>>;
+/// Conversations a session must be told to sync again, and a wake-up for
+/// its push stream (a notice is owed even when no frame follows).
+#[derive(Default)]
+struct OwedInner {
+    set: Mutex<HashSet<String>>,
+    wake: tokio::sync::Notify,
+}
+
+type Owed = Arc<OwedInner>;
 
 fn lock_owed(o: &Owed) -> std::sync::MutexGuard<'_, HashSet<String>> {
-    o.lock().unwrap_or_else(|e| e.into_inner())
+    o.set.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Owes a resync notice and wakes the push stream to send it.
+fn owe(o: &Owed, conv_id: &str) {
+    lock_owed(o).insert(conv_id.to_string());
+    o.wake.notify_one();
 }
 
 fn resync_frame(conv_id: &str) -> Frame {
@@ -115,6 +129,11 @@ struct SyncState {
     sent_side: HashMap<String, i64>,
     /// Acknowledged positions of sessions without a device (memory only).
     acked: HashMap<String, (i64, i64)>,
+    /// Conversations a sync call is reading now: live pushes wait (they
+    /// could otherwise repeat an event the response carries)...
+    busy: HashSet<String>,
+    /// ...and a held-back push makes the session owe a resync.
+    held: HashSet<String>,
 }
 
 /// A session's push stream: queued frames in order, then any owed resync
@@ -135,12 +154,17 @@ impl Pushes {
     }
 
     pub async fn recv(&mut self) -> Option<Frame> {
-        if self.rx.is_empty()
-            && let Some(f) = self.owed_frame()
-        {
-            return Some(f);
+        loop {
+            if self.rx.is_empty()
+                && let Some(f) = self.owed_frame()
+            {
+                return Some(f);
+            }
+            tokio::select! {
+                f = self.rx.recv() => return f,
+                _ = self.owed.wake.notified() => {}
+            }
         }
-        self.rx.recv().await
     }
 
     pub fn try_recv(&mut self) -> Option<Frame> {
@@ -198,6 +222,10 @@ impl Registry {
         };
         let (tx, rx) = mpsc::channel(cap);
         let owed = Owed::default();
+        // A device receives live events only in order after its sync
+        // position (docs/08 §2.2): until its first sync it is only told to
+        // sync, so nothing pushed earlier can come again in that sync.
+        let sync = device_id.is_some().then(SyncState::default);
         let mut g = self.lock();
         g.next += 1;
         let sid = g.next;
@@ -211,7 +239,7 @@ impl Registry {
                 tx,
                 focus: None,
                 resync: owed.clone(),
-                sync: None,
+                sync,
                 started: now_ms(),
             },
         );
@@ -288,16 +316,43 @@ impl Registry {
         }
     }
 
-    /// Records what a sync response sends (positions only move forward).
-    pub fn sync_mark(&self, sid: u64, conv_id: &str, seq: i64, side_seq: i64) {
+    /// A sync call starts reading a conversation: live pushes of it wait
+    /// until `sync_mark` or `sync_end`.
+    pub fn sync_begin(&self, sid: u64, conv_id: &str) {
         let mut g = self.lock();
-        let Some(st) = g.sessions.get_mut(&sid).and_then(|e| e.sync.as_mut()) else {
+        if let Some(st) = g.sessions.get_mut(&sid).and_then(|e| e.sync.as_mut()) {
+            st.busy.insert(conv_id.to_string());
+        }
+    }
+
+    /// The read is over (also when it failed): pushes flow again, and a
+    /// held-back one makes the session owe a resync.
+    pub fn sync_end(&self, sid: u64, conv_id: &str) {
+        let mut g = self.lock();
+        let Some(e) = g.sessions.get_mut(&sid) else {
             return;
         };
-        let s = st.sent.entry(conv_id.to_string()).or_insert(seq);
-        *s = (*s).max(seq);
-        let s = st.sent_side.entry(conv_id.to_string()).or_insert(side_seq);
-        *s = (*s).max(side_seq);
+        let Some(st) = e.sync.as_mut() else { return };
+        st.busy.remove(conv_id);
+        if st.held.remove(conv_id) {
+            owe(&e.resync, conv_id);
+        }
+    }
+
+    /// Records what a sync response sends (positions only move forward),
+    /// and ends the read.
+    pub fn sync_mark(&self, sid: u64, conv_id: &str, seq: i64, side_seq: i64) {
+        {
+            let mut g = self.lock();
+            let Some(st) = g.sessions.get_mut(&sid).and_then(|e| e.sync.as_mut()) else {
+                return;
+            };
+            let s = st.sent.entry(conv_id.to_string()).or_insert(seq);
+            *s = (*s).max(seq);
+            let s = st.sent_side.entry(conv_id.to_string()).or_insert(side_seq);
+            *s = (*s).max(side_seq);
+        }
+        self.sync_end(sid, conv_id);
     }
 
     /// Forgets what was sent for a conversation (reset, lost access).
@@ -474,6 +529,10 @@ fn in_order(g: &mut Inner, sid: u64, conv_id: &str, seq: i64, side: bool) -> boo
     let Some(st) = e.sync.as_mut() else {
         return true;
     };
+    if st.busy.contains(conv_id) {
+        st.held.insert(conv_id.to_string());
+        return false;
+    }
     let map = if side {
         &mut st.sent_side
     } else {
@@ -486,7 +545,7 @@ fn in_order(g: &mut Inner, sid: u64, conv_id: &str, seq: i64, side: bool) -> boo
         }
         Some(sent) if seq <= *sent => false,
         _ => {
-            lock_owed(&e.resync).insert(conv_id.to_string());
+            owe(&e.resync, conv_id);
             false
         }
     }
@@ -510,8 +569,9 @@ fn send(g: &mut Inner, sid: u64, f: Frame, resync_conv: Option<&str>) -> bool {
         return true;
     }
     metrics::counter!(m::PUSH_DROPPED).increment(1);
+    drop(owed);
     if let Some(c) = resync_conv {
-        owed.insert(c.to_string());
+        owe(&e.resync, c);
         // A dropped push was not sent: in sync mode the next sync resends it.
         if let Some(st) = e.sync.as_mut() {
             st.sent.remove(c);
@@ -745,5 +805,60 @@ mod sync_tests {
         let f = drain(&mut rx);
         assert_eq!(f[0]["event"]["seq"], 1);
         assert_eq!(f[1]["type"], "resync");
+    }
+
+    /// While a sync call reads a conversation, a live push of it (which the
+    /// response may also carry) waits; afterwards the session is told to
+    /// sync again, so nothing is lost or delivered twice.
+    #[test]
+    fn pushes_wait_while_a_sync_reads_the_conversation() {
+        let reg = Registry::new(100, 100);
+        let (sid, mut rx) = reg.add(&user());
+        reg.sync_enable(sid);
+        reg.sync_mark(sid, "c", 5, 0);
+        reg.sync_begin(sid, "c");
+        deliver(&reg, 6); // also in the response being read
+        assert!(drain(&mut rx).is_empty(), "held back");
+        reg.sync_mark(sid, "c", 9, 0);
+        deliver(&reg, 10);
+        let f = drain(&mut rx);
+        assert_eq!(f.len(), 2, "{f:?}");
+        assert_eq!(f[0]["type"], "resync");
+        assert_eq!(f[1]["event"]["seq"], 10);
+        // A failed read also releases, with the resync owed.
+        reg.sync_begin(sid, "c");
+        deliver(&reg, 11);
+        reg.sync_end(sid, "c");
+        let f = drain(&mut rx);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0]["type"], "resync");
+        assert_eq!(reg.sync_sent(sid, "c").0, Some(10), "11 was not sent");
+        // Without a held push nothing is owed.
+        reg.sync_begin(sid, "c");
+        reg.sync_mark(sid, "c", 11, 0);
+        deliver(&reg, 12);
+        let f = drain(&mut rx);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0]["event"]["seq"], 12);
+    }
+
+    /// A resync notice owed while the stream waits for frames is sent at
+    /// once, not with the next frame (which may never come).
+    #[tokio::test]
+    async fn an_owed_resync_wakes_a_waiting_stream() {
+        let reg = Arc::new(Registry::new(100, 100));
+        let (sid, mut rx, _) = reg.add_device(&user(), Some("d".into()));
+        let waiting = tokio::spawn(async move { rx.recv().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Not synced yet: the event is held back and a resync owed.
+        deliver(&reg, 1);
+        let f = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+            .await
+            .expect("the waiting stream is woken")
+            .unwrap()
+            .unwrap();
+        let v: Value = serde_json::from_str(&f).unwrap();
+        assert_eq!(v["type"], "resync");
+        assert_eq!(reg.sync_sent(sid, "c").0, None);
     }
 }

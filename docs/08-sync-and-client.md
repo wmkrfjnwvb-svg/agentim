@@ -14,7 +14,7 @@
 |---|---|---|
 | 同步位置 | 表 `device_cursors (device_id, conv_id, user_id, acked_seq, acked_side_seq)`，表结构 v3；确认只前进（取较大值） | `db.rs` `ack_cursor` |
 | 协议 | `sync {limit?}`、`ack {acks: [{conv_id, seq, side_seq}]}`、`unread`、`set_mute {conv_id, mode, until?}`、`set_prefs {read_silences_others?}`、`observe {conv_id, agent_id, after_seq?, limit?}`；客户端的 `pull`、`pull_side` 返回 `bad_request` | `hub/sync.rs` |
-| 一条通道 | 调用过 `sync` 的连接，实时推送只按顺序下发（seq 正好接上已下发的位置）；接不上的不推，改发 `resync`，由下一次 `sync` 补齐 | `registry.rs` `in_order` |
+| 一条通道 | 设备的连接从一开始就只按顺序收实时推送（seq 正好接上已下发的位置）：第一次 `sync` 之前、接不上的、以及某个会话正在被 `sync` 读取期间到达的推送都不发，改发 `resync`（立即发出，不等下一帧），由下一次 `sync` 补齐；所以同一事件不会既被推送又出现在同步结果里 | `registry.rs` `in_order`、`sync_begin` |
 | 起点规则 | 没有位置：设备存在之后加入的会话从可见起点开始，否则按新设备窗口；位置落后于保留期或超过 `max_gap`：重置，响应里带 `reset.from_seq` | `hub/sync.rs` |
 | 新成员历史 | 成员记录 `visible_from`；拉人时 `history` 可选带多少条（≤ `share_max`）；默认人带最近 `member_messages` 条（`member_days` 天内），Agent 不带 | `logic.rs` `add_member` |
 | 移出、解散 | 控制库表 `departures`：被移出的设备同步到移出事件为止，`left` 报告到设备的位置越过移出事件为止；解散对每台设备只报告一次 `dissolved: true`（控制库里记下这台设备已知道）；重新加入时清除 | `logic.rs`、`hub/sync.rs` |

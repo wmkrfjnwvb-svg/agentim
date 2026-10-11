@@ -289,6 +289,8 @@ async fn main() {
     for u in &humans {
         let c = Client::connect(&a.addr, &u.token).await.unwrap();
         c.ok(json!({"op": "focus", "conv_id": conv})).await;
+        // A device gets live events after its first sync (docs/08).
+        c.pull_all(&conv).await;
         clients.push(Arc::new(c));
     }
     // Agents answer a human prompt explicitly (reply_to), as real agents do;

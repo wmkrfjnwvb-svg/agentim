@@ -255,9 +255,16 @@ async fn live_pushes_continue_the_sync_in_order(db: TestDb) {
     let b = Conn::new(&hub, &bob);
     let conv = Conn::new(&hub, &alice).group(&[&bob]).await;
     let mut d = Conn::device(&hub, &alice, &dev);
-    // Before syncing, a session gets pushes as hints.
+    // Before its first sync a device is only told to sync: an event pushed
+    // now would come again in that sync.
     b.send(&conv, "early").await;
-    assert!(d.drain().iter().any(|f| f["type"] == "event"));
+    let f = d.drain();
+    assert!(!f.iter().any(|f| f["type"] == "event"), "{f:?}");
+    assert!(
+        f.iter()
+            .any(|f| f["type"] == "resync" && f["conv_id"] == conv.as_str()),
+        "{f:?}"
+    );
     let head = last_seq(&b, &conv).await;
     assert_eq!(sync_all(&d).await[&conv], range(1, head));
     d.drain();

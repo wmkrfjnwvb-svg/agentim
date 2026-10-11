@@ -23,6 +23,9 @@ backend_tests!(
     keys_and_rotations_survive_a_restart,
     race_rotations_leave_exactly_one_key,
     race_creations_respect_the_cap,
+    agents_start_conversations_only_with_known_contacts,
+    agent_conversations_are_rate_limited,
+    race_agents_open_one_direct_conversation,
 );
 
 fn code(v: &Value) -> &str {
@@ -492,5 +495,168 @@ async fn race_creations_respect_the_cap(db: TestDb) {
             }
         }
         assert_eq!(wins, 1, "round {round}: one owner gets the name");
+    }
+}
+
+fn roles(detail: &Value) -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = detail["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            (
+                m["user"].as_str().unwrap().to_string(),
+                m["role"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+async fn conv_count(hub: &Hub, u: &User) -> usize {
+    Conn::new(hub, u).ok(json!({"op": "list_convs"})).await["convs"]
+        .as_array()
+        .unwrap()
+        .len()
+}
+
+/// An agent reaches its person, its person's agents and whoever already
+/// shares a conversation with it; the person owns what the agent starts.
+async fn agents_start_conversations_only_with_known_contacts(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let helper = user(&hub, "helper", UserKind::Agent, Some(&alice)).await;
+    let helper2 = user(&hub, "helper2", UserKind::Agent, Some(&alice)).await;
+    let bobs = user(&hub, "bobs", UserKind::Agent, Some(&bob)).await;
+    let a = Conn::new(&hub, &alice);
+    let h = Conn::new(&hub, &helper);
+    let dm = |u: &User| json!({"op": "create_conv", "kind": "dm", "title": "t", "members": [u.id]});
+    let group = |title: &str, us: &[&User]| json!({"op": "create_conv", "kind": "group", "title": title, "members": us.iter().map(|u| u.id.clone()).collect::<Vec<_>>()});
+    // Its person and the person's other agents.
+    let d1 = h.ok(dm(&alice)).await["conv_id"].clone();
+    assert_eq!(h.ok(dm(&alice)).await["conv_id"], d1, "one per pair");
+    assert_eq!(h.ok(dm(&alice)).await["existing"], true);
+    h.ok(dm(&helper2)).await;
+    // Strangers and their agents: refused, nothing created.
+    let before = (
+        conv_count(&hub, &bob).await,
+        conv_count(&hub, &helper).await,
+    );
+    for u in [&bob, &bobs, &carol] {
+        let r = h.call(dm(u)).await;
+        assert_eq!(code(&r), "forbidden", "{}: {r}", u.name);
+    }
+    let r = h.call(group("g", &[&helper2, &bob])).await;
+    assert_eq!(code(&r), "forbidden", "{r}");
+    assert_eq!(
+        (
+            conv_count(&hub, &bob).await,
+            conv_count(&hub, &helper).await
+        ),
+        before
+    );
+    // Once they share a conversation, they are contacts.
+    let shared = a.group(&[&helper, &carol]).await;
+    h.ok(dm(&carol)).await;
+    // A group the agent starts: its person owns it, the agent is admin.
+    let g = h.ok(group("agents", &[&helper2, &carol])).await["conv_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let detail = hub.conv_detail(&g).await.unwrap();
+    assert_eq!(
+        roles(&detail),
+        vec![
+            ("alice".into(), "owner".into()),
+            ("carol".into(), "member".into()),
+            ("helper".into(), "admin".into()),
+            ("helper2".into(), "member".into()),
+        ]
+    );
+    // The person is not added twice when listed.
+    let g2 = h.ok(group("with alice", &[&alice])).await["conv_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(roles(&hub.conv_detail(&g2).await.unwrap()).len(), 2);
+    // A direct conversation does not bring the person along.
+    let d2 = h.ok(dm(&carol)).await["conv_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(roles(&hub.conv_detail(&d2).await.unwrap()).len(), 2);
+    // Adding members as admin: contacts only.
+    let add = |conv: &str, u: &User| json!({"op": "add_member", "conv_id": conv, "user_id": u.id});
+    assert_eq!(code(&h.call(add(&g, &bob)).await), "forbidden");
+    assert_eq!(code(&h.call(add(&g, &bobs)).await), "forbidden");
+    h.ok(add(&g2, &carol)).await;
+    // In a group it does not manage, the usual rule: no adding.
+    assert_eq!(code(&h.call(add(&shared, &helper2)).await), "forbidden");
+    // The person manages the group the agent started.
+    a.ok(json!({"op": "remove_member", "conv_id": g, "user_id": helper2.id}))
+        .await;
+    a.ok(add(&g, &bob)).await;
+    // Blocks still apply to contacts.
+    Conn::new(&hub, &carol)
+        .ok(json!({"op": "block", "user_id": helper.id}))
+        .await;
+    let r = h.call(group("blocked", &[&carol])).await;
+    assert_eq!(code(&r), "blocked", "{r}");
+    a.ok(json!({"op": "dissolve", "conv_id": g})).await;
+}
+
+async fn agent_conversations_are_rate_limited(db: TestDb) {
+    let hub = open(cfg_with(&db, |c| c.agents.conversations_per_hour = 2)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let helper = user(&hub, "helper", UserKind::Agent, Some(&alice)).await;
+    let helper2 = user(&hub, "helper2", UserKind::Agent, Some(&alice)).await;
+    let h = Conn::new(&hub, &helper);
+    let group = json!({"op": "create_conv", "kind": "group", "title": "g", "members": []});
+    let dm = json!({"op": "create_conv", "kind": "dm", "title": "t", "members": [alice.id]});
+    h.ok(group.clone()).await;
+    h.ok(dm.clone()).await;
+    let n = conv_count(&hub, &alice).await;
+    let r = h.call(group.clone()).await;
+    assert_eq!(code(&r), "rate_limited", "{r}");
+    assert_eq!(conv_count(&hub, &alice).await, n, "nothing created");
+    // Refusals for other reasons spend nothing; an existing direct
+    // conversation is returned at any time.
+    assert_eq!(h.ok(dm).await["existing"], true);
+    // Per agent: another agent of the same person is not affected.
+    Conn::new(&hub, &helper2).ok(group).await;
+    // People are not limited.
+    for _ in 0..5 {
+        Conn::new(&hub, &alice).group(&[]).await;
+    }
+}
+
+/// Many opens of the same pair at once: one direct conversation.
+async fn race_agents_open_one_direct_conversation(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    for round in 0..10 {
+        let agent = user(&hub, &format!("h{round}"), UserKind::Agent, Some(&alice)).await;
+        let mut tasks = vec![];
+        for i in 0..6 {
+            let (hub, agent, alice) = (hub.clone(), agent.clone(), alice.clone());
+            tasks.push(tokio::spawn(async move {
+                // Both sides open it at once.
+                let (who, other) = if i % 2 == 0 { (&agent, &alice) } else { (&alice, &agent) };
+                Conn::new(&hub, who)
+                    .ok(json!({"op": "create_conv", "kind": "dm", "title": "t", "members": [other.id]}))
+                    .await["conv_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            }));
+        }
+        let mut ids = HashSet::new();
+        for t in tasks {
+            ids.insert(t.await.unwrap());
+        }
+        assert_eq!(ids.len(), 1, "round {round}");
     }
 }

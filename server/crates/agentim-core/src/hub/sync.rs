@@ -119,6 +119,11 @@ impl Hub {
             {
                 continue;
             }
+            // From reading what was sent until the response is recorded, live
+            // pushes of this conversation wait (they could repeat an event
+            // the response carries); dropping the guard releases them.
+            sh.reg.sync_begin(sess.sid, &conv);
+            let _reading = Reading(&sh.reg, sess.sid, &conv);
             let (sent, sent_side) = sh.reg.sync_sent(sess.sid, &conv);
             let visible_from = st.member.as_ref().map(|m| m.visible_from).unwrap_or(1);
             let mut reset = None;
@@ -176,7 +181,7 @@ impl Hub {
             let read_seq = st.read_seq;
             let policy_sh = sh.clone();
             let side_cap = cfg.batch_size;
-            let (events, side, upto, side_upto) = self
+            let read = self
                 .read(shard, move |db| {
                     Box::pin(async move {
                         let raw = if n > 0 {
@@ -221,7 +226,8 @@ impl Hub {
                         Ok((events, side, upto, side_upto))
                     })
                 })
-                .await?;
+                .await;
+            let (events, side, upto, side_upto) = read?;
             sh.reg.sync_mark(sess.sid, &conv, upto, side_upto);
             budget -= upto - (start - 1);
             let has_more = upto < head;
@@ -558,5 +564,14 @@ impl Session {
         }
         *b = Some((tokens - 1.0, now));
         Ok(())
+    }
+}
+
+/// Ends a sync read of one conversation however the call leaves.
+struct Reading<'a>(&'a crate::registry::Registry, u64, &'a str);
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        self.0.sync_end(self.1, self.2);
     }
 }

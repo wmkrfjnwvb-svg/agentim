@@ -63,11 +63,16 @@ pub struct Config {
 pub struct AgentsConfig {
     /// Agents one person may own.
     pub max_per_owner: usize,
+    /// Conversations one agent may start per hour.
+    pub conversations_per_hour: u32,
 }
 
 impl Default for AgentsConfig {
     fn default() -> Self {
-        AgentsConfig { max_per_owner: 20 }
+        AgentsConfig {
+            max_per_owner: 20,
+            conversations_per_hour: 60,
+        }
     }
 }
 
@@ -701,6 +706,9 @@ impl Config {
         }
         if !(1..=10_000).contains(&self.agents.max_per_owner) {
             return Err("agents.max_per_owner must be 1..10000".into());
+        }
+        if !(1..=100_000).contains(&self.agents.conversations_per_hour) {
+            return Err("agents.conversations_per_hour must be 1..100000".into());
         }
         if !(self.mcp.rate_per_second > 0.0 && self.mcp.burst >= 1.0) {
             return Err("mcp.rate_per_second must be > 0 and burst >= 1".into());

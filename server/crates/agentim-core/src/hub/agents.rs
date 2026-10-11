@@ -132,6 +132,62 @@ impl Hub {
         Ok(json!({"revoked": n}))
     }
 
+    /// Whom an agent may bring into a conversation: its person, that
+    /// person's agents, and whoever already shares a conversation with it.
+    pub(super) async fn agent_may_contact(
+        &self,
+        agent: &User,
+        owner: &User,
+        u: &User,
+    ) -> ApiResult<()> {
+        if u.id == owner.id
+            || (u.kind == UserKind::Agent && u.owner_id.as_deref() == Some(owner.id.as_str()))
+        {
+            return Ok(());
+        }
+        let ids = vec![agent.id.clone(), u.id.clone()];
+        let rows = self
+            .read(self.control(), move |db| {
+                Box::pin(async move { db.member_index_for(&ids).await })
+            })
+            .await?;
+        let mine: std::collections::HashSet<&str> = rows
+            .iter()
+            .filter(|(_, who)| *who == agent.id)
+            .map(|(c, _)| c.as_str())
+            .collect();
+        if rows
+            .iter()
+            .any(|(c, who)| *who == u.id && mine.contains(c.as_str()))
+        {
+            return Ok(());
+        }
+        Err(err(
+            "forbidden",
+            format!(
+                "an agent reaches only its owner, the owner's agents and those it already shares a conversation with; ask your owner to introduce {}",
+                u.name
+            ),
+        ))
+    }
+
+    /// The per-agent budget of new conversations; `take` spends one.
+    pub(super) fn agent_conversation_allowed(&self, agent_id: &str, take: bool) -> bool {
+        let n = self.inner.cfg.agents.conversations_per_hour as f64;
+        let now = std::time::Instant::now();
+        let mut b = self.inner.conv_buckets.lock().unwrap();
+        let (tokens, at) = b.entry(agent_id.to_string()).or_insert((n, now));
+        *tokens = (*tokens + now.duration_since(*at).as_secs_f64() * n / 3600.0).min(n);
+        *at = now;
+        if *tokens < 1.0 {
+            return false;
+        }
+        if take {
+            *tokens -= 1.0;
+        }
+        true
+    }
+
     /// An agent the caller owns: unknown ids and people are `not_found`,
     /// somebody else's agent is `forbidden`.
     fn owned_agent(&self, me: &User, agent_id: &str) -> ApiResult<User> {

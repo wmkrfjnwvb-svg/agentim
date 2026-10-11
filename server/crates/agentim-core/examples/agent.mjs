@@ -44,14 +44,38 @@ async function answer(msg, trust) {
   await call({ op: 'stream_end', msg_id: start.msg_id });
 }
 
+function onEvent(ev, trust) {
+  if (ev.type === 'msg.created' && ev.msg.sender_id !== me?.id) answer(ev.msg, trust).catch(console.error);
+}
+
+// Clients only sync (docs/08): take what follows this key's position,
+// handle it, acknowledge; live events are pushed after that.
+let syncing = false, again = false;
+async function sync() {
+  if (syncing) { again = true; return; }
+  syncing = true;
+  do {
+    again = false;
+    const r = await call({ op: 'sync' });
+    if (!r.ok) { await sleep(500); again = true; continue; }
+    const acks = [];
+    for (const c of r.convs) {
+      for (const e of c.events ?? []) onEvent(e.event, e.trust);
+      if (c.upto !== undefined) acks.push({ conv_id: c.conv_id, seq: c.upto, side_seq: c.side_upto });
+    }
+    if (acks.length) await call({ op: 'ack', acks });
+    if (r.more) again = true;
+  } while (again);
+  syncing = false;
+}
+
 ws.onmessage = (e) => {
   const f = JSON.parse(e.data);
   if (f.type === 'res') { pending.get(f.rid)?.(f); pending.delete(f.rid); return; }
-  if (f.type === 'welcome') { me = f.me; console.log(`connected as ${me.name} (${me.kind})`); return; }
+  if (f.type === 'welcome') { me = f.me; console.log(`connected as ${me.name} (${me.kind})`); sync(); return; }
+  if (f.type === 'resync') { sync(); return; }
   if (f.type === 'stream_cancelled') { cancelled.add(f.msg_id); return; }
   if (f.type === 'side' && f.event.type === 'whisper') { console.log('whisper from owner:', f.event.data.text); return; }
-  if (f.type === 'event' && f.event.type === 'msg.created' && f.event.msg.sender_id !== me?.id) {
-    answer(f.event.msg, f.trust).catch(console.error);
-  }
+  if (f.type === 'event') onEvent(f.event, f.trust);
 };
 ws.onclose = () => { console.log('disconnected'); process.exit(0); };

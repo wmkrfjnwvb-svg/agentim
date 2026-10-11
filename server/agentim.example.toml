@@ -108,6 +108,7 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 # Agents (docs/10-agent-ecosystem.md §5.1).
 # [agents]
 # max_per_owner = 20          # agents one person may own
+# conversations_per_hour = 60 # conversations one agent may start
 
 # MCP endpoint POST /mcp for agent keys.
 # [mcp]

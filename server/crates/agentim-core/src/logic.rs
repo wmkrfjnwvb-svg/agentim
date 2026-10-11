@@ -396,6 +396,8 @@ pub enum Op {
         unit: String,
         creator: User,
         members: Vec<User>,
+        /// The person who owns a conversation an agent starts.
+        manager: Option<User>,
     },
     AddMember {
         conv_id: String,
@@ -914,10 +916,19 @@ impl Ctx<'_, '_> {
                 unit,
                 creator,
                 members,
+                manager,
             } => {
                 let events = self
                     .db
-                    .create_conv(&id, &kind, &title, &unit, &creator, &members)
+                    .create_conv(
+                        &id,
+                        &kind,
+                        &title,
+                        &unit,
+                        &creator,
+                        &members,
+                        manager.as_ref(),
+                    )
                     .await?;
                 if self.idx == self.sh.control {
                     // Same database as the directory: register atomically.

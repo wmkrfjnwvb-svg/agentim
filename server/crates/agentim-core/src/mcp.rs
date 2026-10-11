@@ -384,6 +384,9 @@ pub const TOOLS: &[&str] = &[
     "edit_message",
     "recall_message",
     "find_user",
+    "open_direct",
+    "create_group",
+    "add_member",
 ];
 
 fn tools() -> Value {
@@ -468,6 +471,49 @@ fn tools() -> Value {
                 "additionalProperties": false,
             },
             "annotations": ro,
+        },
+        {
+            "name": "open_direct",
+            "title": "Open a direct conversation",
+            "description": "Opens (or returns the existing) one-to-one conversation with a person or agent: your owner, your owner's agents, or someone you already share a conversation with.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"user": id("User name or id.")},
+                "required": ["user"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+        },
+        {
+            "name": "create_group",
+            "title": "Create a group",
+            "description": "Creates a group with people or agents you may contact (see open_direct). Your owner becomes its owner and you manage it as an admin.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "minLength": 1, "maxLength": 255},
+                    "members": {"type": "array", "items": {"type": "string", "minLength": 1}, "maxItems": 500, "description": "User names or ids."},
+                },
+                "required": ["title", "members"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "add_member",
+            "title": "Add a member",
+            "description": "Adds a person or agent you may contact to a group you manage.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The group."),
+                    "user": id("User name or id."),
+                    "history": {"type": "integer", "minimum": 0, "description": "How many recent messages the new member sees (optional)."},
+                },
+                "required": ["conv_id", "user"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
         },
     ])
 }
@@ -621,6 +667,55 @@ async fn call_tool(
                 format!("Found {}.", v["user"]["id"].as_str().unwrap_or("")),
                 v,
             ))
+        }
+        "open_direct" => {
+            only(args, &["user"])?;
+            let other = need(args, "user")?;
+            let v = run(json!({"op": "create_conv", "kind": "dm", "title": format!("{} and {other}", user.name), "members": [other]})).await?;
+            Ok((
+                format!(
+                    "Direct conversation {}.",
+                    v["conv_id"].as_str().unwrap_or("")
+                ),
+                v,
+            ))
+        }
+        "create_group" => {
+            only(args, &["title", "members"])?;
+            let members = match args.get("members") {
+                Some(Value::Array(a))
+                    if a.len() <= 500
+                        && a.iter().all(|m| m.as_str().is_some_and(|x| !x.is_empty())) =>
+                {
+                    a.clone()
+                }
+                _ => {
+                    return Err(ApiError::new(
+                        "bad_request",
+                        "members must be a list of up to 500 user names or ids",
+                    ));
+                }
+            };
+            let v = run(json!({"op": "create_conv", "kind": "group", "title": need(args, "title")?, "members": members})).await?;
+            Ok((
+                format!("Group {} created.", v["conv_id"].as_str().unwrap_or("")),
+                v,
+            ))
+        }
+        "add_member" => {
+            only(args, &["conv_id", "user", "history"])?;
+            let mut m = json!({"op": "add_member", "conv_id": need(args, "conv_id")?, "user_id": need(args, "user")?});
+            match args.get("history") {
+                None | Some(Value::Null) => {}
+                Some(h) => {
+                    m["history"] = json!(h.as_i64().ok_or_else(|| ApiError::new(
+                        "bad_request",
+                        "history must be an integer"
+                    ))?);
+                }
+            }
+            let v = run(m).await?;
+            Ok(("Added.".into(), v))
         }
         _ => Err(ApiError::new("bad_request", "unknown tool")),
     }
