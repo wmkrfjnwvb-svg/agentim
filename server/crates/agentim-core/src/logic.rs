@@ -54,6 +54,8 @@ pub struct HubConfig {
     pub open_stats: bool,
     /// AgentIM Lite or AgentIM (docs/01-product.md §6).
     pub edition: crate::edition::Edition,
+    /// Sync-only clients and retention (docs/08-sync-and-client.md).
+    pub sync: crate::config::SyncConfig,
 }
 
 impl Default for HubConfig {
@@ -71,6 +73,7 @@ impl Default for HubConfig {
             gc_every: Duration::from_secs(600),
             open_stats: false,
             edition: Default::default(),
+            sync: Default::default(),
         }
     }
 }
@@ -355,6 +358,7 @@ pub enum Op {
         conv_id: String,
         actor: User,
         user: User,
+        history: Option<i64>,
     },
     /// Removal by someone else, or leaving when `user` is the actor.
     RemoveMember {
@@ -367,6 +371,34 @@ pub enum Op {
         actor: User,
     },
     // control database, membership lifecycle
+    /// Sync positions a device stored (docs/08 §2.1): (conv, seq, side seq).
+    AckCursors {
+        device_id: String,
+        user_id: String,
+        acks: Vec<(String, i64, i64)>,
+    },
+    /// A device logged out (or every device of a user): their positions in
+    /// this database go.
+    DropDevice {
+        user_id: String,
+        device_id: Option<String>,
+    },
+    /// Control database: a user left (or lost) a conversation at `seq`.
+    Departure {
+        user_id: String,
+        conv_id: String,
+        seq: i64,
+        dissolved: bool,
+    },
+    /// Control database: the user is a member again.
+    Rejoined {
+        user_id: String,
+        conv_id: String,
+    },
+    SetPrefs {
+        user_id: String,
+        prefs: Value,
+    },
     MemberIndexRemove {
         conv_id: String,
         user_id: String,
@@ -432,6 +464,11 @@ impl Op {
             Op::RemoveMember { .. } => "remove_member",
             Op::Dissolve { .. } => "dissolve",
             Op::MemberIndexRemove { .. } => "member_index_remove",
+            Op::AckCursors { .. } => "ack_cursors",
+            Op::DropDevice { .. } => "drop_device",
+            Op::Departure { .. } => "departure",
+            Op::Rejoined { .. } => "rejoined",
+            Op::SetPrefs { .. } => "set_prefs",
             Op::ForgetConv(_) => "forget_conv",
             Op::SetBlock { .. } => "set_block",
             Op::DmPut { .. } => "dm_put",
@@ -778,13 +815,62 @@ impl Ctx<'_, '_> {
                 conv_id,
                 actor,
                 user,
-            } => self.add_member(&conv_id, &actor, &user).await,
+                history,
+            } => self.add_member(&conv_id, &actor, &user, history).await,
             Op::RemoveMember {
                 conv_id,
                 actor,
                 user,
             } => self.remove_member(&conv_id, &actor, &user).await,
             Op::Dissolve { conv_id, actor } => self.dissolve(&conv_id, &actor).await,
+            Op::AckCursors {
+                device_id,
+                user_id,
+                acks,
+            } => {
+                let mut n = 0;
+                for (conv, seq, side) in acks {
+                    // A device keeps acknowledging a conversation it lost
+                    // until it has the removal (its position exists); one
+                    // that never had it gets nothing new.
+                    if self.db.member(&conv, &user_id).await?.is_none()
+                        && self.db.cursor(&device_id, &conv).await?.is_none()
+                    {
+                        continue;
+                    }
+                    self.db
+                        .ack_cursor(&device_id, &conv, &user_id, seq, side)
+                        .await?;
+                    n += 1;
+                }
+                Ok(json!({"stored": n}))
+            }
+            Op::DropDevice { user_id, device_id } => {
+                let n = match device_id {
+                    Some(d) => self.db.drop_device_cursors(&d).await?,
+                    None => self.db.drop_user_cursors(&user_id).await?,
+                };
+                Ok(json!({"dropped": n}))
+            }
+            Op::Departure {
+                user_id,
+                conv_id,
+                seq,
+                dissolved,
+            } => {
+                self.db
+                    .departure_put(&user_id, &conv_id, seq, dissolved)
+                    .await?;
+                Ok(json!({}))
+            }
+            Op::Rejoined { user_id, conv_id } => {
+                self.db.departure_clear(&user_id, &conv_id).await?;
+                Ok(json!({}))
+            }
+            Op::SetPrefs { user_id, prefs } => {
+                self.db.set_prefs(&user_id, &prefs).await?;
+                Ok(json!({}))
+            }
             Op::MemberIndexRemove { conv_id, user_id } => {
                 self.db.member_index_remove(&conv_id, &user_id).await?;
                 Ok(json!({}))
@@ -898,6 +984,33 @@ impl Ctx<'_, '_> {
                 payload,
             } => self.edit(me, &msg_id, &text, payload).await,
             ClientMsg::Recall { msg_id } => self.recall(me, &msg_id).await,
+            ClientMsg::SetMute {
+                conv_id,
+                mode,
+                until,
+            } => {
+                self.require_member(&conv_id, &me.id).await?;
+                if !["none", "all", "mentions"].contains(&mode.as_str()) {
+                    return Err(err("bad_request", "mode must be none, all or mentions"));
+                }
+                let until = if mode == "none" { None } else { until };
+                if until.is_some_and(|u| u <= now_ms()) {
+                    return Err(err("bad_request", "until must be in the future"));
+                }
+                self.db.set_mute(&conv_id, &me.id, &mode, until).await?;
+                self.st.members.remove(&conv_id);
+                self.st.recips.remove(&conv_id);
+                // The user's other devices show the same setting.
+                let frame =
+                    json!({"type": "mute", "conv_id": conv_id, "mode": mode, "until": until});
+                for sid in self.sh.reg.others(&me.id, sess.sid) {
+                    self.out.push(Out::ToSession {
+                        sid,
+                        frame: frame.clone(),
+                    });
+                }
+                Ok(json!({"mode": mode, "until": until}))
+            }
             ClientMsg::Read { conv_id, seq } => {
                 self.require_member(&conv_id, &me.id).await?;
                 // A cursor past the head would hide messages that arrive later.
@@ -1164,7 +1277,7 @@ impl Ctx<'_, '_> {
 
     /// What an agent member may read (bounded by its trigger mode).
     pub async fn agent_can_see(db: &mut Db<'_>, m: &Member, ev: &Event) -> ApiResult<bool> {
-        if ev.seq < m.join_seq {
+        if ev.seq < m.visible_from {
             return Ok(false);
         }
         let Some(msg) = &ev.msg else { return Ok(true) };
@@ -1197,6 +1310,7 @@ impl Ctx<'_, '_> {
                             owner_id: mb.owner_id.clone(),
                             visible: true,
                             trust: None,
+                            notify: false,
                         })
                         .collect(),
                 );
@@ -1232,6 +1346,19 @@ impl Ctx<'_, '_> {
             Arc::new(recips)
         } else {
             base
+        };
+        // New messages notify members who did not send them and have not
+        // muted the conversation (docs/08 §2.6).
+        let recips = match (&ev.msg, ev.kind.as_str()) {
+            (Some(msg), "msg.created") => {
+                let now = now_ms();
+                let mut r = (*recips).clone();
+                for (mb, x) in members.iter().zip(r.iter_mut()) {
+                    x.notify = mb.notified_by(msg, now);
+                }
+                Arc::new(r)
+            }
+            _ => recips,
         };
         metrics::counter!(m::EVENTS_COMMITTED, "type" => ev.kind.clone()).increment(1);
         if ev.kind == "msg.created"
@@ -1378,8 +1505,21 @@ impl Ctx<'_, '_> {
 
     // ---------------------------------------------------------- membership
 
-    async fn add_member(&mut self, conv_id: &str, me: &User, u: &User) -> ApiResult<Value> {
+    async fn add_member(
+        &mut self,
+        conv_id: &str,
+        me: &User,
+        u: &User,
+        history: Option<i64>,
+    ) -> ApiResult<Value> {
         self.own_conv(conv_id)?;
+        let cfg = &self.sh.cfg.sync;
+        if history.is_some_and(|n| !(0..=cfg.share_max).contains(&n)) {
+            return Err(err(
+                "bad_request",
+                format!("history must be 0..{}", cfg.share_max),
+            ));
+        }
         let mine = self.require_member(conv_id, &me.id).await?;
         let own_agent = u.owner_id.as_deref() == Some(me.id.as_str());
         if !is_manager(&mine.role) && !own_agent {
@@ -1405,9 +1545,23 @@ impl Ctx<'_, '_> {
                 "a direct conversation has fixed members",
             ));
         }
+        // How much of the past the new member sees (docs/08 §2.4): people get
+        // the configured default, agents nothing, unless the adder says so.
+        let cfg = &self.sh.cfg.sync;
+        let n = history.unwrap_or(if u.kind == UserKind::Agent {
+            0
+        } else {
+            cfg.member_messages
+        });
+        let since = now_ms() - cfg.member_window.as_millis() as i64;
+        let from = self
+            .db
+            .window_start(conv_id, conv.last_seq, n, since)
+            .await?;
+        let history_from = (from <= conv.last_seq).then_some(from);
         let ev = self
             .db
-            .add_member(conv_id, &conv.kind, u, "member", &me.id)
+            .add_member(conv_id, &conv.kind, u, "member", &me.id, history_from)
             .await?;
         self.st.members.remove(conv_id);
         self.st.recips.remove(conv_id);
@@ -1424,6 +1578,7 @@ impl Ctx<'_, '_> {
         }
         if self.idx == self.sh.control {
             self.db.member_index_add(conv_id, &u.id).await?;
+            self.db.departure_clear(&u.id, conv_id).await?;
         }
         let seq = ev.seq;
         self.emit(ev).await?;
@@ -1536,6 +1691,8 @@ impl Ctx<'_, '_> {
         });
         if self.idx == self.sh.control {
             self.db.member_index_remove(conv_id, &u.id).await?;
+            // Their devices still sync up to this event (docs/08 §2.3).
+            self.db.departure_put(&u.id, conv_id, seq, false).await?;
         }
         self.db
             .audit(Some(&me.id), kind, Some(conv_id), Some(&u.id), json!({}))
@@ -1702,6 +1859,10 @@ impl Ctx<'_, '_> {
         self.db.cx.drop_scope(conv_id);
         if self.idx == self.sh.control {
             self.db.forget_conv(conv_id).await?;
+            // Members' devices learn it is gone at their next sync.
+            for u in &members {
+                self.db.departure_put(u, conv_id, 0, true).await?;
+            }
         }
         self.db
             .audit(
@@ -2430,6 +2591,17 @@ impl Ctx<'_, '_> {
             self.db
                 .dedup_gc(now_ms() - self.sh.cfg.dedup_ttl.as_millis() as i64)
                 .await?;
+            let sync = &self.sh.cfg.sync;
+            let now = now_ms();
+            let stale = now - sync.device_ttl.as_millis() as i64;
+            self.db.drop_stale_cursors(stale).await?;
+            self.db.drop_old_departures(stale).await?;
+            if let Some(keep) = sync.retention {
+                let n = self.db.purge_before(now - keep.as_millis() as i64).await?;
+                if n > 0 {
+                    tracing::info!(rows = n, "retention: deleted old conversation content");
+                }
+            }
         }
         Ok(())
     }

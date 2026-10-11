@@ -133,7 +133,8 @@ function connect() {
     const h = await call({ op: 'hello' });
     h.users.forEach(u => S.users[u.id] = u); S.myAgents = h.my_agents;
     await refreshConvs();
-    // Reconnect: catch up from the last seen seq of the open conversation.
+    // The server keeps this device's position: sync what follows it.
+    await sync();
     if (S.cur) await openConv(S.cur.conv_id);
     await refreshDrafts();
   };
@@ -158,24 +159,23 @@ async function onFrame(f) {
   if (f.type === 'event') {
     const ev = f.event, c = ev.conv_id;
     if (!S.convs.some(x => x.conv_id === c)) { refreshConvs(); return; }
-    if (c in S.lastSeq) {
-      // Push is only a hint: apply in order, pull on a gap.
-      if (ev.seq === S.lastSeq[c] + 1) { apply(c, ev); S.lastSeq[c] = ev.seq; }
-      else if (ev.seq > S.lastSeq[c]) await pull(c);
-    }
+    // After a sync the server pushes each conversation in order; a gap
+    // means sync again.
+    if (ev.seq === (S.lastSeq[c] || 0) + 1 || !(c in S.lastSeq)) { apply(c, ev); S.lastSeq[c] = ev.seq; ack(c); }
+    else if (ev.seq > S.lastSeq[c]) await sync();
     if (S.cur && S.cur.conv_id === c) { render(); markRead(); } else bumpUnread(c, ev);
     if (ev.type === 'member.policy' || ev.type === 'member.joined') refreshConvs();
     return;
   }
   if (f.type === 'side') {
-    const ev = f.event; (S.side[ev.conv_id] ||= []).push(ev); S.sideSeq[ev.conv_id] = ev.side_seq;
+    const ev = f.event; (S.side[ev.conv_id] ||= []).push(ev); S.sideSeq[ev.conv_id] = ev.side_seq; ack(ev.conv_id);
     if (ev.type.startsWith('draft')) refreshDrafts();
     if (S.cur && S.cur.conv_id === ev.conv_id) render(); else renderPanel();
     return;
   }
   if (f.type === 'resync') {
-    // The server dropped pushes for this conversation (slow connection): pull.
-    if (f.conv_id in S.lastSeq) { await pull(f.conv_id); if (S.cur && S.cur.conv_id === f.conv_id) render(); }
+    // The server held pushes back for this conversation: sync.
+    await sync(); if (S.cur && S.cur.conv_id === f.conv_id) render();
     return;
   }
   if (f.type === 'delta') {
@@ -195,20 +195,48 @@ function apply(c, ev) {
   } else log.sys.push(ev);
 }
 
-async function pull(c) {
-  const cv = S.convs.find(x => x.conv_id === c);
+// Clients only sync (docs/08): what follows this device's position comes
+// in rounds; each round is acknowledged once applied. One sync at a time.
+async function sync() {
+  if (S.syncing) { S.syncAgain = true; return; }
+  S.syncing = true;
+  try {
+    do {
+      S.syncAgain = false;
+      for (let i = 0; i < 200; i++) {
+        const r = await call({ op: 'sync' });
+        const acks = [];
+        for (const x of r.convs) {
+          if (x.dissolved) { delete S.logs[x.conv_id]; continue; }
+          (x.events || []).forEach(e => apply(x.conv_id, e.event));
+          (x.side_events || []).forEach(ev => { (S.side[x.conv_id] ||= []).push(ev); });
+          if (x.upto !== undefined) { S.lastSeq[x.conv_id] = Math.max(S.lastSeq[x.conv_id] || 0, x.upto); S.sideSeq[x.conv_id] = x.side_upto; acks.push({ conv_id: x.conv_id, seq: x.upto, side_seq: x.side_upto }); }
+        }
+        if (acks.length) await call({ op: 'ack', acks });
+        if (!r.more) break;
+      }
+    } while (S.syncAgain);
+  } finally { S.syncing = false; }
+}
+
+// Pushes are acknowledged in small batches.
+function ack(c) {
+  (S.toAck ||= new Set()).add(c);
+  clearTimeout(ack.t);
+  ack.t = setTimeout(() => {
+    const acks = [...S.toAck].map(c => ({ conv_id: c, seq: S.lastSeq[c] || 0, side_seq: S.sideSeq[c] || 0 }));
+    S.toAck.clear();
+    if (acks.length) call({ op: 'ack', acks }).catch(() => {});
+  }, 200);
+}
+
+// An owner watching a conversation through one of their agents (audited).
+async function observe(c, agent) {
   for (;;) {
-    const r = await call({ op: 'pull', conv_id: c, after_seq: S.lastSeq[c] || 0, ...(cv && cv.observer_via ? { as_agent: cv.observer_via } : {}) });
+    const r = await call({ op: 'observe', conv_id: c, agent_id: agent, after_seq: S.lastSeq[c] || 0 });
     r.events.forEach(e => apply(c, e.event)); S.lastSeq[c] = r.upto_seq;
     if (!r.has_more) break;
   }
-}
-
-async function pullSide(c) {
-  try {
-    const r = await call({ op: 'pull_side', conv_id: c, after_side_seq: S.sideSeq[c] || 0 });
-    r.side_events.forEach(ev => { (S.side[c] ||= []).push(ev); S.sideSeq[c] = ev.side_seq; });
-  } catch (e) {}
 }
 
 async function refreshConvs() {
@@ -228,9 +256,8 @@ function bumpUnread(c, ev) {
 async function openConv(id) {
   S.cur = S.convs.find(c => c.conv_id === id);
   S.logs[id] ||= newLog();
-  if (!(id in S.lastSeq)) S.lastSeq[id] = 0;
   await call({ op: 'focus', conv_id: id, ...(S.cur.observer_via ? { as_agent: S.cur.observer_via } : {}) });
-  await pull(id); await pullSide(id);
+  if (S.cur.observer_via) await observe(id, S.cur.observer_via); else await sync();
   $('title').textContent = S.cur.title; $('observing').hidden = !S.cur.observer_via;
   $('composer').style.display = S.cur.observer_via ? 'none' : 'flex';
   S.cur.unread = 0; markRead(); renderConvs(); render();

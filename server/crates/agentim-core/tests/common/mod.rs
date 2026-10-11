@@ -153,6 +153,8 @@ pub fn single(url: &str) -> Config {
         server: Default::default(),
         auth: Default::default(),
         encryption: test_encryption(),
+        sync: Default::default(),
+        retention: Default::default(),
     }
 }
 
@@ -188,6 +190,8 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
         server: Default::default(),
         auth: Default::default(),
         encryption: test_encryption(),
+        sync: Default::default(),
+        retention: Default::default(),
     }
 }
 
@@ -217,14 +221,63 @@ pub async fn user_in(hub: &Hub, name: &str, unit: &str) -> User {
 pub struct Conn {
     pub s: Session,
     pub rx: Pushes,
+    hub: Hub,
 }
 
 impl Conn {
     pub fn new(hub: &Hub, u: &User) -> Conn {
         let (s, rx) = hub.connect(u.clone());
-        Conn { s, rx }
+        Conn {
+            s,
+            rx,
+            hub: hub.clone(),
+        }
     }
+    /// A connection of a registered device (sync positions persist).
+    pub fn device(hub: &Hub, u: &User, device_id: &str) -> Conn {
+        let (s, rx) = hub.connect_device(u.clone(), Some(device_id.to_string()));
+        Conn {
+            s,
+            rx,
+            hub: hub.clone(),
+        }
+    }
+    /// Sends a request. Tests read the server log with `pull` / `pull_side`
+    /// as before, but that goes to the server-side read (`Hub::read_log`):
+    /// clients themselves can only sync (docs/08).
     pub async fn call(&self, v: Value) -> Value {
+        let op = v["op"].as_str().unwrap_or("");
+        if (op == "pull" && v["as_agent"].is_null()) || op == "pull_side" {
+            let conv = v["conv_id"].as_str().unwrap_or("");
+            let r = if op == "pull" {
+                self.hub
+                    .read_log(
+                        &self.s.user,
+                        conv,
+                        v["after_seq"].as_i64().unwrap_or(0),
+                        v["limit"].as_i64().unwrap_or(200),
+                    )
+                    .await
+            } else {
+                self.hub
+                    .read_side(
+                        &self.s.user,
+                        conv,
+                        v["after_side_seq"].as_i64().unwrap_or(0),
+                    )
+                    .await
+            };
+            return match r {
+                Ok(mut x) => {
+                    x["ok"] = json!(true);
+                    x["type"] = json!("res");
+                    x
+                }
+                Err(e) => {
+                    json!({"ok": false, "type": "res", "error": {"code": e.code, "message": e.message}})
+                }
+            };
+        }
         self.s.handle_text(&v.to_string()).await
     }
     pub async fn ok(&self, v: Value) -> Value {

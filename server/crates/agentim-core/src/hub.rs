@@ -20,6 +20,8 @@ use crate::protocol;
 use crate::registry::{Out, Pushes, Registry};
 use crate::shard::Shard;
 
+mod sync;
+
 fn err(code: &'static str, msg: impl Into<String>) -> ApiError {
     ApiError::new(code, msg)
 }
@@ -63,6 +65,10 @@ pub struct Session {
     client: std::sync::Mutex<ClientState>,
     /// Signal rate window: (start, count).
     signals: std::sync::Mutex<(Instant, u32)>,
+    /// Sync rate bucket: (tokens, last refill).
+    sync_bucket: std::sync::Mutex<Option<(f64, Instant)>>,
+    /// When this session's device was registered (cached).
+    device_created: std::sync::Mutex<Option<i64>>,
 }
 
 /// Signals one connection may send per second.
@@ -874,6 +880,8 @@ impl Hub {
                 features: Vec::new(),
             }),
             signals: std::sync::Mutex::new((Instant::now(), 0)),
+            sync_bucket: std::sync::Mutex::new(None),
+            device_created: std::sync::Mutex::new(None),
         };
         self.dispatch(&sess, msg).await
     }
@@ -1131,6 +1139,15 @@ impl Hub {
             }
         }
         self.inner.sh.reg.kick(user_id, device_id);
+        // The logged-out device forgets its positions (a new login starts
+        // like a new device).
+        for s in &self.inner.shards {
+            s.call(Op::DropDevice {
+                user_id: user_id.to_string(),
+                device_id: device_id.map(String::from),
+            })
+            .await?;
+        }
         Ok(hashes.len())
     }
 
@@ -1164,6 +1181,8 @@ impl Hub {
                     features: Vec::new(),
                 }),
                 signals: std::sync::Mutex::new((Instant::now(), 0)),
+                sync_bucket: std::sync::Mutex::new(None),
+                device_created: std::sync::Mutex::new(None),
             },
             rx,
         )
@@ -1451,6 +1470,18 @@ impl Hub {
                     .await?;
                 if shard.idx != self.inner.sh.control {
                     self.control().call(Op::ForgetConv(conv_id.clone())).await?;
+                    for u in v["members"].as_array().into_iter().flatten() {
+                        if let Some(u) = u.as_str() {
+                            self.control()
+                                .call(Op::Departure {
+                                    user_id: u.to_string(),
+                                    conv_id: conv_id.clone(),
+                                    seq: 0,
+                                    dissolved: true,
+                                })
+                                .await?;
+                        }
+                    }
                 }
                 self.inner.sh.dir_set(&conv_id, None);
                 Ok(json!({"members": v["members"]}))
@@ -1461,7 +1492,11 @@ impl Hub {
                 title,
                 members,
             } => self.create_conv(me, &kind, &title, &members).await,
-            ClientMsg::AddMember { conv_id, user_id } => {
+            ClientMsg::AddMember {
+                conv_id,
+                user_id,
+                history,
+            } => {
                 let user = self
                     .inner
                     .sh
@@ -1476,6 +1511,7 @@ impl Hub {
                             conv_id: conv_id.clone(),
                             actor: me.clone(),
                             user: user.clone(),
+                            history,
                         })
                         .await
                     {
@@ -1486,26 +1522,55 @@ impl Hub {
                 if shard.idx != self.inner.sh.control {
                     self.control()
                         .call(Op::MemberIndexAdd {
-                            conv_id,
+                            conv_id: conv_id.clone(),
+                            user_id: user.id.clone(),
+                        })
+                        .await?;
+                    self.control()
+                        .call(Op::Rejoined {
                             user_id: user.id,
+                            conv_id,
                         })
                         .await?;
                 }
                 Ok(v)
             }
+            // Clients only sync (docs/08); reading by seq stays for the
+            // open API (the system identity) and owners observing an agent.
             ClientMsg::Pull {
                 conv_id,
                 after_seq,
                 limit,
                 as_agent,
-            } => {
-                self.pull(sess, &conv_id, after_seq, limit.unwrap_or(200), as_agent)
+            } if me.id == SYSTEM_ID || as_agent.is_some() => {
+                self.pull_as(me, &conv_id, after_seq, limit.unwrap_or(200), as_agent)
                     .await
             }
-            ClientMsg::PullSide {
+            ClientMsg::Pull { .. } | ClientMsg::PullSide { .. } => Err(err(
+                "bad_request",
+                "reading history by seq was replaced by sync and ack",
+            )),
+            ClientMsg::Observe {
                 conv_id,
-                after_side_seq,
-            } => self.pull_side(me, &conv_id, after_side_seq).await,
+                agent_id,
+                after_seq,
+                limit,
+            } => {
+                self.pull_as(
+                    me,
+                    &conv_id,
+                    after_seq,
+                    limit.unwrap_or(200),
+                    Some(agent_id),
+                )
+                .await
+            }
+            ClientMsg::Sync { limit } => self.sync(sess, limit).await,
+            ClientMsg::Ack { acks } => self.ack(sess, acks).await,
+            ClientMsg::Unread => self.unread_summary(me).await,
+            ClientMsg::SetPrefs {
+                read_silences_others,
+            } => self.set_prefs(me, read_silences_others).await,
             ClientMsg::Focus { conv_id, as_agent } => match &conv_id {
                 Some(c) => {
                     self.reader_member(me, c, as_agent.as_deref()).await?;
@@ -1539,6 +1604,7 @@ impl Hub {
             }
             ClientMsg::Send { ref conv_id, .. }
             | ClientMsg::Read { ref conv_id, .. }
+            | ClientMsg::SetMute { ref conv_id, .. }
             | ClientMsg::StreamStart { ref conv_id, .. }
             | ClientMsg::Whisper { ref conv_id, .. }
             | ClientMsg::Takeover { ref conv_id, .. }
@@ -1813,16 +1879,34 @@ impl Hub {
         .ok_or_else(|| err("forbidden", "not a member of this conversation"))
     }
 
-    async fn pull(
+    /// Server-side reads by seq for the open API, tests and owners
+    /// observing an agent; people only see from where their membership
+    /// allows (docs/08 §2.4). Clients sync instead.
+    pub async fn read_log(
         &self,
-        sess: &Session,
+        me: &User,
+        conv: &str,
+        after: i64,
+        limit: i64,
+    ) -> ApiResult<Value> {
+        self.pull_as(me, conv, after, limit, None).await
+    }
+
+    /// Side events of a conversation addressed to `me` (server-side read).
+    pub async fn read_side(&self, me: &User, conv: &str, after: i64) -> ApiResult<Value> {
+        self.pull_side(me, conv, after).await
+    }
+
+    async fn pull_as(
+        &self,
+        me: &User,
         conv: &str,
         after: i64,
         limit: i64,
         as_agent: Option<String>,
     ) -> ApiResult<Value> {
-        let me = &sess.user;
         let reader = self.reader_member(me, conv, as_agent.as_deref()).await?;
+        let after = after.max(reader.visible_from - 1);
         let shard = self.conv_shard(conv)?;
         if let Some(a) = &as_agent {
             shard
@@ -2021,7 +2105,15 @@ impl Hub {
             self.control()
                 .call(Op::MemberIndexRemove {
                     conv_id: conv_id.to_string(),
+                    user_id: user.id.clone(),
+                })
+                .await?;
+            self.control()
+                .call(Op::Departure {
                     user_id: user.id,
+                    conv_id: conv_id.to_string(),
+                    seq: v["seq"].as_i64().unwrap_or(0),
+                    dissolved: false,
                 })
                 .await?;
         }

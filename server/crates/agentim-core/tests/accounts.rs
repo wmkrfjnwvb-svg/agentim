@@ -132,8 +132,7 @@ async fn changing_a_password(db: TestDb) {
     let t1 = login(&hub, "alice", PW, None).await.unwrap();
     let t2 = login(&hub, "alice", PW, None).await.unwrap();
     let (u, d1) = hub.authenticate_device(&t1).unwrap();
-    let (s, rx) = hub.connect_device(u, Some(d1));
-    let c = Conn { s, rx };
+    let c = Conn::device(&hub, &u, &d1);
     let set = |current: Option<&str>, new: &str| json!({"op": "set_password", "current": current, "new": new});
     for (cur, new, want) in [
         (None, "brand new password", "forbidden"),
@@ -165,8 +164,9 @@ async fn changing_a_password(db: TestDb) {
         .await
         .unwrap();
     let (u, d) = hub.authenticate_device(&tb).unwrap();
-    let (s, rx) = hub.connect_device(u, Some(d));
-    Conn { s, rx }.ok(set(None, "bobs first password")).await;
+    Conn::device(&hub, &u, &d)
+        .ok(set(None, "bobs first password"))
+        .await;
     assert!(
         login(&hub, "bob", "bobs first password", None)
             .await
@@ -305,8 +305,7 @@ async fn two_factor_login(db: TestDb) {
     // Over the client protocol.
     let t = login(&hub, "alice", PW, None).await.unwrap();
     let (u, d) = hub.authenticate_device(&t).unwrap();
-    let (s, rx) = hub.connect_device(u, Some(d));
-    let c = Conn { s, rx };
+    let c = Conn::device(&hub, &u, &d);
     let v = c.ok(json!({"op": "totp_setup"})).await;
     assert!(v["secret"].is_string());
     let r = c.call(json!({"op": "totp_enable", "code": "999999"})).await;

@@ -141,7 +141,7 @@ Message {
 | 环节 | 行为 |
 |---|---|
 | 发送 | `send` 可选 `kind` 和 `payload`。`kind` 缺省或为 `text` 时不能带 `payload`。自定义类型必须带命名空间：至少两段、以点分隔，每段以小写字母开头、只含 `a-z0-9_-`，总长不超过 64 字节，`agentim.` 保留给内置类型。`payload` 必须是 JSON 对象，序列化后不超过 32 KiB，也可以不带。`text` 照常必填，就是老客户端显示的降级文本 |
-| 存储与读取 | `payload` 和消息写在同一个事务（表结构 v2 的 `messages.payload`），推送、`pull`、重启后都原样返回；去重、seq、权限和普通消息完全一样 |
+| 存储与读取 | `payload` 和消息写在同一个事务（表结构 v2 的 `messages.payload`），推送、同步、重启后都原样返回；去重、seq、权限和普通消息完全一样 |
 | 编辑 | `edit` 可以带新的 `payload` 替换旧的；不带就保留。纯文本消息带 `payload` 返回 `bad_request` |
 | 撤回 | 数据库里的 `payload` 清空，此前所有事件快照里的 `payload` 也清空 |
 | 仅某人可见 | 侧信道事件里带上 `kind` 和 `payload` |
@@ -162,7 +162,7 @@ Message {
 | 至少一次 | 成功后通过写线程移动游标（`meta` 里的 `webhook:<name>`）。重启后从游标继续；接收方用 `webhook-id` 去重 |
 | 签名 | 请求头 `webhook-id`、`webhook-timestamp`、`webhook-signature: v1,<base64(HMAC-SHA256(id.timestamp.body))>`，和 Standard Webhooks 一致，现成的验签库可以直接用 |
 | 请求体 | `{"type", "timestamp", "database", "data": {"conv_id", "seq", "event"}}` |
-| 重试 | 非 2xx 或超时就按指数退避重试（最长 5 分钟一次）；超过 `max_attempts` 次后放弃这一条，写审计 `webhook.dropped`，计入 `agentim_webhook_dropped_total`，然后继续发后面的。接收方可以用 `pull` 按 seq 补齐 |
+| 重试 | 非 2xx 或超时就按指数退避重试（最长 5 分钟一次）；超过 `max_attempts` 次后放弃这一条，写审计 `webhook.dropped`，计入 `agentim_webhook_dropped_total`，然后继续发后面的。接收方可以用开放 API 的历史接口按 seq 补齐 |
 | 清理 | 所有 Webhook 都处理过的行立即删除 |
 | 新增 Webhook | 从当前位置开始，不重放历史 |
 | 多库 | 每个库有自己的 outbox 和投递任务，`database` 字段标明来源 |

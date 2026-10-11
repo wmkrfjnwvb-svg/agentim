@@ -94,8 +94,7 @@ async fn each_login_is_a_device(db: TestDb) {
         .unwrap();
     let (u, d1) = hub.authenticate_device(&t1).unwrap();
     assert_eq!(u.id, alice.id);
-    let (s1, p1) = hub.connect_device(alice.clone(), Some(d1.clone()));
-    let mut c1 = Conn { s: s1, rx: p1 };
+    let mut c1 = Conn::device(&hub, &alice, &d1);
     // A second login: a new device, announced to the first.
     let (t2, row) = hub
         .issue_token(&alice.id, Some("laptop"), Some("windows"), None, "test")

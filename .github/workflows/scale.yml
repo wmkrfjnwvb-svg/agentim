@@ -14,7 +14,7 @@ on:
         description: Traffic duration per scenario (seconds)
         default: "120"
   push:
-    paths: ["server/examples/scale.rs", ".github/workflows/scale.yml"]
+    paths: ["server/crates/agentim-core/examples/scale.rs", ".github/workflows/scale.yml"]
 
 defaults:
   run:

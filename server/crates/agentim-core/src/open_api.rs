@@ -1054,6 +1054,9 @@ struct AddMembers {
     #[serde(rename = "as")]
     who: Option<String>,
     users: Vec<String>,
+    /// Earlier messages the new members may see (docs/08 §2.4).
+    #[serde(default)]
+    history: Option<i64>,
 }
 
 async fn add_members(
@@ -1079,6 +1082,7 @@ async fn add_members(
                     ClientMsg::AddMember {
                         conv_id: id.clone(),
                         user_id: x.id,
+                        history: req.history,
                     },
                 )
                 .await

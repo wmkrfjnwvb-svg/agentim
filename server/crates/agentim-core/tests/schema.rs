@@ -76,8 +76,19 @@ async fn downgrade(db: &TestDb, version: i64) {
     }
     drop(c);
     set_meta(db, "schema_version", Some(&version.to_string())).await;
-    // Version 1 databases predate compat tracking.
-    set_meta(db, "schema_compat", None).await;
+    // Version 1 databases predate compat tracking; later ones record the
+    // compat of the migrations they had.
+    let compat = MIGRATIONS
+        .iter()
+        .filter(|m| m.version <= version)
+        .map(|m| m.compat)
+        .max();
+    set_meta(
+        db,
+        "schema_compat",
+        compat.map(|c| c.to_string()).as_deref(),
+    )
+    .await;
 }
 
 /// Every table has exactly the columns `TABLES` declares.

@@ -12,7 +12,7 @@ use crate::model::{ApiError, ApiResult};
 
 /// Version of the schema in `TABLES`. Bump it together with a new entry in
 /// `MIGRATIONS` (docs/02-architecture.md §5.3).
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -206,6 +206,8 @@ pub const TABLES: &[Table] = &[
             n("avatar", Text),
             n("fields", Text),
             n("deactivated_at", Big),
+            // v3: per-user settings (JSON), e.g. read on one device silences the others.
+            n("prefs", Text),
         ],
         pk: &["id"],
         indexes: &[
@@ -364,6 +366,11 @@ pub const TABLES: &[Table] = &[
             c("trigger_mode", Id),
             c("approval", Big),
             c("join_seq", Big),
+            // v3: first event this member may see (NULL: before v3 — people see
+            // everything, agents from join_seq); mute setting.
+            n("visible_from", Big),
+            n("mute_mode", Id),
+            n("mute_until", Big),
         ],
         pk: &["conv_id", "user_id"],
         indexes: &[],
@@ -454,6 +461,37 @@ pub const TABLES: &[Table] = &[
         cols: &[c("conv_id", Id), c("user_id", Id), c("read_seq", Big)],
         pk: &["conv_id", "user_id"],
         indexes: &[],
+        conv_key: Some("conv_id"),
+    },
+    // v3: conversations a user left or was removed from (or that were
+    // dissolved), so their devices sync up to that point (control database).
+    Table {
+        name: "departures",
+        cols: &[
+            c("user_id", Id),
+            c("conv_id", Id),
+            c("seq", Big),
+            c("dissolved", Big),
+            c("at", Big),
+        ],
+        pk: &["user_id", "conv_id"],
+        indexes: &[],
+        conv_key: None,
+    },
+    // v3: how far each device has received and acknowledged a conversation
+    // (docs/08-sync-and-client.md §2.1). Kept by the server; clients only ack.
+    Table {
+        name: "device_cursors",
+        cols: &[
+            c("device_id", Id),
+            c("conv_id", Id),
+            c("user_id", Id),
+            c("acked_seq", Big),
+            c("acked_side_seq", Big),
+            c("updated_at", Big),
+        ],
+        pk: &["device_id", "conv_id"],
+        indexes: &[("device_cursors_conv_user", &["conv_id", "user_id"], false)],
         conv_key: Some("conv_id"),
     },
     Table {
@@ -610,46 +648,71 @@ pub struct Migration {
 }
 
 /// Every migration after version 1, in order.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 2,
-    compat: 1,
-    about: "custom message kinds, webhook outbox, hashed tokens and devices, open API keys, profiles and custom fields, passwords, encryption keys",
-    steps: &[
-        Step::AddColumn {
-            table: "messages",
-            column: "payload",
-        },
-        Step::AddColumn {
-            table: "drafts",
-            column: "kind",
-        },
-        Step::AddColumn {
-            table: "drafts",
-            column: "payload",
-        },
-        Step::AddColumn {
-            table: "users",
-            column: "display_name",
-        },
-        Step::AddColumn {
-            table: "users",
-            column: "avatar",
-        },
-        Step::AddColumn {
-            table: "users",
-            column: "fields",
-        },
-        Step::AddColumn {
-            table: "users",
-            column: "deactivated_at",
-        },
-        Step::AddColumn {
-            table: "conversations",
-            column: "fields",
-        },
-        Step::HashLegacyTokens,
-    ],
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 2,
+        compat: 1,
+        about: "custom message kinds, webhook outbox, hashed tokens and devices, open API keys, profiles and custom fields, passwords, encryption keys",
+        steps: &[
+            Step::AddColumn {
+                table: "messages",
+                column: "payload",
+            },
+            Step::AddColumn {
+                table: "drafts",
+                column: "kind",
+            },
+            Step::AddColumn {
+                table: "drafts",
+                column: "payload",
+            },
+            Step::AddColumn {
+                table: "users",
+                column: "display_name",
+            },
+            Step::AddColumn {
+                table: "users",
+                column: "avatar",
+            },
+            Step::AddColumn {
+                table: "users",
+                column: "fields",
+            },
+            Step::AddColumn {
+                table: "users",
+                column: "deactivated_at",
+            },
+            Step::AddColumn {
+                table: "conversations",
+                column: "fields",
+            },
+            Step::HashLegacyTokens,
+        ],
+    },
+    Migration {
+        version: 3,
+        compat: 1,
+        about: "sync-only clients: device cursors, member history start and mute, user settings",
+        steps: &[
+            Step::AddColumn {
+                table: "users",
+                column: "prefs",
+            },
+            Step::AddColumn {
+                table: "members",
+                column: "visible_from",
+            },
+            Step::AddColumn {
+                table: "members",
+                column: "mute_mode",
+            },
+            Step::AddColumn {
+                table: "members",
+                column: "mute_until",
+            },
+        ],
+    },
+];
 
 fn table(name: &str) -> &'static Table {
     TABLES

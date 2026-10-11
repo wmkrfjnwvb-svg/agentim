@@ -458,19 +458,40 @@ impl Conn {
         }
     }
 
-    /// Every seq after `after` up to the head, pulled page by page.
-    async fn pull_seqs(&self, conv: &str, mut after: i64) -> Result<Vec<i64>, String> {
-        let mut out = vec![];
+    /// Every seq of `conv` after `after` up to the head, and the head. Clients only sync
+    /// (docs/08): take what follows the device position, acknowledge, until
+    /// nothing more is owed.
+    async fn pull_seqs(&self, conv: &str, after: i64) -> Result<(Vec<i64>, i64), String> {
+        let (mut out, mut head) = (vec![], 0);
         loop {
-            let r = self
-                .call(json!({"op": "pull", "conv_id": conv, "after_seq": after, "limit": 1000}))
-                .await?;
-            for e in r["events"].as_array().unwrap() {
-                out.push(e["event"]["seq"].as_i64().unwrap());
+            let r = match self.call(json!({"op": "sync", "limit": 5000})).await {
+                Ok(r) => r,
+                Err(e) if e.contains("rate_limited") => {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            let mut acks = vec![];
+            for c in r["convs"].as_array().unwrap() {
+                if c["conv_id"] == conv {
+                    head = head.max(c["last_seq"].as_i64().unwrap_or(0));
+                    for e in c["events"].as_array().unwrap() {
+                        let seq = e["event"]["seq"].as_i64().unwrap();
+                        if seq > after {
+                            out.push(seq);
+                        }
+                    }
+                }
+                acks.push(
+                    json!({"conv_id": c["conv_id"], "seq": c["upto"], "side_seq": c["side_upto"]}),
+                );
             }
-            after = r["upto_seq"].as_i64().unwrap();
-            if r["has_more"] != true {
-                return Ok(out);
+            if !acks.is_empty() {
+                self.call(json!({"op": "ack", "acks": acks})).await?;
+            }
+            if r["more"] != true {
+                return Ok((out, head));
             }
         }
     }
@@ -569,6 +590,10 @@ async fn main() {
         a.group_size
     );
     let rss_base = rss_mb(a.server_pid);
+    // One extra member per group reads the head. It has its own device: a
+    // device's position is shared by its connections (docs/08), so reading
+    // with a receiver's token would move that receiver's position.
+    let probes = create_users(&a.addr, &format!("sc-{tag}-probe"), groups_n).await;
     let source = |i: usize| -> u8 { 1 + (i % a.sources.max(1) as usize) as u8 };
     let mut convs: Vec<String> = vec![];
     for g in 0..groups_n {
@@ -576,6 +601,7 @@ async fn main() {
             .iter()
             .skip(g * a.group_size)
             .take(a.group_size)
+            .chain(std::iter::once(&probes[g]))
             .map(|u| u.id.as_str())
             .collect();
         let owner = &users[g * a.group_size];
@@ -635,27 +661,12 @@ async fn main() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Head of every conversation before traffic: receivers must see all after it.
-    let probe = open_retry(&a.addr, &users[0].token, 1, None, totals.clone())
-        .await
-        .unwrap();
     let mut base: Vec<i64> = vec![];
     for (g, conv) in convs.iter().enumerate() {
-        let owner = &users[g * a.group_size];
-        let c = if g == 0 {
-            &probe
-        } else {
-            &open_retry(&a.addr, &owner.token, 1, None, totals.clone())
-                .await
-                .unwrap()
-        };
-        base.push(
-            c.pull_seqs(conv, 0)
-                .await
-                .unwrap()
-                .last()
-                .copied()
-                .unwrap_or(0),
-        );
+        let c = &open_retry(&a.addr, &probes[g].token, 1, None, totals.clone())
+            .await
+            .unwrap();
+        base.push(c.pull_seqs(conv, 0).await.unwrap().1);
     }
 
     // ---- senders: their own connections, spread over the groups
@@ -761,23 +772,10 @@ async fn main() {
     // ---- verify every receiver
     let mut heads = vec![];
     for (g, conv) in convs.iter().enumerate() {
-        let c = open_retry(
-            &a.addr,
-            &users[g * a.group_size].token,
-            1,
-            None,
-            totals.clone(),
-        )
-        .await
-        .unwrap();
-        heads.push(
-            c.pull_seqs(conv, 0)
-                .await
-                .unwrap()
-                .last()
-                .copied()
-                .unwrap_or(0),
-        );
+        let c = open_retry(&a.addr, &probes[g].token, 1, None, totals.clone())
+            .await
+            .unwrap();
+        heads.push(c.pull_seqs(conv, 0).await.unwrap().1);
     }
     let silent = AtomicU64::new(0);
     let lost = AtomicU64::new(0);
@@ -840,7 +838,7 @@ async fn main() {
                 // Told to resync (or reconnected): pulling must fill the gap.
                 let conn = r.conn.as_ref().unwrap();
                 match conn.pull_seqs(conv, missing[0] - 1).await {
-                    Ok(seqs) => {
+                    Ok((seqs, _)) => {
                         let mut v = r.recv.view.lock().unwrap();
                         for s in seqs {
                             v.mark(s);

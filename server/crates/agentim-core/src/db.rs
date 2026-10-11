@@ -210,7 +210,7 @@ pub enum Cell {
 
 const MSG_COLS: &str = "msg_id, conv_id, created_seq, sender_id, sender_name, sender_type, on_behalf_of, kind, content,
     version, state, state_reason, hop, causation_id, reply_to, mentions, created_at, updated_at, payload";
-const MEMBER_COLS: &str = "user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq";
+const MEMBER_COLS: &str = "user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq, visible_from, mute_mode, mute_until";
 const DRAFT_COLS: &str = "draft_id, conv_id, agent_id, content, hop, causation_id, reply_to, state, created_at, kind, payload";
 
 fn row_user(r: &AnyRow) -> sqlx::Result<User> {
@@ -258,6 +258,18 @@ fn row_member(r: &AnyRow) -> sqlx::Result<Member> {
         trigger: Trigger::parse(&r.try_get::<String, _>("trigger_mode")?),
         approval: r.try_get::<i64, _>("approval")? != 0,
         join_seq: r.try_get("join_seq")?,
+        visible_from: match r.try_get::<Option<i64>, _>("visible_from")? {
+            Some(v) => v,
+            // Before v3 people saw the whole history, agents from joining.
+            None if UserKind::parse(&r.try_get::<String, _>("kind")?) == UserKind::Agent => {
+                r.try_get("join_seq")?
+            }
+            None => 1,
+        },
+        mute_mode: r
+            .try_get::<Option<String>, _>("mute_mode")?
+            .unwrap_or_else(|| "none".into()),
+        mute_until: r.try_get("mute_until")?,
     })
 }
 
@@ -1132,7 +1144,11 @@ impl Db<'_> {
             } else {
                 "member"
             };
-            events.push(self.add_member(id, kind, u, role, &creator.id).await?);
+            // Members from the start see the whole conversation.
+            events.push(
+                self.add_member(id, kind, u, role, &creator.id, Some(1))
+                    .await?,
+            );
         }
         Ok(events)
     }
@@ -1144,6 +1160,8 @@ impl Db<'_> {
         u: &User,
         role: &str,
         actor: &str,
+        // Earlier events the member may see, from this seq (None: from joining).
+        history_from: Option<i64>,
     ) -> ApiResult<Event> {
         if self.member(conv_id, &u.id).await?.is_some() {
             return Err(ApiError::new("conflict", "already a member"));
@@ -1160,11 +1178,12 @@ impl Db<'_> {
                 "member.joined",
                 Some(actor),
                 None,
-                json!({"user_id": u.id, "name": u.name, "kind": u.kind, "owner_id": u.owner_id, "role": role, "trigger": trigger}),
+                json!({"user_id": u.id, "name": u.name, "kind": u.kind, "owner_id": u.owner_id, "role": role, "trigger": trigger, "history_from": history_from}),
             )
             .await?;
+        let visible_from = history_from.unwrap_or(ev.seq).min(ev.seq).max(1);
         sqlx::query(self.d.q(
-            "INSERT INTO members (conv_id, user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+            "INSERT INTO members (conv_id, user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq, visible_from, mute_mode) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'none')",
         ))
         .bind(conv_id)
         .bind(&u.id)
@@ -1174,9 +1193,52 @@ impl Db<'_> {
         .bind(role)
         .bind(trigger.as_str())
         .bind(ev.seq)
+        .bind(visible_from)
         .execute(&mut *self.c)
         .await?;
         Ok(ev)
+    }
+
+    /// First seq of a conversation at or after a time (None: nothing that new).
+    pub async fn first_seq_since(&mut self, conv_id: &str, ts: i64) -> ApiResult<Option<i64>> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT MIN(seq) FROM events WHERE conv_id = ? AND created_at >= ?"),
+        )
+        .bind(conv_id)
+        .bind(ts)
+        .fetch_one(&mut *self.c)
+        .await?;
+        Ok(r.try_get::<Option<i64>, _>(0)?)
+    }
+
+    /// Oldest seq still stored (retention deletes older ones).
+    pub async fn first_seq(&mut self, conv_id: &str) -> ApiResult<Option<i64>> {
+        let r = sqlx::query(self.d.q("SELECT MIN(seq) FROM events WHERE conv_id = ?"))
+            .bind(conv_id)
+            .fetch_one(&mut *self.c)
+            .await?;
+        Ok(r.try_get::<Option<i64>, _>(0)?)
+    }
+
+    /// Where a window of history starts: the last `n` events within `since`,
+    /// never before what is still stored. `last_seq + 1` when there is none.
+    pub async fn window_start(
+        &mut self,
+        conv_id: &str,
+        last_seq: i64,
+        n: i64,
+        since: i64,
+    ) -> ApiResult<i64> {
+        if n <= 0 {
+            return Ok(last_seq + 1);
+        }
+        let by_time = self
+            .first_seq_since(conv_id, since)
+            .await?
+            .unwrap_or(last_seq + 1);
+        let floor = self.first_seq(conv_id).await?.unwrap_or(1);
+        Ok((last_seq - n + 1).max(by_time).max(floor).max(1))
     }
 
     pub async fn members(&mut self, conv_id: &str) -> ApiResult<Vec<Member>> {
@@ -1727,6 +1789,262 @@ impl Db<'_> {
             .execute(&mut *self.c)
             .await?;
         }
+        Ok(())
+    }
+
+    // ------------------------------------------------- sync (docs/08)
+
+    /// A device's acknowledged (seq, side seq) for a conversation.
+    pub async fn cursor(
+        &mut self,
+        device_id: &str,
+        conv_id: &str,
+    ) -> ApiResult<Option<(i64, i64)>> {
+        let r = sqlx::query(self.d.q(
+            "SELECT acked_seq, acked_side_seq FROM device_cursors WHERE device_id = ? AND conv_id = ?",
+        ))
+        .bind(device_id)
+        .bind(conv_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        Ok(
+            r.map(|r| Ok::<_, sqlx::Error>((r.try_get(0)?, r.try_get(1)?)))
+                .transpose()?,
+        )
+    }
+
+    /// Moves a device's position forward (never back).
+    pub async fn ack_cursor(
+        &mut self,
+        device_id: &str,
+        conv_id: &str,
+        user_id: &str,
+        seq: i64,
+        side_seq: i64,
+    ) -> ApiResult<()> {
+        let now = now_ms();
+        match self.cursor(device_id, conv_id).await? {
+            Some((a, s)) => {
+                sqlx::query(self.d.q(
+                    "UPDATE device_cursors SET acked_seq = ?, acked_side_seq = ?, updated_at = ? WHERE device_id = ? AND conv_id = ?",
+                ))
+                .bind(a.max(seq))
+                .bind(s.max(side_seq))
+                .bind(now)
+                .bind(device_id)
+                .bind(conv_id)
+                .execute(&mut *self.c)
+                .await?;
+            }
+            None => {
+                sqlx::query(self.d.q(
+                    "INSERT INTO device_cursors (device_id, conv_id, user_id, acked_seq, acked_side_seq, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ))
+                .bind(device_id)
+                .bind(conv_id)
+                .bind(user_id)
+                .bind(seq)
+                .bind(side_seq)
+                .bind(now)
+                .execute(&mut *self.c)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A member lost access: their devices forget the conversation.
+    pub async fn drop_cursors_of(&mut self, conv_id: &str, user_id: &str) -> ApiResult<u64> {
+        Ok(sqlx::query(
+            self.d
+                .q("DELETE FROM device_cursors WHERE conv_id = ? AND user_id = ?"),
+        )
+        .bind(conv_id)
+        .bind(user_id)
+        .execute(&mut *self.c)
+        .await?
+        .rows_affected())
+    }
+
+    pub async fn departure_put(
+        &mut self,
+        user_id: &str,
+        conv_id: &str,
+        seq: i64,
+        dissolved: bool,
+    ) -> ApiResult<()> {
+        self.departure_clear(user_id, conv_id).await?;
+        sqlx::query(self.d.q(
+            "INSERT INTO departures (user_id, conv_id, seq, dissolved, at) VALUES (?, ?, ?, ?, ?)",
+        ))
+        .bind(user_id)
+        .bind(conv_id)
+        .bind(seq)
+        .bind(dissolved as i64)
+        .bind(now_ms())
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn departure_clear(&mut self, user_id: &str, conv_id: &str) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("DELETE FROM departures WHERE user_id = ? AND conv_id = ?"),
+        )
+        .bind(user_id)
+        .bind(conv_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    /// (conv_id, seq, dissolved) a user left, newest first.
+    pub async fn departures(&mut self, user_id: &str) -> ApiResult<Vec<(String, i64, bool)>> {
+        let rows = sqlx::query(self.d.q(
+            "SELECT conv_id, seq, dissolved FROM departures WHERE user_id = ? ORDER BY at DESC",
+        ))
+        .bind(user_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(|r| Ok((r.try_get(0)?, r.try_get(1)?, r.try_get::<i64, _>(2)? != 0)))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn drop_old_departures(&mut self, before: i64) -> ApiResult<u64> {
+        Ok(sqlx::query(self.d.q("DELETE FROM departures WHERE at < ?"))
+            .bind(before)
+            .execute(&mut *self.c)
+            .await?
+            .rows_affected())
+    }
+
+    /// A device logged out: it forgets every conversation in this database.
+    pub async fn drop_device_cursors(&mut self, device_id: &str) -> ApiResult<u64> {
+        Ok(
+            sqlx::query(self.d.q("DELETE FROM device_cursors WHERE device_id = ?"))
+                .bind(device_id)
+                .execute(&mut *self.c)
+                .await?
+                .rows_affected(),
+        )
+    }
+
+    pub async fn drop_user_cursors(&mut self, user_id: &str) -> ApiResult<u64> {
+        Ok(
+            sqlx::query(self.d.q("DELETE FROM device_cursors WHERE user_id = ?"))
+                .bind(user_id)
+                .execute(&mut *self.c)
+                .await?
+                .rows_affected(),
+        )
+    }
+
+    /// Devices silent since `before` lose their positions (docs/08 §2.5).
+    pub async fn drop_stale_cursors(&mut self, before: i64) -> ApiResult<u64> {
+        Ok(
+            sqlx::query(self.d.q("DELETE FROM device_cursors WHERE updated_at < ?"))
+                .bind(before)
+                .execute(&mut *self.c)
+                .await?
+                .rows_affected(),
+        )
+    }
+
+    /// Deletes conversation content older than `before` (retention). The
+    /// conversation keeps its `last_seq`, so new events continue the log.
+    pub async fn purge_before(&mut self, before: i64) -> ApiResult<u64> {
+        let mut n = 0;
+        for t in ["events", "side_events", "messages"] {
+            n += sqlx::query(self.d.q(&format!("DELETE FROM {t} WHERE created_at < ?")))
+                .bind(before)
+                .execute(&mut *self.c)
+                .await?
+                .rows_affected();
+        }
+        Ok(n)
+    }
+
+    /// When an event was written (None: no longer stored).
+    pub async fn event_time(&mut self, conv_id: &str, seq: i64) -> ApiResult<Option<i64>> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT created_at FROM events WHERE conv_id = ? AND seq = ?"),
+        )
+        .bind(conv_id)
+        .bind(seq)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        Ok(r.map(|r| r.try_get(0)).transpose()?)
+    }
+
+    pub async fn set_mute(
+        &mut self,
+        conv_id: &str,
+        user_id: &str,
+        mode: &str,
+        until: Option<i64>,
+    ) -> ApiResult<()> {
+        sqlx::query(self.d.q(
+            "UPDATE members SET mute_mode = ?, mute_until = ? WHERE conv_id = ? AND user_id = ?",
+        ))
+        .bind(mode)
+        .bind(until)
+        .bind(conv_id)
+        .bind(user_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    /// Unread messages that mention the user.
+    pub async fn unread_mentions(&mut self, conv_id: &str, user_id: &str) -> ApiResult<i64> {
+        let read = self.read_seq(conv_id, user_id).await?;
+        let r = sqlx::query(self.d.q(
+            "SELECT COUNT(*) FROM messages WHERE conv_id = ? AND created_seq > ? AND sender_id <> ? AND state <> ? AND mentions LIKE ?",
+        ))
+        .bind(conv_id)
+        .bind(read)
+        .bind(user_id)
+        .bind("recalled")
+        .bind(format!("%\"{user_id}\"%"))
+        .fetch_one(&mut *self.c)
+        .await?;
+        Ok(r.try_get(0)?)
+    }
+
+    /// When a device was registered (its first token).
+    pub async fn device_created(&mut self, device_id: &str) -> ApiResult<Option<i64>> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT MIN(created_at) FROM tokens WHERE device_id = ?"),
+        )
+        .bind(device_id)
+        .fetch_one(&mut *self.c)
+        .await?;
+        Ok(r.try_get::<Option<i64>, _>(0)?)
+    }
+
+    pub async fn prefs(&mut self, user_id: &str) -> ApiResult<Value> {
+        let r = sqlx::query(self.d.q("SELECT prefs FROM users WHERE id = ?"))
+            .bind(user_id)
+            .fetch_optional(&mut *self.c)
+            .await?;
+        Ok(
+            r.and_then(|r| r.try_get::<Option<String>, _>(0).ok().flatten())
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| json!({})),
+        )
+    }
+
+    pub async fn set_prefs(&mut self, user_id: &str, prefs: &Value) -> ApiResult<()> {
+        sqlx::query(self.d.q("UPDATE users SET prefs = ? WHERE id = ?"))
+            .bind(prefs.to_string())
+            .bind(user_id)
+            .execute(&mut *self.c)
+            .await?;
         Ok(())
     }
 

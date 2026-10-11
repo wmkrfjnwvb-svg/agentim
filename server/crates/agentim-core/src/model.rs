@@ -24,6 +24,9 @@ pub fn system_member() -> Member {
         trigger: Trigger::Mention,
         approval: false,
         join_seq: 0,
+        visible_from: 1,
+        mute_mode: "none".into(),
+        mute_until: None,
     }
 }
 pub const UNIT_DEFAULT: &str = "default";
@@ -100,6 +103,29 @@ pub struct Member {
     pub trigger: Trigger,
     pub approval: bool,
     pub join_seq: i64,
+    /// First event this member may see (docs/08 §2.4).
+    pub visible_from: i64,
+    /// `none`, `all` (no notifications) or `mentions` (only when mentioned).
+    pub mute_mode: String,
+    /// Mute ends at this time (ms); None = until changed.
+    pub mute_until: Option<i64>,
+}
+
+impl Member {
+    /// Whether an event should notify this member (docs/08 §2.6): never for
+    /// their own messages, nor while muted (`mentions` still notifies when
+    /// they are mentioned).
+    pub fn notified_by(&self, msg: &MsgView, now: i64) -> bool {
+        if msg.sender_id == self.user_id {
+            return false;
+        }
+        let muted = self.mute_until.is_none_or(|u| u > now);
+        match self.mute_mode.as_str() {
+            "all" if muted => false,
+            "mentions" if muted => msg.mentions.contains(&self.user_id),
+            _ => true,
+        }
+    }
 }
 
 /// Snapshot of a message at a given version. Embedded in every `msg.*` event so
@@ -191,6 +217,10 @@ pub enum ClientMsg {
     AddMember {
         conv_id: String,
         user_id: String,
+        /// Earlier messages the new member may see (docs/08 §2.4); default
+        /// from the server configuration.
+        #[serde(default)]
+        history: Option<i64>,
     },
     /// Owner / admin removes a member; anyone removes an agent they own.
     RemoveMember {
@@ -280,6 +310,36 @@ pub enum ClientMsg {
     Read {
         conv_id: String,
         seq: i64,
+    },
+    /// Receive what this device has not acknowledged yet (docs/08 §2).
+    Sync {
+        #[serde(default)]
+        limit: Option<i64>,
+    },
+    /// Positions this device has stored durably.
+    Ack {
+        acks: Vec<AckItem>,
+    },
+    /// `none`, `all` or `mentions`, optionally until a time (ms).
+    SetMute {
+        conv_id: String,
+        mode: String,
+        #[serde(default)]
+        until: Option<i64>,
+    },
+    Unread,
+    SetPrefs {
+        #[serde(default)]
+        read_silences_others: Option<bool>,
+    },
+    /// An owner reads a conversation as one of their agents sees it (audited).
+    Observe {
+        conv_id: String,
+        agent_id: String,
+        #[serde(default)]
+        after_seq: i64,
+        #[serde(default)]
+        limit: Option<i64>,
     },
     Focus {
         conv_id: Option<String>,
@@ -393,6 +453,12 @@ impl ClientMsg {
             ClientMsg::Pull { .. } => "pull",
             ClientMsg::PullSide { .. } => "pull_side",
             ClientMsg::Read { .. } => "read",
+            ClientMsg::Sync { .. } => "sync",
+            ClientMsg::Ack { .. } => "ack",
+            ClientMsg::SetMute { .. } => "set_mute",
+            ClientMsg::Unread => "unread",
+            ClientMsg::SetPrefs { .. } => "set_prefs",
+            ClientMsg::Observe { .. } => "observe",
             ClientMsg::Focus { .. } => "focus",
             ClientMsg::StreamStart { .. } => "stream_start",
             ClientMsg::StreamAppend { .. } => "stream_append",
@@ -432,6 +498,8 @@ impl ClientMsg {
             | ClientMsg::Pull { conv_id, .. }
             | ClientMsg::PullSide { conv_id, .. }
             | ClientMsg::Read { conv_id, .. }
+            | ClientMsg::SetMute { conv_id, .. }
+            | ClientMsg::Observe { conv_id, .. }
             | ClientMsg::StreamStart { conv_id, .. }
             | ClientMsg::Whisper { conv_id, .. }
             | ClientMsg::Takeover { conv_id, .. }
@@ -442,6 +510,15 @@ impl ClientMsg {
             _ => None,
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AckItem {
+    pub conv_id: String,
+    #[serde(default)]
+    pub seq: i64,
+    #[serde(default)]
+    pub side_seq: i64,
 }
 
 pub fn now_ms() -> i64 {

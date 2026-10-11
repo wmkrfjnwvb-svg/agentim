@@ -121,6 +121,22 @@ struct Client {
     pending: Pending,
     rid: std::sync::atomic::AtomicU64,
     pushes: Arc<Mutex<Vec<Value>>>,
+    /// The client's local log per conversation, by seq: what sync returned
+    /// and what was pushed live (a push counts as delivered).
+    logs: Logs,
+}
+
+type Logs = Arc<Mutex<HashMap<String, BTreeMap<i64, Value>>>>;
+
+async fn keep(logs: &Logs, ev: &Value) {
+    let (Some(conv), Some(seq)) = (ev["conv_id"].as_str(), ev["seq"].as_i64()) else {
+        return;
+    };
+    logs.lock()
+        .await
+        .entry(conv.to_string())
+        .or_default()
+        .insert(seq, ev.clone());
 }
 
 impl Client {
@@ -143,7 +159,8 @@ impl Client {
         });
         let pending: Pending = Arc::default();
         let pushes: Arc<Mutex<Vec<Value>>> = Arc::default();
-        let (p2, pu2) = (pending.clone(), pushes.clone());
+        let logs: Logs = Arc::default();
+        let (p2, pu2, l2) = (pending.clone(), pushes.clone(), logs.clone());
         tokio::spawn(async move {
             while let Some(Ok(Message::Text(t))) = stream.next().await {
                 let v: Value = serde_json::from_str(t.as_str()).unwrap();
@@ -152,6 +169,9 @@ impl Client {
                         let _ = tx.send(v);
                     }
                 } else {
+                    if v["type"] == "event" {
+                        keep(&l2, &v["event"]).await;
+                    }
                     pu2.lock().await.push(v);
                 }
             }
@@ -162,6 +182,7 @@ impl Client {
             pending,
             rid: Default::default(),
             pushes,
+            logs,
         })
     }
 
@@ -189,25 +210,32 @@ impl Client {
         r
     }
 
+    /// The client's copy of a conversation's log. Clients only sync
+    /// (docs/08): take what follows the device position, keep it, acknowledge,
+    /// until nothing more is owed.
     async fn pull_all(&self, conv: &str) -> Vec<Value> {
-        let mut out = vec![];
-        let mut after = 0;
         loop {
-            let r = self
-                .ok(json!({"op": "pull", "conv_id": conv, "after_seq": after, "limit": 1000}))
-                .await;
-            out.extend(
-                r["events"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|e| e["event"].clone()),
-            );
-            after = r["upto_seq"].as_i64().unwrap();
-            if r["has_more"] != true {
-                return out;
+            let r = self.ok(json!({"op": "sync"})).await;
+            let mut acks = vec![];
+            for c in r["convs"].as_array().unwrap() {
+                for e in c["events"].as_array().unwrap() {
+                    keep(&self.logs, &e["event"]).await;
+                }
+                acks.push(
+                    json!({"conv_id": c["conv_id"], "seq": c["upto"], "side_seq": c["side_upto"]}),
+                );
+            }
+            if !acks.is_empty() {
+                self.ok(json!({"op": "ack", "acks": acks})).await;
+            }
+            if r["more"] != true {
+                break;
             }
         }
+        let logs = self.logs.lock().await;
+        logs.get(conv)
+            .map(|l| l.values().cloned().collect())
+            .unwrap_or_default()
     }
 }
 

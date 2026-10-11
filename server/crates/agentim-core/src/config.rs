@@ -44,6 +44,152 @@ pub struct Config {
     pub auth: AuthConfig,
     #[serde(default)]
     pub encryption: EncryptionConfig,
+    /// Sync-only clients (docs/08-sync-and-client.md).
+    #[serde(default)]
+    pub sync: SyncFile,
+    #[serde(default)]
+    pub retention: RetentionFile,
+}
+
+/// `[sync]` in the configuration file; days and counts.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SyncFile {
+    pub batch_size: i64,
+    pub max_unacked: i64,
+    pub max_gap: i64,
+    pub device_ttl_days: i64,
+    pub window_days: i64,
+    pub max_messages: i64,
+    pub older_enabled: bool,
+    pub older_messages: i64,
+    pub older_max: i64,
+    pub member_messages: i64,
+    pub member_days: i64,
+    pub share_max: i64,
+    pub rate_per_second: f64,
+    pub burst: f64,
+    pub agent_rate_per_second: f64,
+    pub agent_burst: f64,
+}
+
+impl Default for SyncFile {
+    fn default() -> Self {
+        let d = SyncConfig::default();
+        SyncFile {
+            batch_size: d.batch_size,
+            max_unacked: d.max_unacked,
+            max_gap: d.max_gap,
+            device_ttl_days: 30,
+            window_days: 90,
+            max_messages: d.max_messages,
+            older_enabled: d.older_enabled,
+            older_messages: d.older_messages,
+            older_max: d.older_max,
+            member_messages: d.member_messages,
+            member_days: 30,
+            share_max: d.share_max,
+            rate_per_second: d.rate.0,
+            burst: d.rate.1,
+            agent_rate_per_second: d.agent_rate.0,
+            agent_burst: d.agent_rate.1,
+        }
+    }
+}
+
+/// `[retention]`: how long the server keeps conversation events.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RetentionFile {
+    /// 0 keeps everything.
+    pub days: i64,
+}
+
+impl Default for RetentionFile {
+    fn default() -> Self {
+        RetentionFile { days: 180 }
+    }
+}
+
+/// The longest history window a device or member may get (docs/08 §2.4).
+pub const MAX_WINDOW_DAYS: i64 = 90;
+const DAY: std::time::Duration = std::time::Duration::from_secs(86_400);
+
+/// Sync settings as the hub uses them.
+#[derive(Debug, Clone)]
+pub struct SyncConfig {
+    /// Events per conversation per sync round.
+    pub batch_size: i64,
+    /// Events sent to a device and not acknowledged yet, per conversation.
+    pub max_unacked: i64,
+    /// A device further behind than this starts over like a new device.
+    pub max_gap: i64,
+    /// Devices that acknowledge nothing for this long lose their positions.
+    pub device_ttl: std::time::Duration,
+    /// New devices: the last `max_messages` events within `window`.
+    pub window: std::time::Duration,
+    pub max_messages: i64,
+    /// Conversations with nothing in the window: none, or the last few events.
+    pub older_enabled: bool,
+    pub older_messages: i64,
+    pub older_max: i64,
+    /// New people in a group: the last `member_messages` within `member_window`.
+    pub member_messages: i64,
+    pub member_window: std::time::Duration,
+    /// Most history whoever adds someone may share.
+    pub share_max: i64,
+    /// Sync rounds per second and burst, for people and for agents.
+    pub rate: (f64, f64),
+    pub agent_rate: (f64, f64),
+    /// Events older than this are deleted; None keeps everything.
+    pub retention: Option<std::time::Duration>,
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        SyncConfig {
+            batch_size: 200,
+            max_unacked: 1000,
+            max_gap: 10_000,
+            device_ttl: DAY * 30,
+            window: DAY * 90,
+            max_messages: 200,
+            older_enabled: false,
+            older_messages: 20,
+            older_max: 100,
+            member_messages: 50,
+            member_window: DAY * 30,
+            share_max: 200,
+            rate: (10.0, 20.0),
+            agent_rate: (2.0, 5.0),
+            retention: Some(DAY * 180),
+        }
+    }
+}
+
+impl Config {
+    /// The sync settings of this configuration.
+    pub fn sync_config(&self) -> SyncConfig {
+        let f = &self.sync;
+        let days = |n: i64| DAY * n.max(0) as u32;
+        SyncConfig {
+            batch_size: f.batch_size,
+            max_unacked: f.max_unacked,
+            max_gap: f.max_gap,
+            device_ttl: days(f.device_ttl_days),
+            window: days(f.window_days),
+            max_messages: f.max_messages,
+            older_enabled: f.older_enabled,
+            older_messages: f.older_messages,
+            older_max: f.older_max,
+            member_messages: f.member_messages,
+            member_window: days(f.member_days),
+            share_max: f.share_max,
+            rate: (f.rate_per_second, f.burst),
+            agent_rate: (f.agent_rate_per_second, f.agent_burst),
+            retention: (self.retention.days > 0).then(|| days(self.retention.days)),
+        }
+    }
 }
 
 /// Encryption at rest (docs/04-security-compliance.md §2.6). On by default.
@@ -364,6 +510,8 @@ impl Config {
             server: Default::default(),
             auth: Default::default(),
             encryption: Default::default(),
+            sync: Default::default(),
+            retention: Default::default(),
         }
     }
 
@@ -462,6 +610,49 @@ impl Config {
                 ));
             }
         }
+        let sy = &self.sync;
+        if !(1..=1000).contains(&sy.batch_size) || sy.max_unacked < sy.batch_size {
+            return Err(
+                "sync.batch_size must be 1..1000 and sync.max_unacked >= batch_size".into(),
+            );
+        }
+        if sy.max_gap < sy.max_messages || sy.device_ttl_days < 1 {
+            return Err(
+                "sync.max_gap must be >= sync.max_messages and sync.device_ttl_days >= 1".into(),
+            );
+        }
+        if !(1..=MAX_WINDOW_DAYS).contains(&sy.window_days)
+            || !(1..=MAX_WINDOW_DAYS).contains(&sy.member_days)
+        {
+            return Err(format!(
+                "sync.window_days and sync.member_days must be 1..{MAX_WINDOW_DAYS}"
+            ));
+        }
+        if !(1..=1000).contains(&sy.max_messages)
+            || !(0..=sy.max_messages).contains(&sy.member_messages)
+            || !(0..=1000).contains(&sy.share_max)
+        {
+            return Err("sync.max_messages must be 1..1000, member_messages 0..max_messages, share_max 0..1000".into());
+        }
+        if !(1..=1000).contains(&sy.older_max) || !(0..=sy.older_max).contains(&sy.older_messages) {
+            return Err(
+                "sync.older_max must be 1..1000 and sync.older_messages 0..older_max".into(),
+            );
+        }
+        if !(sy.rate_per_second > 0.0
+            && sy.burst >= 1.0
+            && sy.agent_rate_per_second > 0.0
+            && sy.agent_burst >= 1.0)
+        {
+            return Err("sync rates must be > 0 and bursts >= 1".into());
+        }
+        if self.retention.days < 0
+            || (self.retention.days > 0 && self.retention.days < sy.window_days)
+        {
+            return Err(
+                "retention.days must be 0 (keep everything) or at least sync.window_days".into(),
+            );
+        }
         if !(self.open_api.rate_per_second > 0.0 && self.open_api.burst >= 1.0) {
             return Err("open_api.rate_per_second must be > 0 and burst >= 1".into());
         }
@@ -522,6 +713,8 @@ mod tests {
             server: Default::default(),
             auth: Default::default(),
             encryption: Default::default(),
+            sync: Default::default(),
+            retention: Default::default(),
         }
     }
 

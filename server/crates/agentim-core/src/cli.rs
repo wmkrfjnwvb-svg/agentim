@@ -157,6 +157,7 @@ pub async fn run(edition: Edition) {
         edition,
         stream_idle: Duration::from_secs(args.stream_idle_secs),
         open_stats: args.demo,
+        sync: cfg.sync_config(),
         ..Default::default()
     };
     let hub = match Hub::open(cfg, hub_cfg).await {

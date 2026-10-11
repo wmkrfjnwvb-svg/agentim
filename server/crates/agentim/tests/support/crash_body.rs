@@ -186,28 +186,36 @@ async fn crash_round(crash_after: Duration) {
     let mut child = spawn(&db, port, &log);
     wait_ready(&addr, &mut child, &log).await;
     let mut ows = connect(&addr, &owner_token).await;
-    let mut after = 0;
     let mut seen: HashMap<String, i64> = HashMap::new();
     let mut seqs = vec![];
-    loop {
-        let p = request(
-            &mut ows,
-            1000 + after as u64,
-            json!({"op": "pull", "conv_id": conv, "after_seq": after, "limit": 1000}),
-        )
-        .await
-        .unwrap();
-        for e in p["events"].as_array().unwrap() {
-            seqs.push(e["event"]["seq"].as_i64().unwrap());
-            if let Some(id) = e["event"]["msg"]["msg_id"].as_str() {
-                seen.insert(
-                    id.to_string(),
-                    e["event"]["msg"]["created_seq"].as_i64().unwrap(),
-                );
+    // A client only syncs (docs/08): take what follows its position, store
+    // it, acknowledge, until nothing more is owed.
+    for round in 0..1000u64 {
+        let p = request(&mut ows, 1000 + round, json!({"op": "sync"}))
+            .await
+            .unwrap();
+        let mut acks = vec![];
+        for c in p["convs"].as_array().unwrap() {
+            if c["conv_id"] != conv.as_str() {
+                continue;
             }
+            for e in c["events"].as_array().unwrap() {
+                seqs.push(e["event"]["seq"].as_i64().unwrap());
+                if let Some(id) = e["event"]["msg"]["msg_id"].as_str() {
+                    seen.insert(
+                        id.to_string(),
+                        e["event"]["msg"]["created_seq"].as_i64().unwrap(),
+                    );
+                }
+            }
+            acks.push(json!({"conv_id": conv, "seq": c["upto"], "side_seq": c["side_upto"]}));
         }
-        after = p["upto_seq"].as_i64().unwrap();
-        if p["has_more"] != true {
+        if !acks.is_empty() {
+            request(&mut ows, 5000 + round, json!({"op": "ack", "acks": acks}))
+                .await
+                .unwrap();
+        }
+        if p["more"] != true {
             break;
         }
     }
