@@ -292,6 +292,14 @@ function sysText(ev) {
       if (d.state === 'tripped') return `⛔ 护栏熔断：${name(d.agent_id)}（${d.reason}：${d.detail}）`;
       if (d.state === 'stopped') return `⛔ Agent 已停下：${name(d.agent_id)}（${d.reason}：${d.detail}），等人发言后继续`;
       return `▶ ${name(d.agent_id)} 恢复工作${d.reason ? '（' + d.reason + '）' : ''}`;
+    case 'task.updated': {
+      const st = { submitted: '已提交', working: '进行中', input_required: '等待输入', completed: '已完成', failed: '失败', canceled: '已取消' }[d.state] || d.state;
+      return `📋 任务${st}${d.assignee ? '，负责人 ' + name(d.assignee) : ''}（${name(d.by)}）${d.note ? '：' + d.note : ''}`;
+    }
+    case 'msg.claimed': return `✋ ${name(d.by)} 接下了一个请求`;
+    case 'msg.released': return `${name(d.by)} 放弃了一个请求`;
+    case 'floor.granted': return `🎙 ${name(d.by)} 把发言权给了 ${name(d.agent_id)}`;
+    case 'floor.released': return `🎙 ${name(d.agent_id)} 的发言权已收回`;
     default: return ev.type;
   }
 }

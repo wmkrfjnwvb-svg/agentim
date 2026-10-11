@@ -928,6 +928,7 @@ async fn create_conversation(State(st): State<AppState>, Extension(k): K, b: Byt
                 kind: req.kind,
                 title: req.title,
                 members,
+                assignee: None,
             },
         )
         .await?;
@@ -1299,6 +1300,7 @@ async fn dm(hub: &Hub, who: &User, to: &User) -> Result<String, Problem> {
                 kind: "dm".into(),
                 title: format!("{} · {}", who.name, to.name),
                 members: vec![to.id.clone()],
+                assignee: None,
             },
         )
         .await?;

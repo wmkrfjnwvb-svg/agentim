@@ -83,6 +83,9 @@ pub enum Trigger {
     Topics,
     /// Receives everything, is never woken (monitoring, audit, recording).
     Observe,
+    /// Receives everything, woken only when given the floor; speaks only
+    /// while holding it (docs/09 §3.3).
+    Coordinated,
 }
 
 impl Trigger {
@@ -93,6 +96,7 @@ impl Trigger {
             Trigger::Addressed => "addressed",
             Trigger::Topics => "topics",
             Trigger::Observe => "observe",
+            Trigger::Coordinated => "coordinated",
         }
     }
     pub fn parse(s: &str) -> Trigger {
@@ -101,6 +105,7 @@ impl Trigger {
             "addressed" => Trigger::Addressed,
             "topics" => Trigger::Topics,
             "observe" => Trigger::Observe,
+            "coordinated" => Trigger::Coordinated,
             _ => Trigger::Mention,
         }
     }
@@ -235,6 +240,9 @@ pub enum ClientMsg {
         kind: String,
         title: String,
         members: Vec<String>,
+        /// Task channels: the member responsible for the task.
+        #[serde(default)]
+        assignee: Option<String>,
     },
     AddMember {
         conv_id: String,
@@ -521,6 +529,33 @@ pub enum ClientMsg {
     /// What waits for my decision across conversations: requests and my
     /// agents' drafts.
     Inbox,
+    /// Moves a task channel to a state (docs/09 §10.2).
+    UpdateTask {
+        conv_id: String,
+        #[serde(default)]
+        state: Option<String>,
+        #[serde(default)]
+        assignee: Option<String>,
+        #[serde(default)]
+        note: Option<String>,
+    },
+    /// Takes a request (`intent: request`) for oneself; the first wins.
+    Claim {
+        msg_id: String,
+    },
+    ReleaseClaim {
+        msg_id: String,
+    },
+    /// Gives a coordinated agent the floor for a while.
+    FloorGrant {
+        conv_id: String,
+        agent_id: String,
+        #[serde(default)]
+        ttl_secs: Option<i64>,
+    },
+    FloorRelease {
+        conv_id: String,
+    },
 }
 
 impl ClientMsg {
@@ -582,6 +617,11 @@ impl ClientMsg {
             ClientMsg::CancelRequest { .. } => "cancel_request",
             ClientMsg::GetRequest { .. } => "get_request",
             ClientMsg::Inbox => "inbox",
+            ClientMsg::UpdateTask { .. } => "update_task",
+            ClientMsg::Claim { .. } => "claim",
+            ClientMsg::ReleaseClaim { .. } => "release_claim",
+            ClientMsg::FloorGrant { .. } => "floor_grant",
+            ClientMsg::FloorRelease { .. } => "floor_release",
         }
     }
 
@@ -596,6 +636,9 @@ impl ClientMsg {
             | ClientMsg::Dissolve { conv_id }
             | ClientMsg::Send { conv_id, .. }
             | ClientMsg::RequestHuman { conv_id, .. }
+            | ClientMsg::UpdateTask { conv_id, .. }
+            | ClientMsg::FloorGrant { conv_id, .. }
+            | ClientMsg::FloorRelease { conv_id }
             | ClientMsg::Signal { conv_id, .. }
             | ClientMsg::UpdateConv { conv_id, .. }
             | ClientMsg::Pull { conv_id, .. }

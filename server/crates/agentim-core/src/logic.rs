@@ -20,6 +20,7 @@ use crate::registry::{Out, Recip, Registry};
 
 mod requests;
 mod routing;
+mod tasks;
 pub use requests::MAX_PENDING as MAX_PENDING_REQUESTS;
 pub use routing::{MAX_AGENTS_FOR_ALL, MAX_WAKE};
 
@@ -412,6 +413,8 @@ pub enum Op {
         members: Vec<User>,
         /// The person who owns a conversation an agent starts.
         manager: Option<User>,
+        /// Task channels: the member responsible for the task.
+        assignee: Option<User>,
     },
     AddMember {
         conv_id: String,
@@ -931,6 +934,7 @@ impl Ctx<'_, '_> {
                 creator,
                 members,
                 manager,
+                assignee,
             } => {
                 let events = self
                     .db
@@ -961,6 +965,9 @@ impl Ctx<'_, '_> {
                 }
                 for ev in events {
                     self.emit(ev).await?;
+                }
+                if kind == "task" {
+                    self.task_created(&id, &creator, assignee.as_ref()).await?;
                 }
                 Ok(json!({"conv_id": id}))
             }
@@ -1295,6 +1302,20 @@ impl Ctx<'_, '_> {
                 choice,
             } => self.decide(me, &request_id, &decision, text, choice).await,
             ClientMsg::CancelRequest { request_id } => self.cancel_request(me, &request_id).await,
+            ClientMsg::UpdateTask {
+                conv_id,
+                state,
+                assignee,
+                note,
+            } => self.update_task(me, &conv_id, state, assignee, note).await,
+            ClientMsg::Claim { msg_id } => self.claim(me, &msg_id).await,
+            ClientMsg::ReleaseClaim { msg_id } => self.release_claim(me, &msg_id).await,
+            ClientMsg::FloorGrant {
+                conv_id,
+                agent_id,
+                ttl_secs,
+            } => self.floor_grant(me, &conv_id, &agent_id, ttl_secs).await,
+            ClientMsg::FloorRelease { conv_id } => self.floor_release(me, &conv_id).await,
             ClientMsg::Reject { draft_id } => self.reject(me, &draft_id).await,
             ClientMsg::Takeover { conv_id, agent_id } => {
                 self.takeover(me, &conv_id, &agent_id, true).await
@@ -1498,7 +1519,11 @@ impl Ctx<'_, '_> {
             return Ok(false);
         }
         let Some(msg) = &ev.msg else { return Ok(true) };
-        if matches!(m.trigger, Trigger::All | Trigger::Observe) || msg.sender_id == m.user_id {
+        if matches!(
+            m.trigger,
+            Trigger::All | Trigger::Observe | Trigger::Coordinated
+        ) || msg.sender_id == m.user_id
+        {
             return Ok(true);
         }
         let to = routing::to_of(msg.envelope.as_ref());
@@ -2142,6 +2167,8 @@ impl Ctx<'_, '_> {
         let (causation_id, hop) = self.causation(conv_id, me, causation_id, &reply_to).await?;
         let root = self.root_of(me, causation_id.as_deref()).await?;
         if me.kind == UserKind::Agent {
+            self.agent_may_speak(me, conv_id, &member, reply_to.as_deref())
+                .await?;
             self.root_gate(me, conv_id, root.as_deref()).await?;
             self.agent_gate(me, conv_id, hop, text).await?;
             if let Some((hook, reason)) =
@@ -2435,6 +2462,8 @@ impl Ctx<'_, '_> {
         }
         let (causation_id, hop) = self.causation(conv_id, me, causation_id, &reply_to).await?;
         let root = self.root_of(me, causation_id.as_deref()).await?;
+        self.agent_may_speak(me, conv_id, &member, reply_to.as_deref())
+            .await?;
         self.root_gate(me, conv_id, root.as_deref()).await?;
         self.agent_gate(me, conv_id, hop, "").await?;
         let now = Instant::now();
@@ -2939,6 +2968,13 @@ impl Ctx<'_, '_> {
                 "conflict",
                 "the agent is taken over; release it before publishing its drafts",
             ));
+        }
+        // An ended task stays silent for agents, drafts included: reopen it
+        // first.
+        if let Some(st) = self.task_state(&d.conv_id).await?
+            && tasks::terminal(&st)
+        {
+            return Err(err("conflict", format!("the task is {st}")));
         }
         if let Some(t) = &text {
             check_text(t)?;

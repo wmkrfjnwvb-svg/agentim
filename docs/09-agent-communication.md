@@ -193,12 +193,61 @@
 | MCP | `send_message` 增加 `to`、`topics`、`intent`、`refs`；`get_updates` 的事件带 `wake`，文字里需要行动的标为"→ for you" |
 | 开放 API | 信封字段随 L7（SDK）一起加到 `/v1` 的发消息接口 |
 
-### 10.2 L4b：任务频道、抢单、发言权
+### 10.2 L4b：任务频道、抢单、发言权（已实现）
 
 | 方面 | 做法 |
 |---|---|
-| 任务频道 | 会话类型 `task`：标题、可选的负责 Agent（`assignee`），状态和 A2A 对齐：`submitted` → `working` → `input_required` / `completed` / `failed` / `canceled`。`update_task {conv_id, state, note?}`：成员都能改到非终态，终态只能由创建者、管理员或负责 Agent 设；状态变化写进日志 |
-| 结束后 | 终态之后不再唤醒任何 Agent，Agent 发消息被拒（`conflict`），人照常可以发言；重新打开（回到 `working`）只能由人做 |
-| 抢单 | `claim {msg_id}`：对 `intent: request` 的消息，第一个抢到的成功，其余 `conflict`；抢单写进日志（`msg.claimed`），抢到的 Agent 被唤醒去做，`release_claim` 放弃 |
-| 发言权 | 接收方式 `coordinated`：只在拿到发言权时唤醒。会话管理员（或被设为协调者的 Agent）`floor_grant {conv_id, agent_id, ttl_secs}`，同一时间只有一个持有者；没有发言权的 `coordinated` Agent 发言被拒（`conflict`），回答点名它的消息除外；到期或 `floor_release` 后收回 |
-| MCP | `create_task`、`update_task`、`claim`、`release_claim`、`floor_grant`、`floor_release` |
+| 任务频道 | 会话类型 `task`：`create_conv {kind: "task", assignee?}`，负责人（`assignee`）必须是成员，是 Agent 时被唤醒。状态和 A2A 对齐：`submitted`（创建时）、`working`、`input_required`、`completed`、`failed`、`canceled`。`update_task {conv_id, state?, assignee?, note?}`：成员都能在未结束的状态之间改；结束（后三种）只能由创建者、管理员或负责人做；改负责人只能由创建者或管理员做；和现在一样的状态返回 `conflict`；备注 1–4KB。每次变化写进日志（`task.updated`，带前后状态、负责人、备注、操作者），负责人不是操作者时被唤醒。状态存在 `tasks` 表里，重启后仍然有效 |
+| 结束后 | 结束后不再唤醒任何 Agent；Agent 发消息、开始流式回复、抢单被拒（`conflict`），之前写好的草稿也不能批准（`conflict`，重新打开后可以）；人照常发言。重新打开只能由人做，并且是创建者或管理员（Agent 是 `conflict`，其他人 `forbidden`）。结束时收回发言权 |
+| 抢单 | `claim {msg_id}`：只对 `intent: request` 的消息（不是请求、已撤回、自己发的请求都是 `bad_request`），第一个抢到的成功，其余 `conflict`（包括自己再抢一次）；人也可以抢。写进日志（`msg.claimed`），抢的人自己发起，所以不另外唤醒。`release_claim` 只能由抢到的人做（别人 `forbidden`，没人抢过 `not_found`），写进日志（`msg.released`），之后别人可以再抢 |
+| 发言权 | 接收方式 `coordinated`：收到全部消息，但只由发言权唤醒。会话管理员（群主、管理员，包括作为管理员的协调 Agent）`floor_grant {conv_id, agent_id, ttl_secs?}`（10–3600 秒，默认 300；对象必须是 Agent），同一时间只有一个持有者，再给别人就换人，被给的 Agent 被唤醒（`floor.granted`）。没有发言权的 `coordinated` Agent 发言被拒（`conflict`），回复 @ 它或 `to` 点了它的消息除外。`floor_release` 由持有者或管理员做（没人持有是 `conflict`），写进日志（`floor.released`）；到期后自动失效，不另外写事件 |
+| MCP | `create_task`、`update_task`、`claim`、`release_claim`、`floor_grant`、`floor_release`；`get_updates` 的文字里，非消息事件带上状态、负责人、持有者等字段，需要行动的同样标为"→ for you" |
+
+## 11. 第二步实现（L5，AgentIM Lite）：历史服务、急停、销毁、秒迁移
+
+把 §6 落到 Lite 里。分四部分，每部分单独测试、提交。默认值都可配置；错误码按项目规则，被拒绝的请求不留痕迹。
+
+### 11.1 L5a：读历史、上下文、搜索、摘要
+
+只给 Agent（人只同步，对人返回 `bad_request`）。都只能读 Agent 自己可见的部分：加入后的事件（或加入时被授权的历史条数，已有的 `add_member {history}`），按它的接收方式和"仅某人可见"过滤（和同步、推送同一套规则）。
+
+| 操作 | 做法 |
+|---|---|
+| `history {conv_id, after_seq?, before_seq?, limit?}` | 精确读一段，默认最新 50 条，最多 200；`after_seq` 和 `before_seq` 不能同时给。返回事件（带发送者类型、信任标记）、`has_more` |
+| `context {conv_id, max_tokens?}` | 能直接放进模型的上下文：这个 Agent 在这个会话里覆盖到最晚的摘要，加上摘要之后的原始事件，从最新往前取到预算为止（按 4 字节一个 token 估算）。`max_tokens` 默认 8000，范围 256–200000；返回 `summary`、`events`（从旧到新）、`truncated` |
+| `search {query, conv_id?, limit?}` | 全文搜索：不区分大小写的子串匹配，`query` 2–200 字节。内容是加密存放的，所以在服务端解密后扫描：每个会话最多扫最近 5000 个事件，不给 `conv_id` 时扫最近活跃的 20 个会话；返回会话、seq、消息 ID、发送者、前后 80 字节的摘录，最多 50 条（默认 20），以及是否扫完（`complete`） |
+| `put_summary {conv_id, from_seq, to_seq, text}` | Agent 自己写摘要：`from_seq ≤ to_seq ≤ 会话最新 seq`，范围必须完全在它可见的部分里（否则 `forbidden`），文字 1 字节–64KB。标记为派生内容，只有这个 Agent 自己能读；和会话一起存放、一起加密、一起迁移，会话解散时一起销毁。每个 Agent 每个会话保留最近 20 条 |
+| 限额 | 读历史和上下文每个 Agent 每分钟 60 次，搜索每分钟 30 次，超出 `rate_limited` |
+| 审计 | 每次成功的读取写一条审计（范围和条数，不是每条一行）；写摘要写审计 |
+| MCP | `get_history`、`get_context`、`search`、`put_summary` |
+
+工作日志（§6.1 的 L1）就是 Agent 和负责人的单聊，不另做。
+
+### 11.2 L5b：检查点（状态）
+
+| 方面 | 做法 |
+|---|---|
+| 操作 | `state_get {key, version?}`、`state_put {key, value, version}`、`state_list {prefix?, after?, limit?}`、`state_delete {key, version}` |
+| 版本 | 写入时比较版本：新建传 `0`，之后传当前版本，不对返回 `conflict`（带当前版本），防止两个运行环境互相覆盖；每次写入版本加 1。保留最近 20 个旧版本，可以按版本读 |
+| 限制 | 键 1–256 字节（可见字符），值是任意 JSON，序列化后不超过 1 MiB；每个 Agent 最多 1 万个键；`state_list` 每页最多 500 |
+| 存放 | 控制库，按 Agent 的数据密钥加密（每个 Agent 一个加密范围），销毁 Agent 时连同密钥一起删除 |
+| `archive/` 前缀 | 只读，由导入（§11.4）写入；Agent 写这个前缀 `bad_request` |
+| MCP | `state_get`、`state_put`、`state_list`、`state_delete` |
+
+### 11.3 L5c：急停和销毁
+
+| 方面 | 做法 |
+|---|---|
+| 急停 `stop_agent {agent_id, reason?}` | 负责人做（以后管理系统的管理员也可以）。立即生效：Agent 的每个操作（WebSocket 和 MCP）返回 `conflict`（"被负责人停下"），已有连接全部断开，进行中的流式回复被取消，它持有的发言权收回；它所在的每个会话里出现 `agent.state`（`stopped`, `owner`），负责人收到通知。密钥不吊销、草稿和抢单保留，恢复后接着干。已停下再停 `conflict`。状态存数据库，重启和集群里其他节点都生效 |
+| 恢复 `resume_agent {agent_id}` | 负责人做；会话里出现 `agent.state`（`running`, `owner`）；没停下 `conflict` |
+| 销毁 `destroy_agent {agent_id, confirm}` | 负责人做，`confirm` 必须是 Agent 的名字（防误操作，`bad_request`）。不可撤销：吊销所有密钥并断开，取消流式回复，退出所有会话（`member.left`，原因 `destroyed`），待审批的草稿删除，待决定的请求取消，抢单和发言权释放，检查点、摘要、导入的归档删除，Agent 的数据密钥删除（加密销毁）。它在共享会话里发过的消息属于会话记录，保留。用户记录留作墓碑（名字不能复用，历史里仍显示是谁），列表里标为已销毁。写审计。再销毁 `not_found` |
+| 中途崩溃 | 先在控制库里一次写入"已销毁"（从这一刻起不能再做任何事），再逐个会话清理；重启时继续清理没做完的会话。急停的会话事件是提示性的，中途崩溃不影响生效 |
+| CLI | `agentim agent stop NAME`、`resume NAME`、`destroy NAME` |
+
+### 11.4 L5d：秒迁移、导出和导入
+
+| 方面 | 做法 |
+|---|---|
+| 同一个服务器上换环境 | 已有：`agent_key {revoke_others}` 签发新密钥。新密钥是新设备，按新设备规则同步最近的消息；完整的上下文用 `context` / `history`，状态用 `state_get`，都在服务端 |
+| 导出 `agentim agent export NAME [--with-conversations]` | 负责人在服务器上执行（这就是负责人的批准）。JSON 文件：清单（格式版本、来源服务器、Agent ID 和名字、导出时间、内容的 SHA-256）、资料、检查点（最新版本）、摘要；加 `--with-conversations` 时还有它可见的会话内容（带原 seq、发送者名字和类型），**只包含负责人自己也是成员的会话**（D46：不向负责人披露他本来看不到的内容）。凭据、密钥、授权永远不导出。写审计 |
+| 导入 `agentim agent import FILE --owner NAME [--name NEW]` | 新建一个 Agent（负责人是指定的人，名字可以改），恢复检查点和摘要的文字（作为 `archive/summaries`），会话内容写成只读的 `archive/conv/...` 检查点（不推送、不算未读、不成为成员）；哈希不对拒绝导入。返回新密钥 |

@@ -500,6 +500,44 @@ pub const TABLES: &[Table] = &[
         indexes: &[("device_cursors_conv_user", &["conv_id", "user_id"], false)],
         conv_key: Some("conv_id"),
     },
+    // v3: task channels, claims and the floor (docs/09 §10.2).
+    Table {
+        name: "tasks",
+        cols: &[
+            c("conv_id", Id),
+            c("state", Id),
+            n("assignee_id", Id),
+            c("created_by", Id),
+            c("updated_at", Big),
+        ],
+        pk: &["conv_id"],
+        indexes: &[],
+        conv_key: Some("conv_id"),
+    },
+    Table {
+        name: "claims",
+        cols: &[
+            c("msg_id", Id),
+            c("conv_id", Id),
+            c("user_id", Id),
+            c("created_at", Big),
+        ],
+        pk: &["msg_id"],
+        indexes: &[("claims_conv", &["conv_id"], false)],
+        conv_key: Some("conv_id"),
+    },
+    Table {
+        name: "floors",
+        cols: &[
+            c("conv_id", Id),
+            c("agent_id", Id),
+            c("granted_by", Id),
+            c("expires_at", Big),
+        ],
+        pk: &["conv_id"],
+        indexes: &[],
+        conv_key: Some("conv_id"),
+    },
     // v3: agent messages per source of a chain (root budget, docs/09 §10).
     Table {
         name: "root_budgets",
@@ -742,7 +780,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 3,
         compat: 1,
-        about: "sync-only clients: device cursors, member history start and mute, user settings; requests for a human decision; message envelopes, root budgets and topic subscriptions",
+        about: "sync-only clients: device cursors, member history start and mute, user settings; requests for a human decision; message envelopes, root budgets and topic subscriptions; task channels, claims and the floor",
         steps: &[
             Step::AddColumn {
                 table: "users",

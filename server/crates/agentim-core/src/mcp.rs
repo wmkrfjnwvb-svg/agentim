@@ -390,6 +390,12 @@ pub const TOOLS: &[&str] = &[
     "request_human",
     "get_request",
     "cancel_request",
+    "create_task",
+    "update_task",
+    "claim",
+    "release_claim",
+    "floor_grant",
+    "floor_release",
 ];
 
 fn tools() -> Value {
@@ -566,6 +572,91 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": {"request_id": id("From request_human.")},
                 "required": ["request_id"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "create_task",
+            "title": "Create a task channel",
+            "description": "Creates a task channel for one piece of work with people or agents you may contact; optionally names the member responsible (assignee), who is woken to work on it. States follow A2A: submitted, working, input_required, completed, failed, canceled.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "minLength": 1, "maxLength": 255},
+                    "members": {"type": "array", "items": {"type": "string", "minLength": 1}, "maxItems": 500},
+                    "assignee": id("Member responsible for the task (name or id)."),
+                },
+                "required": ["title", "members"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "update_task",
+            "title": "Update a task",
+            "description": "Moves a task to a state (working, input_required, completed, failed, canceled) and/or reassigns it, with an optional note. After completed, failed or canceled nobody is woken and agents cannot speak in it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The task channel."),
+                    "state": {"type": "string", "enum": ["submitted", "working", "input_required", "completed", "failed", "canceled"]},
+                    "assignee": id("New assignee (creator or manager only)."),
+                    "note": {"type": "string", "minLength": 1, "maxLength": 4096},
+                },
+                "required": ["conv_id"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "claim",
+            "title": "Claim a request",
+            "description": "Takes a message sent with intent=request for yourself. The first claim wins; others get a conflict. Release it if you cannot do it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"msg_id": id("The request message.")},
+                "required": ["msg_id"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "release_claim",
+            "title": "Release a claim",
+            "description": "Gives back a request you claimed so somebody else can take it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"msg_id": id("The request message.")},
+                "required": ["msg_id"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "floor_grant",
+            "title": "Give the floor",
+            "description": "As a manager of the conversation (e.g. a coordinator agent), lets one coordinated agent speak for a while; it is woken. Only one holder at a time.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "agent": id("The agent (name or id)."),
+                    "ttl_secs": {"type": "integer", "minimum": 10, "maximum": 3600},
+                },
+                "required": ["conv_id", "agent"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "floor_release",
+            "title": "Release the floor",
+            "description": "Ends the current turn (the holder or a manager).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"conv_id": id("The conversation.")},
+                "required": ["conv_id"],
                 "additionalProperties": false,
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
@@ -892,8 +983,90 @@ async fn call_tool(
                 .await?;
             Ok(("Cancelled.".into(), v))
         }
+        "create_task" => {
+            only(args, &["title", "members", "assignee"])?;
+            let members = match args.get("members") {
+                Some(Value::Array(a))
+                    if a.len() <= 500
+                        && a.iter().all(|m| m.as_str().is_some_and(|x| !x.is_empty())) =>
+                {
+                    a.clone()
+                }
+                _ => {
+                    return Err(ApiError::new(
+                        "bad_request",
+                        "members must be a list of up to 500 user names or ids",
+                    ));
+                }
+            };
+            let mut m = json!({"op": "create_conv", "kind": "task", "title": need(args, "title")?, "members": members});
+            if let Some(a) = arg_str(args, "assignee", false)? {
+                m["assignee"] = json!(a);
+            }
+            let v = run(m).await?;
+            Ok((
+                format!("Task {} created.", v["conv_id"].as_str().unwrap_or("")),
+                v,
+            ))
+        }
+        "update_task" => {
+            only(args, &["conv_id", "state", "assignee", "note"])?;
+            let mut m = json!({"op": "update_task", "conv_id": need(args, "conv_id")?});
+            for k in ["state", "assignee", "note"] {
+                if let Some(x) = arg_str(args, k, false)? {
+                    m[k] = json!(x);
+                }
+            }
+            let v = run(m).await?;
+            Ok((
+                format!("The task is {}.", v["state"].as_str().unwrap_or("")),
+                v,
+            ))
+        }
+        "claim" => {
+            only(args, &["msg_id"])?;
+            let v = run(json!({"op": "claim", "msg_id": need(args, "msg_id")?})).await?;
+            Ok(("Claimed: it is yours to do.".into(), v))
+        }
+        "release_claim" => {
+            only(args, &["msg_id"])?;
+            let v = run(json!({"op": "release_claim", "msg_id": need(args, "msg_id")?})).await?;
+            Ok(("Released.".into(), v))
+        }
+        "floor_grant" => {
+            only(args, &["conv_id", "agent", "ttl_secs"])?;
+            let mut m = json!({"op": "floor_grant", "conv_id": need(args, "conv_id")?, "agent_id": need(args, "agent")?});
+            match args.get("ttl_secs") {
+                None | Some(Value::Null) => {}
+                Some(t) => {
+                    m["ttl_secs"] = json!(t.as_i64().ok_or_else(|| ApiError::new(
+                        "bad_request",
+                        "ttl_secs must be an integer"
+                    ))?)
+                }
+            }
+            let v = run(m).await?;
+            Ok(("The floor is given.".into(), v))
+        }
+        "floor_release" => {
+            only(args, &["conv_id"])?;
+            let v = run(json!({"op": "floor_release", "conv_id": need(args, "conv_id")?})).await?;
+            Ok(("The floor is free.".into(), v))
+        }
         _ => Err(ApiError::new("bad_request", "unknown tool")),
     }
+}
+
+/// The fields of a non-message event a model needs (task state, who holds
+/// a claim or the floor), as ` key=value` pairs.
+fn event_detail(data: &Value) -> String {
+    let mut out = String::new();
+    for k in ["state", "assignee", "msg_id", "agent_id", "by", "note"] {
+        if let Some(v) = data.get(k).and_then(Value::as_str) {
+            out.push_str(&format!(" {k}={v}"));
+        }
+    }
+    out
 }
 
 /// Updates as lines a model reads easily; the full events are in
@@ -915,18 +1088,18 @@ fn render_updates(convs: &[Value], more: bool) -> String {
             let ev = &e["event"];
             let seq = ev["seq"].as_i64().unwrap_or(0);
             let kind = ev["type"].as_str().unwrap_or("");
+            // What asks you to act is marked; the rest is context.
+            let act = if e["wake"] == true {
+                "→ for you "
+            } else {
+                ""
+            };
             match ev["msg"].as_object() {
                 Some(m) if kind == "msg.created" => {
                     let trust = e["trust"]
                         .as_str()
                         .map(|t| format!(", trust {t}"))
                         .unwrap_or_default();
-                    // What asks you to act is marked; the rest is context.
-                    let act = if e["wake"] == true {
-                        "→ for you "
-                    } else {
-                        ""
-                    };
                     out.push_str(&format!(
                         "{act}[{conv} #{seq}] {} ({}{trust}) [{}]: {}\n",
                         m["sender_name"].as_str().unwrap_or(""),
@@ -941,7 +1114,10 @@ fn render_updates(convs: &[Value], more: bool) -> String {
                     m["msg_id"].as_str().unwrap_or(""),
                     m["content"].as_str().unwrap_or("")
                 )),
-                None => out.push_str(&format!("[{conv} #{seq}] {kind}\n")),
+                None => out.push_str(&format!(
+                    "{act}[{conv} #{seq}] {kind}{}\n",
+                    event_detail(&ev["data"])
+                )),
             }
         }
         for s in c["side_events"].as_array().into_iter().flatten() {

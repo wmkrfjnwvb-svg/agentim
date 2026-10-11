@@ -2445,6 +2445,149 @@ impl Db<'_> {
         Ok(out)
     }
 
+    // ------------------------------------------- tasks, claims and floor
+
+    pub async fn create_task(
+        &mut self,
+        conv_id: &str,
+        created_by: &str,
+        assignee: Option<&str>,
+    ) -> ApiResult<()> {
+        sqlx::query(self.d.q(
+            "INSERT INTO tasks (conv_id, state, assignee_id, created_by, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ))
+        .bind(conv_id)
+        .bind("submitted")
+        .bind(assignee.map(String::from))
+        .bind(created_by)
+        .bind(now_ms())
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    /// (state, assignee, created_by) of a task channel.
+    pub async fn task(
+        &mut self,
+        conv_id: &str,
+    ) -> ApiResult<Option<(String, Option<String>, String)>> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT state, assignee_id, created_by FROM tasks WHERE conv_id = ?"),
+        )
+        .bind(conv_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        Ok(match r {
+            Some(r) => Some((r.try_get(0)?, r.try_get(1)?, r.try_get(2)?)),
+            None => None,
+        })
+    }
+
+    pub async fn set_task(
+        &mut self,
+        conv_id: &str,
+        state: &str,
+        assignee: Option<&str>,
+    ) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("UPDATE tasks SET state = ?, assignee_id = ?, updated_at = ? WHERE conv_id = ?"),
+        )
+        .bind(state)
+        .bind(assignee.map(String::from))
+        .bind(now_ms())
+        .bind(conv_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn claim_of(&mut self, msg_id: &str) -> ApiResult<Option<String>> {
+        let r = sqlx::query(self.d.q("SELECT user_id FROM claims WHERE msg_id = ?"))
+            .bind(msg_id)
+            .fetch_optional(&mut *self.c)
+            .await?;
+        Ok(match r {
+            Some(r) => Some(r.try_get(0)?),
+            None => None,
+        })
+    }
+
+    pub async fn put_claim(&mut self, msg_id: &str, conv_id: &str, user_id: &str) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("INSERT INTO claims (msg_id, conv_id, user_id, created_at) VALUES (?, ?, ?, ?)"),
+        )
+        .bind(msg_id)
+        .bind(conv_id)
+        .bind(user_id)
+        .bind(now_ms())
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn drop_claim(&mut self, msg_id: &str) -> ApiResult<()> {
+        sqlx::query(self.d.q("DELETE FROM claims WHERE msg_id = ?"))
+            .bind(msg_id)
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
+    }
+
+    /// The agent holding the floor of a conversation, while unexpired.
+    pub async fn floor(&mut self, conv_id: &str) -> ApiResult<Option<(String, i64)>> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT agent_id, expires_at FROM floors WHERE conv_id = ?"),
+        )
+        .bind(conv_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        Ok(match r {
+            Some(r) => {
+                let exp: i64 = r.try_get(1)?;
+                (exp > now_ms())
+                    .then(|| r.try_get(0))
+                    .transpose()?
+                    .map(|a| (a, exp))
+            }
+            None => None,
+        })
+    }
+
+    pub async fn set_floor(
+        &mut self,
+        conv_id: &str,
+        agent_id: &str,
+        by: &str,
+        expires_at: i64,
+    ) -> ApiResult<()> {
+        sqlx::query(self.d.q("DELETE FROM floors WHERE conv_id = ?"))
+            .bind(conv_id)
+            .execute(&mut *self.c)
+            .await?;
+        sqlx::query(self.d.q(
+            "INSERT INTO floors (conv_id, agent_id, granted_by, expires_at) VALUES (?, ?, ?, ?)",
+        ))
+        .bind(conv_id)
+        .bind(agent_id)
+        .bind(by)
+        .bind(expires_at)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn clear_floor(&mut self, conv_id: &str) -> ApiResult<()> {
+        sqlx::query(self.d.q("DELETE FROM floors WHERE conv_id = ?"))
+            .bind(conv_id)
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
+    }
+
     // -------------------------------------------------------- root budget
 
     /// Agent messages counted against a chain's source.

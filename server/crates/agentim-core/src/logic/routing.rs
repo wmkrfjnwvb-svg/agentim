@@ -108,6 +108,12 @@ impl Ctx<'_, '_> {
         mentions: &[String],
         envelope: Option<&Value>,
     ) -> ApiResult<(Vec<String>, usize)> {
+        // An ended task wakes nobody.
+        if let Some(st) = self.task_state(conv_id).await?
+            && super::tasks::terminal(&st)
+        {
+            return Ok((vec![], 0));
+        }
         let members = self.members(conv_id).await?;
         let replied_to = match reply_to {
             Some(r) => self.db.message(r).await?.map(|p| p.sender_id),
@@ -313,6 +319,7 @@ pub fn wakes(
                             .any(|x| x.as_str().is_some_and(|x| m.topics.iter().any(|s| s == x)))
                     })
         }
-        Trigger::Observe => false,
+        // Woken only by the floor (floor.granted).
+        Trigger::Observe | Trigger::Coordinated => false,
     }
 }

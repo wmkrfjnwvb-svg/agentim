@@ -85,6 +85,11 @@ pub const OPS: &[&str] = &[
     "cancel_request",
     "get_request",
     "inbox",
+    "update_task",
+    "claim",
+    "release_claim",
+    "floor_grant",
+    "floor_release",
 ];
 
 pub const MAX_CLIENT_FEATURES: usize = 100;

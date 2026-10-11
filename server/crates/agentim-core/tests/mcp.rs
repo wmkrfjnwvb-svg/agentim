@@ -27,6 +27,7 @@ backend_tests!(
     race_concurrent_updates_deliver_each_event_once,
     agents_ask_people_to_decide,
     agents_address_each_other,
+    agents_work_on_tasks,
 );
 
 const V: &str = "2026-07-28";
@@ -1173,6 +1174,213 @@ async fn agents_address_each_other(db: TestDb) {
             m.tool_err(&key, "send_message", args.clone()).await,
             want,
             "{args}"
+        );
+    }
+}
+
+/// Task channels, claims and the floor through the tools (docs/09 §10.2).
+async fn agents_work_on_tasks(db: TestDb) {
+    let mut cfg = single(&db.url);
+    cfg.mcp.burst = 1000.0;
+    let m = serve(cfg).await;
+    let (alice, _helper, key, conv) = setup(&m).await;
+    let r = m.hub.create_agent(&alice, "worker").await.unwrap();
+    let wkey = r["key"].as_str().unwrap().to_string();
+    let worker = m.hub.user_by_name("worker").unwrap();
+    Conn::new(&m.hub, &alice)
+        .ok(json!({"op": "add_member", "conv_id": conv, "user_id": worker.id}))
+        .await;
+    m.ok(&wkey, "get_updates", json!({})).await;
+    for (args, want) in [
+        (json!({"title": "t", "members": "worker"}), "bad_request"),
+        (
+            json!({"title": "t", "members": ["worker"], "x": 1}),
+            "bad_request",
+        ),
+        (
+            json!({"title": "t", "members": ["worker"], "assignee": "nobody"}),
+            "bad_request",
+        ),
+    ] {
+        assert_eq!(
+            m.tool_err(&key, "create_task", args.clone()).await,
+            want,
+            "{args}"
+        );
+    }
+    let task = m
+        .ok(
+            &key,
+            "create_task",
+            json!({"title": "translate the docs", "members": ["alice", "worker"], "assignee": "worker"}),
+        )
+        .await["conv_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The assignee is told, marked as asked to act.
+    let r = m.tool(&wkey, "get_updates", json!({})).await;
+    let text = r["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains(&format!(
+            "→ for you [{task} #5] task.updated state=submitted assignee={}",
+            worker.id
+        )),
+        "{text}"
+    );
+    for (who, args, want) in [
+        (&wkey, json!({"conv_id": task}), "bad_request"),
+        (
+            &wkey,
+            json!({"conv_id": task, "state": "done"}),
+            "bad_request",
+        ),
+        (
+            &wkey,
+            json!({"conv_id": conv, "state": "working"}),
+            "bad_request",
+        ),
+        (
+            &wkey,
+            json!({"conv_id": task, "assignee": "alice"}),
+            "forbidden",
+        ),
+        (
+            &wkey,
+            json!({"conv_id": task, "state": "submitted"}),
+            "conflict",
+        ),
+        (
+            &wkey,
+            json!({"conv_id": "c_nope", "state": "working"}),
+            "not_found",
+        ),
+    ] {
+        assert_eq!(
+            m.tool_err(who, "update_task", args.clone()).await,
+            want,
+            "{args}"
+        );
+    }
+    let r = m
+        .ok(
+            &wkey,
+            "update_task",
+            json!({"conv_id": task, "state": "working", "note": "on it"}),
+        )
+        .await;
+    assert_eq!(r["state"], "working");
+    // Claims.
+    let req = m
+        .ok(
+            &key,
+            "send_message",
+            json!({"conv_id": task, "text": "who proofreads?", "intent": "request"}),
+        )
+        .await["msg_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        m.tool_err(&key, "claim", json!({"msg_id": req})).await,
+        "bad_request"
+    );
+    assert_eq!(
+        m.tool_err(&wkey, "release_claim", json!({"msg_id": req}))
+            .await,
+        "not_found"
+    );
+    m.ok(&wkey, "claim", json!({"msg_id": req})).await;
+    assert_eq!(
+        m.tool_err(&wkey, "claim", json!({"msg_id": req})).await,
+        "conflict"
+    );
+    m.ok(&wkey, "release_claim", json!({"msg_id": req})).await;
+    m.ok(&wkey, "claim", json!({"msg_id": req})).await;
+    // The floor: the creating agent manages its task.
+    for (who, args, want) in [
+        (
+            &key,
+            json!({"conv_id": task, "agent": "worker", "ttl_secs": 5}),
+            "bad_request",
+        ),
+        (
+            &key,
+            json!({"conv_id": task, "agent": "worker", "ttl_secs": "60"}),
+            "bad_request",
+        ),
+        (
+            &key,
+            json!({"conv_id": task, "agent": "alice"}),
+            "bad_request",
+        ),
+        (
+            &key,
+            json!({"conv_id": task, "agent": "nobody"}),
+            "not_found",
+        ),
+        (
+            &wkey,
+            json!({"conv_id": task, "agent": "worker"}),
+            "forbidden",
+        ),
+    ] {
+        assert_eq!(
+            m.tool_err(who, "floor_grant", args.clone()).await,
+            want,
+            "{args}"
+        );
+    }
+    assert_eq!(
+        m.tool_err(&wkey, "floor_release", json!({"conv_id": task}))
+            .await,
+        "conflict"
+    );
+    let g = m
+        .ok(
+            &key,
+            "floor_grant",
+            json!({"conv_id": task, "agent": "worker", "ttl_secs": 60}),
+        )
+        .await;
+    assert_eq!(g["agent_id"], json!(worker.id));
+    m.ok(&wkey, "floor_release", json!({"conv_id": task})).await;
+    // Ended: the agents fall silent.
+    m.ok(
+        &wkey,
+        "update_task",
+        json!({"conv_id": task, "state": "completed"}),
+    )
+    .await;
+    let r = m.tool(&key, "get_updates", json!({})).await;
+    assert!(
+        r["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("task.updated state=completed"),
+        "{r}"
+    );
+    for (who, tool, args) in [
+        (
+            &wkey,
+            "send_message",
+            json!({"conv_id": task, "text": "one more thing"}),
+        ),
+        (
+            &key,
+            "floor_grant",
+            json!({"conv_id": task, "agent": "worker"}),
+        ),
+        (
+            &wkey,
+            "update_task",
+            json!({"conv_id": task, "state": "working"}),
+        ),
+    ] {
+        assert_eq!(
+            m.tool_err(who, tool, args.clone()).await,
+            "conflict",
+            "{tool} {args}"
         );
     }
 }

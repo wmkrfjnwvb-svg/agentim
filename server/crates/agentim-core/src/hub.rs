@@ -1635,7 +1635,11 @@ impl Hub {
                 kind,
                 title,
                 members,
-            } => self.create_conv(me, &kind, &title, &members).await,
+                assignee,
+            } => {
+                self.create_conv(me, &kind, &title, &members, assignee.as_deref())
+                    .await
+            }
             ClientMsg::AddMember {
                 conv_id,
                 user_id,
@@ -1766,7 +1770,10 @@ impl Hub {
             | ClientMsg::TransferOwner { ref conv_id, .. }
             | ClientMsg::ResetGuard { ref conv_id, .. }
             | ClientMsg::UpdateConv { ref conv_id, .. }
-            | ClientMsg::RequestHuman { ref conv_id, .. } => {
+            | ClientMsg::RequestHuman { ref conv_id, .. }
+            | ClientMsg::UpdateTask { ref conv_id, .. }
+            | ClientMsg::FloorGrant { ref conv_id, .. }
+            | ClientMsg::FloorRelease { ref conv_id } => {
                 let c = conv_id.clone();
                 self.on_conv(sess, &c, msg).await
             }
@@ -1789,7 +1796,10 @@ impl Hub {
                 wait_secs,
             } => self.get_request(me, &request_id, wait_secs).await,
             ClientMsg::Inbox => self.inbox(me).await,
-            ClientMsg::Edit { ref msg_id, .. } | ClientMsg::Recall { ref msg_id, .. } => {
+            ClientMsg::Edit { ref msg_id, .. }
+            | ClientMsg::Recall { ref msg_id, .. }
+            | ClientMsg::Claim { ref msg_id }
+            | ClientMsg::ReleaseClaim { ref msg_id } => {
                 let id = msg_id.clone();
                 let conv = self
                     .find_conv_of(|db| {
@@ -2316,6 +2326,7 @@ impl Hub {
         kind: &str,
         title: &str,
         members: &[String],
+        assignee: Option<&str>,
     ) -> ApiResult<Value> {
         // An agent's conversations belong to its person (docs/10 §5.1).
         let agent_owner = match me.kind {
@@ -2333,8 +2344,11 @@ impl Hub {
                 ));
             }
         };
-        if kind != "dm" && kind != "group" {
-            return Err(err("bad_request", "kind must be dm or group"));
+        if !matches!(kind, "dm" | "group" | "task") {
+            return Err(err("bad_request", "kind must be dm, group or task"));
+        }
+        if assignee.is_some() && kind != "task" {
+            return Err(err("bad_request", "only a task has an assignee"));
         }
         if title.is_empty() || title.len() > 255 || title.contains('\0') {
             return Err(err("bad_request", "title must be 1..255 bytes"));
@@ -2362,7 +2376,7 @@ impl Hub {
                 self.agent_may_contact(me, owner, u).await?;
             }
             // In a group the person comes along as its owner.
-            if kind == "group" && !users.iter().any(|u| u.id == owner.id) {
+            if kind != "dm" && !users.iter().any(|u| u.id == owner.id) {
                 users.push(owner.clone());
             }
         }
@@ -2396,6 +2410,19 @@ impl Hub {
         } else {
             None
         };
+        // The assignee of a task is one of its members.
+        let assignee_user = match assignee {
+            None => None,
+            Some(k) => Some(
+                std::iter::once(me)
+                    .chain(users.iter())
+                    .find(|u| u.id == k || u.name == k)
+                    .cloned()
+                    .ok_or_else(|| {
+                        err("bad_request", "the assignee must be a member of the task")
+                    })?,
+            ),
+        };
         // Opening an existing direct conversation (above) costs nothing.
         if agent_owner.is_some() && !self.agent_conversation_allowed(&me.id, false) {
             return Err(err(
@@ -2424,7 +2451,8 @@ impl Hub {
                 unit: me.unit_id.clone(),
                 creator: me.clone(),
                 members: users.clone(),
-                manager: agent_owner.clone().filter(|_| kind == "group"),
+                manager: agent_owner.clone().filter(|_| kind != "dm"),
+                assignee: assignee_user.clone(),
             })
             .await;
         if let Err(e) = res {
