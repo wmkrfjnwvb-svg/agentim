@@ -303,7 +303,8 @@ async fn budget_is_shared_across_conversations_and_databases_under_concurrency(d
 async fn a_tripped_guard_recovers_after_cooldown_and_reset_needs_a_trip(db: TestDb) {
     let hub = open_with(single(&db.url), |h| {
         h.guards = GuardConfig {
-            cooldown: Duration::from_millis(300),
+            // Long enough that a slow runner still sees the breaker open.
+            cooldown: Duration::from_millis(2000),
             rate_capacity: 100.0,
             ..h.guards.clone()
         };
@@ -335,7 +336,7 @@ async fn a_tripped_guard_recovers_after_cooldown_and_reset_needs_a_trip(db: Test
         code(&g.reply(&conv, "different now", &q).await),
         "circuit_open"
     );
-    tokio::time::sleep(Duration::from_millis(350)).await;
+    tokio::time::sleep(Duration::from_millis(2100)).await;
     assert_eq!(
         g.reply(&conv, "after the cooldown", &q).await["ok"],
         true,

@@ -513,7 +513,10 @@ async fn summaries_survive_a_restart_and_go_with_dissolution(db: TestDb) {
 /// Messages keep arriving while an agent pages forward: every visible
 /// event comes exactly once, in order.
 async fn race_paging_while_messages_arrive(db: TestDb) {
-    let hub = open(single(&db.url)).await;
+    let mut cfg = single(&db.url);
+    // The reader polls as fast as the runner allows.
+    cfg.agents.history_per_minute = 100_000;
+    let hub = open(cfg).await;
     let alice = user(&hub, "alice", UserKind::Human, None).await;
     let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
     let a = Conn::new(&hub, &alice);
