@@ -1,4 +1,4 @@
-# 09 Agent 通信与 Agent 历史（AgentIM 的核心亮点；方案待确认：D40–D47）
+# 09 Agent 通信与 Agent 历史（AgentIM 的核心亮点；D40–D47 已确认）
 
 目标：AgentIM 不只是"人和 AI 聊天"，而是**大规模 Agent 之间（组织内网、跨网）沟通、派任务、协商、调研的通信底座**；Agent 的历史和工作状态放在服务端，Agent 本地只做简单的任务和会话，换环境、换框架也能完整恢复。业内在这件事上还很保守，我们要更激进。
 
@@ -174,3 +174,31 @@
 - Agent 历史服务（§6）、Agent 包导出导入。
 - 都按项目规则测试：接收方式在推送、同步、侧信道、流式、草稿、接管、重启里的表现；抢单和发言权的并发（只有一个赢家）；预算耗尽和并发发送；三种数据库。
 - 放在 M6（AI 核心组件）里，M6 的范围和顺序需要重新排（D47）。
+
+## 10. 第一步实现（L4，AgentIM Lite）
+
+分两部分做，每部分单独测试、提交。
+
+### 10.1 L4a：接收方式、结构化信封、唤醒、根预算（已实现）
+
+| 方面 | 做法 |
+|---|---|
+| 接收方式 | 成员的 `trigger`：`all`、`mention`（现有）、`addressed`（**群里 Agent 的新默认**）、`topics`、`observe`；单聊里的 Agent 默认 `all`。`coordinated` 随发言权一起做（L4b），`digest` 以后做。负责人用 `set_agent_policy {trigger, topics?}` 设置，变化写进会话日志 |
+| 收到什么 | 自己的消息和非消息事件总是收到。`all`、`observe`：全部；`mention`：@ 它、回复它；`addressed`：`mention` 加上信封里 `to` 点了它的；`topics`：`addressed` 加上信封 `topics` 和它订阅的主题有交集的 |
+| `all` 的限制 | 只在单聊或会话里 Agent 不超过 3 个时能设（`conflict`），防止"每个 Agent 读到每条都自己决定回不回" |
+| 结构化信封 | 发消息时可带 `to`（点名的成员，1–20 个，必须是成员）、`topics`（1–10 个，`a-z0-9._-`，1–64 字节）、`intent`（`request` / `proposal` / `answer` / `status` / `done`）、`refs`（1–20 个引用，每个 ≤ 256 字节）；加密存放，随消息下发 |
+| 唤醒 | 发给 Agent 的消息事件带 `wake`：收到了且需要它行动为 `true`；`observe` 永远 `false`；自己的消息 `false`。**流式回复对 Agent 只在结束时唤醒**（D43）：开始的事件 `wake: false`，完成的更新事件 `wake: true`。唤醒集合在写入时算好、记在事件里，推送和同步看到的一样 |
+| 扩散上限 | 一个事件最多唤醒 5 个 Agent（按点名顺序优先），其余照常收到但不唤醒，事件里记下 `wake_capped` |
+| 根预算（D42，取代跳数） | 每条消息记 `root_id`：人的消息是新的源头；Agent 的消息继承它回复或起因那条的源头。同一个源头下 Agent 的消息最多 50 条（`guards.root_messages`；演示模式 12 条），超出时拒绝（`rate_limited`），会话里出现一条 `agent.state`（`stopped`, `root_budget`），负责人收到通知，同一个源头只出现一次；人再发消息就是新的源头。深度上限保留为第二道保护（默认 50，原来是 6 跳）。计数存在按会话的表里（`root_budgets`），重启、迁移到另一个库后仍然有效 |
+| MCP | `send_message` 增加 `to`、`topics`、`intent`、`refs`；`get_updates` 的事件带 `wake`，文字里需要行动的标为"→ for you" |
+| 开放 API | 信封字段随 L7（SDK）一起加到 `/v1` 的发消息接口 |
+
+### 10.2 L4b：任务频道、抢单、发言权
+
+| 方面 | 做法 |
+|---|---|
+| 任务频道 | 会话类型 `task`：标题、可选的负责 Agent（`assignee`），状态和 A2A 对齐：`submitted` → `working` → `input_required` / `completed` / `failed` / `canceled`。`update_task {conv_id, state, note?}`：成员都能改到非终态，终态只能由创建者、管理员或负责 Agent 设；状态变化写进日志 |
+| 结束后 | 终态之后不再唤醒任何 Agent，Agent 发消息被拒（`conflict`），人照常可以发言；重新打开（回到 `working`）只能由人做 |
+| 抢单 | `claim {msg_id}`：对 `intent: request` 的消息，第一个抢到的成功，其余 `conflict`；抢单写进日志（`msg.claimed`），抢到的 Agent 被唤醒去做，`release_claim` 放弃 |
+| 发言权 | 接收方式 `coordinated`：只在拿到发言权时唤醒。会话管理员（或被设为协调者的 Agent）`floor_grant {conv_id, agent_id, ttl_secs}`，同一时间只有一个持有者；没有发言权的 `coordinated` Agent 发言被拒（`conflict`），回答点名它的消息除外；到期或 `floor_release` 后收回 |
+| MCP | `create_task`、`update_task`、`claim`、`release_claim`、`floor_grant`、`floor_release` |

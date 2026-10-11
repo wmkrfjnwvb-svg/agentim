@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct GuardConfig {
+    /// Deepest reply chain of agent messages since a person spoke.
     pub max_hop: i64,
+    /// Agent messages per source of a chain (root budget, docs/09 §5).
+    pub root_messages: i64,
     /// Trip when the same normalized content appears this many times among
     /// the agent's recent messages in the conversation (including the new one).
     pub dup_threshold: usize,
@@ -22,7 +25,8 @@ pub struct GuardConfig {
 impl Default for GuardConfig {
     fn default() -> Self {
         GuardConfig {
-            max_hop: 6,
+            max_hop: 50,
+            root_messages: 50,
             dup_threshold: 3,
             dup_window: 5,
             rate_capacity: 5.0,
@@ -208,7 +212,10 @@ mod tests {
 
     #[test]
     fn hop_limit_trips_and_stays_open() {
-        let mut g = Guards::new(GuardConfig::default());
+        let mut g = Guards::new(GuardConfig {
+            max_hop: 6,
+            ..Default::default()
+        });
         assert_eq!(g.check("a", "c", 6, "x", &[]), Verdict::Allow);
         assert!(matches!(
             g.check("a", "c", 7, "y", &[]),

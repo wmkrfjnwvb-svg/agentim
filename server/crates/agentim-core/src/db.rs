@@ -76,6 +76,7 @@ pub struct Draft {
     pub created_at: i64,
     pub kind: String,
     pub payload: Option<Value>,
+    pub envelope: Option<Value>,
 }
 
 /// A request for a human decision (docs/03-ai-native.md §9.3.4).
@@ -256,6 +257,13 @@ pub struct NewMsg<'a> {
     /// Who approved a draft and whether they edited it (D36): the message
     /// stays the agent's, the event records the approval.
     pub approval: Option<Value>,
+    /// Routing envelope (docs/09 §10).
+    pub envelope: Option<Value>,
+    /// Source of the chain; None: this message starts one.
+    pub root_id: Option<String>,
+    /// Agents this message wakes, and how many more it would have woken
+    /// past the fan-out cap; recorded in the event.
+    pub wake: Option<(Vec<String>, usize)>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -276,9 +284,9 @@ pub enum Cell {
 }
 
 const MSG_COLS: &str = "msg_id, conv_id, created_seq, sender_id, sender_name, sender_type, on_behalf_of, kind, content,
-    version, state, state_reason, hop, causation_id, reply_to, mentions, created_at, updated_at, payload";
-const MEMBER_COLS: &str = "user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq, visible_from, mute_mode, mute_until";
-const DRAFT_COLS: &str = "draft_id, conv_id, agent_id, content, hop, causation_id, reply_to, state, created_at, kind, payload";
+    version, state, state_reason, hop, causation_id, reply_to, mentions, created_at, updated_at, payload, envelope, root_id";
+const MEMBER_COLS: &str = "user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq, visible_from, mute_mode, mute_until, topics";
+const DRAFT_COLS: &str = "draft_id, conv_id, agent_id, content, hop, causation_id, reply_to, state, created_at, kind, payload, envelope";
 
 fn row_user(r: &AnyRow) -> sqlx::Result<User> {
     Ok(User {
@@ -295,6 +303,8 @@ fn row_msg(r: &AnyRow, cx: &crate::crypto::Crypto) -> sqlx::Result<MsgView> {
     Ok(MsgView {
         content: dec(cx, r, "content", &format!("messages.content:{id}"))?,
         payload: dec_json(cx, r, "payload", &format!("messages.payload:{id}"))?,
+        envelope: dec_json(cx, r, "envelope", &format!("messages.envelope:{id}"))?,
+        root_id: r.try_get("root_id")?,
         msg_id: id,
         conv_id: r.try_get("conv_id")?,
         created_seq: r.try_get("created_seq")?,
@@ -337,6 +347,10 @@ fn row_member(r: &AnyRow) -> sqlx::Result<Member> {
             .try_get::<Option<String>, _>("mute_mode")?
             .unwrap_or_else(|| "none".into()),
         mute_until: r.try_get("mute_until")?,
+        topics: r
+            .try_get::<Option<String>, _>("topics")?
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default(),
     })
 }
 
@@ -382,6 +396,7 @@ fn row_draft(r: &AnyRow, cx: &crate::crypto::Crypto) -> sqlx::Result<Draft> {
     Ok(Draft {
         content: dec(cx, r, "content", &format!("drafts.content:{id}"))?,
         payload: dec_json(cx, r, "payload", &format!("drafts.payload:{id}"))?,
+        envelope: dec_json(cx, r, "envelope", &format!("drafts.envelope:{id}"))?,
         draft_id: id,
         conv_id: r.try_get("conv_id")?,
         agent_id: r.try_get("agent_id")?,
@@ -481,10 +496,14 @@ impl Db<'_> {
     pub async fn encrypt_existing(&mut self, table: &str, limit: i64) -> ApiResult<u64> {
         // (key columns, scope column or "", encrypted columns)
         let (keys, scope, cols): (&[&str], &str, &[&str]) = match table {
-            "messages" => (&["msg_id"], "conv_id", &["content", "payload"]),
+            "messages" => (&["msg_id"], "conv_id", &["content", "payload", "envelope"]),
             "events" => (&["conv_id", "seq"], "conv_id", &["payload"]),
             "side_events" => (&["conv_id", "side_seq"], "conv_id", &["payload"]),
-            "drafts" => (&["draft_id"], "conv_id", &["content", "payload"]),
+            "drafts" => (
+                &["draft_id"],
+                "conv_id",
+                &["content", "payload", "envelope"],
+            ),
             "requests" => (
                 &["request_id"],
                 "conv_id",
@@ -1292,8 +1311,8 @@ impl Db<'_> {
             return Err(ApiError::new("conflict", "already a member"));
         }
         // Agents in groups only hear what is addressed to them by default.
-        let trigger = if u.kind == UserKind::Agent && conv_kind == "group" {
-            Trigger::Mention
+        let trigger = if u.kind == UserKind::Agent && conv_kind != "dm" {
+            Trigger::Addressed
         } else {
             Trigger::All
         };
@@ -1507,8 +1526,20 @@ impl Db<'_> {
         agent_id: &str,
         approval: Option<bool>,
         trigger: Option<Trigger>,
+        topics: Option<&[String]>,
         actor: &str,
     ) -> ApiResult<Event> {
+        if let Some(t) = topics {
+            sqlx::query(
+                self.d
+                    .q("UPDATE members SET topics = ? WHERE conv_id = ? AND user_id = ?"),
+            )
+            .bind(serde_json::to_string(t).unwrap())
+            .bind(conv_id)
+            .bind(agent_id)
+            .execute(&mut *self.c)
+            .await?;
+        }
         if let Some(a) = approval {
             sqlx::query(
                 self.d
@@ -1540,7 +1571,7 @@ impl Db<'_> {
             "member.policy",
             Some(actor),
             None,
-            json!({"user_id": agent_id, "approval": m.approval, "trigger": m.trigger}),
+            json!({"user_id": agent_id, "approval": m.approval, "trigger": m.trigger, "topics": m.topics}),
         )
         .await
     }
@@ -1588,7 +1619,18 @@ impl Db<'_> {
             mentions: m.mentions,
             created_at: ts,
             updated_at: ts,
+            envelope: m.envelope,
+            root_id: None,
         };
+        let mut view = view;
+        view.root_id = Some(m.root_id.unwrap_or_else(|| view.msg_id.clone()));
+        let sealed_envelope = self
+            .seal_json(
+                m.conv_id,
+                &format!("messages.envelope:{}", view.msg_id),
+                view.envelope.as_ref(),
+            )
+            .await?;
         let sealed_content = self
             .seal(
                 m.conv_id,
@@ -1604,7 +1646,7 @@ impl Db<'_> {
             )
             .await?;
         sqlx::query(self.d.q(&format!(
-            "INSERT INTO messages ({MSG_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO messages ({MSG_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )))
         .bind(&view.msg_id)
         .bind(&view.conv_id)
@@ -1625,6 +1667,8 @@ impl Db<'_> {
         .bind(ts)
         .bind(ts)
         .bind(sealed_payload)
+        .bind(sealed_envelope)
+        .bind(&view.root_id)
         .execute(&mut *self.c)
         .await?;
         if let Some(cid) = m.client_msg_id {
@@ -1645,9 +1689,18 @@ impl Db<'_> {
                 "msg.created",
                 Some(&sender_id),
                 Some(view),
-                match m.approval {
-                    Some(a) => json!({"approval": a}),
-                    None => json!({}),
+                {
+                    let mut data = json!({});
+                    if let Some(a) = m.approval {
+                        data["approval"] = a;
+                    }
+                    if let Some((w, capped)) = m.wake {
+                        data["wake"] = json!(w);
+                        if capped > 0 {
+                            data["wake_capped"] = json!(capped);
+                        }
+                    }
+                    data
                 },
                 ts,
             )
@@ -1681,6 +1734,23 @@ impl Db<'_> {
         state: Option<&str>,
         reason: Option<&str>,
     ) -> ApiResult<Event> {
+        self.update_message_with(msg_id, kind, actor, content, state, reason, json!({}))
+            .await
+    }
+
+    /// `update_message` with event data (e.g. the agents a completed stream
+    /// wakes).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_message_with(
+        &mut self,
+        msg_id: &str,
+        kind: &str,
+        actor: &str,
+        content: Option<&str>,
+        state: Option<&str>,
+        reason: Option<&str>,
+        data: Value,
+    ) -> ApiResult<Event> {
         let content = match content {
             Some(c) => {
                 let conv = self.msg_conv(msg_id).await?.unwrap_or_default();
@@ -1707,7 +1777,7 @@ impl Db<'_> {
             .await?
             .ok_or_else(|| ApiError::new("not_found", "message"))?;
         let conv_id = view.conv_id.clone();
-        self.append_event(&conv_id, kind, Some(actor), Some(view), json!({}))
+        self.append_event(&conv_id, kind, Some(actor), Some(view), data)
             .await
     }
 
@@ -2277,6 +2347,7 @@ impl Db<'_> {
         audience: &[String],
         kind: &str,
         payload: Option<Value>,
+        envelope: Option<Value>,
     ) -> ApiResult<(Draft, SideEvent)> {
         let d = Draft {
             draft_id: draft_id.to_string(),
@@ -2290,7 +2361,15 @@ impl Db<'_> {
             created_at: now_ms(),
             kind: kind.to_string(),
             payload,
+            envelope,
         };
+        let sealed_envelope = self
+            .seal_json(
+                conv_id,
+                &format!("drafts.envelope:{}", d.draft_id),
+                d.envelope.as_ref(),
+            )
+            .await?;
         let sealed_content = self
             .seal(
                 conv_id,
@@ -2306,7 +2385,7 @@ impl Db<'_> {
             )
             .await?;
         sqlx::query(self.d.q(&format!(
-            "INSERT INTO drafts ({DRAFT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO drafts ({DRAFT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )))
         .bind(&d.draft_id)
         .bind(&d.conv_id)
@@ -2319,6 +2398,7 @@ impl Db<'_> {
         .bind(d.created_at)
         .bind(&d.kind)
         .bind(sealed_payload)
+        .bind(sealed_envelope)
         .execute(&mut *self.c)
         .await?;
         let side = self
@@ -2355,13 +2435,54 @@ impl Db<'_> {
                 .bind("pending")
                 .fetch_all(&mut *self.c)
                 .await?;
-            self.preload(&rows, &["content", "payload"]).await?;
+            self.preload(&rows, &["content", "payload", "envelope"])
+                .await?;
             for r in rows {
                 out.push(row_draft(&r, self.cx)?);
             }
         }
         out.sort_by_key(|d| d.created_at);
         Ok(out)
+    }
+
+    // -------------------------------------------------------- root budget
+
+    /// Agent messages counted against a chain's source.
+    pub async fn root_messages(&mut self, conv_id: &str, root_id: &str) -> ApiResult<i64> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT messages FROM root_budgets WHERE conv_id = ? AND root_id = ?"),
+        )
+        .bind(conv_id)
+        .bind(root_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        Ok(match r {
+            Some(r) => r.try_get::<i64, _>(0)?,
+            None => 0,
+        })
+    }
+
+    pub async fn charge_root(&mut self, conv_id: &str, root_id: &str) -> ApiResult<()> {
+        let n = sqlx::query(self.d.q(
+            "UPDATE root_budgets SET messages = messages + 1 WHERE conv_id = ? AND root_id = ?",
+        ))
+        .bind(conv_id)
+        .bind(root_id)
+        .execute(&mut *self.c)
+        .await?
+        .rows_affected();
+        if n == 0 {
+            sqlx::query(
+                self.d
+                    .q("INSERT INTO root_budgets (conv_id, root_id, messages) VALUES (?, ?, 1)"),
+            )
+            .bind(conv_id)
+            .bind(root_id)
+            .execute(&mut *self.c)
+            .await?;
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------ requests

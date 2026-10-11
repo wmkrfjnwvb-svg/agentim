@@ -78,6 +78,8 @@ pub struct Recip {
     pub trust: Option<(String, Vec<String>)>,
     /// Whether the event should notify this member (not their own, not muted).
     pub notify: bool,
+    /// For agents: whether the event asks it to act (docs/09 §10).
+    pub wake: bool,
 }
 
 /// Conversations a session must be told to resync. Shared between fan-out
@@ -593,14 +595,18 @@ fn deliver_event(g: &mut Inner, ev: &Event, recips: &[Recip]) {
         if !r.visible {
             continue;
         }
-        let frame = match &r.trust {
-            Some((trust, flags)) => {
-                json!({"type": "event", "event": ev, "trust": trust, "flags": flags, "notify": r.notify})
-                    .to_string()
-                    .into()
+        let frame = if r.kind == UserKind::Agent {
+            // Agents also get the trust label and whether to act.
+            let mut v = json!({"type": "event", "event": ev, "notify": r.notify, "wake": r.wake});
+            if let Some((trust, flags)) = &r.trust {
+                v["trust"] = json!(trust);
+                v["flags"] = json!(flags);
             }
-            None if r.notify => loud.clone(),
-            None => quiet.clone(),
+            v.to_string().into()
+        } else if r.notify {
+            loud.clone()
+        } else {
+            quiet.clone()
         };
         for sid in sessions_of(g, &r.user_id) {
             if in_order(g, sid, &ev.conv_id, ev.seq, false) {
@@ -673,6 +679,7 @@ mod tests {
             visible: true,
             trust: None,
             notify: true,
+            wake: false,
         }]);
         for s in 1..=5 {
             reg.deliver(vec![Out::Event {
@@ -703,6 +710,7 @@ mod tests {
             visible: true,
             trust: None,
             notify: true,
+            wake: false,
         }]);
         for s in 1..=5 {
             reg.deliver(vec![Out::Event {
@@ -754,6 +762,7 @@ mod sync_tests {
                 visible: true,
                 trust: None,
                 notify: false,
+                wake: false,
             }]),
         }]);
     }

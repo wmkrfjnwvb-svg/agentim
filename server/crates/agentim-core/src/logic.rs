@@ -19,7 +19,9 @@ use crate::policy::PolicyChain;
 use crate::registry::{Out, Recip, Registry};
 
 mod requests;
+mod routing;
 pub use requests::MAX_PENDING as MAX_PENDING_REQUESTS;
+pub use routing::{MAX_AGENTS_FOR_ALL, MAX_WAKE};
 
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 /// Serialized payload of a custom message kind.
@@ -1125,6 +1127,10 @@ impl Ctx<'_, '_> {
                 causation_id,
                 on_behalf_of,
                 to_user,
+                to,
+                topics,
+                intent,
+                refs,
             } => {
                 check_client_msg_id(&client_msg_id)?;
                 self.send(
@@ -1137,6 +1143,12 @@ impl Ctx<'_, '_> {
                     causation_id,
                     on_behalf_of,
                     to_user,
+                    routing::EnvelopeIn {
+                        to,
+                        topics,
+                        intent,
+                        refs,
+                    },
                 )
                 .await
             }
@@ -1295,12 +1307,22 @@ impl Ctx<'_, '_> {
                 agent_id,
                 approval,
                 trigger,
+                topics,
             } => {
                 let agent = self.owned_agent(me, &agent_id)?;
                 self.require_member(&conv_id, &agent.id).await?;
+                self.check_mode(&conv_id, &agent.id, trigger, topics.as_deref())
+                    .await?;
                 let ev = self
                     .db
-                    .set_agent_policy(&conv_id, &agent.id, approval, trigger, &me.id)
+                    .set_agent_policy(
+                        &conv_id,
+                        &agent.id,
+                        approval,
+                        trigger,
+                        topics.as_deref(),
+                        &me.id,
+                    )
                     .await?;
                 self.st.members.remove(&conv_id);
                 self.st.recips.remove(&conv_id);
@@ -1310,7 +1332,7 @@ impl Ctx<'_, '_> {
                         "agent.policy",
                         Some(&conv_id),
                         Some(&agent.id),
-                        json!({"approval": approval, "trigger": trigger}),
+                        json!({"approval": approval, "trigger": trigger, "topics": topics}),
                     )
                     .await?;
                 let seq = ev.seq;
@@ -1476,10 +1498,11 @@ impl Ctx<'_, '_> {
             return Ok(false);
         }
         let Some(msg) = &ev.msg else { return Ok(true) };
-        if m.trigger == Trigger::All
-            || msg.sender_id == m.user_id
-            || msg.mentions.contains(&m.user_id)
-        {
+        if matches!(m.trigger, Trigger::All | Trigger::Observe) || msg.sender_id == m.user_id {
+            return Ok(true);
+        }
+        let to = routing::to_of(msg.envelope.as_ref());
+        if routing::wakes(m, &msg.mentions, msg.envelope.as_ref(), None, &to) {
             return Ok(true);
         }
         if let Some(r) = &msg.reply_to
@@ -1506,6 +1529,7 @@ impl Ctx<'_, '_> {
                             visible: true,
                             trust: None,
                             notify: false,
+                            wake: false,
                         })
                         .collect(),
                 );
@@ -1537,6 +1561,9 @@ impl Ctx<'_, '_> {
                     }
                     r.trust = Some((t.as_str().to_string(), flags));
                 }
+            }
+            if ev.data.get("wake").is_some() {
+                Self::push_wake(&ev, &mut recips);
             }
             Arc::new(recips)
         } else {
@@ -2094,10 +2121,18 @@ impl Ctx<'_, '_> {
         causation_id: Option<String>,
         on_behalf_of: Option<String>,
         to_user: Option<String>,
+        envelope: routing::EnvelopeIn,
     ) -> ApiResult<Value> {
         let member = self.require_member(conv_id, &me.id).await?;
         check_text(text)?;
         let kind = check_kind(kind, &payload)?;
+        let envelope = self.envelope(conv_id, envelope).await?;
+        if envelope.is_some() && to_user.is_some() {
+            return Err(err(
+                "bad_request",
+                "an envelope is for messages in the conversation, not to_user",
+            ));
+        }
         if let Some(o) = &on_behalf_of {
             // Community rule: an agent may only speak on behalf of its owner.
             if me.kind != UserKind::Agent || me.owner_id.as_deref() != Some(o.as_str()) {
@@ -2105,7 +2140,9 @@ impl Ctx<'_, '_> {
             }
         }
         let (causation_id, hop) = self.causation(conv_id, me, causation_id, &reply_to).await?;
+        let root = self.root_of(me, causation_id.as_deref()).await?;
         if me.kind == UserKind::Agent {
+            self.root_gate(me, conv_id, root.as_deref()).await?;
             self.agent_gate(me, conv_id, hop, text).await?;
             if let Some((hook, reason)) =
                 self.sh.policy.outbound(&scan_text(text, payload.as_ref()))
@@ -2175,6 +2212,7 @@ impl Ctx<'_, '_> {
                     &audience,
                     &kind,
                     payload,
+                    envelope,
                 )
                 .await?;
             self.db
@@ -2192,6 +2230,15 @@ impl Ctx<'_, '_> {
         }
 
         let mentions = self.mentions(conv_id, text).await?;
+        let wake = self
+            .wake_set(
+                conv_id,
+                &me.id,
+                reply_to.as_deref(),
+                &mentions,
+                envelope.as_ref(),
+            )
+            .await?;
         let res = self
             .db
             .commit_message(NewMsg {
@@ -2208,6 +2255,9 @@ impl Ctx<'_, '_> {
                 reply_to,
                 mentions,
                 approval: None,
+                envelope,
+                root_id: root,
+                wake: Some(wake),
             })
             .await?;
         match res {
@@ -2217,7 +2267,8 @@ impl Ctx<'_, '_> {
             }
             Committed::New(ev) => {
                 let msg = ev.msg.as_ref().unwrap();
-                let v = json!({"seq": ev.seq, "msg_id": msg.msg_id, "hop": msg.hop});
+                self.charge(msg).await?;
+                let v = json!({"seq": ev.seq, "msg_id": msg.msg_id, "hop": msg.hop, "root_id": msg.root_id, "wake": ev.data["wake"]});
                 self.emit(ev).await?;
                 Ok(v)
             }
@@ -2383,6 +2434,8 @@ impl Ctx<'_, '_> {
             ));
         }
         let (causation_id, hop) = self.causation(conv_id, me, causation_id, &reply_to).await?;
+        let root = self.root_of(me, causation_id.as_deref()).await?;
+        self.root_gate(me, conv_id, root.as_deref()).await?;
         self.agent_gate(me, conv_id, hop, "").await?;
         let now = Instant::now();
         let (msg_id, target, seq) = if member.approval {
@@ -2410,6 +2463,10 @@ impl Ctx<'_, '_> {
                     reply_to: reply_to.clone(),
                     mentions: vec![],
                     approval: None,
+                    envelope: None,
+                    root_id: root,
+                    // Agents act on a stream when it completes (D43).
+                    wake: Some((vec![], 0)),
                 })
                 .await?;
             match res {
@@ -2417,6 +2474,7 @@ impl Ctx<'_, '_> {
                     return Ok(json!({"msg_id": msg_id, "seq": seq, "duplicate": true}));
                 }
                 Committed::New(ev) => {
+                    self.charge(ev.msg.as_ref().unwrap()).await?;
                     let id = ev.msg.as_ref().unwrap().msg_id.clone();
                     let seq = ev.seq;
                     self.emit(ev).await?;
@@ -2645,15 +2703,29 @@ impl Ctx<'_, '_> {
             };
         match &target {
             Target::Main => {
+                // A completed stream wakes the agents it is for (D43).
+                let data = if state == "complete" {
+                    let (w, capped) = self
+                        .wake_set(&conv_id, &sender.id, reply_to.as_deref(), &[], None)
+                        .await?;
+                    let mut d = json!({"wake": w});
+                    if capped > 0 {
+                        d["wake_capped"] = json!(capped);
+                    }
+                    d
+                } else {
+                    json!({})
+                };
                 let ev = self
                     .db
-                    .update_message(
+                    .update_message_with(
                         msg_id,
                         "msg.updated",
                         actor,
                         Some(&buf),
                         Some(state),
                         reason,
+                        data,
                     )
                     .await?;
                 self.emit(ev).await?;
@@ -2672,6 +2744,7 @@ impl Ctx<'_, '_> {
                             reply_to,
                             audience,
                             "text",
+                            None,
                             None,
                         )
                         .await?;
@@ -2878,6 +2951,16 @@ impl Ctx<'_, '_> {
         let edited = text.as_ref().is_some_and(|t| *t != d.content);
         let content = text.unwrap_or(d.content.clone());
         let mentions = self.mentions(&d.conv_id, &content).await?;
+        let root = self.root_of(&agent, d.causation_id.as_deref()).await?;
+        let wake = self
+            .wake_set(
+                &d.conv_id,
+                &agent.id,
+                d.reply_to.as_deref(),
+                &mentions,
+                d.envelope.as_ref(),
+            )
+            .await?;
         let res = self
             .db
             .commit_message(NewMsg {
@@ -2892,10 +2975,16 @@ impl Ctx<'_, '_> {
                 hop: d.hop,
                 causation_id: d.causation_id.clone(),
                 reply_to: d.reply_to.clone(),
-                mentions,
+                mentions: mentions.clone(),
                 approval: Some(json!({"by": me.id, "edited": edited})),
+                envelope: d.envelope.clone(),
+                root_id: root,
+                wake: Some(wake),
             })
             .await?;
+        if let Committed::New(ev) = &res {
+            self.charge(ev.msg.as_ref().unwrap()).await?;
+        }
         self.db
             .audit(
                 Some(&me.id),

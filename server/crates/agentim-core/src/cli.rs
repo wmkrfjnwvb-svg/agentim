@@ -197,6 +197,11 @@ pub async fn run(edition: Edition) {
         stream_idle: Duration::from_secs(args.stream_idle_secs),
         open_stats: args.demo,
         sync: cfg.sync_config(),
+        guards: crate::guard::GuardConfig {
+            // The demo's agent ping-pong stops quickly enough to watch.
+            root_messages: if args.demo { 12 } else { 50 },
+            ..Default::default()
+        },
         ..Default::default()
     };
     let hub = match Hub::open(cfg, hub_cfg).await {

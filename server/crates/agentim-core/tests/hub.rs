@@ -5,6 +5,7 @@ mod common;
 
 use std::time::Duration;
 
+use agentim_core::hub::Hub;
 use agentim_core::model::*;
 use common::*;
 use serde_json::{Value, json};
@@ -15,7 +16,8 @@ backend_tests!(
     edits_recalls_and_stream_completion_reach_already_synced_clients,
     interrupted_streams_end_as_failed_and_keep_partial_content,
     humans_can_interrupt_and_the_agent_is_told,
-    agent_ping_pong_is_broken_at_the_hop_limit,
+    agent_ping_pong_is_stopped_by_the_root_budget,
+    agent_reply_depth_is_bounded,
     repeated_agent_content_trips_the_loop_breaker,
     takeover_blocks_the_agent_until_released,
     group_agents_in_mention_mode_only_hear_what_is_addressed_to_them,
@@ -291,8 +293,88 @@ async fn humans_can_interrupt_and_the_agent_is_told(db: TestDb) {
     );
 }
 
-async fn agent_ping_pong_is_broken_at_the_hop_limit(db: TestDb) {
-    let hub = open(single(&db.url)).await;
+/// Agents answering each other without a person: the chain's root budget
+/// stops them (docs/09 §5), once told; a person speaking starts a new chain.
+async fn agent_ping_pong_is_stopped_by_the_root_budget(db: TestDb) {
+    let open_hub = || async {
+        let mut h = hub_cfg();
+        h.guards.root_messages = 6;
+        Hub::open(single(&db.url), h).await.unwrap()
+    };
+    let hub = open_hub().await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let x = user(&hub, "x", UserKind::Agent, Some(&alice)).await;
+    let y = user(&hub, "y", UserKind::Agent, Some(&alice)).await;
+    let mut a = Conn::new(&hub, &alice);
+    let cx = Conn::new(&hub, &x);
+    let cy = Conn::new(&hub, &y);
+    let conv = a.group(&[&x, &y]).await;
+    let start = a.send(&conv, "start").await["msg_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut last = start.clone();
+    let mut hops = vec![];
+    let mut refused = None;
+    for i in 0..10 {
+        let who = if i % 2 == 0 { &cx } else { &cy };
+        let r = who.reply(&conv, &format!("turn {i}"), &last).await;
+        if r["ok"] != true {
+            refused = Some(r["error"]["code"].as_str().unwrap().to_string());
+            break;
+        }
+        assert_eq!(r["root_id"], json!(start), "the chain keeps its source");
+        hops.push(r["hop"].as_i64().unwrap());
+        last = r["msg_id"].as_str().unwrap().to_string();
+    }
+    assert_eq!(hops, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(refused.as_deref(), Some("rate_limited"));
+    // Told once in the conversation and to the owner, however often refused.
+    assert_eq!(
+        cy.reply(&conv, "more", &last).await["error"]["code"],
+        "rate_limited"
+    );
+    let stopped = |p: &Value| {
+        p["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| {
+                v["event"]["type"] == "agent.state"
+                    && v["event"]["data"]["state"] == "stopped"
+                    && v["event"]["data"]["reason"] == "root_budget"
+            })
+            .count()
+    };
+    assert_eq!(stopped(&a.pull(&conv, 0).await), 1);
+    assert!(
+        a.drain()
+            .iter()
+            .any(|f| f["type"] == "side" && f["event"]["data"]["code"] == "root_budget")
+    );
+    // The budget is kept across a restart.
+    drop((a, cx, cy));
+    drop(hub);
+    let hub = open_hub().await;
+    let a = Conn::new(&hub, &alice);
+    let cx = Conn::new(&hub, &x);
+    assert_eq!(
+        cx.reply(&conv, "after restart", &last).await["error"]["code"],
+        "rate_limited"
+    );
+    assert_eq!(stopped(&a.pull(&conv, 0).await), 1);
+    // A person speaking starts a new chain.
+    let again = a.send(&conv, "new topic").await["msg_id"].clone();
+    let r = cx.reply(&conv, "back", again.as_str().unwrap()).await;
+    assert_eq!(r["hop"], 1);
+    assert_eq!(r["root_id"], again);
+}
+
+/// The depth of a reply chain stays bounded as a second guard.
+async fn agent_reply_depth_is_bounded(db: TestDb) {
+    let mut h = hub_cfg();
+    h.guards.max_hop = 3;
+    let hub = Hub::open(single(&db.url), h).await.unwrap();
     let alice = user(&hub, "alice", UserKind::Human, None).await;
     let x = user(&hub, "x", UserKind::Agent, Some(&alice)).await;
     let y = user(&hub, "y", UserKind::Agent, Some(&alice)).await;
@@ -306,7 +388,7 @@ async fn agent_ping_pong_is_broken_at_the_hop_limit(db: TestDb) {
         .to_string();
     let mut hops = vec![];
     let mut tripped = None;
-    for i in 0..10 {
+    for i in 0..6 {
         let who = if i % 2 == 0 { &cx } else { &cy };
         let r = who.reply(&conv, &format!("turn {i}"), &last).await;
         if r["ok"] != true {
@@ -316,7 +398,7 @@ async fn agent_ping_pong_is_broken_at_the_hop_limit(db: TestDb) {
         hops.push(r["hop"].as_i64().unwrap());
         last = r["msg_id"].as_str().unwrap().to_string();
     }
-    assert_eq!(hops, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(hops, vec![1, 2, 3]);
     assert_eq!(tripped.as_deref(), Some("hop_limit"));
     let p = a.pull(&conv, 0).await;
     assert!(
@@ -326,19 +408,13 @@ async fn agent_ping_pong_is_broken_at_the_hop_limit(db: TestDb) {
         "the trip is recorded although the send was rejected"
     );
     assert_eq!(
-        cx.send(&conv, "again").await["error"]["code"],
+        cy.send(&conv, "again").await["error"]["code"],
         "circuit_open"
     );
-    a.ok(json!({"op": "reset_guard", "conv_id": conv, "agent_id": x.id}))
-        .await;
-    assert_eq!(
-        cx.reply(&conv, "continue", &last).await["error"]["code"],
-        "hop_limit"
-    );
-    a.ok(json!({"op": "reset_guard", "conv_id": conv, "agent_id": x.id}))
+    a.ok(json!({"op": "reset_guard", "conv_id": conv, "agent_id": y.id}))
         .await;
     a.send(&conv, "new topic").await;
-    assert_eq!(cx.send(&conv, "back").await["hop"], 1);
+    assert_eq!(cy.send(&conv, "back").await["hop"], 1);
 }
 
 async fn repeated_agent_content_trips_the_loop_breaker(db: TestDb) {

@@ -537,6 +537,14 @@ fn decorate(
         v["trust"] = json!(t.as_str());
         v["flags"] = json!(flags);
     }
+    if member.is_some_and(|m| m.kind == UserKind::Agent) {
+        // As recorded when the message was written (docs/09 §10).
+        v["wake"] = json!(
+            e.data["wake"]
+                .as_array()
+                .is_some_and(|w| w.iter().any(|x| x == me_id))
+        );
+    }
     v
 }
 

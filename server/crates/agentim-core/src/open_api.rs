@@ -1237,6 +1237,10 @@ async fn send_as(
                 causation_id: None,
                 on_behalf_of: None,
                 to_user,
+                to: None,
+                topics: None,
+                intent: None,
+                refs: None,
             },
         )
         .await?;

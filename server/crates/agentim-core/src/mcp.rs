@@ -425,7 +425,7 @@ fn tools() -> Value {
         {
             "name": "send_message",
             "title": "Send a message",
-            "description": "Sends a message to a conversation you are a member of. Pass the same client_msg_id when you retry so the message is not sent twice.",
+            "description": "Sends a message to a conversation you are a member of. Name who should act in `to` (they are woken; others are not), tag it with `topics`, say what it is with `intent`, and point to material with `refs` instead of pasting it. Pass the same client_msg_id when you retry so the message is not sent twice.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -433,6 +433,10 @@ fn tools() -> Value {
                     "text": {"type": "string", "minLength": 1, "description": "The message."},
                     "reply_to": id("msg_id of the message you answer (optional)."),
                     "client_msg_id": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Your id for this message; repeat it on retries (optional)."},
+                    "to": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 20, "description": "Members who should act (names or ids)."},
+                    "topics": {"type": "array", "items": {"type": "string", "pattern": "^[a-z0-9._-]{1,64}$"}, "minItems": 1, "maxItems": 10},
+                    "intent": {"type": "string", "enum": ["request", "proposal", "answer", "status", "done"]},
+                    "refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 256}, "minItems": 1, "maxItems": 20, "description": "References to documents, artifacts or messages."},
                 },
                 "required": ["conv_id", "text"],
                 "additionalProperties": false,
@@ -675,7 +679,19 @@ async fn call_tool(
             Ok((render_updates(&convs, v["more"] == true), v))
         }
         "send_message" => {
-            only(args, &["conv_id", "text", "reply_to", "client_msg_id"])?;
+            only(
+                args,
+                &[
+                    "conv_id",
+                    "text",
+                    "reply_to",
+                    "client_msg_id",
+                    "to",
+                    "topics",
+                    "intent",
+                    "refs",
+                ],
+            )?;
             let cmid = arg_str(args, "client_msg_id", false)?
                 .unwrap_or_else(|| format!("mcp-{}", uuid::Uuid::new_v4().simple()));
             let mut m = json!({
@@ -686,6 +702,21 @@ async fn call_tool(
             });
             if let Some(r) = arg_str(args, "reply_to", false)? {
                 m["reply_to"] = json!(r);
+            }
+            if let Some(i) = arg_str(args, "intent", false)? {
+                m["intent"] = json!(i);
+            }
+            for k in ["to", "topics", "refs"] {
+                match args.get(k) {
+                    None | Some(Value::Null) => {}
+                    Some(Value::Array(a)) if a.iter().all(Value::is_string) => m[k] = json!(a),
+                    _ => {
+                        return Err(ApiError::new(
+                            "bad_request",
+                            format!("{k} must be a list of strings"),
+                        ));
+                    }
+                }
             }
             let v = run(m).await?;
             let text = match v["draft_id"].as_str() {
@@ -890,8 +921,14 @@ fn render_updates(convs: &[Value], more: bool) -> String {
                         .as_str()
                         .map(|t| format!(", trust {t}"))
                         .unwrap_or_default();
+                    // What asks you to act is marked; the rest is context.
+                    let act = if e["wake"] == true {
+                        "→ for you "
+                    } else {
+                        ""
+                    };
                     out.push_str(&format!(
-                        "[{conv} #{seq}] {} ({}{trust}) [{}]: {}\n",
+                        "{act}[{conv} #{seq}] {} ({}{trust}) [{}]: {}\n",
                         m["sender_name"].as_str().unwrap_or(""),
                         m["sender_type"].as_str().unwrap_or(""),
                         m["msg_id"].as_str().unwrap_or(""),

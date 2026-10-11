@@ -290,6 +290,7 @@ function sysText(ev) {
     case 'agent.state':
       if (d.state === 'taken_over') return `🧑‍💼 ${name(d.by)} 接管了 ${name(d.agent_id)}，Agent 暂停发言`;
       if (d.state === 'tripped') return `⛔ 护栏熔断：${name(d.agent_id)}（${d.reason}：${d.detail}）`;
+      if (d.state === 'stopped') return `⛔ Agent 已停下：${name(d.agent_id)}（${d.reason}：${d.detail}），等人发言后继续`;
       return `▶ ${name(d.agent_id)} 恢复工作${d.reason ? '（' + d.reason + '）' : ''}`;
     default: return ev.type;
   }
@@ -306,7 +307,7 @@ function render() {
   items.sort((a, b) => a.k - b.k || a.s - b.s);
   const mine = (m) => m.sender_id === S.me.id || S.myAgents.some(a => a.id === m.sender_id);
   $('msgs').innerHTML = items.map(it => {
-    if (it.sys) return `<div class="sys ${it.sys.data && it.sys.data.state === 'tripped' ? 'warn' : ''}">${esc(sysText(it.sys))}${dbg ? ` <span class="debug">seq ${it.sys.seq}</span>` : ''}</div>`;
+    if (it.sys) return `<div class="sys ${it.sys.data && (it.sys.data.state === 'tripped' || it.sys.data.state === 'stopped') ? 'warn' : ''}">${esc(sysText(it.sys))}${dbg ? ` <span class="debug">seq ${it.sys.seq}</span>` : ''}</div>`;
     if (it.side) {
       const e = it.side, d = e.data;
       const label = e.type === 'whisper' ? `🤫 耳语 → ${esc(name(d.to))}（会话其他人不可见）` : `👁 仅 ${esc(name(d.to))} 可见`;

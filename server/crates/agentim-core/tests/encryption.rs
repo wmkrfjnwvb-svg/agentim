@@ -111,6 +111,9 @@ async fn everything(hub: &Hub, alice: &User, bob: &User, bot: &User) -> String {
         .to_string();
     a.ok(json!({"op": "edit", "msg_id": e, "text": format!("{MARK} edit")}))
         .await;
+    // A routing envelope.
+    a.ok(json!({"op": "send", "conv_id": conv, "client_msg_id": "env", "text": "with envelope", "refs": [format!("{MARK} ref")]}))
+        .await;
     // A request for a decision: question, context and answer.
     let r = g
         .ok(json!({"op": "request_human", "conv_id": conv, "kind": "answer", "title": format!("{MARK} question"), "context": {"c": format!("{MARK} context")}, "client_req_id": "enc"}))
@@ -122,7 +125,7 @@ async fn everything(hub: &Hub, alice: &User, bob: &User, bot: &User) -> String {
 
 async fn check(hub: &Hub, alice: &User, bob: &User, conv: &str) {
     let p = Conn::new(hub, alice).pull(conv, 0).await.to_string();
-    for w in ["plain", "payload", "edited", "edit"] {
+    for w in ["plain", "payload", "edited", "edit", "ref"] {
         assert!(p.contains(&format!("{MARK} {w}")), "{w}: {p}");
     }
     let side = Conn::new(hub, bob)

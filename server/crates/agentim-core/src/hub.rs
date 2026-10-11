@@ -1935,13 +1935,17 @@ impl Hub {
             causation_id,
             on_behalf_of,
             to_user,
+            to,
+            topics,
+            intent,
+            refs,
         } = msg
         else {
             return Ok(msg);
         };
         crate::logic::check_text(&text)?;
         crate::logic::check_kind(kind.clone(), &payload)?;
-        let req = json!({"conv_id": conv_id, "client_msg_id": client_msg_id, "kind": kind.as_deref().unwrap_or("text"), "text": text, "payload": payload, "reply_to": reply_to, "to_user": to_user});
+        let req = json!({"conv_id": conv_id, "client_msg_id": client_msg_id, "kind": kind.as_deref().unwrap_or("text"), "text": text, "payload": payload, "reply_to": reply_to, "to_user": to_user, "to": to, "topics": topics, "intent": intent, "refs": refs});
         if let crate::webhook::Verdict::Replace {
             text: t,
             payload: p,
@@ -1960,6 +1964,10 @@ impl Hub {
             causation_id,
             on_behalf_of,
             to_user,
+            to,
+            topics,
+            intent,
+            refs,
         })
     }
 

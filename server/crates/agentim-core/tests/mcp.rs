@@ -26,6 +26,7 @@ backend_tests!(
     keys_and_positions_survive_a_restart,
     race_concurrent_updates_deliver_each_event_once,
     agents_ask_people_to_decide,
+    agents_address_each_other,
 );
 
 const V: &str = "2026-07-28";
@@ -1103,6 +1104,75 @@ async fn agents_ask_people_to_decide(db: TestDb) {
             m.tool_err(&key, tool, args.clone()).await,
             want,
             "{tool} {args}"
+        );
+    }
+}
+
+/// One agent names another in `to`: the other is woken and sees it marked;
+/// a message that names nobody does not reach it.
+async fn agents_address_each_other(db: TestDb) {
+    let mut cfg = single(&db.url);
+    cfg.mcp.burst = 1000.0;
+    let m = serve(cfg).await;
+    let (alice, helper, key, conv) = setup(&m).await;
+    let r = m.hub.create_agent(&alice, "peer").await.unwrap();
+    let peer_key = r["key"].as_str().unwrap().to_string();
+    let peer = m.hub.user_by_name("peer").unwrap();
+    let a = Conn::new(&m.hub, &alice);
+    a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": peer.id}))
+        .await;
+    m.ok(&peer_key, "get_updates", json!({})).await;
+    a.send(&conv, "general chatter").await;
+    let sent = m
+        .ok(
+            &key,
+            "send_message",
+            json!({"conv_id": conv, "text": "please review", "to": ["peer"], "intent": "request", "topics": ["review"], "refs": ["doc://pr/42"]}),
+        )
+        .await;
+    assert_eq!(sent["wake"], json!([peer.id]));
+    let r = m.tool(&peer_key, "get_updates", json!({})).await;
+    let text = r["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("→ for you") && text.contains("please review"),
+        "{text}"
+    );
+    assert!(!text.contains("general chatter"), "{text}");
+    let ev = r["structuredContent"]["convs"][0]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["event"]["msg"]["content"] == "please review")
+        .unwrap()
+        .clone();
+    assert_eq!(ev["wake"], true);
+    assert_eq!(
+        ev["event"]["msg"]["envelope"]["refs"],
+        json!(["doc://pr/42"])
+    );
+    assert_eq!(ev["event"]["msg"]["sender_id"], json!(helper.id));
+    for (args, want) in [
+        (
+            json!({"conv_id": conv, "text": "x", "intent": "shout"}),
+            "bad_request",
+        ),
+        (
+            json!({"conv_id": conv, "text": "x", "to": "peer"}),
+            "bad_request",
+        ),
+        (
+            json!({"conv_id": conv, "text": "x", "to": ["nobody"]}),
+            "bad_request",
+        ),
+        (
+            json!({"conv_id": conv, "text": "x", "topics": ["Bad Topic"]}),
+            "bad_request",
+        ),
+    ] {
+        assert_eq!(
+            m.tool_err(&key, "send_message", args.clone()).await,
+            want,
+            "{args}"
         );
     }
 }

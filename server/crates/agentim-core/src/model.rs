@@ -27,6 +27,7 @@ pub fn system_member() -> Member {
         visible_from: 1,
         mute_mode: "none".into(),
         mute_until: None,
+        topics: vec![],
     }
 }
 pub const UNIT_DEFAULT: &str = "default";
@@ -71,10 +72,17 @@ pub struct User {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Trigger {
-    /// Receives every visible event.
+    /// Receives (and is woken by) every visible event.
     All,
     /// Receives only events that mention it, reply to it, or are its own.
     Mention,
+    /// `mention` plus messages whose envelope names it in `to` (the default
+    /// for agents in groups, docs/09 §3.2).
+    Addressed,
+    /// `addressed` plus messages on a topic it subscribes to.
+    Topics,
+    /// Receives everything, is never woken (monitoring, audit, recording).
+    Observe,
 }
 
 impl Trigger {
@@ -82,13 +90,18 @@ impl Trigger {
         match self {
             Trigger::All => "all",
             Trigger::Mention => "mention",
+            Trigger::Addressed => "addressed",
+            Trigger::Topics => "topics",
+            Trigger::Observe => "observe",
         }
     }
     pub fn parse(s: &str) -> Trigger {
-        if s == "all" {
-            Trigger::All
-        } else {
-            Trigger::Mention
+        match s {
+            "all" => Trigger::All,
+            "addressed" => Trigger::Addressed,
+            "topics" => Trigger::Topics,
+            "observe" => Trigger::Observe,
+            _ => Trigger::Mention,
         }
     }
 }
@@ -109,6 +122,8 @@ pub struct Member {
     pub mute_mode: String,
     /// Mute ends at this time (ms); None = until changed.
     pub mute_until: Option<i64>,
+    /// Topics an agent in `topics` mode subscribes to.
+    pub topics: Vec<String>,
 }
 
 impl Member {
@@ -157,6 +172,13 @@ pub struct MsgView {
     pub mentions: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Routing envelope: `to`, `topics`, `intent`, `refs` (docs/09 §10).
+    #[serde(default)]
+    pub envelope: Option<Value>,
+    /// The message that started the chain this one belongs to (root
+    /// budget); None for messages from before v3.
+    #[serde(default)]
+    pub root_id: Option<String>,
 }
 
 /// One entry of the main conversation log. `seq` is gap-free per conversation.
@@ -274,6 +296,16 @@ pub enum ClientMsg {
         /// agent, its owner). Goes to the side channel, takes no conv_seq.
         #[serde(default)]
         to_user: Option<String>,
+        /// Routing envelope (docs/09 §10): members named, topics, intent,
+        /// references.
+        #[serde(default)]
+        to: Option<Vec<String>>,
+        #[serde(default)]
+        topics: Option<Vec<String>>,
+        #[serde(default)]
+        intent: Option<String>,
+        #[serde(default)]
+        refs: Option<Vec<String>>,
     },
     Edit {
         msg_id: String,
@@ -393,6 +425,9 @@ pub enum ClientMsg {
         approval: Option<bool>,
         #[serde(default)]
         trigger: Option<Trigger>,
+        /// Topics an agent in `topics` mode subscribes to.
+        #[serde(default)]
+        topics: Option<Vec<String>>,
     },
     ResetGuard {
         conv_id: String,

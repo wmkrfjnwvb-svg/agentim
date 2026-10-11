@@ -263,8 +263,8 @@ async fn only_the_owner_adds_members_and_members_may_add_their_own_agents(db: Te
     let info = conv_info(&a, &conv).await;
     assert_eq!(
         member(&info, &bobbot)["trigger"],
-        "mention",
-        "group agents default to mention mode"
+        "addressed",
+        "group agents default to addressed mode"
     );
 }
 

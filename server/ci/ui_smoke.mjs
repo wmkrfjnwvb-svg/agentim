@@ -75,7 +75,7 @@ await shot(alice, '03-stall-timeout');
 await conv(alice, 'Agent 循环实验室');
 await say(alice, '你们俩讨论一下 IM 的未来');
 await alice.waitForSelector('.sys.warn', { timeout: 20000 });
-check((await alice.locator('.sys.warn').last().textContent()).includes('hop_limit'), 'agent ping-pong is broken at the hop limit');
+check((await alice.locator('.sys.warn').last().textContent()).includes('root_budget'), 'agent ping-pong is stopped by the root budget');
 await shot(alice, '04-loop-breaker');
 
 await conv(alice, '客服：退款工单');

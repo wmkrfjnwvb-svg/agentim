@@ -371,6 +371,8 @@ pub const TABLES: &[Table] = &[
             n("visible_from", Big),
             n("mute_mode", Id),
             n("mute_until", Big),
+            // v3: subscribed topics of an agent in `topics` mode (JSON list).
+            n("topics", Text),
         ],
         pk: &["conv_id", "user_id"],
         indexes: &[],
@@ -414,6 +416,10 @@ pub const TABLES: &[Table] = &[
             c("updated_at", Big),
             // v2: structured content of custom message kinds (JSON).
             n("payload", Text),
+            // v3: routing envelope (to, topics, intent, refs; encrypted JSON)
+            // and the source of the chain it belongs to (docs/09 §10).
+            n("envelope", Text),
+            n("root_id", Id),
         ],
         pk: &["msg_id"],
         indexes: &[
@@ -494,6 +500,14 @@ pub const TABLES: &[Table] = &[
         indexes: &[("device_cursors_conv_user", &["conv_id", "user_id"], false)],
         conv_key: Some("conv_id"),
     },
+    // v3: agent messages per source of a chain (root budget, docs/09 §10).
+    Table {
+        name: "root_budgets",
+        cols: &[c("conv_id", Id), c("root_id", Id), c("messages", Big)],
+        pk: &["conv_id", "root_id"],
+        indexes: &[],
+        conv_key: Some("conv_id"),
+    },
     // v3: requests for a human decision (docs/03-ai-native.md §9.3.4).
     Table {
         name: "requests",
@@ -545,6 +559,8 @@ pub const TABLES: &[Table] = &[
             // v2: kind and payload of custom message kinds.
             n("kind", Id),
             n("payload", Text),
+            // v3: routing envelope (docs/09 §10).
+            n("envelope", Text),
         ],
         pk: &["draft_id"],
         indexes: &[
@@ -726,7 +742,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 3,
         compat: 1,
-        about: "sync-only clients: device cursors, member history start and mute, user settings; requests for a human decision",
+        about: "sync-only clients: device cursors, member history start and mute, user settings; requests for a human decision; message envelopes, root budgets and topic subscriptions",
         steps: &[
             Step::AddColumn {
                 table: "users",
@@ -743,6 +759,22 @@ pub const MIGRATIONS: &[Migration] = &[
             Step::AddColumn {
                 table: "members",
                 column: "mute_until",
+            },
+            Step::AddColumn {
+                table: "members",
+                column: "topics",
+            },
+            Step::AddColumn {
+                table: "messages",
+                column: "envelope",
+            },
+            Step::AddColumn {
+                table: "messages",
+                column: "root_id",
+            },
+            Step::AddColumn {
+                table: "drafts",
+                column: "envelope",
             },
         ],
     },
