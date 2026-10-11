@@ -19,6 +19,12 @@ export class AgentIMError extends Error {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Failures worth another try. A refusal on business grounds (forbidden,
+// conflict, taken_over, ...) would only be refused again: the event is
+// acknowledged and the refusal logged.
+const TRANSIENT = new Set(['rate_limited', 'disconnected', 'storage', 'conv_moved', 'conv_migrating', 'unavailable', 'internal']);
+const retriable = (e) => !(e instanceof AgentIMError) || TRANSIENT.has(e.code);
 const uid = () => globalThis.crypto.randomUUID();
 
 /** One WebSocket connection: requests by `rid`, pushes to a callback. */
@@ -186,12 +192,28 @@ export class Agent {
       const r = await this.conn.call('sync', { limit: 200 });
       const acks = [];
       for (const c of r.convs) {
-        for (const item of c.events ?? []) await this.#handle(item);
-        for (const s of c.side_events ?? []) await this.#side(s);
+        let done;
+        try {
+          for (const item of c.events ?? []) { await this.#handle(item); done = item.event.seq; }
+        } catch (e) {
+          // What was handled before the failure is not given again.
+          if (done !== undefined) acks.push({ conv_id: c.conv_id, seq: done });
+          if (acks.length) await this.conn.call('ack', { acks }).catch(() => {});
+          throw e;
+        }
+        for (const s of c.side_events ?? []) this.#side(s);
         if (c.upto !== undefined) acks.push({ conv_id: c.conv_id, seq: c.upto, side_seq: c.side_upto ?? 0 });
       }
       if (acks.length) await this.conn.call('ack', { acks });
       if (!r.more) return;
+    }
+  }
+
+  // Runs handlers; a business refusal from the server is not retried.
+  async #run(fn, what) {
+    try { await fn(); } catch (e) {
+      if (retriable(e)) throw e;
+      this.log(`${what}: refused by the server (${e.code}): ${e.detail}; not retried`);
     }
   }
 
@@ -215,15 +237,16 @@ export class Agent {
   async #handle(item) {
     const ev = item.event;
     this.lastSeq.set(ev.conv_id, ev.seq);
-    for (const h of this.handlers.event) await h(ev, item);
+    const what = `${ev.type} ${ev.conv_id}#${ev.seq}`;
+    for (const h of this.handlers.event) await this.#run(() => h(ev, item), what);
     if (!item.wake) return;
     const ctx = new Ctx(this, ev);
     if (ev.msg && ev.msg.sender_id !== this.me.id && (ev.type === 'msg.created' || ev.type === 'msg.updated')) {
-      for (const h of this.handlers.message) await h(ev.msg, ctx, item);
+      for (const h of this.handlers.message) await this.#run(() => h(ev.msg, ctx, item), what);
     } else if (ev.type === 'card.response') {
-      for (const h of this.handlers.card) await h(ev.data, ctx);
+      for (const h of this.handlers.card) await this.#run(() => h(ev.data, ctx), what);
     } else if (ev.type === 'agent.state' && ev.data.handback) {
-      for (const h of this.handlers.handback) await h(ev.data, ctx);
+      for (const h of this.handlers.handback) await this.#run(() => h(ev.data, ctx), what);
     }
   }
 

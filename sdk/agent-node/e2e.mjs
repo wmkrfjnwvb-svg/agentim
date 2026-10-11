@@ -92,6 +92,7 @@ try {
 
   // The agents.
   let failedOnce = false;
+  let refusedRuns = 0;
   const bot = new Agent({ url: URL, key: one.key, log: (m) => console.log('[nbot]', m) });
   bot.onMessage(async (msg, ctx) => {
     const t = msg.content;
@@ -116,6 +117,9 @@ try {
     } else if (t.includes('context')) {
       const c = await bot.context(ctx.convId);
       await ctx.reply(`context has ${c.events.length} events`);
+    } else if (t.includes('refused')) {
+      refusedRuns++;
+      await bot.claim(msg.msg_id); // not a request: refused, and not retried
     } else if (t.includes('fail once')) {
       if (!failedOnce) { failedOnce = true; throw new Error('first try fails'); }
       await ctx.reply('retried');
@@ -168,6 +172,12 @@ try {
   await alice.say(conv, '@nbot fail once');
   await alice.reply(a, 'retried');
   check(failedOnce, 'a failed handler gets the message again (at least once)');
+
+  await alice.say(conv, '@nbot refused');
+  await sleep(1500);
+  await alice.say(conv, '@nbot sources again');
+  await alice.reply(a, 'see the docs');
+  check(refusedRuns === 1, `a handler refused by the server is not run again (${refusedRuns})`);
 
   await alice.say(conv, '@nbot ask peer');
   await alice.reply(a, 'peer answered');

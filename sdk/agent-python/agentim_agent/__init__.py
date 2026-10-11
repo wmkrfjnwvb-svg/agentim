@@ -36,6 +36,16 @@ class AgentIMError(Exception):
         self.detail = message
 
 
+# Failures worth another try. A refusal on business grounds (forbidden,
+# conflict, taken_over, ...) would only be refused again: the event is
+# acknowledged and the refusal logged.
+TRANSIENT = {"rate_limited", "disconnected", "storage", "conv_moved", "conv_migrating", "unavailable", "internal"}
+
+
+def _retriable(e):
+    return not isinstance(e, AgentIMError) or e.code in TRANSIENT
+
+
 def _clean(d):
     # None means "not given", except where null is a value (a checkpoint's
     # value, clearing a rating).
@@ -293,8 +303,21 @@ class Agent:
             r = await conn.call("sync", limit=200)
             acks = []
             for c in r["convs"]:
-                for item in c.get("events") or []:
-                    await self._handle(item)
+                done = None
+                try:
+                    for item in c.get("events") or []:
+                        await self._handle(item)
+                        done = item["event"]["seq"]
+                except Exception:
+                    # What was handled before the failure is not given again.
+                    if done is not None:
+                        acks.append({"conv_id": c["conv_id"], "seq": done})
+                    if acks:
+                        try:
+                            await conn.call("ack", acks=acks)
+                        except AgentIMError:
+                            pass
+                    raise
                 for s in c.get("side_events") or []:
                     self._side(s)
                 if "upto" in c:
@@ -304,23 +327,33 @@ class Agent:
             if not r.get("more"):
                 return
 
+    async def _run(self, coro, what):
+        """Runs a handler; a business refusal from the server is not retried."""
+        try:
+            await coro
+        except Exception as e:  # noqa: BLE001
+            if _retriable(e):
+                raise
+            self.log(f"{what}: refused by the server ({e.code}): {e.detail}; not retried")
+
     async def _handle(self, item):
         ev = item["event"]
+        what = f"{ev['type']} {ev['conv_id']}#{ev['seq']}"
         for h in self.handlers["event"]:
-            await h(ev, item)
+            await self._run(h(ev, item), what)
         if not item.get("wake"):
             return
         ctx = Ctx(self, ev)
         msg = ev.get("msg")
         if msg and msg["sender_id"] != self.me["id"] and ev["type"] in ("msg.created", "msg.updated"):
             for h in self.handlers["message"]:
-                await h(msg, ctx)
+                await self._run(h(msg, ctx), what)
         elif ev["type"] == "card.response":
             for h in self.handlers["card"]:
-                await h(ev["data"], ctx)
+                await self._run(h(ev["data"], ctx), what)
         elif ev["type"] == "agent.state" and ev["data"].get("handback"):
             for h in self.handlers["handback"]:
-                await h(ev["data"], ctx)
+                await self._run(h(ev["data"], ctx), what)
 
     def _side(self, s):
         rid = (s.get("data") or {}).get("request_id")

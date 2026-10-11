@@ -137,6 +137,7 @@ async def main():
                                   members=[one["agent"]["id"], two["agent"]["id"]]))["conv_id"]
 
     failed_once = {"done": False}
+    refused_runs = {"n": 0}
     bot = Agent(URL, one["key"], log=lambda m: print("[pybot]", m, flush=True))
 
     @bot.on_message
@@ -170,6 +171,9 @@ async def main():
         elif "context" in t:
             c = await bot.context(ctx.conv_id)
             await ctx.reply(f"context has {len(c['events'])} events")
+        elif "refused" in t:
+            refused_runs["n"] += 1
+            await bot.claim(msg["msg_id"])  # not a request: refused, and not retried
         elif "fail once" in t:
             if not failed_once["done"]:
                 failed_once["done"] = True
@@ -234,6 +238,13 @@ async def main():
     await alice.say(conv, "@pybot fail once")
     await alice.reply(a, "retried")
     check(failed_once["done"], "a failed handler gets the message again (at least once)")
+
+    await alice.say(conv, "@pybot refused")
+    await asyncio.sleep(1.5)
+    await alice.say(conv, "@pybot sources again")
+    await alice.wait(lambda e: e.get("msg") and e["msg"]["sender_id"] == a and e["msg"]["content"] == "see the docs"
+                     and e["seq"] > 0 and e is not r, "the second docs reply")
+    check(refused_runs["n"] == 1, f"a handler refused by the server is not run again ({refused_runs['n']})")
 
     await alice.say(conv, "@pybot ask peer")
     await alice.reply(a, "peer answered")
