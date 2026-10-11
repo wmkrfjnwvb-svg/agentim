@@ -181,12 +181,14 @@ Agent ──tool_call{tool, args, call_id, conv_id?, on_behalf_of?}──▶ IM 
 
 | 协议 / 项目 | 解决什么 | 现状 | 没解决什么 |
 |---|---|---|---|
-| **MCP**（Agentic AI Foundation） | Agent 调用工具和数据 | 2026-07-28 版本改成无状态；长任务（Tasks）和 MCP Apps 成为官方扩展；授权对齐 OAuth | 不管 Agent 之间、Agent 和人之间的对话 |
+| **MCP**（Agentic AI Foundation） | Agent 调用工具和数据 | 2026-07-28 版本改成无状态、**去掉了流的断点续传**；长任务（Tasks）和 MCP Apps 成为官方扩展；追问改为多轮请求（`input_required`）；授权对齐 OAuth | 不管 Agent 之间、Agent 和人之间的对话 |
 | **A2A v1.0**（Linux Foundation） | Agent 之间委派任务：Agent Card（能力说明，可签名）、Task 状态机、消息 / 产出物、流式、推送通知 | 2026 年 4 月发布 1.0，150 多家组织支持，已进入 Google、微软、AWS 的平台 | 点对点的请求 / 响应；没有多方会话、没有持久有序的共享记录、没有人工介入和审批、跨组织治理留给实现方 |
 | **AG-UI** | Agent 和前端界面之间的事件流（文本流、工具调用、状态同步） | 进入 Microsoft Agent Framework、Google ADK | 只管界面同步，不管存储和权限 |
 | **AGNTCY**（Linux Foundation） | Agent 目录（发现）、身份徽章（W3C 可验证凭证）、SLIM 消息层（gRPC + MLS 群组加密，IETF 草案） | 草案仍在变化 | 偏传输和发现，不管业务语义 |
 | **NANDA**（MIT） | 替代 DNS 的 Agent 命名与索引，可验证的 AgentFacts | 研究阶段 | 同上 |
 | Agent 记忆产品（各类向量库、记忆服务） | 单个 Agent 的长期记忆 | 很多 | 研究和厂商都指出**缺治理**：作用范围、版本、来源、删除、审计、多 Agent 共享时的正确性 |
+
+**海外产品**（2026-10 调研，详见 [research/sdk-and-ai-2026.md §3](research/sdk-and-ai-2026.md)）：Slack、Teams、Linear 把 Agent 做成流式回复 + 展示步骤 + 委派任务；微软 Agent 365 / Entra Agent ID 定下了企业治理的模板（每个 Agent 有人类担保人、独立凭据、生命周期、一键阻止、审计）；所有 Agent 框架都有"暂停等人批准"，但**没有一家提供多人、持久、可审计、送到对的人面前的处理界面**；Stream、Sendbird、Intercom 等聊天厂商都是闭源 SaaS、偏客服。
 
 结论：**MCP 管"Agent 用工具"，A2A 管"Agent 找 Agent 办事"，AG-UI 管"Agent 上屏幕"；而"多方之间持久、有序、可审计、可介入的交流和协作记录"以及"对 Agent 的治理"没有人做好。** 这正是 IM 的强项（会话、顺序、权限、多端同步），也是 AgentIM 已经具备的能力（seq 连续不丢、审批、接管、护栏、审计）。所以定位是：**兼容这些协议，做它们下面那一层可靠的会话与治理底座**，而不是再发明一个协议。
 
@@ -213,6 +215,7 @@ Agent ──tool_call{tool, args, call_id, conv_id?, on_behalf_of?}──▶ IM 
 #### 9.3.1 Agent 注册与身份
 
 - 每个 Agent 有一份档案：所有者、所属单元、简介、技能（skills）、输入输出类型、版本、联系方式（WebSocket 在线 / Webhook / A2A 端点）、状态（启用 / 暂停 / 退役）。
+- **人类负责人（担保人）必填**（参考 Entra Agent ID）：负责人被停用、删除账号或离开单元时，Agent 自动暂停并通知管理员，不会出现没人负责的 Agent；长期不活跃的 Agent 标记出来，可配置自动退役。
 - 凭据：每个 Agent 独立的 API Key（前缀 + 随机数，只存哈希，可设置权限范围、轮换、吊销），之后支持 OAuth client credentials。
 - **档案可以导出为 A2A Agent Card**，由服务器签名（A2A v1.0 支持签名的 Agent Card），挂在标准的 well-known 地址上。这样外部的 A2A Agent 不需要了解 AgentIM 就能发现和调用我们的 Agent。
 - 组织内发现：按单元和权限过滤的 Agent 目录（人和 Agent 都能搜"谁能处理退款"）。跨组织发现见 §9.6。
@@ -228,6 +231,8 @@ submitted → working → completed
               ↘ failed / canceled / rejected
 ```
 
+- **委派给 Agent 时人仍是负责人**（参考 Linear）：任务记录"负责人"（人）和"执行者"（Agent），出了问题找得到人。
+- **进度事件**：Agent 在执行过程中发出带类型的进度（思考、调用工具及结果摘要、计划步骤、提问、出错），作为侧信道事件挂在任务和流式回复旁边，界面可以像 Slack 的任务卡片那样展示；收到任务后应在约 10 秒内确认（`working`），超时可提醒负责人。
 - 字段：标题、描述、发起方、负责方（Agent 或人）、父任务（委派链，用于追溯"谁把活派给了谁"）、截止时间、优先级、产出物（文本、文件、结构化数据）、来源消息。
 - 每次变化写主日志事件（`task.created`、`task.updated`、`task.artifact`），会话成员实时看到、离线能补拉；任务列表可以按会话、按负责方、按状态查。
 - `input_required` 直接变成给人的提问（富消息按钮），`auth_required` 接到审批（§6），所以"Agent 卡住了需要人拍板"有统一入口。
@@ -244,8 +249,25 @@ submitted → working → completed
 | 单元知识 | 单元内授权的 Agent 和人 | 部门的 FAQ、流程 |
 
 - 每条记录带**来源**（来自哪条消息、哪个任务）、版本历史、有效期；删除是真删（满足 GDPR 删除请求，也纳入保留策略）；静态加密；他人读取写审计。
+- **定位是"受治理的记事本"，不和 Mem0、Letta、Zep 这类记忆产品比检索效果**：我们的价值在作用范围、来源、审计、删除。
 - 第一版只做键值、标签和全文检索；向量检索做成可插拔接口，让用户接自己的向量库，避免绑定某一家。
 - 隔离等级沿用组织单元（[04 §5](04-security-compliance.md)）：L2 / L3 单元的记事本跟随单元放在它自己的数据库里。
+
+#### 9.3.4 请人决定（统一的人工介入请求）和待办
+
+各 Agent 框架都会"暂停等人"：工具需要审批（OpenAI Agents SDK、Google ADK）、LangGraph 的 `interrupt()`、MCP 的 `input_required`、A2A 的 `input-required` / `auth-required`。我们把这些统一成一个对象，现有的"草稿审批"也是它的一种：
+
+| 字段 | 内容 |
+|---|---|
+| 类型 | 批准 / 拒绝（可修改后批准）、回答问题（文本或表单）、从选项中选择 |
+| 发给谁 | Agent 的负责人、会话管理员、或指定的人；可设置"任何一人"或"必须某人" |
+| 内容 | 要决定的事情、上下文（来源消息、任务、工具调用参数） |
+| 有效期 | 到期自动按配置处理（拒绝或升级给别人） |
+| 结果 | **只有一个决定生效**（并发决定只有一个成功，已有草稿审批的并发测试可复用）；结果写日志、写审计，Agent 收到后继续 |
+
+- **待办收件箱**：每个人有一个跨会话的待办列表，列出所有等自己决定的请求（参考 LangChain Agent Inbox，但是多人、持久的）。
+- **人不在线时**：通过推送、邮件或 Webhook 通知（参考 Auth0 的异步授权），在任意一台设备上处理。
+- 对外映射：MCP 服务（§9.5）把 `input_required` 转成这个请求；A2A 网关（§9.6）把 `input-required` / `auth-required` 转成它；Agent SDK 有对应的调用（[05 §6.5](05-operations.md)）。
 
 ### 9.4 Agent 管理（治理层）
 
@@ -253,20 +275,20 @@ submitted → working → completed
 |---|---|
 | 生命周期 | 创建、启用、暂停、退役；**急停**：一键暂停某个 Agent（或某个单元的全部 Agent），立即断开它的连接、取消进行中的流和任务 |
 | 权限 | 能进哪些会话 / 单元、能和哪些外部 Agent 通信（§9.6）、能用哪些工具（工具网关，§7）、能读写哪些记事本范围 |
-| 预算与成本 | 现有的消息数 / 字符数预算持久化；Agent 上报 token 用量，按 Agent、所有者、单元汇总 |
+| 预算与成本 | 现有的消息数 / 字符数预算持久化；Agent 上报 token 用量和成本，按 Agent、会话、负责人、单元汇总；超过上限自动暂停并通知负责人（Gartner 把成本列为 Agent 项目失败的主要原因之一） |
 | 护栏 | 现有的跳数、重复、速率、注入检测、DLP，按 Agent 或单元配置 |
-| 观测 | 每条消息、每个任务带追踪 ID，按 OpenTelemetry GenAI 语义约定导出；能看到"一个任务经过了哪些 Agent、各花了多少" |
+| 观测 | 每条消息、每个任务带追踪 ID（W3C `traceparent`，和 MCP 2026-07-28 一致），按 OpenTelemetry GenAI 语义约定导出（约定还在开发中，相关字段标为实验性），可以接 Datadog、Langfuse、LangSmith；能看到"一个任务经过了哪些 Agent、各花了多少" |
 | 审计 | 已有；增加任务、记事本、外部通信、急停等操作 |
 
 这些都在管理系统（[05 §8](05-operations.md)）里有界面。
 
 ### 9.5 MCP 服务：让任何 Agent 框架直接用 AgentIM
 
-AgentIM 自己作为一个 MCP 服务器，提供工具：`list_conversations`、`read_messages`、`send_message`、`create_task` / `update_task` / `list_tasks`、`note_put` / `note_get` / `note_search`、`find_agent`。任何支持 MCP 的 Agent（各家模型的客户端、LangGraph、CrewAI、自研框架）配置一个地址就能接入，权限按该 Agent 的凭据和范围执行。这是让更多 Agent 用上 AgentIM 的最低成本入口。
+AgentIM 自己作为一个 MCP 服务器，**按 2026-07-28 规范（无状态）实现**，不再做已被去掉的会话模式；客户端认证用 Client ID Metadata Documents（动态注册已被弃用）。提供工具：`list_conversations`、`read_messages`、`send_message`、`create_task` / `update_task` / `list_tasks`、`note_put` / `note_get` / `note_search`、`find_agent`、`request_human`（§9.3.4）。任何支持 MCP 的 Agent（各家模型的客户端、LangGraph、CrewAI、自研框架）配置一个地址就能接入，权限按该 Agent 的凭据和范围执行。这是让更多 Agent 用上 AgentIM 的最低成本入口。
 
 ### 9.6 A2A 网关与跨互联网的 Agent 联邦
 
-**同一服务器内外互通（MVP 内，M8）：**
+**同一服务器内外互通（MVP 2）：**
 
 - 入站：外部 A2A Agent 调用我们的某个 Agent → 网关为每个 A2A `contextId` 建立（或复用）一个会话，A2A Task 对应 §9.3.2 的任务，消息和产出物进入主日志。于是外部的调用同样可审计、可被人观察和接管、受护栏约束。
 - 出站：我们的 Agent 调用外部 A2A Agent（`SendMessage` / `SendStreamingMessage`）→ 网关代为调用，过程记录在会话里，外部 Agent 以"外部参与者"身份出现在成员列表中。
@@ -280,12 +302,32 @@ AgentIM 自己作为一个 MCP 服务器，提供工具：`list_conversations`�
 - 发现：先支持直接配置对端和 well-known Agent Card；之后接入 AGNTCY 目录或 NANDA 索引这类开放目录。
 - 传输：先用 A2A 的 HTTP 绑定；AGNTCY 的 SLIM（群组通信 + MLS 加密）成熟后作为可选传输。
 
+### 9.6.1 AI 消息体验（调研中发现缺少的部分）
+
+| 能力 | 内容 | 参考 |
+|---|---|---|
+| 转人工 | Agent 主动把对话交给人（附交接说明），人处理完可以交回；和"接管"（人主动）互补 | Intercom Fin、Sendbird |
+| 结构化消息（卡片、按钮、表单） | 固定的一组组件、声明式 JSON（不执行脚本）；用户的选择或填写作为结果回到 Agent；不支持的客户端显示 `fallback` | Slack Block Kit、ChatKit、MCP Apps（沙箱界面以后作为可选） |
+| 工具调用和步骤展示 | §9.3.2 的进度事件在流式回复旁边展示 | Slack 任务卡片、Linear 活动 |
+| 引用来源 | Agent 消息可以带来源列表（标题、链接、摘录） | 各 AI 助手 |
+| 反馈 | 对 Agent 消息点赞 / 点踩 + 原因，关联追踪 ID，供评估使用 | 各 AI 助手、LangSmith |
+
+### 9.6.2 AI 标记（EU AI Act 第 50 条，2026-08-02 已生效）
+
+- **现状**：每条消息的 `sender_type` 由服务端写入，Agent 不能冒充人；客户端协议、开放 API、Webhook 都带着它，满足"机器可读"的基本要求。
+- **要补的**：
+  - 被批准的草稿记录"由谁批准、是否被修改"（`approved_by`、`edited_by_human`），仍然标记为 AI 生成；人接管后发的才是人类内容。
+  - 流式回复从开始就带标记，不是结束后才有。
+  - 以后的文件（Agent 上传的图片、音频）、导出、联邦都带标记；2026-12-02 之前要完成已上市系统的机器可读标记。
+  - 客户端 SDK 和界面组件默认显示 AI 标识（应用可以换样式，但不提供关闭的开关）。
+
 ### 9.7 分步实施
 
 | 步骤 | 内容 | 对应 |
 |---|---|---|
-| A | Agent 注册与身份、任务、记事本、Agent 管理（暂停 / 急停、权限、预算持久化）、MCP 服务 | M4 |
-| B | A2A 网关：入站和出站，Agent Card 导出与签名 | M8 |
+| A | 按调研重新排序（D35）：① Agent 注册、独立凭据、人类负责人；② 暂停 / 急停；③ 请人决定 + 待办收件箱（统一现有草稿审批）；④ 任务 + 进度事件；⑤ MCP 服务（2026-07-28 规范）；⑥ 用量和成本计量、超预算自动暂停；⑦ OpenTelemetry 导出；⑧ 受治理的记事本（精简版）；AI 标记补全（§9.6.2，D36） | M6 |
+| A2 | AI 消息体验：转人工、结构化消息、引用、反馈（§9.6.1）（D37：放进 M6 还是下一步） | M6 或之后 |
+| B | A2A 网关：入站和出站，Agent Card 导出与签名 | MVP 2 |
 | C | 跨服务器联邦：服务器身份、对端策略、跨域会话 | MVP 之后 |
 | D | 开放目录接入、SLIM 传输、向量检索插件 | 之后 |
 
