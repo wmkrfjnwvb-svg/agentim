@@ -40,14 +40,13 @@ Agent 通信与 Agent 历史的方案见 [09](09-agent-communication.md)（调�
 | D44 | 协调者是服务端规则还是一个 Agent | 两者都支持：服务端先提供轮流、按角色、按转移图三种规则；也可以指定一个 Agent 当协调者 |
 | D45 | Agent 的历史和状态放服务端（工作日志、检查点、摘要），提供上下文、历史、搜索接口 | 采用（你的方向）；摘要由 Agent 自己写，服务端可选定时生成；搜索先做全文，向量以后做 |
 | D46 | Agent 包导出 | 需要负责人批准，且只包含允许导出的会话；同时提供 Letta `.af` 适配 |
-| D47 | M6 的范围和顺序（取代 D35） | ① Agent 注册、凭据、负责人；② 急停；③ 接收方式三层 + 被点名 + 根预算（取代跳数）；④ 请人决定 + 待办；⑤ 任务和任务频道（抢单、发言权）；⑥ Agent 历史服务（上下文、历史、搜索、状态）；⑦ MCP 服务；⑧ 计量和 OpenTelemetry；主题 / 广播、Agent 包导出、协调者 Agent 放在 M6 之后紧接着做 |
+| D47 | M6 的范围和顺序（取代 D35；按你 2026-10-11 选的重点重排） | ① **Agent 接入**：注册、负责人、凭据、一条命令创建、MCP 服务 + Agent API + Python / TS SDK（登录、同步、发消息、找 Agent、开单聊和群）；② **请人决定 + 审批 + 待办**（统一现有草稿审批）；③ **模型网关 + 用量计量 + 预算 + 区域白名单**；④ **Agent 之间**：接收方式三层（默认被点名）、根预算取代跳数、任务频道、派任务、抢单；⑤ **ChatKit 桥**（赶 2026-11-30 窗口）、Vercel Chat SDK 适配器、Agno 接口；⑥ 急停、随时销毁、秒迁移（服务端历史和状态）；⑦ AI 标记补全、OpenTelemetry 导出。主题 / 广播、协调者、Agent 包导出、托管 Agent 放在 M6 之后 |
+| D53 | 网关的硬预算会不会在流式回复中途掐断 | 不掐断：只在请求开始前检查（剩余额度不够就拒绝），超出部分记账、下次拒绝；中途掐断会给用户一条半截的回复 |
 
 和 Agent 生态的关系见 [10](10-agent-ecosystem.md)（调研见 [research/agent-ecosystem-2026.md](research/agent-ecosystem-2026.md)）：
 
 | # | 事项 | 我的建议 |
 |---|---|---|
-| D48 | 集成的优先级 | MCP 服务 → 人工介入桥 → Python / TS 的 Agent SDK → 会话存储适配器（OpenAI、Claude、LangGraph）→ A2A 网关 → 作为 Vercel Chat SDK / ChatKit 的渠道 → OTel → AG-UI；趁 OpenAI Agent Builder 2026-11-30 停用的窗口，ChatKit 桥可以提前 |
-| D49 | 模型调用和计量 | 不做完整的模型网关；M6 先做用量上报和计量（按厂商返回的用量、价格表、软硬上限、业务单位）；之后做可选的轻量模型出口（虚拟密钥、预算、区域白名单） |
 | D50 | 企业身份 | 在 OIDC（D26，M10）之后接受 Okta ID-JAG、Entra Agent ID 的令牌 |
 | D51 | 外部护栏分类器出错时 | 可按钩子设置；默认：Agent 发出的内容出错时拒绝（安全优先），人发的内容出错时放行（IM 不能卡住人说话），都写审计 |
 | D52 | 不做的清单 | 按 [10 §4](10-agent-ecosystem.md)：Agent 循环、记忆检索、沙箱、支付、工作流引擎、追踪界面、IM 连接器等都不做，只做适配 |
@@ -81,6 +80,11 @@ Agent 通信与 Agent 历史的方案见 [09](09-agent-communication.md)（调�
 | D23 | 开放 API 里用户 ID 由开发者决定 | 支持 |
 | D24 | 开放 API 认证 | Bearer + HTTPS；HMAC 签名放 MVP 2 |
 | D25 | 开放 API 的身份 | 只有"以用户身份"和"以系统身份"两种 |
+| 定位 | AgentIM 的定位（2026-10-11） | **任何框架写的 Agent 都能接进来的、持久、有序、多方、可治理的通信和记录层。秒迁移，随时销毁。**（[01 §1](01-product.md)） |
+| D48 | 集成的优先级 | 按 [10 §2](10-agent-ecosystem.md)：MCP 服务、人工介入桥、Agent SDK、会话存储适配器、A2A、渠道适配器（**Vercel Chat SDK 适配器、Agno 接口、自托管 ChatKit 桥，赶 OpenAI Agent Builder 2026-11-30 停用的窗口**）、OTel、AG-UI |
+| D49 | 模型网关 | **要做**：内置网关（OpenAI / Anthropic 兼容，Agent 不拿厂商密钥，预算、限流、区域白名单、计量、审计在网关执行），并为以后"服务端托管 Agent / 模型消息传递"留好接口（[10 §6](10-agent-ecosystem.md)） |
+| 审批 | 请人决定、审批、待办 | 要做，作为"可治理"的核心展示（[03 §9.3.4](03-ai-native.md)） |
+| Agent 接入 | 给 Agent 一个 API 或 MCP | 一条命令创建，MCP / Agent API / 适配器三种方式接入，登录后能同步、交流、派任务（[10 §5](10-agent-ecosystem.md)） |
 | D26 | OIDC 登录 | 放到 M10，和管理系统一起做（管理员登录和企业用户登录共用一套） |
 | D14 | 多设备补全 + 管理系统 | 按建议做；管理系统用 **Go 后端 + React 前端**，前端打包进 Go 二进制，启动即用。方案见 [04 §1](04-security-compliance.md)、[05 §8](05-operations.md) |
 
@@ -98,7 +102,7 @@ Agent 通信与 Agent 历史的方案见 [09](09-agent-communication.md)（调�
 | M3 | 开放 API（[07](07-open-api.md) §4 的 MVP 1 部分：API Key、签发登录令牌、用户与自定义字段、会话与成员、消息、批量发送、以系统身份、防重复、限流、错误格式、OpenAPI 文档、Node / Python / Go 服务端 SDK）；账号与设备：令牌只存哈希、设备列表和单台下线、已读多端同步、新设备登录通知、内置账号密码 + TOTP；Origin 校验、内置 TLS | ✅（OIDC 见 D26） |
 | M4 | 静态加密默认开启（D3）；数据库升级迁移流程（老库加密、主密钥轮换） | ✅ |
 | M5 | 文件和图片：上传、下载、大小限制、缩略图；本地磁盘或 S3 兼容存储（[方案](02-architecture.md)） | 暂缓：你在考虑（D27–D30） |
-| M6 | AI 核心组件 A（D15）：Agent 注册与凭据、任务、记事本、急停、MCP 服务（按调研调整的范围见 D35–D37） | 方案待确认 |
+| M6 | AI 核心组件：Agent 接入（MCP、Agent API、SDK）、请人决定和审批、模型网关和计量、Agent 之间的通信（接收方式、根预算、任务频道、抢单）、渠道桥（ChatKit、Vercel Chat SDK、Agno）、急停和销毁、AI 标记（顺序见 D47） | 方案待确认（D40–D47、D53） |
 | M7 | 同步协议改造（服务端按设备记同步位置、只同步不读历史、保留期，见 [08](08-sync-and-client.md)）；SDK：Rust 核心（本地存储、同步、待发送队列、事件和 hook，见 [05 §6](05-operations.md)）、TypeScript、Python（加纯 Go / Python 的轻量 Agent 客户端）、测试工具包 | 方案待确认（D32–D34、D38、D39） |
 | M8 | 客户端：Web 端补齐（登录、文件、成员管理、在线状态、正在输入、头像资料、搜索、表情回应、通知）；Windows 端（Tauri 2） | |
 | M9 | 管理 API（`/admin/v1`，只给运维和管理员）和管理系统（Go + React，Ant Design） | |

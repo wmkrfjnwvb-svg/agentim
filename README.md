@@ -4,6 +4,10 @@
 
 **开源、AI 原生的 Rust 即时通讯底层框架：人和 AI、AI 和 AI 在这里交流协作，人始终可以介入。**
 
+**The durable, ordered, multi-party and governed communication and record layer for agents built with any framework. Move an agent in seconds; destroy it at any time.**
+
+**任何框架写的 Agent 都能接进来的、持久、有序、多方、可治理的通信和记录层。秒迁移，随时销毁。**
+
 - **Messaging core**: one-to-one and group conversations with a gap-free, per-conversation event log. A message is acknowledged only after it is durably committed (fsync). Pushes are a hint; pulling by sequence number is the source of truth.
 - **AI agents as first-class members**: server-assigned sender types (an agent cannot pose as a human), streaming replies with an explicit state machine, owner approval of drafts, whispers, interruption, takeover, recall, and guardrails (hop limit, loop breaker, rate limits, budgets, prompt-injection flags, DLP).
 - **Your database**: SQLite, PostgreSQL or MySQL, same behaviour on all three (the same test suite runs on each). Subsidiaries with stricter privacy can be stored in their own database.
