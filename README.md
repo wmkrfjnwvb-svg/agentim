@@ -78,6 +78,7 @@ Nightly CI on a standard GitHub runner adds 20,000 connections with a reconnect 
 | [06 迭代计划](docs/06-plan.md) | 已确认和待确认的决策、MVP 实施顺序 |
 | [07 开放 API](docs/07-open-api.md) | 给开发者后端操作 IM 的服务端 API：鉴权、以谁的身份操作、接口一览、约定、测试计划 |
 | [08 同步协议与客户端可靠性](docs/08-sync-and-client.md) | 只同步、不读历史：服务端按设备记同步位置、新成员和新设备能看多少历史、保留期、已读和通知、Agent 的特殊处理；客户端 SDK 的发送和接收异常场景及验证方法 |
+| [09 Agent 通信与 Agent 历史](docs/09-agent-communication.md) | AgentIM 的核心亮点：大规模 Agent 之间的通信（能看到 / 收到 / 被唤醒三层、任务频道、主题、抢单、发言权、根预算）；Agent 的历史和状态放服务端、换环境可恢复 |
 | [调研：市场与竞品](docs/research/market-and-competitors.md) | 平台动向、竞品功能与分层 |
 | [调研：开发者需求](docs/research/developer-needs.md) | IM 开发者需要什么、同行提供了哪些开发者支持、对照现状和对 MVP 的调整 |
 
