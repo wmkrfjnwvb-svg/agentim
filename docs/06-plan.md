@@ -42,6 +42,16 @@ Agent 通信与 Agent 历史的方案见 [09](09-agent-communication.md)（调�
 | D46 | Agent 包导出 | 需要负责人批准，且只包含允许导出的会话；同时提供 Letta `.af` 适配 |
 | D47 | M6 的范围和顺序（取代 D35） | ① Agent 注册、凭据、负责人；② 急停；③ 接收方式三层 + 被点名 + 根预算（取代跳数）；④ 请人决定 + 待办；⑤ 任务和任务频道（抢单、发言权）；⑥ Agent 历史服务（上下文、历史、搜索、状态）；⑦ MCP 服务；⑧ 计量和 OpenTelemetry；主题 / 广播、Agent 包导出、协调者 Agent 放在 M6 之后紧接着做 |
 
+和 Agent 生态的关系见 [10](10-agent-ecosystem.md)（调研见 [research/agent-ecosystem-2026.md](research/agent-ecosystem-2026.md)）：
+
+| # | 事项 | 我的建议 |
+|---|---|---|
+| D48 | 集成的优先级 | MCP 服务 → 人工介入桥 → Python / TS 的 Agent SDK → 会话存储适配器（OpenAI、Claude、LangGraph）→ A2A 网关 → 作为 Vercel Chat SDK / ChatKit 的渠道 → OTel → AG-UI；趁 OpenAI Agent Builder 2026-11-30 停用的窗口，ChatKit 桥可以提前 |
+| D49 | 模型调用和计量 | 不做完整的模型网关；M6 先做用量上报和计量（按厂商返回的用量、价格表、软硬上限、业务单位）；之后做可选的轻量模型出口（虚拟密钥、预算、区域白名单） |
+| D50 | 企业身份 | 在 OIDC（D26，M10）之后接受 Okta ID-JAG、Entra Agent ID 的令牌 |
+| D51 | 外部护栏分类器出错时 | 可按钩子设置；默认：Agent 发出的内容出错时拒绝（安全优先），人发的内容出错时放行（IM 不能卡住人说话），都写审计 |
+| D52 | 不做的清单 | 按 [10 §4](10-agent-ecosystem.md)：Agent 循环、记忆检索、沙箱、支付、工作流引擎、追踪界面、IM 连接器等都不做，只做适配 |
+
 ### 1.2 已确认
 
 | # | 事项 | 结果 |
