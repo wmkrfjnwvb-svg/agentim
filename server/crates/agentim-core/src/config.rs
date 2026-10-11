@@ -65,6 +65,10 @@ pub struct AgentsConfig {
     pub max_per_owner: usize,
     /// Conversations one agent may start per hour.
     pub conversations_per_hour: u32,
+    /// History and context reads per agent per minute (docs/09 §11.1).
+    pub history_per_minute: u32,
+    /// Searches per agent per minute.
+    pub search_per_minute: u32,
 }
 
 impl Default for AgentsConfig {
@@ -72,6 +76,8 @@ impl Default for AgentsConfig {
         AgentsConfig {
             max_per_owner: 20,
             conversations_per_hour: 60,
+            history_per_minute: 60,
+            search_per_minute: 30,
         }
     }
 }
@@ -709,6 +715,13 @@ impl Config {
         }
         if !(1..=100_000).contains(&self.agents.conversations_per_hour) {
             return Err("agents.conversations_per_hour must be 1..100000".into());
+        }
+        if !(1..=100_000).contains(&self.agents.history_per_minute)
+            || !(1..=100_000).contains(&self.agents.search_per_minute)
+        {
+            return Err(
+                "agents.history_per_minute and agents.search_per_minute must be 1..100000".into(),
+            );
         }
         if !(self.mcp.rate_per_second > 0.0 && self.mcp.burst >= 1.0) {
             return Err("mcp.rate_per_second must be > 0 and burst >= 1".into());

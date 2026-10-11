@@ -396,6 +396,10 @@ pub const TOOLS: &[&str] = &[
     "release_claim",
     "floor_grant",
     "floor_release",
+    "get_history",
+    "get_context",
+    "search",
+    "put_summary",
 ];
 
 fn tools() -> Value {
@@ -661,6 +665,71 @@ fn tools() -> Value {
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
         },
+        {
+            "name": "get_history",
+            "title": "Read history",
+            "description": "Reads what you can see of a conversation by position: the latest messages by default, or before_seq / after_seq to page (use first_seq / last_seq of the previous answer). Up to 200 events.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "after_seq": {"type": "integer", "minimum": 0},
+                    "before_seq": {"type": "integer", "minimum": 1},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                },
+                "required": ["conv_id"],
+                "additionalProperties": false,
+            },
+            "annotations": ro,
+        },
+        {
+            "name": "get_context",
+            "title": "Get context",
+            "description": "What you need to continue in a conversation, within a token budget: your latest summary of it plus the newer events, oldest first. Use it after a restart or on a new machine.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "max_tokens": {"type": "integer", "minimum": 256, "maximum": 200000},
+                },
+                "required": ["conv_id"],
+                "additionalProperties": false,
+            },
+            "annotations": ro,
+        },
+        {
+            "name": "search",
+            "title": "Search messages",
+            "description": "Finds messages you can see containing a text (case-insensitive), in one conversation or your 20 most recently active ones. `complete` is false when not everything was searched.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "minLength": 2, "maxLength": 200},
+                    "conv_id": id("Only this conversation (optional)."),
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                },
+                "required": ["query"],
+                "additionalProperties": false,
+            },
+            "annotations": ro,
+        },
+        {
+            "name": "put_summary",
+            "title": "Write a summary",
+            "description": "Stores your own summary of a range of a conversation (from_seq..to_seq, which you must be able to see). get_context then starts from it. Only you can read it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "from_seq": {"type": "integer", "minimum": 1},
+                    "to_seq": {"type": "integer", "minimum": 1},
+                    "text": {"type": "string", "minLength": 1, "maxLength": 65536},
+                },
+                "required": ["conv_id", "from_seq", "to_seq", "text"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
     ])
 }
 
@@ -677,6 +746,17 @@ fn arg_str(args: &Map<String, Value>, k: &str, required: bool) -> ApiResult<Opti
 
 fn need(args: &Map<String, Value>, k: &str) -> ApiResult<String> {
     arg_str(args, k, true).map(|v| v.unwrap_or_default())
+}
+
+/// An optional integer argument.
+fn opt_int(args: &Map<String, Value>, k: &str) -> ApiResult<Option<i64>> {
+    match args.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| ApiError::new("bad_request", format!("{k} must be an integer"))),
+    }
 }
 
 /// Refuses arguments a tool does not take, so typos are not ignored.
@@ -1053,6 +1133,50 @@ async fn call_tool(
             let v = run(json!({"op": "floor_release", "conv_id": need(args, "conv_id")?})).await?;
             Ok(("The floor is free.".into(), v))
         }
+        "get_history" => {
+            only(args, &["conv_id", "after_seq", "before_seq", "limit"])?;
+            let mut m = json!({"op": "history", "conv_id": need(args, "conv_id")?});
+            for k in ["after_seq", "before_seq", "limit"] {
+                if let Some(x) = opt_int(args, k)? {
+                    m[k] = json!(x);
+                }
+            }
+            let v = run(m).await?;
+            Ok((render_read(&v), v))
+        }
+        "get_context" => {
+            only(args, &["conv_id", "max_tokens"])?;
+            let mut m = json!({"op": "context", "conv_id": need(args, "conv_id")?});
+            if let Some(x) = opt_int(args, "max_tokens")? {
+                m["max_tokens"] = json!(x);
+            }
+            let v = run(m).await?;
+            Ok((render_read(&v), v))
+        }
+        "search" => {
+            only(args, &["query", "conv_id", "limit"])?;
+            let mut m = json!({"op": "search", "query": need(args, "query")?});
+            if let Some(c) = arg_str(args, "conv_id", false)? {
+                m["conv_id"] = json!(c);
+            }
+            if let Some(x) = opt_int(args, "limit")? {
+                m["limit"] = json!(x);
+            }
+            let v = run(m).await?;
+            Ok((render_hits(&v), v))
+        }
+        "put_summary" => {
+            only(args, &["conv_id", "from_seq", "to_seq", "text"])?;
+            let (from, to) = (opt_int(args, "from_seq")?, opt_int(args, "to_seq")?);
+            let (Some(from), Some(to)) = (from, to) else {
+                return Err(ApiError::new(
+                    "bad_request",
+                    "from_seq and to_seq are required integers",
+                ));
+            };
+            let v = run(json!({"op": "put_summary", "conv_id": need(args, "conv_id")?, "from_seq": from, "to_seq": to, "text": need(args, "text")?})).await?;
+            Ok(("Summary stored; get_context starts from it.".into(), v))
+        }
         _ => Err(ApiError::new("bad_request", "unknown tool")),
     }
 }
@@ -1067,6 +1191,98 @@ fn event_detail(data: &Value) -> String {
         }
     }
     out
+}
+
+/// One event as a line a model reads easily.
+fn render_event(out: &mut String, conv: &str, e: &Value) {
+    let ev = &e["event"];
+    let seq = ev["seq"].as_i64().unwrap_or(0);
+    let kind = ev["type"].as_str().unwrap_or("");
+    // What asks you to act is marked; the rest is context.
+    let act = if e["wake"] == true {
+        "→ for you "
+    } else {
+        ""
+    };
+    match ev["msg"].as_object() {
+        Some(m) if kind == "msg.created" => {
+            let trust = e["trust"]
+                .as_str()
+                .map(|t| format!(", trust {t}"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "{act}[{conv} #{seq}] {} ({}{trust}) [{}]: {}\n",
+                m["sender_name"].as_str().unwrap_or(""),
+                m["sender_type"].as_str().unwrap_or(""),
+                m["msg_id"].as_str().unwrap_or(""),
+                m["content"].as_str().unwrap_or("")
+            ));
+        }
+        Some(m) => out.push_str(&format!(
+            "[{conv} #{seq}] {kind} {} [{}]: {}\n",
+            m["sender_name"].as_str().unwrap_or(""),
+            m["msg_id"].as_str().unwrap_or(""),
+            m["content"].as_str().unwrap_or("")
+        )),
+        None => out.push_str(&format!(
+            "{act}[{conv} #{seq}] {kind}{}\n",
+            event_detail(&ev["data"])
+        )),
+    }
+}
+
+/// A read of history or context as lines; the events are in
+/// `structuredContent`.
+fn render_read(v: &Value) -> String {
+    let conv = v["conv_id"].as_str().unwrap_or("");
+    let mut out = String::new();
+    if let Some(s) = v["summary"].as_object() {
+        out.push_str(&format!(
+            "[{conv} summary of #{}..#{}, yours, derived]: {}\n",
+            s["from_seq"],
+            s["to_seq"],
+            s["text"].as_str().unwrap_or("")
+        ));
+    }
+    for e in v["events"].as_array().into_iter().flatten() {
+        render_event(&mut out, conv, e);
+    }
+    if out.is_empty() {
+        out.push_str("Nothing you can see here.\n");
+    }
+    if v["has_more"] == true {
+        out.push_str(&format!(
+            "More: call again with before_seq={} (older) or after_seq={} (newer).\n",
+            v["first_seq"], v["last_seq"]
+        ));
+    }
+    if v["truncated"] == true {
+        out.push_str("Older events did not fit max_tokens; write a summary (put_summary) or read them with get_history.\n");
+    }
+    out.trim_end().to_string()
+}
+
+/// Search hits as lines.
+fn render_hits(v: &Value) -> String {
+    let mut out = String::new();
+    for h in v["hits"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "[{} #{}] {} ({}) [{}]: {}\n",
+            h["conv_id"].as_str().unwrap_or(""),
+            h["seq"],
+            h["sender_name"].as_str().unwrap_or(""),
+            h["sender_type"].as_str().unwrap_or(""),
+            h["msg_id"].as_str().unwrap_or(""),
+            h["excerpt"].as_str().unwrap_or("")
+        ));
+    }
+    if out.is_empty() {
+        out.push_str("No match.\n");
+    }
+    if v["complete"] != true {
+        out.push_str("Not everything was searched: narrow it with conv_id.\n");
+    }
+    out.trim_end().to_string()
 }
 
 /// Updates as lines a model reads easily; the full events are in
@@ -1085,40 +1301,7 @@ fn render_updates(convs: &[Value], more: bool) -> String {
         }
         for e in c["events"].as_array().into_iter().flatten() {
             n += 1;
-            let ev = &e["event"];
-            let seq = ev["seq"].as_i64().unwrap_or(0);
-            let kind = ev["type"].as_str().unwrap_or("");
-            // What asks you to act is marked; the rest is context.
-            let act = if e["wake"] == true {
-                "→ for you "
-            } else {
-                ""
-            };
-            match ev["msg"].as_object() {
-                Some(m) if kind == "msg.created" => {
-                    let trust = e["trust"]
-                        .as_str()
-                        .map(|t| format!(", trust {t}"))
-                        .unwrap_or_default();
-                    out.push_str(&format!(
-                        "{act}[{conv} #{seq}] {} ({}{trust}) [{}]: {}\n",
-                        m["sender_name"].as_str().unwrap_or(""),
-                        m["sender_type"].as_str().unwrap_or(""),
-                        m["msg_id"].as_str().unwrap_or(""),
-                        m["content"].as_str().unwrap_or("")
-                    ));
-                }
-                Some(m) => out.push_str(&format!(
-                    "[{conv} #{seq}] {kind} {} [{}]: {}\n",
-                    m["sender_name"].as_str().unwrap_or(""),
-                    m["msg_id"].as_str().unwrap_or(""),
-                    m["content"].as_str().unwrap_or("")
-                )),
-                None => out.push_str(&format!(
-                    "{act}[{conv} #{seq}] {kind}{}\n",
-                    event_detail(&ev["data"])
-                )),
-            }
+            render_event(&mut out, conv, e);
         }
         for s in c["side_events"].as_array().into_iter().flatten() {
             n += 1;

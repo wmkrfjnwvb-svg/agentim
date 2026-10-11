@@ -556,6 +556,34 @@ pub enum ClientMsg {
     FloorRelease {
         conv_id: String,
     },
+    /// Agents read what they may see of a conversation (docs/09 §11.1).
+    History {
+        conv_id: String,
+        #[serde(default)]
+        after_seq: Option<i64>,
+        #[serde(default)]
+        before_seq: Option<i64>,
+        #[serde(default)]
+        limit: Option<i64>,
+    },
+    Context {
+        conv_id: String,
+        #[serde(default)]
+        max_tokens: Option<i64>,
+    },
+    Search {
+        query: String,
+        #[serde(default)]
+        conv_id: Option<String>,
+        #[serde(default)]
+        limit: Option<i64>,
+    },
+    PutSummary {
+        conv_id: String,
+        from_seq: i64,
+        to_seq: i64,
+        text: String,
+    },
 }
 
 impl ClientMsg {
@@ -622,6 +650,10 @@ impl ClientMsg {
             ClientMsg::ReleaseClaim { .. } => "release_claim",
             ClientMsg::FloorGrant { .. } => "floor_grant",
             ClientMsg::FloorRelease { .. } => "floor_release",
+            ClientMsg::History { .. } => "history",
+            ClientMsg::Context { .. } => "context",
+            ClientMsg::Search { .. } => "search",
+            ClientMsg::PutSummary { .. } => "put_summary",
         }
     }
 
@@ -639,6 +671,9 @@ impl ClientMsg {
             | ClientMsg::UpdateTask { conv_id, .. }
             | ClientMsg::FloorGrant { conv_id, .. }
             | ClientMsg::FloorRelease { conv_id }
+            | ClientMsg::History { conv_id, .. }
+            | ClientMsg::Context { conv_id, .. }
+            | ClientMsg::PutSummary { conv_id, .. }
             | ClientMsg::Signal { conv_id, .. }
             | ClientMsg::UpdateConv { conv_id, .. }
             | ClientMsg::Pull { conv_id, .. }

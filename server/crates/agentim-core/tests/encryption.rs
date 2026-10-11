@@ -120,6 +120,10 @@ async fn everything(hub: &Hub, alice: &User, bob: &User, bot: &User) -> String {
         .await;
     a.ok(json!({"op": "decide", "request_id": r["request_id"], "decision": "answer", "text": format!("{MARK} answer")}))
         .await;
+    // The agent's own summary (docs/09 §11.1).
+    let last = *seqs(&a.pull(&conv, 0).await).last().unwrap();
+    g.ok(json!({"op": "put_summary", "conv_id": conv, "from_seq": 1, "to_seq": last, "text": format!("{MARK} summary")}))
+        .await;
     conv
 }
 
@@ -140,6 +144,11 @@ async fn check(hub: &Hub, alice: &User, bob: &User, conv: &str) {
     for w in ["question", "context", "answer"] {
         assert!(q.contains(&format!("{MARK} {w}")), "{w}: {q}");
     }
+    let bot = hub.user_by_name("bot").unwrap();
+    let c = Conn::new(hub, &bot)
+        .ok(json!({"op": "context", "conv_id": conv}))
+        .await;
+    assert_eq!(c["summary"]["text"], json!(format!("{MARK} summary")));
     let audit = hub.audit_log(100).await.unwrap();
     assert!(
         format!("{audit:?}").contains(&format!("{MARK} draft")),

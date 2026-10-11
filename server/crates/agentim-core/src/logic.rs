@@ -18,6 +18,7 @@ use crate::model::*;
 use crate::policy::PolicyChain;
 use crate::registry::{Out, Recip, Registry};
 
+mod history;
 mod requests;
 mod routing;
 mod tasks;
@@ -1309,6 +1310,15 @@ impl Ctx<'_, '_> {
                 note,
             } => self.update_task(me, &conv_id, state, assignee, note).await,
             ClientMsg::Claim { msg_id } => self.claim(me, &msg_id).await,
+            ClientMsg::PutSummary {
+                conv_id,
+                from_seq,
+                to_seq,
+                text,
+            } => {
+                self.put_summary(me, &conv_id, from_seq, to_seq, &text)
+                    .await
+            }
             ClientMsg::ReleaseClaim { msg_id } => self.release_claim(me, &msg_id).await,
             ClientMsg::FloorGrant {
                 conv_id,

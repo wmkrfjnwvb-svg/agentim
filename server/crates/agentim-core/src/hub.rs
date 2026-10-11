@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::config::Config;
 use crate::db::{Db, DirEntry, fingerprint, new_id};
-use crate::logic::{Ctx, DirInfo, HubConfig, Op, SessCtx, Shared, TokenInfo};
+use crate::logic::{DirInfo, HubConfig, Op, SessCtx, Shared, TokenInfo};
 use crate::metrics as m;
 use crate::model::*;
 use crate::policy::PolicyChain;
@@ -20,7 +20,11 @@ use crate::protocol;
 use crate::registry::{Out, Pushes, Registry};
 use crate::shard::Shard;
 
+/// A token bucket: tokens left and when they were counted.
+type Bucket = (f64, Instant);
+
 mod agents;
+mod history;
 mod requests;
 pub use agents::MAX_AGENT_KEYS;
 pub use requests::MAX_WAIT_SECS;
@@ -52,6 +56,8 @@ struct Inner {
     device_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Conversations agents started: (tokens, last refill) per agent.
     conv_buckets: Mutex<HashMap<String, (f64, Instant)>>,
+    /// History and search reads per agent (docs/09 §11.1).
+    read_buckets: Mutex<HashMap<(String, &'static str), Bucket>>,
 }
 
 impl Drop for Inner {
@@ -181,6 +187,7 @@ impl Hub {
                 mcp_buckets: Mutex::default(),
                 device_locks: Mutex::default(),
                 conv_buckets: Mutex::default(),
+                read_buckets: Mutex::default(),
                 dm_lock: tokio::sync::Mutex::new(()),
             }),
         };
@@ -473,6 +480,7 @@ impl Hub {
                 "side_events",
                 "drafts",
                 "requests",
+                "summaries",
                 "audit",
                 "webhook_outbox",
             ] {
@@ -1773,7 +1781,8 @@ impl Hub {
             | ClientMsg::RequestHuman { ref conv_id, .. }
             | ClientMsg::UpdateTask { ref conv_id, .. }
             | ClientMsg::FloorGrant { ref conv_id, .. }
-            | ClientMsg::FloorRelease { ref conv_id } => {
+            | ClientMsg::FloorRelease { ref conv_id }
+            | ClientMsg::PutSummary { ref conv_id, .. } => {
                 let c = conv_id.clone();
                 self.on_conv(sess, &c, msg).await
             }
@@ -1796,6 +1805,24 @@ impl Hub {
                 wait_secs,
             } => self.get_request(me, &request_id, wait_secs).await,
             ClientMsg::Inbox => self.inbox(me).await,
+            ClientMsg::History {
+                conv_id,
+                after_seq,
+                before_seq,
+                limit,
+            } => {
+                self.history(me, &conv_id, after_seq, before_seq, limit)
+                    .await
+            }
+            ClientMsg::Context {
+                conv_id,
+                max_tokens,
+            } => self.context(me, &conv_id, max_tokens).await,
+            ClientMsg::Search {
+                query,
+                conv_id,
+                limit,
+            } => self.search(me, &query, conv_id.as_deref(), limit).await,
             ClientMsg::Edit { ref msg_id, .. }
             | ClientMsg::Recall { ref msg_id, .. }
             | ClientMsg::Claim { ref msg_id }
@@ -2130,25 +2157,9 @@ impl Hub {
                     let has_more = events.len() as i64 == limit;
                     let mut out = vec![];
                     for e in events {
-                        if reader.kind == UserKind::Agent
-                            && !Ctx::agent_can_see(db, &reader, &e).await?
-                        {
-                            continue;
+                        if let Some(v) = history::agent_view(db, &sh, &reader, e).await? {
+                            out.push(v);
                         }
-                        let mut v = json!({"type": "event", "event": e});
-                        if reader.kind == UserKind::Agent
-                            && e.kind == "msg.created"
-                            && let Some(msg) = &e.msg
-                            && msg.sender_id != reader.user_id
-                        {
-                            let (t, flags) = sh.policy.inbound(
-                                &crate::logic::scan_text(&msg.content, msg.payload.as_ref()),
-                                msg.sender_type,
-                            );
-                            v["trust"] = json!(t.as_str());
-                            v["flags"] = json!(flags);
-                        }
-                        out.push(v);
                     }
                     Ok((out, upto, has_more))
                 })

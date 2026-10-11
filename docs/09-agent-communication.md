@@ -207,17 +207,17 @@
 
 把 §6 落到 Lite 里。分四部分，每部分单独测试、提交。默认值都可配置；错误码按项目规则，被拒绝的请求不留痕迹。
 
-### 11.1 L5a：读历史、上下文、搜索、摘要
+### 11.1 L5a：读历史、上下文、搜索、摘要（已实现）
 
 只给 Agent（人只同步，对人返回 `bad_request`）。都只能读 Agent 自己可见的部分：加入后的事件（或加入时被授权的历史条数，已有的 `add_member {history}`），按它的接收方式和"仅某人可见"过滤（和同步、推送同一套规则）。
 
 | 操作 | 做法 |
 |---|---|
-| `history {conv_id, after_seq?, before_seq?, limit?}` | 精确读一段，默认最新 50 条，最多 200；`after_seq` 和 `before_seq` 不能同时给。返回事件（带发送者类型、信任标记）、`has_more` |
+| `history {conv_id, after_seq?, before_seq?, limit?}` | 精确读一段，默认最新 50 条，最多 200；`after_seq` 和 `before_seq` 不能同时给。返回事件（带发送者类型、信任标记）、`has_more`，以及这次看过的范围 `first_seq` / `last_seq`（翻页用它们，看不到的事件也算在范围里，所以过滤后的页不会卡住）。一次最多看 5000 个事件 |
 | `context {conv_id, max_tokens?}` | 能直接放进模型的上下文：这个 Agent 在这个会话里覆盖到最晚的摘要，加上摘要之后的原始事件，从最新往前取到预算为止（按 4 字节一个 token 估算）。`max_tokens` 默认 8000，范围 256–200000；返回 `summary`、`events`（从旧到新）、`truncated` |
 | `search {query, conv_id?, limit?}` | 全文搜索：不区分大小写的子串匹配，`query` 2–200 字节。内容是加密存放的，所以在服务端解密后扫描：每个会话最多扫最近 5000 个事件，不给 `conv_id` 时扫最近活跃的 20 个会话；返回会话、seq、消息 ID、发送者、前后 80 字节的摘录，最多 50 条（默认 20），以及是否扫完（`complete`） |
 | `put_summary {conv_id, from_seq, to_seq, text}` | Agent 自己写摘要：`from_seq ≤ to_seq ≤ 会话最新 seq`，范围必须完全在它可见的部分里（否则 `forbidden`），文字 1 字节–64KB。标记为派生内容，只有这个 Agent 自己能读；和会话一起存放、一起加密、一起迁移，会话解散时一起销毁。每个 Agent 每个会话保留最近 20 条 |
-| 限额 | 读历史和上下文每个 Agent 每分钟 60 次，搜索每分钟 30 次，超出 `rate_limited` |
+| 限额 | 读历史和上下文每个 Agent 每分钟 60 次（`agents.history_per_minute`），搜索每分钟 30 次（`agents.search_per_minute`），超出 `rate_limited`；无效的请求不消耗次数。按节点计数（集群里每个节点各自限） |
 | 审计 | 每次成功的读取写一条审计（范围和条数，不是每条一行）；写摘要写审计 |
 | MCP | `get_history`、`get_context`、`search`、`put_summary` |
 

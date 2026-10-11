@@ -90,6 +90,10 @@ pub const OPS: &[&str] = &[
     "release_claim",
     "floor_grant",
     "floor_release",
+    "history",
+    "context",
+    "search",
+    "put_summary",
 ];
 
 pub const MAX_CLIENT_FEATURES: usize = 100;

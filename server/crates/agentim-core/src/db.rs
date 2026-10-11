@@ -509,6 +509,7 @@ impl Db<'_> {
                 "conv_id",
                 &["title", "context", "response"],
             ),
+            "summaries" => (&["summary_id"], "conv_id", &["text"]),
             "audit" => (&["id"], "", &["detail"]),
             "webhook_outbox" => (&["id"], "", &["body"]),
             _ => {
@@ -3001,6 +3002,120 @@ impl Db<'_> {
                 .await?
                 .rows_affected(),
         )
+    }
+
+    // ------------------------------------- agent history (docs/09 §11.1)
+
+    /// Events below `before` and above `floor`, newest first.
+    pub async fn pull_before(
+        &mut self,
+        conv_id: &str,
+        before: i64,
+        floor: i64,
+        limit: i64,
+    ) -> ApiResult<Vec<Event>> {
+        let rows = sqlx::query(self.d.q(
+            "SELECT conv_id, seq, type, actor_id, payload, created_at FROM events WHERE conv_id = ? AND seq < ? AND seq > ? ORDER BY seq DESC LIMIT ?",
+        ))
+        .bind(conv_id)
+        .bind(before)
+        .bind(floor)
+        .bind(limit)
+        .fetch_all(&mut *self.c)
+        .await?;
+        self.preload(&rows, &["payload"]).await?;
+        rows.iter()
+            .map(|x| row_event(x, self.cx))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    /// When the last event of a conversation happened (0 when none).
+    pub async fn last_event_at(&mut self, conv_id: &str) -> ApiResult<i64> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT created_at FROM events WHERE conv_id = ? ORDER BY seq DESC LIMIT 1"),
+        )
+        .bind(conv_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        Ok(match r {
+            Some(r) => r.try_get(0)?,
+            None => 0,
+        })
+    }
+
+    /// Stores an agent's summary of a conversation, keeping its latest
+    /// `keep` there.
+    pub async fn put_summary(
+        &mut self,
+        conv_id: &str,
+        agent_id: &str,
+        from_seq: i64,
+        to_seq: i64,
+        text: &str,
+        keep: usize,
+    ) -> ApiResult<String> {
+        let id = format!("s_{}", new_id());
+        let sealed = self
+            .seal(conv_id, &format!("summaries.text:{id}"), text)
+            .await?;
+        sqlx::query(self.d.q(
+            "INSERT INTO summaries (summary_id, conv_id, agent_id, from_seq, to_seq, text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ))
+        .bind(&id)
+        .bind(conv_id)
+        .bind(agent_id)
+        .bind(from_seq)
+        .bind(to_seq)
+        .bind(sealed)
+        .bind(now_ms())
+        .execute(&mut *self.c)
+        .await?;
+        let rows = sqlx::query(self.d.q(
+            "SELECT summary_id FROM summaries WHERE conv_id = ? AND agent_id = ? ORDER BY created_at DESC, summary_id DESC",
+        ))
+        .bind(conv_id)
+        .bind(agent_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        for r in rows.iter().skip(keep) {
+            let old: String = r.try_get(0)?;
+            sqlx::query(self.d.q("DELETE FROM summaries WHERE summary_id = ?"))
+                .bind(old)
+                .execute(&mut *self.c)
+                .await?;
+        }
+        Ok(id)
+    }
+
+    /// The agent's summary of a conversation that reaches furthest.
+    pub async fn latest_summary(
+        &mut self,
+        conv_id: &str,
+        agent_id: &str,
+    ) -> ApiResult<Option<Value>> {
+        let rows = sqlx::query(self.d.q(
+            "SELECT summary_id, from_seq, to_seq, text, created_at FROM summaries WHERE conv_id = ? AND agent_id = ? ORDER BY to_seq DESC, created_at DESC LIMIT 1",
+        ))
+        .bind(conv_id)
+        .bind(agent_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        self.preload(&rows, &["text"]).await?;
+        let Some(r) = rows.first() else {
+            return Ok(None);
+        };
+        let id: String = r.try_get(0)?;
+        let text = dec(self.cx, r, "text", &format!("summaries.text:{id}"))?;
+        Ok(Some(json!({
+            "summary_id": id,
+            "from_seq": r.try_get::<i64, _>(1)?,
+            "to_seq": r.try_get::<i64, _>(2)?,
+            "text": text,
+            "created_at": r.try_get::<i64, _>(4)?,
+            "derived": true,
+        })))
     }
 
     // ----------------------------------------------- migration between DBs

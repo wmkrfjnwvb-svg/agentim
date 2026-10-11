@@ -28,6 +28,7 @@ backend_tests!(
     agents_ask_people_to_decide,
     agents_address_each_other,
     agents_work_on_tasks,
+    agents_read_their_history,
 );
 
 const V: &str = "2026-07-28";
@@ -1383,4 +1384,95 @@ async fn agents_work_on_tasks(db: TestDb) {
             "{tool} {args}"
         );
     }
+}
+
+/// History, context, search and summaries through the tools (docs/09 §11.1).
+async fn agents_read_their_history(db: TestDb) {
+    let mut cfg = single(&db.url);
+    cfg.mcp.burst = 1000.0;
+    let m = serve(cfg).await;
+    let (alice, _helper, key, conv) = setup(&m).await;
+    let a = Conn::new(&m.hub, &alice);
+    for i in 0..5 {
+        a.send(&conv, &format!("@helper step {i} of the Rollout"))
+            .await;
+    }
+    a.send(&conv, "not for the agent").await;
+    let r = m
+        .tool(&key, "get_history", json!({"conv_id": conv, "limit": 2}))
+        .await;
+    let text = r["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("step 3") && text.contains("step 4") && text.contains("More:"),
+        "{text}"
+    );
+    let first = r["structuredContent"]["first_seq"].clone();
+    let r = m
+        .ok(
+            &key,
+            "get_history",
+            json!({"conv_id": conv, "before_seq": first, "limit": 200}),
+        )
+        .await;
+    assert_eq!(r["has_more"], false);
+    let r = m.tool(&key, "search", json!({"query": "rollout"})).await;
+    let text = r["content"][0]["text"].as_str().unwrap();
+    assert_eq!(text.lines().count(), 5, "{text}");
+    assert!(!text.contains("not for the agent"));
+    let last = r["structuredContent"]["hits"][0]["seq"].as_i64().unwrap();
+    m.ok(
+        &key,
+        "put_summary",
+        json!({"conv_id": conv, "from_seq": 1, "to_seq": last - 1, "text": "steps 0-3 done"}),
+    )
+    .await;
+    let r = m.tool(&key, "get_context", json!({"conv_id": conv})).await;
+    let text = r["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with(&format!("[{conv} summary of #1..#{}", last - 1)),
+        "{text}"
+    );
+    assert!(
+        text.contains("steps 0-3 done") && text.contains("step 4"),
+        "{text}"
+    );
+    assert!(!text.contains("step 3 "), "{text}");
+    for (tool, args, want) in [
+        (
+            "get_history",
+            json!({"conv_id": conv, "limit": "2"}),
+            "bad_request",
+        ),
+        (
+            "get_history",
+            json!({"conv_id": conv, "x": 1}),
+            "bad_request",
+        ),
+        ("get_history", json!({"conv_id": "c_nope"}), "not_found"),
+        (
+            "get_context",
+            json!({"conv_id": conv, "max_tokens": 10}),
+            "bad_request",
+        ),
+        ("search", json!({"query": "r"}), "bad_request"),
+        ("search", json!({}), "bad_request"),
+        (
+            "put_summary",
+            json!({"conv_id": conv, "from_seq": 1, "text": "x"}),
+            "bad_request",
+        ),
+        (
+            "put_summary",
+            json!({"conv_id": conv, "from_seq": 2, "to_seq": 1, "text": "x"}),
+            "bad_request",
+        ),
+    ] {
+        assert_eq!(
+            m.tool_err(&key, tool, args.clone()).await,
+            want,
+            "{tool} {args}"
+        );
+    }
+    let r = m.tool(&key, "search", json!({"query": "zzzz"})).await;
+    assert_eq!(r["content"][0]["text"], "No match.");
 }

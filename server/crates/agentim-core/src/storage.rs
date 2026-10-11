@@ -538,6 +538,22 @@ pub const TABLES: &[Table] = &[
         indexes: &[],
         conv_key: Some("conv_id"),
     },
+    // v3: summaries agents write of conversations (docs/09 §11.1).
+    Table {
+        name: "summaries",
+        cols: &[
+            c("summary_id", Id),
+            c("conv_id", Id),
+            c("agent_id", Id),
+            c("from_seq", Big),
+            c("to_seq", Big),
+            c("text", Text),
+            c("created_at", Big),
+        ],
+        pk: &["summary_id"],
+        indexes: &[("summaries_agent", &["conv_id", "agent_id", "to_seq"], false)],
+        conv_key: Some("conv_id"),
+    },
     // v3: agent messages per source of a chain (root budget, docs/09 §10).
     Table {
         name: "root_budgets",
