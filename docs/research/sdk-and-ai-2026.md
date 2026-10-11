@@ -1,6 +1,6 @@
 # 调研：客户端 SDK 与海外 AI 组件（2026-10）
 
-三个问题：① 客户端要不要本地存储，存什么、怎么存；② SDK 应该提供哪些 API 和回调（hook），开发者才能在上面开发；③ 海外的 AI 组件现在是什么情况，我们的 M6 该做什么。
+四个问题：① 客户端要不要本地存储，存什么、怎么存；② SDK 应该提供哪些 API 和回调（hook），开发者才能在上面开发；③ 海外的 AI 组件现在是什么情况，我们的 M6 该做什么；④ 只同步、不读历史时，新成员、新设备、Agent 能看到多少历史，同步位置和确认怎么做。
 
 来源标注：**[已核实]** 本次调研查看了官方文档或原始来源（附链接）；**[二手]** 只有媒体、论坛或厂商宣传，引用前应再核实；**[推断]** 我们自己的判断。结论写进了设计文档：SDK 见 [05 §6](../05-operations.md)，AI 组件见 [03 §9](../03-ai-native.md)。
 
@@ -97,3 +97,15 @@
 3. **会话层的治理**：跳数、防循环、预算、DLP、耳语、接管，别家没有；Agent 365 只管身份层，而且绑在微软生态里。
 4. **人能看见、能介入的跨组织 Agent 协作**（A2A 本身对人不透明）。
 5. 内置的 AI Act 第 50 条合规。
+
+## 4. 只同步、不读历史（2026-10-11 补充调研）
+
+结论已写进 [08 §6](../08-sync-and-client.md)，这里只列来源。
+
+- 新成员看历史：[Slack 单聊加人](https://slack.com/help/articles/1500002969782-Add-people-to-a-direct-message)、[Teams 群聊加人可选带多少历史](https://support.microsoft.com/en-us/office/0c71b32b-c050-4930-a887-5afbe742b3d8)、[Telegram 新成员历史可见性](https://core.telegram.org/method/channels.togglePreHistoryHidden)、Matrix `m.room.history_visibility`（[规范](https://spec.matrix.org/v1.16/client-server-api/)）、[Google Chat 群历史](https://workspaceupdates.googleblog.com/2020/11/changes-to-google-chat-group.html)、[腾讯云 IM 群类型](https://www.tencentcloud.com/document/product/1047/60011)；WhatsApp 拉人时带最近 25–100 条 [二手，[来源](https://m.gsmarena.com/whatsapp_introduces_new_group_message_history_feature-news-71641.php)]。
+- 新设备：[WhatsApp 多设备](https://engineering.fb.com/2021/07/14/security/whatsapp-multi-device/)；Signal 关联设备可迁移全部消息和 45 天媒体 [二手]。
+- 同步和确认：[Telegram 更新机制](https://core.telegram.org/api/updates)、[Telegram 确认](https://core.telegram.org/mtproto/service_messages_about_messages)、[Matrix Simplified Sliding Sync（MSC4186）](https://github.com/matrix-org/matrix-spec-proposals/blob/erikj/sss/proposals/4186-simplified-sliding-sync.md)、[Discord 状态码](https://docs.discord.com/developers/topics/opcodes-and-status-codes)、[WhatsApp 隐私政策（未投递保留 30 天）](https://www.whatsapp.com/legal/privacy-policy)。
+- 已读和未读：[Telegram 已读事件](https://core.telegram.org/constructor/updateReadHistoryInbox)、[Matrix 推送网关](https://spec.matrix.org/v1.9/push-gateway-api)、[Slack 通知](https://slack.com/help/articles/360042339754)、[Stream 未读](https://getstream.io/chat/docs/javascript/unread/)、[Sendbird 已读](https://docs.sendbird.com/docs/chat/sdk/v4/android/message/marking-messages-as-read-in-a-group-channel/mark-messages-as-read)。
+- 保留期：[Mattermost 保留策略](https://docs.mattermost.com/administration-guide/comply/data-retention-policy.html)、[Mattermost 法律保全](https://docs.mattermost.com/administration-guide/comply/legal-hold)。
+- Agent 读历史：[Telegram Bot API](https://core.telegram.org/bots/api#getting-updates)（更新只保留 24 小时、没有读历史的接口）、[Telegram 隐私模式](https://core.telegram.org/bots/features#privacy-mode)、[Slack 2025 限流](https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps)、[Slack AI 应用](https://docs.slack.dev/ai/developing-ai-apps)、[Teams Agent 默认只收 @](https://learn.microsoft.com/en-us/microsoftteams/platform/agents-in-teams/enable-receive-all-chat-messages)、[Discord 消息](https://docs.discord.com/developers/resources/message)、[Google Chat 读消息需管理员批准](https://developers.google.com/workspace/chat/authenticate-authorize-chat-app)、[Zulip 读消息](https://zulip.com/api/get-messages)、[Stream AI 示例](https://github.com/GetStream/chat-ai-samples)、[Intercom Fin 记忆](https://fin.ai/help/en/articles/16004462-fin-memory)、[OpenAI 对话状态](https://developers.openai.com/api/docs/guides/conversation-state)、[OpenAI Assistants 停用](https://developers.openai.com/api/docs/deprecations)、[Claude Managed Agents](https://platform.claude.com/docs/en/managed-agents/overview)。
+
