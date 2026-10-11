@@ -29,6 +29,7 @@ backend_tests!(
     agents_address_each_other,
     agents_work_on_tasks,
     agents_read_their_history,
+    agents_keep_checkpoints,
 );
 
 const V: &str = "2026-07-28";
@@ -1475,4 +1476,107 @@ async fn agents_read_their_history(db: TestDb) {
     }
     let r = m.tool(&key, "search", json!({"query": "zzzz"})).await;
     assert_eq!(r["content"][0]["text"], "No match.");
+}
+
+/// Checkpoints through the tools (docs/09 §11.2).
+async fn agents_keep_checkpoints(db: TestDb) {
+    let mut cfg = single(&db.url);
+    cfg.mcp.burst = 1000.0;
+    let m = serve(cfg).await;
+    let (_alice, _helper, key, _conv) = setup(&m).await;
+    let r = m
+        .ok(
+            &key,
+            "state_put",
+            json!({"key": "plan/a", "value": {"step": 1}, "version": 0}),
+        )
+        .await;
+    assert_eq!(r["version"], 1);
+    let r = m
+        .tool(
+            &key,
+            "state_put",
+            json!({"key": "plan/a", "value": [1, 2], "version": 1}),
+        )
+        .await;
+    assert_eq!(r["content"][0]["text"], "Stored as version 2.");
+    m.ok(
+        &key,
+        "state_put",
+        json!({"key": "plan/b", "value": null, "version": 0}),
+    )
+    .await;
+    let r = m.tool(&key, "state_get", json!({"key": "plan/a"})).await;
+    assert_eq!(r["content"][0]["text"], "plan/a (version 2): [1,2]");
+    let r = m
+        .ok(&key, "state_get", json!({"key": "plan/a", "version": 1}))
+        .await;
+    assert_eq!(r["value"], json!({"step": 1}));
+    let r = m
+        .tool(&key, "state_list", json!({"prefix": "plan/", "limit": 1}))
+        .await;
+    assert_eq!(
+        r["content"][0]["text"],
+        "plan/a (version 2)\nMore: call again with after = the last key."
+    );
+    let r = m
+        .ok(
+            &key,
+            "state_list",
+            json!({"prefix": "plan/", "after": "plan/a"}),
+        )
+        .await;
+    assert_eq!(r["keys"][0]["key"], "plan/b");
+    m.ok(&key, "state_delete", json!({"key": "plan/b", "version": 1}))
+        .await;
+    let r = m.tool(&key, "state_list", json!({"prefix": "zzz"})).await;
+    assert_eq!(r["content"][0]["text"], "No keys.");
+    for (tool, args, want) in [
+        (
+            "state_put",
+            json!({"key": "k", "value": 1, "version": 5}),
+            "conflict",
+        ),
+        ("state_put", json!({"key": "k", "value": 1}), "bad_request"),
+        (
+            "state_put",
+            json!({"key": "k", "version": 0}),
+            "bad_request",
+        ),
+        (
+            "state_put",
+            json!({"key": "archive/x", "value": 1, "version": 0}),
+            "bad_request",
+        ),
+        (
+            "state_put",
+            json!({"key": "k", "value": 1, "version": "0"}),
+            "bad_request",
+        ),
+        ("state_get", json!({"key": "nope"}), "not_found"),
+        (
+            "state_get",
+            json!({"key": "plan/a", "version": 99}),
+            "not_found",
+        ),
+        ("state_list", json!({"prefix": 3}), "bad_request"),
+        ("state_list", json!({"limit": 501}), "bad_request"),
+        ("state_delete", json!({"key": "plan/a"}), "bad_request"),
+        (
+            "state_delete",
+            json!({"key": "plan/a", "version": 1}),
+            "conflict",
+        ),
+        (
+            "state_delete",
+            json!({"key": "nope", "version": 1}),
+            "not_found",
+        ),
+    ] {
+        assert_eq!(
+            m.tool_err(&key, tool, args.clone()).await,
+            want,
+            "{tool} {args}"
+        );
+    }
 }

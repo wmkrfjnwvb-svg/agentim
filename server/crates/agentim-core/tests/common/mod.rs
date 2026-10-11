@@ -87,10 +87,22 @@ pub async fn new_db(b: Backend) -> Option<TestDb> {
             let mut admin = sqlx::AnyConnection::connect(&format!("{base}{admin_db}"))
                 .await
                 .expect("admin connection");
-            sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
-                .execute(&mut admin)
-                .await
-                .expect("create database");
+            // PostgreSQL: a linguistic collation, as most installations have,
+            // so tests catch code that assumes byte order.
+            let icu = format!(
+                "CREATE DATABASE {name} TEMPLATE template0 ENCODING 'UTF8' LOCALE_PROVIDER icu ICU_LOCALE 'en-US' LOCALE 'C.UTF-8'"
+            );
+            let created = admin_db == "/postgres"
+                && sqlx::query(sqlx::AssertSqlSafe(icu))
+                    .execute(&mut admin)
+                    .await
+                    .is_ok();
+            if !created {
+                sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
+                    .execute(&mut admin)
+                    .await
+                    .expect("create database");
+            }
             Some(TestDb {
                 url: format!("{base}/{name}"),
                 path: None,

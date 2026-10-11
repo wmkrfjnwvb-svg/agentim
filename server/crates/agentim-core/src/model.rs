@@ -584,6 +584,29 @@ pub enum ClientMsg {
         to_seq: i64,
         text: String,
     },
+    /// Agent checkpoints (docs/09 §11.2).
+    StateGet {
+        key: String,
+        #[serde(default)]
+        version: Option<i64>,
+    },
+    StatePut {
+        key: String,
+        value: Value,
+        version: i64,
+    },
+    StateList {
+        #[serde(default)]
+        prefix: Option<String>,
+        #[serde(default)]
+        after: Option<String>,
+        #[serde(default)]
+        limit: Option<i64>,
+    },
+    StateDelete {
+        key: String,
+        version: i64,
+    },
 }
 
 impl ClientMsg {
@@ -654,6 +677,10 @@ impl ClientMsg {
             ClientMsg::Context { .. } => "context",
             ClientMsg::Search { .. } => "search",
             ClientMsg::PutSummary { .. } => "put_summary",
+            ClientMsg::StateGet { .. } => "state_get",
+            ClientMsg::StatePut { .. } => "state_put",
+            ClientMsg::StateList { .. } => "state_list",
+            ClientMsg::StateDelete { .. } => "state_delete",
         }
     }
 

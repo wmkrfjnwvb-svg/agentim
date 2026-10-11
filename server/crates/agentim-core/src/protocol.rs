@@ -94,6 +94,10 @@ pub const OPS: &[&str] = &[
     "context",
     "search",
     "put_summary",
+    "state_get",
+    "state_put",
+    "state_list",
+    "state_delete",
 ];
 
 pub const MAX_CLIENT_FEATURES: usize = 100;

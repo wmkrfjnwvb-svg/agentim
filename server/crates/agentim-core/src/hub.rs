@@ -26,6 +26,7 @@ type Bucket = (f64, Instant);
 mod agents;
 mod history;
 mod requests;
+mod state;
 pub use agents::MAX_AGENT_KEYS;
 pub use requests::MAX_WAIT_SECS;
 mod sync;
@@ -481,6 +482,7 @@ impl Hub {
                 "drafts",
                 "requests",
                 "summaries",
+                "agent_state",
                 "audit",
                 "webhook_outbox",
             ] {
@@ -1823,6 +1825,18 @@ impl Hub {
                 conv_id,
                 limit,
             } => self.search(me, &query, conv_id.as_deref(), limit).await,
+            ClientMsg::StateGet { key, version } => self.state_get(me, &key, version).await,
+            ClientMsg::StatePut {
+                key,
+                value,
+                version,
+            } => self.state_put(me, &key, value, version).await,
+            ClientMsg::StateList {
+                prefix,
+                after,
+                limit,
+            } => self.state_list(me, prefix, after, limit).await,
+            ClientMsg::StateDelete { key, version } => self.state_delete(me, &key, version).await,
             ClientMsg::Edit { ref msg_id, .. }
             | ClientMsg::Recall { ref msg_id, .. }
             | ClientMsg::Claim { ref msg_id }

@@ -510,6 +510,11 @@ impl Db<'_> {
                 &["title", "context", "response"],
             ),
             "summaries" => (&["summary_id"], "conv_id", &["text"]),
+            "agent_state" => (
+                &["agent_id", "state_key", "version"],
+                "agent_id",
+                &["value"],
+            ),
             "audit" => (&["id"], "", &["detail"]),
             "webhook_outbox" => (&["id"], "", &["body"]),
             _ => {
@@ -577,7 +582,10 @@ impl Db<'_> {
                 q = q.bind(v);
             }
             for (k, v) in keys.iter().zip(&key_vals) {
-                q = if *k == "seq" || *k == "side_seq" || (table == "webhook_outbox" && *k == "id")
+                q = if *k == "seq"
+                    || *k == "side_seq"
+                    || *k == "version"
+                    || (table == "webhook_outbox" && *k == "id")
                 {
                     q.bind(v.parse::<i64>().unwrap_or(0))
                 } else {
@@ -3002,6 +3010,176 @@ impl Db<'_> {
                 .await?
                 .rows_affected(),
         )
+    }
+
+    // ------------------------------- agent checkpoints (docs/09 §11.2)
+    //
+    // One row per version of a key; the current value is the highest
+    // version. Values are encrypted with the agent's own data key (scope =
+    // the agent id), destroyed with the agent.
+
+    /// Keys compare byte-wise on every database (PostgreSQL's default
+    /// collation does not).
+    fn key_col(&self) -> &'static str {
+        if self.d == Dialect::Postgres {
+            "state_key COLLATE \"C\""
+        } else {
+            "state_key"
+        }
+    }
+
+    /// A version of a key (the current one when `version` is None):
+    /// (version, value, updated_at, current version).
+    pub async fn state(
+        &mut self,
+        agent_id: &str,
+        key: &str,
+        version: Option<i64>,
+    ) -> ApiResult<Option<(i64, Value, i64, i64)>> {
+        let rows = sqlx::query(self.d.q(
+            "SELECT version, value, updated_at FROM agent_state WHERE agent_id = ? AND state_key = ? ORDER BY version DESC",
+        ))
+        .bind(agent_id)
+        .bind(key)
+        .fetch_all(&mut *self.c)
+        .await?;
+        let Some(cur) = rows.first().map(|r| r.try_get::<i64, _>(0)).transpose()? else {
+            return Ok(None);
+        };
+        let want = version.unwrap_or(cur);
+        let Some(r) = rows
+            .iter()
+            .find(|r| r.try_get::<i64, _>(0).ok() == Some(want))
+        else {
+            return Ok(None);
+        };
+        self.preload(std::slice::from_ref(r), &["value"]).await?;
+        let text = dec(
+            self.cx,
+            r,
+            "value",
+            &format!("agent_state.value:{agent_id}:{key}:{want}"),
+        )?;
+        Ok(Some((
+            want,
+            serde_json::from_str(&text).unwrap_or(Value::Null),
+            r.try_get(2)?,
+            cur,
+        )))
+    }
+
+    /// The current version of a key, 0 when there is none.
+    pub async fn state_head(&mut self, agent_id: &str, key: &str) -> ApiResult<i64> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT MAX(version) FROM agent_state WHERE agent_id = ? AND state_key = ?"),
+        )
+        .bind(agent_id)
+        .bind(key)
+        .fetch_one(&mut *self.c)
+        .await?;
+        Ok(r.try_get::<Option<i64>, _>(0)?.unwrap_or(0))
+    }
+
+    pub async fn state_keys(&mut self, agent_id: &str) -> ApiResult<i64> {
+        Ok(sqlx::query(
+            self.d
+                .q("SELECT COUNT(DISTINCT state_key) FROM agent_state WHERE agent_id = ?"),
+        )
+        .bind(agent_id)
+        .fetch_one(&mut *self.c)
+        .await?
+        .try_get(0)?)
+    }
+
+    /// Writes `version` of a key and keeps the latest `keep` older ones.
+    pub async fn put_state(
+        &mut self,
+        agent_id: &str,
+        key: &str,
+        version: i64,
+        value: &str,
+        keep: i64,
+    ) -> ApiResult<()> {
+        let sealed = self
+            .seal(
+                agent_id,
+                &format!("agent_state.value:{agent_id}:{key}:{version}"),
+                value,
+            )
+            .await?;
+        sqlx::query(self.d.q(
+            "INSERT INTO agent_state (agent_id, state_key, version, value, updated_at) VALUES (?, ?, ?, ?, ?)",
+        ))
+        .bind(agent_id)
+        .bind(key)
+        .bind(version)
+        .bind(sealed)
+        .bind(now_ms())
+        .execute(&mut *self.c)
+        .await?;
+        sqlx::query(
+            self.d
+                .q("DELETE FROM agent_state WHERE agent_id = ? AND state_key = ? AND version < ?"),
+        )
+        .bind(agent_id)
+        .bind(key)
+        .bind(version - keep)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    /// Removes a key with all its versions.
+    pub async fn delete_state(&mut self, agent_id: &str, key: &str) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("DELETE FROM agent_state WHERE agent_id = ? AND state_key = ?"),
+        )
+        .bind(agent_id)
+        .bind(key)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    /// Keys after `after` starting with `prefix`, in byte order:
+    /// (key, current version, updated_at), and whether more follow.
+    pub async fn list_state(
+        &mut self,
+        agent_id: &str,
+        prefix: &str,
+        after: &str,
+        limit: i64,
+    ) -> ApiResult<(Vec<(String, i64, i64)>, bool)> {
+        let k = self.key_col();
+        let (from, op) = if after.as_bytes() >= prefix.as_bytes() {
+            (after, ">")
+        } else {
+            (prefix, ">=")
+        };
+        let rows = sqlx::query(self.d.q(&format!(
+            "SELECT state_key, MAX(version), MAX(updated_at) FROM agent_state WHERE agent_id = ? AND {k} {op} ? GROUP BY state_key ORDER BY {k} LIMIT ?"
+        )))
+        .bind(agent_id)
+        .bind(from)
+        .bind(limit + 1)
+        .fetch_all(&mut *self.c)
+        .await?;
+        let mut out = vec![];
+        let mut more = false;
+        for r in rows {
+            let key: String = r.try_get(0)?;
+            if !key.starts_with(prefix) {
+                break;
+            }
+            if out.len() as i64 == limit {
+                more = true;
+                break;
+            }
+            out.push((key, r.try_get(1)?, r.try_get(2)?));
+        }
+        Ok((out, more))
     }
 
     // ------------------------------------- agent history (docs/09 §11.1)

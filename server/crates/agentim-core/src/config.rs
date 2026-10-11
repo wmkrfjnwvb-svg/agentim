@@ -69,6 +69,8 @@ pub struct AgentsConfig {
     pub history_per_minute: u32,
     /// Searches per agent per minute.
     pub search_per_minute: u32,
+    /// Checkpoint keys one agent may keep (docs/09 §11.2).
+    pub state_keys: u32,
 }
 
 impl Default for AgentsConfig {
@@ -78,6 +80,7 @@ impl Default for AgentsConfig {
             conversations_per_hour: 60,
             history_per_minute: 60,
             search_per_minute: 30,
+            state_keys: 10_000,
         }
     }
 }
@@ -722,6 +725,9 @@ impl Config {
             return Err(
                 "agents.history_per_minute and agents.search_per_minute must be 1..100000".into(),
             );
+        }
+        if !(1..=1_000_000).contains(&self.agents.state_keys) {
+            return Err("agents.state_keys must be 1..1000000".into());
         }
         if !(self.mcp.rate_per_second > 0.0 && self.mcp.burst >= 1.0) {
             return Err("mcp.rate_per_second must be > 0 and burst >= 1".into());

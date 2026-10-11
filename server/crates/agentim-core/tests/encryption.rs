@@ -124,6 +124,11 @@ async fn everything(hub: &Hub, alice: &User, bob: &User, bot: &User) -> String {
     let last = *seqs(&a.pull(&conv, 0).await).last().unwrap();
     g.ok(json!({"op": "put_summary", "conv_id": conv, "from_seq": 1, "to_seq": last, "text": format!("{MARK} summary")}))
         .await;
+    // A checkpoint, with an older version (docs/09 §11.2).
+    g.ok(json!({"op": "state_put", "key": "plan", "value": {"v": format!("{MARK} state 1")}, "version": 0}))
+        .await;
+    g.ok(json!({"op": "state_put", "key": "plan", "value": {"v": format!("{MARK} state 2")}, "version": 1}))
+        .await;
     conv
 }
 
@@ -149,6 +154,13 @@ async fn check(hub: &Hub, alice: &User, bob: &User, conv: &str) {
         .ok(json!({"op": "context", "conv_id": conv}))
         .await;
     assert_eq!(c["summary"]["text"], json!(format!("{MARK} summary")));
+    let g = Conn::new(hub, &bot);
+    for v in [1, 2] {
+        let s = g
+            .ok(json!({"op": "state_get", "key": "plan", "version": v}))
+            .await;
+        assert_eq!(s["value"]["v"], json!(format!("{MARK} state {v}")));
+    }
     let audit = hub.audit_log(100).await.unwrap();
     assert!(
         format!("{audit:?}").contains(&format!("{MARK} draft")),

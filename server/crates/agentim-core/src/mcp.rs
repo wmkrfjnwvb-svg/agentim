@@ -400,6 +400,10 @@ pub const TOOLS: &[&str] = &[
     "get_context",
     "search",
     "put_summary",
+    "state_get",
+    "state_put",
+    "state_list",
+    "state_delete",
 ];
 
 fn tools() -> Value {
@@ -729,6 +733,67 @@ fn tools() -> Value {
                 "additionalProperties": false,
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "state_get",
+            "title": "Read a checkpoint",
+            "description": "Reads a value you stored with state_put (the current version, or an older one by number). Keys under archive/ hold what was imported with you from another server.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "minLength": 1, "maxLength": 255},
+                    "version": {"type": "integer", "minimum": 1},
+                },
+                "required": ["key"],
+                "additionalProperties": false,
+            },
+            "annotations": ro,
+        },
+        {
+            "name": "state_put",
+            "title": "Store a checkpoint",
+            "description": "Stores any JSON value (up to 1 MiB) under a key on the server, so you can carry on after a restart or on another machine. Pass the version you read (0 to create); if somebody wrote in between you get a conflict and should read again. Returns the new version.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "minLength": 1, "maxLength": 255},
+                    "value": {},
+                    "version": {"type": "integer", "minimum": 0},
+                },
+                "required": ["key", "value", "version"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "state_list",
+            "title": "List checkpoints",
+            "description": "Your keys in byte order, optionally only those starting with a prefix; page with `after` (the last key you got).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "prefix": {"type": "string", "maxLength": 255},
+                    "after": {"type": "string", "maxLength": 255},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+                },
+                "additionalProperties": false,
+            },
+            "annotations": ro,
+        },
+        {
+            "name": "state_delete",
+            "title": "Delete a checkpoint",
+            "description": "Deletes a key with all its versions; pass the current version.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "minLength": 1, "maxLength": 255},
+                    "version": {"type": "integer", "minimum": 1},
+                },
+                "required": ["key", "version"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
         },
     ])
 }
@@ -1176,6 +1241,86 @@ async fn call_tool(
             };
             let v = run(json!({"op": "put_summary", "conv_id": need(args, "conv_id")?, "from_seq": from, "to_seq": to, "text": need(args, "text")?})).await?;
             Ok(("Summary stored; get_context starts from it.".into(), v))
+        }
+        "state_get" => {
+            only(args, &["key", "version"])?;
+            let mut m = json!({"op": "state_get", "key": need(args, "key")?});
+            if let Some(v) = opt_int(args, "version")? {
+                m["version"] = json!(v);
+            }
+            let v = run(m).await?;
+            Ok((
+                format!(
+                    "{} (version {}): {}",
+                    v["key"].as_str().unwrap_or(""),
+                    v["version"],
+                    v["value"]
+                ),
+                v,
+            ))
+        }
+        "state_put" => {
+            only(args, &["key", "value", "version"])?;
+            let Some(value) = args.get("value") else {
+                return Err(ApiError::new("bad_request", "value is required"));
+            };
+            let Some(version) = opt_int(args, "version")? else {
+                return Err(ApiError::new(
+                    "bad_request",
+                    "version is required (0 creates)",
+                ));
+            };
+            let v = run(json!({"op": "state_put", "key": need(args, "key")?, "value": value, "version": version})).await?;
+            Ok((format!("Stored as version {}.", v["version"]), v))
+        }
+        "state_list" => {
+            only(args, &["prefix", "after", "limit"])?;
+            let mut m = json!({"op": "state_list"});
+            for k in ["prefix", "after"] {
+                match args.get(k) {
+                    None | Some(Value::Null) => {}
+                    Some(Value::String(x)) => m[k] = json!(x),
+                    _ => {
+                        return Err(ApiError::new(
+                            "bad_request",
+                            format!("{k} must be a string"),
+                        ));
+                    }
+                }
+            }
+            if let Some(l) = opt_int(args, "limit")? {
+                m["limit"] = json!(l);
+            }
+            let v = run(m).await?;
+            let mut text: Vec<String> = v["keys"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|k| {
+                    format!(
+                        "{} (version {})",
+                        k["key"].as_str().unwrap_or(""),
+                        k["version"]
+                    )
+                })
+                .collect();
+            if text.is_empty() {
+                text.push("No keys.".into());
+            }
+            if v["more"] == true {
+                text.push("More: call again with after = the last key.".into());
+            }
+            Ok((text.join("\n"), v))
+        }
+        "state_delete" => {
+            only(args, &["key", "version"])?;
+            let Some(version) = opt_int(args, "version")? else {
+                return Err(ApiError::new("bad_request", "version is required"));
+            };
+            let v =
+                run(json!({"op": "state_delete", "key": need(args, "key")?, "version": version}))
+                    .await?;
+            Ok(("Deleted.".into(), v))
         }
         _ => Err(ApiError::new("bad_request", "unknown tool")),
     }

@@ -538,6 +538,20 @@ pub const TABLES: &[Table] = &[
         indexes: &[],
         conv_key: Some("conv_id"),
     },
+    // v3: agent checkpoints, one row per version (docs/09 §11.2).
+    Table {
+        name: "agent_state",
+        cols: &[
+            c("agent_id", Id),
+            c("state_key", Name),
+            c("version", Big),
+            c("value", Text),
+            c("updated_at", Big),
+        ],
+        pk: &["agent_id", "state_key", "version"],
+        indexes: &[],
+        conv_key: None,
+    },
     // v3: summaries agents write of conversations (docs/09 §11.1).
     Table {
         name: "summaries",

@@ -21,6 +21,7 @@ use crate::registry::{Out, Recip, Registry};
 mod history;
 mod requests;
 mod routing;
+mod state;
 mod tasks;
 pub use requests::MAX_PENDING as MAX_PENDING_REQUESTS;
 pub use routing::{MAX_AGENTS_FOR_ALL, MAX_WAKE};
@@ -366,6 +367,20 @@ pub enum Op {
         user_id: String,
         on: bool,
     },
+    /// An agent's checkpoint write, compared against `version` (docs/09
+    /// §11.2).
+    StatePut {
+        agent_id: String,
+        key: String,
+        value: String,
+        version: i64,
+        max_keys: i64,
+    },
+    StateDelete {
+        agent_id: String,
+        key: String,
+        version: i64,
+    },
     /// Read-modify-write of a user's credentials in the writer, so
     /// concurrent logins count failures and TOTP steps exactly.
     Credentials {
@@ -519,6 +534,8 @@ impl Op {
             Op::TouchToken { .. } => "touch_token",
             Op::UpdateUser { .. } => "update_user",
             Op::SetDeactivated { .. } => "set_deactivated",
+            Op::StatePut { .. } => "state_put",
+            Op::StateDelete { .. } => "state_delete",
             Op::Credentials { .. } => "credentials",
             Op::EncryptExisting { .. } => "encrypt_existing",
             Op::RewrapKeys { .. } => "rewrap_keys",
@@ -819,6 +836,21 @@ impl Ctx<'_, '_> {
                     .await?;
                 Ok(json!({}))
             }
+            Op::StatePut {
+                agent_id,
+                key,
+                value,
+                version,
+                max_keys,
+            } => {
+                self.state_put(&agent_id, &key, &value, version, max_keys)
+                    .await
+            }
+            Op::StateDelete {
+                agent_id,
+                key,
+                version,
+            } => self.state_delete(&agent_id, &key, version).await,
             Op::SetDeactivated { user_id, on } => {
                 self.db.set_deactivated(&user_id, on).await?;
                 Ok(json!({}))

@@ -111,6 +111,7 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 # conversations_per_hour = 60 # conversations one agent may start
 # history_per_minute = 60     # history and context reads per agent
 # search_per_minute = 30      # searches per agent
+# state_keys = 10000          # checkpoint keys per agent
 
 # MCP endpoint POST /mcp for agent keys.
 # [mcp]
