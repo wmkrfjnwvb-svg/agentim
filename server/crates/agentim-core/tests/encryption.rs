@@ -111,6 +111,12 @@ async fn everything(hub: &Hub, alice: &User, bob: &User, bot: &User) -> String {
         .to_string();
     a.ok(json!({"op": "edit", "msg_id": e, "text": format!("{MARK} edit")}))
         .await;
+    // A request for a decision: question, context and answer.
+    let r = g
+        .ok(json!({"op": "request_human", "conv_id": conv, "kind": "answer", "title": format!("{MARK} question"), "context": {"c": format!("{MARK} context")}, "client_req_id": "enc"}))
+        .await;
+    a.ok(json!({"op": "decide", "request_id": r["request_id"], "decision": "answer", "text": format!("{MARK} answer")}))
+        .await;
     conv
 }
 
@@ -124,6 +130,13 @@ async fn check(hub: &Hub, alice: &User, bob: &User, conv: &str) {
         .await
         .to_string();
     assert!(side.contains(&format!("{MARK} to bob")));
+    let q = Conn::new(hub, alice)
+        .ok(json!({"op": "pull_side", "conv_id": conv, "after_side_seq": 0}))
+        .await
+        .to_string();
+    for w in ["question", "context", "answer"] {
+        assert!(q.contains(&format!("{MARK} {w}")), "{w}: {q}");
+    }
     let audit = hub.audit_log(100).await.unwrap();
     assert!(
         format!("{audit:?}").contains(&format!("{MARK} draft")),

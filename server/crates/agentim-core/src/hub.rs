@@ -21,7 +21,9 @@ use crate::registry::{Out, Pushes, Registry};
 use crate::shard::Shard;
 
 mod agents;
+mod requests;
 pub use agents::MAX_AGENT_KEYS;
+pub use requests::MAX_WAIT_SECS;
 mod sync;
 
 fn err(code: &'static str, msg: impl Into<String>) -> ApiError {
@@ -470,6 +472,7 @@ impl Hub {
                 "events",
                 "side_events",
                 "drafts",
+                "requests",
                 "audit",
                 "webhook_outbox",
             ] {
@@ -1762,10 +1765,30 @@ impl Hub {
             | ClientMsg::SetRole { ref conv_id, .. }
             | ClientMsg::TransferOwner { ref conv_id, .. }
             | ClientMsg::ResetGuard { ref conv_id, .. }
-            | ClientMsg::UpdateConv { ref conv_id, .. } => {
+            | ClientMsg::UpdateConv { ref conv_id, .. }
+            | ClientMsg::RequestHuman { ref conv_id, .. } => {
                 let c = conv_id.clone();
                 self.on_conv(sess, &c, msg).await
             }
+            ClientMsg::Decide { ref request_id, .. }
+            | ClientMsg::CancelRequest { ref request_id } => {
+                let id = request_id.clone();
+                let conv = self
+                    .find_conv_of(|db| {
+                        Box::pin({
+                            let id = id.clone();
+                            async move { Ok(db.request(&id).await?.map(|q| q.conv_id)) }
+                        })
+                    })
+                    .await
+                    .map_err(|_| err("not_found", "request"))?;
+                self.on_conv(sess, &conv, msg).await
+            }
+            ClientMsg::GetRequest {
+                request_id,
+                wait_secs,
+            } => self.get_request(me, &request_id, wait_secs).await,
+            ClientMsg::Inbox => self.inbox(me).await,
             ClientMsg::Edit { ref msg_id, .. } | ClientMsg::Recall { ref msg_id, .. } => {
                 let id = msg_id.clone();
                 let conv = self

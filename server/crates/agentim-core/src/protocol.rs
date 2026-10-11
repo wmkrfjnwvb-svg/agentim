@@ -80,6 +80,11 @@ pub const OPS: &[&str] = &[
     "list_agents",
     "agent_key",
     "revoke_agent_key",
+    "request_human",
+    "decide",
+    "cancel_request",
+    "get_request",
+    "inbox",
 ];
 
 pub const MAX_CLIENT_FEATURES: usize = 100;

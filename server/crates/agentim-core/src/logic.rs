@@ -18,6 +18,9 @@ use crate::model::*;
 use crate::policy::PolicyChain;
 use crate::registry::{Out, Recip, Registry};
 
+mod requests;
+pub use requests::MAX_PENDING as MAX_PENDING_REQUESTS;
+
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 /// Serialized payload of a custom message kind.
 pub const MAX_PAYLOAD_BYTES: usize = 32 * 1024;
@@ -49,6 +52,8 @@ pub struct HubConfig {
     /// expired records are removed.
     pub dedup_ttl: Duration,
     pub gc_every: Duration,
+    /// How often requests past their time are expired.
+    pub expire_every: Duration,
     /// `stats` (global counts, online users, audit) for every user. Only
     /// for the demo; operators get it from the admin API.
     pub open_stats: bool,
@@ -71,6 +76,7 @@ impl Default for HubConfig {
             agent_queue: 4096,
             dedup_ttl: Duration::from_secs(7 * 24 * 3600),
             gc_every: Duration::from_secs(600),
+            expire_every: Duration::from_secs(10),
             open_stats: false,
             edition: Default::default(),
             sync: Default::default(),
@@ -254,6 +260,8 @@ pub struct ShardState {
     last_checkpoint: Instant,
     last_gc: Instant,
     gc_every: Duration,
+    last_expiry: Instant,
+    expire_every: Duration,
 }
 
 impl ShardState {
@@ -268,13 +276,17 @@ impl ShardState {
             last_checkpoint: now,
             last_gc: now,
             gc_every: sh.cfg.gc_every,
+            last_expiry: now,
+            expire_every: sh.cfg.expire_every,
         }
     }
 
     /// Whether a tick has database work (otherwise the writer skips the
     /// transaction entirely).
     pub fn tick_needs_db(&self) -> bool {
-        !self.streams.is_empty() || self.last_gc.elapsed() > self.gc_every
+        !self.streams.is_empty()
+            || self.last_gc.elapsed() > self.gc_every
+            || self.last_expiry.elapsed() > self.expire_every
     }
 
     pub fn active_streams(&self) -> Vec<Value> {
@@ -1239,6 +1251,38 @@ impl Ctx<'_, '_> {
                 text,
             } => self.whisper(me, &conv_id, &agent_id, &text).await,
             ClientMsg::Approve { draft_id, text } => self.approve(me, &draft_id, text).await,
+            ClientMsg::RequestHuman {
+                conv_id,
+                kind,
+                title,
+                options,
+                context,
+                assignees,
+                ttl_secs,
+                client_req_id,
+            } => {
+                self.request_human(
+                    me,
+                    requests::Ask {
+                        conv_id,
+                        kind,
+                        title,
+                        options,
+                        context,
+                        assignees,
+                        ttl_secs,
+                        client_req_id,
+                    },
+                )
+                .await
+            }
+            ClientMsg::Decide {
+                request_id,
+                decision,
+                text,
+                choice,
+            } => self.decide(me, &request_id, &decision, text, choice).await,
+            ClientMsg::CancelRequest { request_id } => self.cancel_request(me, &request_id).await,
             ClientMsg::Reject { draft_id } => self.reject(me, &draft_id).await,
             ClientMsg::Takeover { conv_id, agent_id } => {
                 self.takeover(me, &conv_id, &agent_id, true).await
@@ -1814,6 +1858,7 @@ impl Ctx<'_, '_> {
                     .await?;
             }
             self.db.discard_drafts(conv_id, &u.id).await?;
+            self.cancel_requests_of(conv_id, u).await?;
         }
         let kind = if leaving {
             "member.left"
@@ -2162,6 +2207,7 @@ impl Ctx<'_, '_> {
                 causation_id,
                 reply_to,
                 mentions,
+                approval: None,
             })
             .await?;
         match res {
@@ -2363,6 +2409,7 @@ impl Ctx<'_, '_> {
                     causation_id: causation_id.clone(),
                     reply_to: reply_to.clone(),
                     mentions: vec![],
+                    approval: None,
                 })
                 .await?;
             match res {
@@ -2737,6 +2784,10 @@ impl Ctx<'_, '_> {
             self.finish_stream(&id, state, Some(reason), &sender)
                 .await?;
         }
+        if self.st.last_expiry.elapsed() > self.sh.cfg.expire_every {
+            self.st.last_expiry = now;
+            self.expire_requests().await?;
+        }
         if self.st.last_gc.elapsed() > self.sh.cfg.gc_every {
             self.st.last_gc = now;
             self.db
@@ -2816,14 +2867,15 @@ impl Ctx<'_, '_> {
                 "the agent is taken over; release it before publishing its drafts",
             ));
         }
+        if let Some(t) = &text {
+            check_text(t)?;
+        }
         let audience = Self::agent_audience(&agent);
         let side = self
             .db
             .decide_draft(draft_id, "approved", &me.id, &audience, &d.conv_id)
             .await?;
-        if let Some(t) = &text {
-            check_text(t)?;
-        }
+        let edited = text.as_ref().is_some_and(|t| *t != d.content);
         let content = text.unwrap_or(d.content.clone());
         let mentions = self.mentions(&d.conv_id, &content).await?;
         let res = self
@@ -2841,6 +2893,7 @@ impl Ctx<'_, '_> {
                 causation_id: d.causation_id.clone(),
                 reply_to: d.reply_to.clone(),
                 mentions,
+                approval: Some(json!({"by": me.id, "edited": edited})),
             })
             .await?;
         self.db

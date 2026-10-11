@@ -78,6 +78,70 @@ pub struct Draft {
     pub payload: Option<Value>,
 }
 
+/// A request for a human decision (docs/03-ai-native.md §9.3.4).
+#[derive(Debug, Clone)]
+pub struct Request {
+    pub request_id: String,
+    pub conv_id: String,
+    pub agent_id: String,
+    pub client_req_id: String,
+    pub kind: String,
+    pub title: String,
+    pub options: Option<Value>,
+    pub context: Option<Value>,
+    pub state: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub decided_by: Option<String>,
+    pub decided_at: Option<i64>,
+    pub response: Option<Value>,
+}
+
+impl Request {
+    pub fn view(&self) -> Value {
+        json!({
+            "request_id": self.request_id,
+            "conv_id": self.conv_id,
+            "agent_id": self.agent_id,
+            "client_req_id": self.client_req_id,
+            "kind": self.kind,
+            "title": self.title,
+            "options": self.options,
+            "context": self.context,
+            "state": self.state,
+            "created_at": self.created_at,
+            "expires_at": self.expires_at,
+            "decided_by": self.decided_by,
+            "decided_at": self.decided_at,
+            "response": self.response,
+        })
+    }
+}
+
+const REQUEST_COLS: &str = "request_id, conv_id, agent_id, client_req_id, kind, title, options, context, state, created_at, expires_at, decided_by, decided_at, response";
+
+fn row_request(r: &AnyRow, cx: &crate::crypto::Crypto) -> sqlx::Result<Request> {
+    let id: String = r.try_get("request_id")?;
+    Ok(Request {
+        title: dec(cx, r, "title", &format!("requests.title:{id}"))?,
+        context: dec_json(cx, r, "context", &format!("requests.context:{id}"))?,
+        response: dec_json(cx, r, "response", &format!("requests.response:{id}"))?,
+        options: r
+            .try_get::<Option<String>, _>("options")?
+            .and_then(|o| serde_json::from_str(&o).ok()),
+        request_id: id,
+        conv_id: r.try_get("conv_id")?,
+        agent_id: r.try_get("agent_id")?,
+        client_req_id: r.try_get("client_req_id")?,
+        kind: r.try_get("kind")?,
+        state: r.try_get("state")?,
+        created_at: r.try_get("created_at")?,
+        expires_at: r.try_get("expires_at")?,
+        decided_by: r.try_get("decided_by")?,
+        decided_at: r.try_get("decided_at")?,
+    })
+}
+
 /// A nullable JSON column.
 fn json_col(r: &AnyRow, col: &str) -> sqlx::Result<Option<Value>> {
     Ok(r.try_get::<Option<String>, _>(col)?
@@ -189,6 +253,9 @@ pub struct NewMsg<'a> {
     pub causation_id: Option<String>,
     pub reply_to: Option<String>,
     pub mentions: Vec<String>,
+    /// Who approved a draft and whether they edited it (D36): the message
+    /// stays the agent's, the event records the approval.
+    pub approval: Option<Value>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -418,6 +485,11 @@ impl Db<'_> {
             "events" => (&["conv_id", "seq"], "conv_id", &["payload"]),
             "side_events" => (&["conv_id", "side_seq"], "conv_id", &["payload"]),
             "drafts" => (&["draft_id"], "conv_id", &["content", "payload"]),
+            "requests" => (
+                &["request_id"],
+                "conv_id",
+                &["title", "context", "response"],
+            ),
             "audit" => (&["id"], "", &["detail"]),
             "webhook_outbox" => (&["id"], "", &["body"]),
             _ => {
@@ -1573,7 +1645,10 @@ impl Db<'_> {
                 "msg.created",
                 Some(&sender_id),
                 Some(view),
-                json!({}),
+                match m.approval {
+                    Some(a) => json!({"approval": a}),
+                    None => json!({}),
+                },
                 ts,
             )
             .await?;
@@ -2287,6 +2362,180 @@ impl Db<'_> {
         }
         out.sort_by_key(|d| d.created_at);
         Ok(out)
+    }
+
+    // ------------------------------------------------------------ requests
+
+    pub async fn create_request(&mut self, q: &Request, assignees: &[String]) -> ApiResult<()> {
+        let id = &q.request_id;
+        let title = self
+            .seal(&q.conv_id, &format!("requests.title:{id}"), &q.title)
+            .await?;
+        let context = self
+            .seal_json(
+                &q.conv_id,
+                &format!("requests.context:{id}"),
+                q.context.as_ref(),
+            )
+            .await?;
+        sqlx::query(self.d.q(&format!(
+            "INSERT INTO requests ({REQUEST_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )))
+        .bind(id)
+        .bind(&q.conv_id)
+        .bind(&q.agent_id)
+        .bind(&q.client_req_id)
+        .bind(&q.kind)
+        .bind(title)
+        .bind(q.options.as_ref().map(|o| o.to_string()))
+        .bind(context)
+        .bind(&q.state)
+        .bind(q.created_at)
+        .bind(q.expires_at)
+        .bind(None::<String>)
+        .bind(None::<i64>)
+        .bind(None::<String>)
+        .execute(&mut *self.c)
+        .await?;
+        for u in assignees {
+            sqlx::query(self.d.q(
+                "INSERT INTO request_assignees (request_id, user_id, conv_id) VALUES (?, ?, ?)",
+            ))
+            .bind(id)
+            .bind(u)
+            .bind(&q.conv_id)
+            .execute(&mut *self.c)
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn requests_where(&mut self, cond: &str, binds: &[&str]) -> ApiResult<Vec<Request>> {
+        let sql = format!(
+            "SELECT {REQUEST_COLS} FROM requests WHERE {cond} ORDER BY created_at, request_id"
+        );
+        let mut q = sqlx::query(self.d.q(&sql));
+        for b in binds {
+            q = q.bind(b.to_string());
+        }
+        let rows = q.fetch_all(&mut *self.c).await?;
+        self.preload(&rows, &["title", "context", "response"])
+            .await?;
+        rows.iter()
+            .map(|r| row_request(r, self.cx))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    pub async fn request(&mut self, id: &str) -> ApiResult<Option<Request>> {
+        Ok(self.requests_where("request_id = ?", &[id]).await?.pop())
+    }
+
+    pub async fn request_by_client(
+        &mut self,
+        agent_id: &str,
+        client_req_id: &str,
+    ) -> ApiResult<Option<Request>> {
+        Ok(self
+            .requests_where(
+                "agent_id = ? AND client_req_id = ?",
+                &[agent_id, client_req_id],
+            )
+            .await?
+            .pop())
+    }
+
+    pub async fn request_assignees(&mut self, id: &str) -> ApiResult<Vec<String>> {
+        let rows = sqlx::query(
+            self.d
+                .q("SELECT user_id FROM request_assignees WHERE request_id = ? ORDER BY user_id"),
+        )
+        .bind(id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(|r| r.try_get(0))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    /// Pending requests assigned to a person, or made by the given agents.
+    pub async fn pending_requests_for(
+        &mut self,
+        user_id: &str,
+        agent_ids: &[String],
+    ) -> ApiResult<Vec<Request>> {
+        let mut out = self
+            .requests_where(
+                "state = 'pending' AND request_id IN (SELECT request_id FROM request_assignees WHERE user_id = ?)",
+                &[user_id],
+            )
+            .await?;
+        for a in agent_ids {
+            for q in self
+                .requests_where("state = 'pending' AND agent_id = ?", &[a])
+                .await?
+            {
+                if !out.iter().any(|x| x.request_id == q.request_id) {
+                    out.push(q);
+                }
+            }
+        }
+        out.sort_by(|a, b| (a.created_at, &a.request_id).cmp(&(b.created_at, &b.request_id)));
+        Ok(out)
+    }
+
+    pub async fn pending_request_count(&mut self, agent_id: &str) -> ApiResult<i64> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT COUNT(*) FROM requests WHERE agent_id = ? AND state = 'pending'"),
+        )
+        .bind(agent_id)
+        .fetch_one(&mut *self.c)
+        .await?;
+        Ok(r.try_get::<i64, _>(0)?)
+    }
+
+    /// Moves a pending request to its final state; `false` when it was
+    /// already decided (exactly one decision wins).
+    pub async fn finish_request(
+        &mut self,
+        q: &Request,
+        state: &str,
+        by: Option<&str>,
+        response: Option<&Value>,
+    ) -> ApiResult<bool> {
+        let id = &q.request_id;
+        let sealed = self
+            .seal_json(&q.conv_id, &format!("requests.response:{id}"), response)
+            .await?;
+        let n = sqlx::query(self.d.q("UPDATE requests SET state = ?, decided_by = ?, decided_at = ?, response = ? WHERE request_id = ? AND state = 'pending'"))
+            .bind(state)
+            .bind(by.map(String::from))
+            .bind(now_ms())
+            .bind(sealed)
+            .bind(id)
+            .execute(&mut *self.c)
+            .await?
+            .rows_affected();
+        Ok(n == 1)
+    }
+
+    /// Pending requests past their expiry.
+    pub async fn expired_requests(&mut self, now: i64) -> ApiResult<Vec<Request>> {
+        let sql = format!(
+            "SELECT {REQUEST_COLS} FROM requests WHERE state = 'pending' AND expires_at <= ? ORDER BY created_at, request_id"
+        );
+        let rows = sqlx::query(self.d.q(&sql))
+            .bind(now)
+            .fetch_all(&mut *self.c)
+            .await?;
+        self.preload(&rows, &["title", "context", "response"])
+            .await?;
+        rows.iter()
+            .map(|r| row_request(r, self.cx))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
     }
 
     pub async fn decide_draft(

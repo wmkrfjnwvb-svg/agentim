@@ -265,6 +265,21 @@ submitted → working → completed
 | 有效期 | 到期自动按配置处理（拒绝或升级给别人） |
 | 结果 | **只有一个决定生效**（并发决定只有一个成功，已有草稿审批的并发测试可复用）；结果写日志、写审计，Agent 收到后继续 |
 
+**第一步实现（L3，AgentIM Lite）：**
+
+| 方面 | 做法 |
+|---|---|
+| 发起 | Agent 用 `request_human {conv_id, kind, title, options?, context?, assignees?, ttl_secs?, client_req_id}`（MCP 工具同名）。`kind`：`approve`（批准 / 拒绝，可修改后批准）、`answer`（回答文字）、`choose`（从 2–20 个选项里选一个）。`title` 1..4KB，`context` 是任意 JSON（例如工具调用参数，≤ 32KB，加密存放）。同一个 Agent 同一个 `client_req_id` 重试返回原来的请求 |
+| 发给谁 | 默认是 Agent 的负责人；也可以指定会话里的人（1–20 个，必须是会话成员、不能是 Agent）。**负责人始终可以决定**（人工监督）。任何一个被指定的人决定即生效 |
+| 谁能看到 | 发起的 Agent、它的负责人、被指定的人（侧信道，不进主日志，不占 seq）；其他成员看不到 |
+| 决定 | `decide {request_id, decision, text?, choice?}`：`approve`、`reject`、`answer`（带 `text`）、`choose`（带 `choice`，必须是选项之一）。**只有第一个决定生效**，之后的返回 `conflict`；决定和请求类型不匹配 `bad_request`；不是负责人也不是被指定的人 `forbidden`；不存在 `not_found` |
+| 有效期 | `ttl_secs` 60 秒到 30 天，默认 24 小时；到期变成 `expired`（定时任务处理，到期后再决定返回 `conflict`）。Agent 可以 `cancel_request`；Agent 被移出会话时它的待决请求变成 `cancelled` |
+| 结果 | Agent 通过同步收到 `request.decided` / `request.expired` / `request.cancelled` 侧信道事件；也可以 `get_request {request_id, wait_secs?}` 查询，最多等 25 秒（MCP 工具同名，适合不常驻的 Agent） |
+| 待办收件箱 | `inbox`：跨会话列出等我决定的请求和我的 Agent 的待审批草稿（统一现有的草稿审批），按时间排序；新请求实时推给在线的被指定的人。离线的手机推送、邮件随 M8 |
+| 上限 | 每个 Agent 同时待决的请求最多 100 个，超出 `rate_limited` |
+| 审计 | 创建、决定、到期、取消各写一条审计 |
+| AI 标记（D36） | 批准草稿发出的消息仍是 Agent 发的（`sender_type: agent`），事件里记下批准人和是否被修改（`approval: {by, edited}`） |
+
 - **待办收件箱**：每个人有一个跨会话的待办列表，列出所有等自己决定的请求（参考 LangChain Agent Inbox，但是多人、持久的）。
 - **人不在线时**：通过推送、邮件或 Webhook 通知（参考 Auth0 的异步授权），在任意一台设备上处理。
 - 对外映射：MCP 服务（§9.5）把 `input_required` 转成这个请求；A2A 网关（§9.6）把 `input-required` / `auth-required` 转成它；Agent SDK 有对应的调用（[05 §6.5](05-operations.md)）。

@@ -25,6 +25,7 @@ backend_tests!(
     rate_limits_leave_no_trace,
     keys_and_positions_survive_a_restart,
     race_concurrent_updates_deliver_each_event_once,
+    agents_ask_people_to_decide,
 );
 
 const V: &str = "2026-07-28";
@@ -990,5 +991,118 @@ async fn race_concurrent_updates_deliver_each_event_once(db: TestDb) {
         for s in mine {
             assert_eq!(seen.get(&s), Some(&1), "round {round}: seq {s}");
         }
+    }
+}
+
+/// request_human, get_request (waiting) and cancel_request as tools.
+async fn agents_ask_people_to_decide(db: TestDb) {
+    let mut cfg = single(&db.url);
+    cfg.mcp.burst = 1000.0;
+    let m = serve(cfg).await;
+    let (alice, _, key, conv) = setup(&m).await;
+    let a = Conn::new(&m.hub, &alice);
+    let q = m
+        .ok(&key, "request_human", json!({"conv_id": conv, "kind": "approve", "title": "Deploy to prod?", "context": {"env": "prod"}}))
+        .await;
+    let id = q["request_id"].as_str().unwrap().to_string();
+    assert_eq!(q["state"], "pending");
+    // Retrying with the same client_req_id returns the same request.
+    let r1 = m
+        .ok(&key, "request_human", json!({"conv_id": conv, "kind": "answer", "title": "Which region?", "client_req_id": "region"}))
+        .await;
+    let r2 = m
+        .ok(&key, "request_human", json!({"conv_id": conv, "kind": "answer", "title": "Which region?", "client_req_id": "region"}))
+        .await;
+    assert_eq!(r1["request_id"], r2["request_id"]);
+    // Waiting ends when the owner decides.
+    let (hub, al, id2) = (m.hub.clone(), alice.clone(), id.clone());
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        Conn::new(&hub, &al)
+            .ok(json!({"op": "decide", "request_id": id2, "decision": "approve"}))
+            .await;
+    });
+    let r = m
+        .tool(
+            &key,
+            "get_request",
+            json!({"request_id": id, "wait_secs": 10}),
+        )
+        .await;
+    assert_eq!(r["content"][0]["text"], "Approved.", "{r}");
+    a.ok(json!({"op": "decide", "request_id": r1["request_id"], "decision": "answer", "text": "eu-west"}))
+        .await;
+    let r = m
+        .tool(&key, "get_request", json!({"request_id": r1["request_id"]}))
+        .await;
+    assert_eq!(r["content"][0]["text"], "Answer: eu-west");
+    let c = m
+        .ok(&key, "request_human", json!({"conv_id": conv, "kind": "choose", "title": "Colour?", "options": ["blue", "green"]}))
+        .await;
+    let r = m
+        .tool(
+            &key,
+            "get_request",
+            json!({"request_id": c["request_id"], "wait_secs": 0}),
+        )
+        .await;
+    assert_eq!(r["content"][0]["text"], "Still waiting for a decision.");
+    m.ok(
+        &key,
+        "cancel_request",
+        json!({"request_id": c["request_id"]}),
+    )
+    .await;
+    let r = m
+        .tool(&key, "get_request", json!({"request_id": c["request_id"]}))
+        .await;
+    assert_eq!(r["content"][0]["text"], "The request is cancelled.");
+    // Refusals are tool errors with the protocol's codes.
+    let bob = user(&m.hub, "bob", UserKind::Human, None).await;
+    let other = Conn::new(&m.hub, &bob).group(&[]).await;
+    for (tool, args, want) in [
+        (
+            "request_human",
+            json!({"conv_id": conv, "kind": "vote", "title": "x"}),
+            "bad_request",
+        ),
+        (
+            "request_human",
+            json!({"conv_id": conv, "kind": "choose", "title": "x", "options": "a,b"}),
+            "bad_request",
+        ),
+        (
+            "request_human",
+            json!({"conv_id": conv, "kind": "approve", "title": "x", "ttl_secs": "soon"}),
+            "bad_request",
+        ),
+        (
+            "request_human",
+            json!({"conv_id": conv, "kind": "approve", "title": "x", "assignees": ["bob"]}),
+            "bad_request",
+        ),
+        (
+            "request_human",
+            json!({"conv_id": other, "kind": "approve", "title": "x"}),
+            "forbidden",
+        ),
+        (
+            "request_human",
+            json!({"conv_id": conv, "kind": "approve"}),
+            "bad_request",
+        ),
+        ("get_request", json!({"request_id": "q_nope"}), "not_found"),
+        (
+            "get_request",
+            json!({"request_id": id, "wait_secs": 26}),
+            "bad_request",
+        ),
+        ("cancel_request", json!({"request_id": id}), "conflict"),
+    ] {
+        assert_eq!(
+            m.tool_err(&key, tool, args.clone()).await,
+            want,
+            "{tool} {args}"
+        );
     }
 }

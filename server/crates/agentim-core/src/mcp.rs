@@ -387,6 +387,9 @@ pub const TOOLS: &[&str] = &[
     "open_direct",
     "create_group",
     "add_member",
+    "request_human",
+    "get_request",
+    "cancel_request",
 ];
 
 fn tools() -> Value {
@@ -511,6 +514,54 @@ fn tools() -> Value {
                     "history": {"type": "integer", "minimum": 0, "description": "How many recent messages the new member sees (optional)."},
                 },
                 "required": ["conv_id", "user"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "request_human",
+            "title": "Ask a person to decide",
+            "description": "Asks your owner (or named members of the conversation) to approve or reject something, answer a question, or choose an option, before you act. Returns a request_id; call get_request with wait_secs to wait for the decision. Use it before anything irreversible or costly.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("Conversation the request belongs to."),
+                    "kind": {"type": "string", "enum": ["approve", "answer", "choose"]},
+                    "title": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "What is to be decided, in plain words."},
+                    "options": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 200}, "minItems": 2, "maxItems": 20, "description": "For kind=choose."},
+                    "context": {"description": "Details for the decider, e.g. the tool call arguments (JSON, at most 32KB)."},
+                    "assignees": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 20, "description": "People in the conversation who may decide (default: your owner)."},
+                    "ttl_secs": {"type": "integer", "minimum": 60, "maximum": 2592000, "description": "How long the request stays open (default one day)."},
+                    "client_req_id": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Your id for this request; repeat it on retries."},
+                },
+                "required": ["conv_id", "kind", "title"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+        },
+        {
+            "name": "get_request",
+            "title": "Get a decision",
+            "description": "The state and outcome of a request: pending, approved, rejected, answered, chosen, expired or cancelled. With wait_secs it waits up to that long for a decision.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "request_id": id("From request_human."),
+                    "wait_secs": {"type": "integer", "minimum": 0, "maximum": 25},
+                },
+                "required": ["request_id"],
+                "additionalProperties": false,
+            },
+            "annotations": ro,
+        },
+        {
+            "name": "cancel_request",
+            "title": "Cancel a request",
+            "description": "Withdraws a request you made that is still pending.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"request_id": id("From request_human.")},
+                "required": ["request_id"],
                 "additionalProperties": false,
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
@@ -716,6 +767,99 @@ async fn call_tool(
             }
             let v = run(m).await?;
             Ok(("Added.".into(), v))
+        }
+        "request_human" => {
+            only(
+                args,
+                &[
+                    "conv_id",
+                    "kind",
+                    "title",
+                    "options",
+                    "context",
+                    "assignees",
+                    "ttl_secs",
+                    "client_req_id",
+                ],
+            )?;
+            let cid = arg_str(args, "client_req_id", false)?
+                .unwrap_or_else(|| format!("mcp-{}", uuid::Uuid::new_v4().simple()));
+            let mut m = json!({
+                "op": "request_human",
+                "conv_id": need(args, "conv_id")?,
+                "kind": need(args, "kind")?,
+                "title": need(args, "title")?,
+                "client_req_id": cid,
+            });
+            for k in ["options", "assignees"] {
+                match args.get(k) {
+                    None | Some(Value::Null) => {}
+                    Some(Value::Array(a)) if a.iter().all(Value::is_string) => m[k] = json!(a),
+                    _ => {
+                        return Err(ApiError::new(
+                            "bad_request",
+                            format!("{k} must be a list of strings"),
+                        ));
+                    }
+                }
+            }
+            if let Some(c) = args.get("context").filter(|c| !c.is_null()) {
+                m["context"] = c.clone();
+            }
+            match args.get("ttl_secs") {
+                None | Some(Value::Null) => {}
+                Some(t) => {
+                    m["ttl_secs"] = json!(t.as_i64().ok_or_else(|| ApiError::new(
+                        "bad_request",
+                        "ttl_secs must be an integer"
+                    ))?)
+                }
+            }
+            let v = run(m).await?;
+            Ok((
+                format!(
+                    "Asked: request {} is {}. Call get_request with wait_secs to wait for the decision.",
+                    v["request_id"].as_str().unwrap_or(""),
+                    v["state"].as_str().unwrap_or("")
+                ),
+                v,
+            ))
+        }
+        "get_request" => {
+            only(args, &["request_id", "wait_secs"])?;
+            let mut m = json!({"op": "get_request", "request_id": need(args, "request_id")?});
+            match args.get("wait_secs") {
+                None | Some(Value::Null) => {}
+                Some(w) => {
+                    m["wait_secs"] = json!(w.as_i64().ok_or_else(|| ApiError::new(
+                        "bad_request",
+                        "wait_secs must be an integer"
+                    ))?)
+                }
+            }
+            let v = run(m).await?;
+            let state = v["state"].as_str().unwrap_or("");
+            let text = match state {
+                "pending" => "Still waiting for a decision.".to_string(),
+                "approved" => "Approved.".to_string(),
+                "rejected" => format!(
+                    "Rejected{}.",
+                    v["response"]["text"]
+                        .as_str()
+                        .map(|t| format!(": {t}"))
+                        .unwrap_or_default()
+                ),
+                "answered" => format!("Answer: {}", v["response"]["text"].as_str().unwrap_or("")),
+                "chosen" => format!("Chosen: {}", v["response"]["choice"].as_str().unwrap_or("")),
+                s => format!("The request is {s}."),
+            };
+            Ok((text, v))
+        }
+        "cancel_request" => {
+            only(args, &["request_id"])?;
+            let v = run(json!({"op": "cancel_request", "request_id": need(args, "request_id")?}))
+                .await?;
+            Ok(("Cancelled.".into(), v))
         }
         _ => Err(ApiError::new("bad_request", "unknown tool")),
     }

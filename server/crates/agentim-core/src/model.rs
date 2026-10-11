@@ -447,6 +447,45 @@ pub enum ClientMsg {
         agent_id: String,
         device_id: String,
     },
+    /// An agent asks a person to approve, answer or choose
+    /// (docs/03-ai-native.md §9.3.4).
+    RequestHuman {
+        conv_id: String,
+        kind: String,
+        title: String,
+        #[serde(default)]
+        options: Option<Vec<String>>,
+        #[serde(default)]
+        context: Option<Value>,
+        #[serde(default)]
+        assignees: Option<Vec<String>>,
+        #[serde(default)]
+        ttl_secs: Option<i64>,
+        client_req_id: String,
+    },
+    /// A person decides a request: approve, reject, answer or choose.
+    Decide {
+        request_id: String,
+        decision: String,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        choice: Option<String>,
+    },
+    /// The asking agent withdraws a pending request.
+    CancelRequest {
+        request_id: String,
+    },
+    /// A request and its outcome; waits up to `wait_secs` (≤ 25) for a
+    /// decision.
+    GetRequest {
+        request_id: String,
+        #[serde(default)]
+        wait_secs: Option<i64>,
+    },
+    /// What waits for my decision across conversations: requests and my
+    /// agents' drafts.
+    Inbox,
 }
 
 impl ClientMsg {
@@ -503,6 +542,11 @@ impl ClientMsg {
             ClientMsg::ListAgents => "list_agents",
             ClientMsg::AgentKey { .. } => "agent_key",
             ClientMsg::RevokeAgentKey { .. } => "revoke_agent_key",
+            ClientMsg::RequestHuman { .. } => "request_human",
+            ClientMsg::Decide { .. } => "decide",
+            ClientMsg::CancelRequest { .. } => "cancel_request",
+            ClientMsg::GetRequest { .. } => "get_request",
+            ClientMsg::Inbox => "inbox",
         }
     }
 
@@ -516,6 +560,7 @@ impl ClientMsg {
             | ClientMsg::TransferOwner { conv_id, .. }
             | ClientMsg::Dissolve { conv_id }
             | ClientMsg::Send { conv_id, .. }
+            | ClientMsg::RequestHuman { conv_id, .. }
             | ClientMsg::Signal { conv_id, .. }
             | ClientMsg::UpdateConv { conv_id, .. }
             | ClientMsg::Pull { conv_id, .. }

@@ -494,6 +494,40 @@ pub const TABLES: &[Table] = &[
         indexes: &[("device_cursors_conv_user", &["conv_id", "user_id"], false)],
         conv_key: Some("conv_id"),
     },
+    // v3: requests for a human decision (docs/03-ai-native.md §9.3.4).
+    Table {
+        name: "requests",
+        cols: &[
+            c("request_id", Id),
+            c("conv_id", Id),
+            c("agent_id", Id),
+            c("client_req_id", Name),
+            c("kind", Id),
+            c("title", Text),
+            n("options", Text),
+            n("context", Text),
+            c("state", Id),
+            c("created_at", Big),
+            c("expires_at", Big),
+            n("decided_by", Id),
+            n("decided_at", Big),
+            n("response", Text),
+        ],
+        pk: &["request_id"],
+        indexes: &[
+            ("requests_client", &["agent_id", "client_req_id"], true),
+            ("requests_expiry", &["state", "expires_at"], false),
+            ("requests_conv", &["conv_id"], false),
+        ],
+        conv_key: Some("conv_id"),
+    },
+    Table {
+        name: "request_assignees",
+        cols: &[c("request_id", Id), c("user_id", Id), c("conv_id", Id)],
+        pk: &["request_id", "user_id"],
+        indexes: &[("request_assignees_user", &["user_id"], false)],
+        conv_key: Some("conv_id"),
+    },
     Table {
         name: "drafts",
         cols: &[
@@ -692,7 +726,7 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 3,
         compat: 1,
-        about: "sync-only clients: device cursors, member history start and mute, user settings",
+        about: "sync-only clients: device cursors, member history start and mute, user settings; requests for a human decision",
         steps: &[
             Step::AddColumn {
                 table: "users",
