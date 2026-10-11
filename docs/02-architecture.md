@@ -107,7 +107,7 @@ Message {
 | 存储兼容 | 数据库表结构有版本号，启动时自动迁移；新版本服务端能读老版本写的数据；集群阶段支持滚动升级（新旧节点同时在线时读写都兼容） |
 | 文档与测试 | 协议用 AsyncAPI（WebSocket 版的 OpenAPI）描述，并生成文档；CI 里保留**上一个版本的 SDK 和场景测试**，每次都用它们测新服务端，确认老客户端不被破坏 |
 
-**已实现**（`server/src/protocol.rs`，测试见 `tests/protocol.rs`）：
+**已实现**（`server/crates/agentim-core/src/protocol.rs`，测试见 `tests/protocol.rs`）：
 
 | 环节 | 行为 |
 |---|---|

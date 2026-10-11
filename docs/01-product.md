@@ -137,19 +137,19 @@
 
 数据上限：单条消息 ≤ 64KB；单条流式消息 ≤ 256KB、最长 10 分钟；每个 Agent 在每个会话内最多 2 路并发流。
 
-## 6. 产品线：AgentLiteIM 和 AgentIM（方案待确认：D54–D58）
+## 6. 产品线：AgentIM Lite 和 AgentIM（2026-10-11 已确认）
 
-两个产品，**同一套底层**，AgentLiteIM 是 AgentIM 的子集：
+两个产品，**同一套底层**，AgentIM Lite 是 AgentIM 的子集：
 
-| | **AgentLiteIM** | **AgentIM** |
+| | **AgentIM Lite** | **AgentIM** |
 |---|---|---|
-| 一句话 | 任何框架写的 Agent 都能接进来的、持久、有序、多方、可治理的通信和记录层。秒迁移，随时销毁。**只做 IM** | AgentLiteIM 的全部 + 围绕 Agent 的平台能力（模型网关、生态桥接、管理系统、企业合规） |
+| 一句话 | 任何框架写的 Agent 都能接进来的、持久、有序、多方、可治理的通信和记录层。秒迁移，随时销毁。**只做 IM** | AgentIM Lite 的全部 + 围绕 Agent 的平台能力（模型网关、生态桥接、管理系统、企业合规） |
 | 给谁 | 只想要一个可靠的"人和 Agent、Agent 和 Agent 的通信层"的开发者和团队 | 要一站式平台的团队和企业 |
 | 好处 | 小、清楚、好讲、好部署；作为通信和记录层可以嵌到任何架构里 | 不用自己拼装网关、渠道、管理后台 |
 
 **划分原则**：属于"通信和记录"本身的，进 Lite；围绕 Agent 的平台和生态能力，只在 AgentIM。
 
-| 能力 | AgentLiteIM | AgentIM |
+| 能力 | AgentIM Lite | AgentIM |
 |---|---|---|
 | 消息核心：单聊、群、成员生命周期、有序不丢的会话日志、编辑撤回、自定义消息、信号、流式 | ✅ | ✅ |
 | 同步协议、多设备、已读未读、免打扰（[08](08-sync-and-client.md)）；文件和图片（M5） | ✅ | ✅ |
@@ -169,10 +169,10 @@
 
 **同一套底层，迁移就是换程序**：
 
-- 一个代码仓库、一个 Rust 核心，编译出两个程序：`agentliteim` 和 `agentim`（AgentIM 多编译进平台模块）。不是两份代码，不会越走越远。
+- 一个代码仓库、一个 Rust 核心，编译出两个程序：`agentim-lite` 和 `agentim`（AgentIM 多编译进平台模块）。不是两份代码，不会越走越远。代码结构（已实现）：`server/crates/agentim-core`（核心库：消息、同步、Agent、治理、存储）、`server/crates/agentim-lite` 和 `server/crates/agentim`（两个程序）；以后的平台模块（模型网关、渠道桥等）各自是独立的 crate，只被 `agentim` 引用。
 - **协议、数据库表结构、配置格式完全一样**（AgentIM 的配置是 Lite 的超集）。从 Lite 升级到 AgentIM：停服务、换程序（或换 Docker 镜像）、启动，**数据、密钥、令牌、Agent 都不用迁移**。反过来也可以：AgentIM 独有的数据原样留在库里，只是对应功能不可用，启动时提示。
 - 连接时服务端声明自己是哪个产品、有哪些功能（[02 §2.5](02-architecture.md) 的功能声明），SDK 是同一套，按声明启用功能。
-- **同一套测试**：Lite 的全部测试在两个程序上都跑，CI 保证 Lite 的行为在 AgentIM 里完全一样；AgentIM 另有自己模块的测试。
+- **同一套测试**（已实现）：整套测试用 `AGENTIM_TEST_EDITION=lite` 再跑一遍（三种数据库都跑），崩溃测试和 SDK 冒烟测试在两个程序上都跑；Lite 遇到需要 AgentIM 的配置（多个数据库）会拒绝启动并说明原因；握手时服务端报出自己是哪个产品。AgentIM 另有自己模块的测试。
 
 ## 7. 版本划分（AgentIM 内部的社区版和企业版）
 

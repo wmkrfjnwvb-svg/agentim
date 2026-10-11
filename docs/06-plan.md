@@ -50,16 +50,6 @@ Agent 通信与 Agent 历史的方案见 [09](09-agent-communication.md)（调�
 | D51 | 外部护栏分类器出错时 | 可按钩子设置；默认：Agent 发出的内容出错时拒绝（安全优先），人发的内容出错时放行（IM 不能卡住人说话），都写审计 |
 | D52 | 不做的清单 | 按 [10 §4](10-agent-ecosystem.md)：Agent 循环、记忆检索、沙箱、支付、工作流引擎、追踪界面、IM 连接器等都不做，只做适配 |
 
-产品拆分（[01 §6](01-product.md)），你 2026-10-11 提出：
-
-| # | 事项 | 我的建议 |
-|---|---|---|
-| D54 | 名字 | 用你定的 **AgentLiteIM**；备选 "AgentIM Lite"（一看就知道是 AgentIM 的子集，品牌只有一个，搜索和推广更集中）。二选一 |
-| D55 | 代码怎么拆 | **一个仓库、一个核心，编译出两个程序**；不拆成两个仓库（两份代码一定会越走越远，"Lite 是子集、换程序就能迁移"就保证不了） |
-| D56 | Lite 的边界 | 按 [01 §6](01-product.md) 的表：通信和记录本身（含文件、Agent 接入、Agent 之间通信、审批和请人决定、秒迁移和销毁、开放 API 和 Webhook）进 Lite；模型网关、生态桥接、工具网关、管理系统、多库隔离、企业身份、合规工具、OTel、官方客户端只在 AgentIM。需要你特别确认：**多库隔离（组织单元）放 AgentIM**（现有功能，Lite 程序里不编译进去）、**文件放 Lite** |
-| D57 | 许可和收费 | AgentLiteIM 完全开源（Apache 2.0）、免费；AgentIM 保持原来的社区版（开源）+ 企业版（商业授权）（§7） |
-| D58 | 开发顺序 | M6 先做属于 Lite 的部分（Agent 接入、请人决定和审批、Agent 之间通信、秒迁移和销毁、AI 标记），**先发布 AgentLiteIM**；再做 AgentIM 的平台部分（模型网关、渠道桥）。冲突：ChatKit 桥（赶 2026-11-30）属于 AgentIM，如果要赶这个窗口，它要插在 Agent 接入之后马上做 |
-
 ### 1.2 已确认
 
 | # | 事项 | 结果 |
@@ -89,6 +79,7 @@ Agent 通信与 Agent 历史的方案见 [09](09-agent-communication.md)（调�
 | D23 | 开放 API 里用户 ID 由开发者决定 | 支持 |
 | D24 | 开放 API 认证 | Bearer + HTTPS；HMAC 签名放 MVP 2 |
 | D25 | 开放 API 的身份 | 只有"以用户身份"和"以系统身份"两种 |
+| 产品线 | AgentIM Lite 和 AgentIM（2026-10-11） | 名字 **AgentIM Lite**；一个仓库、一个核心、两个程序（已拆成 crate）；Lite 的边界按 [01 §6](01-product.md)（组织单元 / 多库只在 AgentIM，文件属于 Lite）；Lite 完全开源免费，AgentIM 保持社区版 + 企业版；**先做完 AgentIM Lite 再做 AgentIM**；文件（M5）是重点，在当前这批做完之后做 |
 | 定位 | AgentIM 的定位（2026-10-11） | **任何框架写的 Agent 都能接进来的、持久、有序、多方、可治理的通信和记录层。秒迁移，随时销毁。**（[01 §1](01-product.md)） |
 | D48 | 集成的优先级 | 按 [10 §2](10-agent-ecosystem.md)：MCP 服务、人工介入桥、Agent SDK、会话存储适配器、A2A、渠道适配器（**Vercel Chat SDK 适配器、Agno 接口、自托管 ChatKit 桥，赶 OpenAI Agent Builder 2026-11-30 停用的窗口**）、OTel、AG-UI |
 | D49 | 模型网关 | **要做**：内置网关（OpenAI / Anthropic 兼容，Agent 不拿厂商密钥，预算、限流、区域白名单、计量、审计在网关执行），并为以后"服务端托管 Agent / 模型消息传递"留好接口（[10 §6](10-agent-ecosystem.md)） |

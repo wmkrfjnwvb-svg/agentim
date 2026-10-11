@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BIN=./target/release/agentim
+BIN=${BIN:-./target/release/agentim}
 LOAD=./target/release/examples/loadtest
 SCALE=./target/release/examples/scale
 OUT=bench/out

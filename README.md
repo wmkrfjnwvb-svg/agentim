@@ -21,7 +21,8 @@ Status: **single-node edition**, under active development towards an MVP. See th
 
 ```bash
 cd server
-cargo run --release -- --demo          # open http://127.0.0.1:8080 and log in as alice, bob or carol
+cargo run --release --bin agentim-lite -- --demo   # AgentIM Lite; open http://127.0.0.1:8080 and log in as alice, bob or carol
+cargo run --release --bin agentim -- --demo        # AgentIM (Lite plus the platform modules)
 ```
 
 Open API: `agentim api-key create --name backend --scopes users:write,tokens:issue,messages:write` prints a key; see [docs/07-open-api.md](docs/07-open-api.md).

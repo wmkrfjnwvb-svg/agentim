@@ -6,6 +6,18 @@ version = 4
 name = "agentim"
 version = "0.1.0"
 dependencies = [
+ "agentim-core",
+ "futures-util",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+]
+
+[[package]]
+name = "agentim-core"
+version = "0.1.0"
+dependencies = [
  "argon2",
  "axum",
  "base64 0.22.1",
@@ -33,6 +45,18 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "agentim-lite"
+version = "0.1.0"
+dependencies = [
+ "agentim-core",
+ "futures-util",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
 ]
 
 [[package]]
