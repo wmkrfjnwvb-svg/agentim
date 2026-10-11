@@ -198,11 +198,12 @@ async fn expired_and_revoked_tokens_stop_working(db: TestDb) {
         .await
         .unwrap();
     let (short, _) = hub
-        .issue_token(&alice.id, None, None, Some(50), "test")
+        .issue_token(&alice.id, None, None, Some(1000), "test")
         .await
         .unwrap();
+    // Long enough for a slow CI machine to check it before it expires.
     assert!(hub.authenticate(&short).is_some());
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
     assert!(hub.authenticate(&short).is_none(), "expired");
     assert!(hub.authenticate("atk_not_a_token").is_none());
     assert!(hub.authenticate("").is_none());
