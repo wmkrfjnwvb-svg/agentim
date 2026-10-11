@@ -14,7 +14,7 @@ const NOTE_MAX: usize = 500;
 impl Hub {
     /// Conversations the user is a member of (the control database's
     /// member index).
-    async fn convs_of(&self, user_id: &str) -> ApiResult<Vec<String>> {
+    pub(super) async fn convs_of(&self, user_id: &str) -> ApiResult<Vec<String>> {
         let ids = vec![user_id.to_string()];
         let pairs = self
             .read(self.control(), move |db| {

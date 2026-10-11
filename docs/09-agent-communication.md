@@ -246,10 +246,12 @@
 | 集群 | 停下和销毁的状态在控制库里，启动时载入；集群阶段随控制库的状态一起复制 |
 | 顺带修正 | 会话解散时，内存里缓存的数据密钥也一并清掉（以前只清了"当前密钥"的指针，重启前仍能解开旧内容） |
 
-### 11.4 L5d：秒迁移、导出和导入
+### 11.4 L5d：秒迁移、导出和导入（已实现）
 
 | 方面 | 做法 |
 |---|---|
-| 同一个服务器上换环境 | 已有：`agent_key {revoke_others}` 签发新密钥。新密钥是新设备，按新设备规则同步最近的消息；完整的上下文用 `context` / `history`，状态用 `state_get`，都在服务端 |
-| 导出 `agentim agent export NAME [--with-conversations]` | 负责人在服务器上执行（这就是负责人的批准）。JSON 文件：清单（格式版本、来源服务器、Agent ID 和名字、导出时间、内容的 SHA-256）、资料、检查点（最新版本）、摘要；加 `--with-conversations` 时还有它可见的会话内容（带原 seq、发送者名字和类型），**只包含负责人自己也是成员的会话**（D46：不向负责人披露他本来看不到的内容）。凭据、密钥、授权永远不导出。写审计 |
-| 导入 `agentim agent import FILE --owner NAME [--name NEW]` | 新建一个 Agent（负责人是指定的人，名字可以改），恢复检查点和摘要的文字（作为 `archive/summaries`），会话内容写成只读的 `archive/conv/...` 检查点（不推送、不算未读、不成为成员）；哈希不对拒绝导入。返回新密钥 |
+| 同一个服务器上换环境 | `agent_key {revoke_others}` 签发新密钥、同一次写入吊销旧的。新密钥是新设备，按新设备规则同步最近的消息；完整的上下文用 `context` / `history`，状态用 `state_get`，都在服务端，新环境接着写（版本号接得上） |
+| 导出 `agentim agent export --name NAME [--with-conversations] [--out FILE]` | 负责人在服务器上执行（这就是负责人的批准）。JSON 包（格式 `agentim.agent/1`）：来源服务器和导出时间、Agent 的 ID 和名字、负责人、检查点（每个键的当前版本）、摘要（带会话标题）；加 `--with-conversations` 时还有它看得到的消息（按它的接收方式过滤，带原 seq、发送者名字和类型），**只包含负责人自己也是成员的会话**（D46：不向负责人披露他本来看不到的内容）。末尾是整个包的 SHA-256。密钥、令牌、授权永远不导出。已销毁的 Agent 不能导出。写审计 |
+| 导入 `agentim agent import FILE --owner NAME [--name NEW]` | 先全部检查再创建：格式、哈希（被改过 `bad_request`）、名字规则、每个键和值的限制、键数上限（`rate_limited`）；然后按 Agent 的规则新建（名字已占用、负责人名额已满都是 `conflict`），检查点原样写入（版本从 1 开始），摘要写成只读的 `archive/summaries/N`，会话写成 `archive/conv/<原会话 ID>/meta` 和按 900KB 分块的 `archive/conv/<原会话 ID>/N`（每块是事件数组）；这些不推送、不算未读，Agent 不成为任何会话的成员。中途写入失败时把刚建的 Agent 销毁，不留半个。返回新密钥（只显示一次）。写审计 |
+| 入口 | 只有 CLI（导出是只读的，导入和 `agent create` 一样可以在服务端运行时做）。Letta `.af` 适配以后再做 |
+

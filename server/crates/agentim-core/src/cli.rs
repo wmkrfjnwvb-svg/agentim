@@ -103,6 +103,30 @@ enum AgentCmd {
         #[arg(long)]
         owner: String,
     },
+    /// Writes an agent package (JSON) to move the agent to another server
+    /// (docs/09 §11.4): profile, checkpoints, summaries; never keys.
+    Export {
+        #[arg(long)]
+        name: String,
+        /// Also the conversation content the agent sees, from the
+        /// conversations its owner is in too.
+        #[arg(long)]
+        with_conversations: bool,
+        /// File to write (default: standard output).
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Creates an agent from a package and prints its new key once.
+    Import {
+        /// The package file.
+        file: String,
+        /// The person responsible for the new agent.
+        #[arg(long)]
+        owner: String,
+        /// A new name (default: the one in the package).
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -367,6 +391,54 @@ pub async fn run(edition: Edition) {
                 Ok(o) => hub.list_agents(&o).await,
                 Err(e) => Err(e),
             },
+            AgentCmd::Export {
+                name,
+                with_conversations,
+                out,
+            } => {
+                let agent = hub
+                    .user_by_name(name)
+                    .filter(|u| u.kind == crate::model::UserKind::Agent);
+                let res = match agent.and_then(|a| {
+                    a.owner_id
+                        .clone()
+                        .and_then(|o| hub.user(&o))
+                        .map(|o| (a, o))
+                }) {
+                    Some((a, o)) => hub.export_agent(&o, &a.id, *with_conversations).await,
+                    None => Err(crate::model::ApiError::new(
+                        "not_found",
+                        format!("no agent named {name}"),
+                    )),
+                };
+                match (res, out) {
+                    (Ok(pkg), Some(path)) => std::fs::write(path, pkg.to_string())
+                        .map(|_| serde_json::json!({"written": path, "sha256": pkg["sha256"]}))
+                        .map_err(|e| crate::model::ApiError::new("io", e.to_string())),
+                    (r, None) => r,
+                    (Err(e), _) => Err(e),
+                }
+            }
+            AgentCmd::Import { file, owner, name } => {
+                let pkg = std::fs::read_to_string(file)
+                    .map_err(|e| crate::model::ApiError::new("io", e.to_string()))
+                    .and_then(|t| {
+                        serde_json::from_str::<serde_json::Value>(&t)
+                            .map_err(|e| crate::model::ApiError::new("bad_request", e.to_string()))
+                    });
+                match (pkg, owner_of(owner)) {
+                    (Ok(p), Ok(o)) => {
+                        hub.import_agent(&o, &p, name.as_deref())
+                            .await
+                            .map(|mut v| {
+                                v["note"] =
+                                    serde_json::json!("store the key now; it is not shown again");
+                                v
+                            })
+                    }
+                    (Err(e), _) | (_, Err(e)) => Err(e),
+                }
+            }
         };
         match out {
             Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),

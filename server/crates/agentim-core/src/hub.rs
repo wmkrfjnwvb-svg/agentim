@@ -24,6 +24,7 @@ use crate::shard::Shard;
 type Bucket = (f64, Instant);
 
 mod agents;
+mod export;
 mod history;
 mod lifecycle;
 mod requests;

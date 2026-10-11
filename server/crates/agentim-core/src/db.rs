@@ -3369,6 +3369,29 @@ impl Db<'_> {
         Ok(id)
     }
 
+    /// All of an agent's summaries of a conversation, oldest first.
+    pub async fn summaries_of(&mut self, conv_id: &str, agent_id: &str) -> ApiResult<Vec<Value>> {
+        let rows = sqlx::query(self.d.q(
+            "SELECT summary_id, from_seq, to_seq, text, created_at FROM summaries WHERE conv_id = ? AND agent_id = ? ORDER BY created_at, summary_id",
+        ))
+        .bind(conv_id)
+        .bind(agent_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        self.preload(&rows, &["text"]).await?;
+        let mut out = vec![];
+        for r in &rows {
+            let id: String = r.try_get(0)?;
+            out.push(json!({
+                "from_seq": r.try_get::<i64, _>(1)?,
+                "to_seq": r.try_get::<i64, _>(2)?,
+                "text": dec(self.cx, r, "text", &format!("summaries.text:{id}"))?,
+                "created_at": r.try_get::<i64, _>(4)?,
+            }));
+        }
+        Ok(out)
+    }
+
     /// The agent's summary of a conversation that reaches furthest.
     pub async fn latest_summary(
         &mut self,
