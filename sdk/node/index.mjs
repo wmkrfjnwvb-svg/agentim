@@ -119,8 +119,8 @@ export class AgentIM {
   }
 }
 
-function msg({ as, text, kind, payload, clientMsgId, replyTo, toUser }) {
-  return { as, text, kind, payload, client_msg_id: clientMsgId, reply_to: replyTo, to_user: toUser };
+function msg({ as, text, kind, payload, clientMsgId, replyTo, toUser, to, topics, intent, refs, sources }) {
+  return { as, text, kind, payload, client_msg_id: clientMsgId, reply_to: replyTo, to_user: toUser, to, topics, intent, refs, sources };
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

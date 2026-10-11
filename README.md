@@ -27,7 +27,7 @@ cargo run --release --bin agentim -- --demo        # AgentIM (Lite plus the plat
 
 Open API: `agentim api-key create --name backend --scopes users:write,tokens:issue,messages:write` prints a key; see [docs/07-open-api.md](docs/07-open-api.md).
 
-Connect an agent: `agentim agent create --name helper --owner alice --url http://127.0.0.1:8080` prints the agent's key once, with an MCP config block for any MCP client (Claude, Cursor, OpenAI Agents SDK; endpoint `POST /mcp`) and the WebSocket address. People can do the same in the app (`create_agent`); see [docs/10-agent-ecosystem.md §5.1](docs/10-agent-ecosystem.md).
+Connect an agent: `agentim agent create --name helper --owner alice --url http://127.0.0.1:8080` prints the agent's key once, with an MCP config block for any MCP client (Claude, Cursor, OpenAI Agents SDK; endpoint `POST /mcp`) and the WebSocket address. People can do the same in the app (`create_agent`); see [docs/10-agent-ecosystem.md §5.1](docs/10-agent-ecosystem.md). Agent SDKs for Node and Python (no dependencies): [sdk/README.md](sdk/README.md#agent-sdks).
 
 Configuration (databases, organisation units, writer settings, webhooks, TLS, accounts): [`server/agentim.example.toml`](server/agentim.example.toml). More commands: [`server/README.md`](server/README.md).
 

@@ -876,6 +876,35 @@ async fn messages_as_users_and_the_system(db: TestDb) {
         (&v["duplicate"], &v["msg_id"]),
         (&json!(true), &json!(msg_id))
     );
+    // The routing envelope and sources (docs/09 §10.1, docs/03 §9.6.1.1).
+    let (s, v) = api
+        .call(
+            "POST",
+            &msgs,
+            Some(json!({"as": "alice", "text": "please review", "to": ["bob"], "intent": "request", "topics": ["review"], "refs": ["doc://1"], "sources": [{"title": "Spec", "url": "https://example.com/spec"}]})),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let pushed = b.drain();
+    let env = pushed
+        .iter()
+        .find(|f| f["event"]["msg"]["content"] == "please review")
+        .unwrap()["event"]["msg"]["envelope"]
+        .clone();
+    assert_eq!(
+        env,
+        json!({"to": [bob.id], "intent": "request", "topics": ["review"], "refs": ["doc://1"], "sources": [{"title": "Spec", "url": "https://example.com/spec"}]})
+    );
+    for bad in [
+        json!({"as": "alice", "text": "x", "intent": "shout"}),
+        json!({"as": "alice", "text": "x", "to": ["eve"]}),
+        json!({"as": "alice", "text": "x", "sources": [{"title": "t", "url": "ftp://x"}]}),
+        json!({"as": "alice", "text": "x", "to": "bob"}),
+    ] {
+        let (s, v) = api.call("POST", &msgs, Some(bad.clone())).await;
+        assert_eq!(s, 400, "{bad}: {v}");
+    }
+    assert!(b.drain().is_empty(), "refused sends push nothing");
     // Custom kinds and targeted messages go through too.
     api.ok("POST", &msgs, Some(json!({"as": "alice", "text": "[order]", "kind": "com.acme.order", "payload": {"id": 1}}))).await;
     let v = api

@@ -132,9 +132,11 @@ class AgentIM:
 
     # ---- messages
     @staticmethod
-    def _msg(as_, text, kind=None, payload=None, client_msg_id=None, reply_to=None, to_user=None):
+    def _msg(as_, text, kind=None, payload=None, client_msg_id=None, reply_to=None, to_user=None,
+             to=None, topics=None, intent=None, refs=None, sources=None):
         return {"as": as_, "text": text, "kind": kind, "payload": payload,
-                "client_msg_id": client_msg_id, "reply_to": reply_to, "to_user": to_user}
+                "client_msg_id": client_msg_id, "reply_to": reply_to, "to_user": to_user,
+                "to": to, "topics": topics, "intent": intent, "refs": refs, "sources": sources}
 
     def send_message(self, conv_id, as_, text, **kw):
         return self.request("POST", f"/v1/conversations/{_q(conv_id)}/messages", self._msg(as_, text, **kw))

@@ -240,6 +240,60 @@
           },
           "to_user": {
             "type": "string"
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Members this asks to act (names or ids, 1..20); agents named here are woken"
+          },
+          "topics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "1..10 topics (a-z 0-9 . _ -)"
+          },
+          "intent": {
+            "type": "string",
+            "enum": [
+              "request",
+              "proposal",
+              "answer",
+              "status",
+              "done"
+            ]
+          },
+          "refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "1..20 references of up to 256 bytes"
+          },
+          "sources": {
+            "type": "array",
+            "description": "1..20 sources the message is based on",
+            "items": {
+              "type": "object",
+              "required": [
+                "title",
+                "url"
+              ],
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "excerpt": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       },

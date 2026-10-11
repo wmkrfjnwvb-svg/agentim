@@ -16,6 +16,13 @@ export interface Message {
   clientMsgId?: string;
   replyTo?: string;
   toUser?: string;
+  /** Routing envelope (docs/09 §10.1): members this asks to act, topics, intent, references. */
+  to?: string[];
+  topics?: string[];
+  intent?: "request" | "proposal" | "answer" | "status" | "done";
+  refs?: string[];
+  /** Sources the message is based on. */
+  sources?: { title: string; url: string; excerpt?: string }[];
 }
 
 export interface UserAttrs {

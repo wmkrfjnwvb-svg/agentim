@@ -179,3 +179,27 @@ jobs:
       - run: (cd ../sdk/go && gofmt -l . | (! grep .) && go vet ./...)
       - run: bash ../sdk/smoke.sh server/target/debug/agentim
       - run: bash ../sdk/smoke.sh server/target/debug/agentim-lite
+
+  agent-sdk:
+    name: agent SDK end-to-end (${{ matrix.os }}, Node and Python)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: cargo build --bins
+      - run: PYTHON=python bash ../sdk/agent_e2e.sh server/target/debug/agentim
+      - run: PYTHON=python bash ../sdk/agent_e2e.sh server/target/debug/agentim-lite

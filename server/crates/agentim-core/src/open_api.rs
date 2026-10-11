@@ -1194,6 +1194,12 @@ struct SendReq {
     client_msg_id: Option<String>,
     reply_to: Option<String>,
     to_user: Option<String>,
+    /// Routing envelope and sources (docs/09 §10.1, docs/03 §9.6.1.1).
+    to: Option<Vec<String>>,
+    topics: Option<Vec<String>>,
+    intent: Option<String>,
+    refs: Option<Vec<String>>,
+    sources: Option<Vec<Value>>,
 }
 
 /// The request's `client_msg_id`, else one derived from the Idempotency-Key
@@ -1238,11 +1244,11 @@ async fn send_as(
                 causation_id: None,
                 on_behalf_of: None,
                 to_user,
-                to: None,
-                topics: None,
-                intent: None,
-                refs: None,
-                sources: None,
+                to: req.to,
+                topics: req.topics,
+                intent: req.intent,
+                refs: req.refs,
+                sources: req.sources,
             },
         )
         .await?;
@@ -1366,6 +1372,11 @@ async fn batch_send(
         client_msg_id: req.client_msg_id,
         reply_to: None,
         to_user: None,
+        to: None,
+        topics: None,
+        intent: None,
+        refs: None,
+        sources: None,
     };
     let root = client_msg_id(&base, &k, idem.as_ref().map(|e| &e.0))?;
     let mut results = vec![];

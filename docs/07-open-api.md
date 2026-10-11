@@ -71,7 +71,7 @@
 | | `GET`、`PATCH`、`DELETE /v1/conversations/{id}` | 读取、修改资料、解散 |
 | | `POST /v1/conversations/{id}/members`、`DELETE …/members/{user}`、`PATCH …/members/{user}` | 批量拉人、移除、改角色；转让群主 |
 | | `GET /v1/users/{id}/conversations` | 某个用户的会话列表 |
-| 消息 | `POST /v1/conversations/{id}/messages` | 在会话里发消息（以用户或系统身份） |
+| 消息 | `POST /v1/conversations/{id}/messages` | 在会话里发消息（以用户或系统身份）；可带路由信封 `to`、`topics`、`intent`、`refs` 和来源 `sources`（[09 §10.1](09-agent-communication.md)、[03 §9.6.1.1](03-ai-native.md)） |
 | | `POST /v1/users/{id}/messages` | **"给某人发消息"**：没有单聊就自动建一个 |
 | | `POST /v1/messages:batch-send` | 同一个发送者发给多人（一次最多 500 人），逐人返回结果 |
 | | `PATCH /v1/messages/{id}`、`POST /v1/messages/{id}:recall` | 编辑、撤回 |

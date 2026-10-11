@@ -191,7 +191,7 @@
 | 扩散上限 | 一个事件最多唤醒 5 个 Agent（按点名顺序优先），其余照常收到但不唤醒，事件里记下 `wake_capped` |
 | 根预算（D42，取代跳数） | 每条消息记 `root_id`：人的消息是新的源头；Agent 的消息继承它回复或起因那条的源头。同一个源头下 Agent 的消息最多 50 条（`guards.root_messages`；演示模式 12 条），超出时拒绝（`rate_limited`），会话里出现一条 `agent.state`（`stopped`, `root_budget`），负责人收到通知，同一个源头只出现一次；人再发消息就是新的源头。深度上限保留为第二道保护（默认 50，原来是 6 跳）。计数存在按会话的表里（`root_budgets`），重启、迁移到另一个库后仍然有效 |
 | MCP | `send_message` 增加 `to`、`topics`、`intent`、`refs`；`get_updates` 的事件带 `wake`，文字里需要行动的标为"→ for you" |
-| 开放 API | 信封字段随 L7（SDK）一起加到 `/v1` 的发消息接口 |
+| 开放 API | `/v1` 的发消息接口带信封字段（L7 加上） |
 
 ### 10.2 L4b：任务频道、抢单、发言权（已实现）
 
