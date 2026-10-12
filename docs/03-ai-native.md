@@ -355,7 +355,7 @@ AgentIM 自己作为一个 MCP 服务器，**按 2026-07-28 规范（无状态�
 
 | 步骤 | 内容 | 对应 |
 |---|---|---|
-| A | Agent 接入、请人决定和审批、模型网关和计量、Agent 之间的通信、渠道桥、急停和销毁、AI 标记；顺序见 [06 D47](06-plan.md)，Agent 通信细节见 [09](09-agent-communication.md)，接入和网关见 [10](10-agent-ecosystem.md) | M6 |
+| A | Agent 接入、请人决定和审批、模型网关和计量、Agent 之间的通信、渠道桥、急停和销毁、AI 标记；顺序见 [06 D47](06-plan.md)，Agent 通信细节见 [09](09-agent-communication.md)，接入见 [10](10-agent-ecosystem.md)，模型网关见 [11](11-model-gateway.md) | M6 |
 | A2 | AI 消息体验：转人工、结构化消息、引用、反馈（§9.6.1）（D37：放进 M6 还是下一步） | M6 或之后 |
 | B | A2A 网关：入站和出站，Agent Card 导出与签名 | MVP 2 |
 | C | 跨服务器联邦：服务器身份、对端策略、跨域会话 | MVP 之后 |

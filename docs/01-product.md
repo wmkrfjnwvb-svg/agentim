@@ -24,7 +24,7 @@
 
 不做的事情：
 
-- 不在 IM 内部做模型推理。Agent 作为特殊客户端接入，IM 负责传输、权限、计量和治理；IM 内置**模型网关**，代 Agent 调用模型厂商或客户自己的模型服务（[10 §5](10-agent-ecosystem.md)），以后还可以由服务端直接托管 Agent。
+- 不在 IM 内部做模型推理。Agent 作为特殊客户端接入，IM 负责传输、权限、计量和治理；IM 内置**模型网关**，代 Agent 调用模型厂商或客户自己的模型服务（[11](11-model-gateway.md)），以后还可以由服务端直接托管 Agent。
 - 不保证全局消息顺序，只保证会话内有序。
 - 第一优先级不是终端聊天 App。先交付服务端、协议、SDK 和参考客户端（Web，之后是 Windows 桌面端）。
 
@@ -143,7 +143,7 @@
 
 | | **AgentIM Lite** | **AgentIM** |
 |---|---|---|
-| 一句话 | 任何框架写的 Agent 都能接进来的、持久、有序、多方、可治理的通信和记录层。秒迁移，随时销毁。**只做 IM** | AgentIM Lite 的全部 + 围绕 Agent 的平台能力（模型网关、生态桥接、管理系统、企业合规） |
+| 一句话 | 任何框架写的 Agent 都能接进来的、持久、有序、多方、可治理的通信和记录层。秒迁移，随时销毁。**只做 IM** | AgentIM Lite 的全部 + 围绕 Agent 的平台能力（生态桥接、管理系统、企业合规） |
 | 给谁 | 只想要一个可靠的"人和 Agent、Agent 和 Agent 的通信层"的开发者和团队 | 要一站式平台的团队和企业 |
 | 好处 | 小、清楚、好讲、好部署；作为通信和记录层可以嵌到任何架构里 | 不用自己拼装网关、渠道、管理后台 |
 
@@ -159,7 +159,8 @@
 | 记录：Agent 的历史和状态在服务端（上下文、历史、搜索、检查点）——**秒迁移**；**随时销毁** | ✅ | ✅ |
 | 开发者接入：客户端协议、开放 API、Webhook、发送前拦截、客户端 SDK、Agent SDK | ✅ | ✅ |
 | 安全和运维：静态加密、TLS、账号密码 + 两步验证、SQLite / PostgreSQL / MySQL、监控指标、单个程序部署 | ✅ | ✅ |
-| 模型网关、用量计量和费用预算、服务端托管 Agent（[10 §6](10-agent-ecosystem.md)） | — | ✅ |
+| 模型网关（Claude Code、Codex 协议）、用量计量和费用预算（[11](11-model-gateway.md)） | ✅ | ✅ |
+| 服务端托管 Agent（[10 §6](10-agent-ecosystem.md)） | — | ✅ |
 | 生态桥接：ChatKit 桥、Vercel Chat SDK 适配器、Agno 接口、各 SDK 的会话存储适配器、A2A 网关和跨服务器联邦、AG-UI | — | ✅ |
 | 工具网关（上游 MCP 工具、绑定参数的工具审批）、记事本 / 记忆连接器 | — | ✅ |
 | 主题 / 广播、协调者 Agent、跨服务器的 Agent 包导出 | — | ✅ |
@@ -169,7 +170,7 @@
 
 **同一套底层，迁移就是换程序**：
 
-- 一个代码仓库、一个 Rust 核心，编译出两个程序：`agentim-lite` 和 `agentim`（AgentIM 多编译进平台模块）。不是两份代码，不会越走越远。代码结构（已实现）：`server/crates/agentim-core`（核心库：消息、同步、Agent、治理、存储）、`server/crates/agentim-lite` 和 `server/crates/agentim`（两个程序）；以后的平台模块（模型网关、渠道桥等）各自是独立的 crate，只被 `agentim` 引用。
+- 一个代码仓库、一个 Rust 核心，编译出两个程序：`agentim-lite` 和 `agentim`（AgentIM 多编译进平台模块）。不是两份代码，不会越走越远。代码结构（已实现）：`server/crates/agentim-core`（核心库：消息、同步、Agent、治理、存储）、`server/crates/agentim-lite` 和 `server/crates/agentim`（两个程序）；以后的平台模块（渠道桥等）各自是独立的 crate，只被 `agentim` 引用。
 - **协议、数据库表结构、配置格式完全一样**（AgentIM 的配置是 Lite 的超集）。从 Lite 升级到 AgentIM：停服务、换程序（或换 Docker 镜像）、启动，**数据、密钥、令牌、Agent 都不用迁移**。反过来也可以：AgentIM 独有的数据原样留在库里，只是对应功能不可用，启动时提示。
 - 连接时服务端声明自己是哪个产品、有哪些功能（[02 §2.5](02-architecture.md) 的功能声明），SDK 是同一套，按声明启用功能。
 - **同一套测试**（已实现）：整套测试用 `AGENTIM_TEST_EDITION=lite` 再跑一遍（三种数据库都跑），崩溃测试和 SDK 冒烟测试在两个程序上都跑；Lite 遇到需要 AgentIM 的配置（多个数据库）会拒绝启动并说明原因；握手时服务端报出自己是哪个产品。AgentIM 另有自己模块的测试。

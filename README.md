@@ -82,11 +82,12 @@ Nightly CI on a standard GitHub runner adds 20,000 connections with a reconnect 
 | [03 AI 原生](docs/03-ai-native.md) | Agent 身份、信任模型、流式、介入、审批、工具网关、护栏、**AI 核心组件（Agent 之间的通信、任务、记事本、管理、A2A / MCP）** |
 | [04 安全与合规](docs/04-security-compliance.md) | 身份与设备、加密（静态加密、MLS 端到端加密）、海外法规、集团内的私密性 |
 | [05 运维、测试与客户端](docs/05-operations.md) | 部署、日志、指标、测试矩阵与结果、SDK 与客户端、管理系统 |
-| [06 迭代计划](docs/06-plan.md) | 已确认和待确认的决策、MVP 实施顺序 |
+| [06 进度与计划](docs/06-plan.md) | 整个项目的进度、没做完的、待你确认的、已确认的决策 |
 | [07 开放 API](docs/07-open-api.md) | 给开发者后端操作 IM 的服务端 API：鉴权、以谁的身份操作、接口一览、约定、测试计划 |
 | [08 同步协议与客户端可靠性](docs/08-sync-and-client.md) | 只同步、不读历史：服务端按设备记同步位置、新成员和新设备能看多少历史、保留期、已读和通知、Agent 的特殊处理；客户端 SDK 的发送和接收异常场景及验证方法 |
 | [09 Agent 通信与 Agent 历史](docs/09-agent-communication.md) | AgentIM 的核心亮点：大规模 Agent 之间的通信（能看到 / 收到 / 被唤醒三层、任务频道、主题、抢单、发言权、根预算）；Agent 的历史和状态放服务端、换环境可恢复 |
-| [10 和 Agent 生态的关系](docs/10-agent-ecosystem.md) | Agent SDK、周边组件、大模型基础设施全景；AgentIM 要提供的集成、自己做的、不做的；模型调用和用量计量 |
+| [10 和 Agent 生态的关系](docs/10-agent-ecosystem.md) | Agent SDK、周边组件、大模型基础设施全景；AgentIM 要提供的集成、自己做的、不做的 |
+| [11 模型网关](docs/11-model-gateway.md) | Claude Code、Codex 通过 AgentIM 调模型：按协议原样透传、认证、限额和计量、流式转发的取消和重试、业内网关的经验、测试计划（设计，待确认） |
 | [调研：市场与竞品](docs/research/market-and-competitors.md) | 平台动向、竞品功能与分层 |
 | [调研：开发者需求](docs/research/developer-needs.md) | IM 开发者需要什么、同行提供了哪些开发者支持、对照现状和对 MVP 的调整 |
 

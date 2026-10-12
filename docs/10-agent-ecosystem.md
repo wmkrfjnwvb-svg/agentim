@@ -50,7 +50,7 @@ agentim agent create --name researcher --owner alice
 # 输出：Agent ID、密钥（只显示一次）、以及可以直接粘贴的配置：
 #   - MCP 配置（Claude、Cursor、OpenAI Agents SDK、任何 MCP 客户端）
 #   - Agent API 地址和 Python / TS SDK 的三行示例
-#   - 模型网关地址（OpenAI 兼容 / Anthropic 兼容，用同一个密钥）
+#   - 模型网关的 Claude Code、Codex 配置（用同一个密钥，见 11 §14）
 ```
 
 接入方式有三种，能力相同、共用同一套权限和审计：
@@ -109,21 +109,9 @@ MCP 和 Agent API 提供的操作（同一份清单，CI 检查两边一致）�
 | 顺带修正 | 服务端运行时用 CLI 建的 Agent，在它第一次连接之前就能被拉进会话（以前要等它连上一次） |
 | 端到端验证 | `sdk/agent_e2e.sh`：起一个真实服务端，用 CLI 建两个 Agent（Python 一个、TS 一个），一个人通过 WebSocket 和它们对话：点名后流式回复完整到达；卡片发出、人点按钮、Agent 收到并回复；Agent 请人决定、人批准、Agent 拿到结果；检查点读写和版本冲突；读上下文；两个 Agent 用 `to` 互相点名一来一回；转人工后人交回、Agent 被唤醒；处理器抛错后同一条消息重新交给它（至少一次）；服务端重启后 Agent 自动重连并继续收到新消息。CI 在 Linux 和 Windows 上每次推送都跑 |
 
-## 6. 模型网关（你的要求：网关要有；以后做模型消息传递）
+## 6. 模型网关和服务端托管 Agent
 
-方向调整：**内置模型网关**（原来建议只做用量上报）。目的：Agent 不用拿到厂商密钥；预算、限流、区域白名单、审计在花钱的那一刻执行；每次模型调用和触发它的消息关联起来；为以后"服务端直接托管 Agent"留好接口。
-
-| 方面 | 做法 |
-|---|---|
-| 接口 | OpenAI 兼容（Chat Completions、Responses）和 Anthropic Messages 兼容，Agent 用自己的 AgentIM 密钥调用，**现有的 SDK 只改地址就能用** |
-| 上游 | 厂商（OpenAI、Anthropic、Google、Mistral，以及通过 Azure / Bedrock / Vertex 的欧盟区域）、客户自己的模型服务（vLLM、SGLang、Ollama，任何 OpenAI 兼容地址）、或者客户已有的网关（LiteLLM、Envoy、Portkey 等） |
-| 厂商密钥 | 管理员配置，用主密钥加密存放（[04 §2.6](04-security-compliance.md)），Agent 永远拿不到 |
-| 控制 | 每个 Agent / 负责人 / 单元：允许的厂商、模型、区域（例如只允许欧盟）；token 和费用预算（软上限提醒、硬上限拒绝）；每分钟请求和 token 限流；按 [09 §5](09-agent-communication.md) 的根预算统一计算 |
-| 计量 | 用厂商返回的用量（输入、输出、缓存读写、推理 token），按可版本化的价格表算费用，写入只追加的用量记录；直接调模型、不经过网关的 Agent 可以上报用量（标为"自报"） |
-| 审计和关联 | 请求头带上触发它的会话和消息 ID，追踪里串起"哪条消息 → 哪个 Agent → 哪次模型调用 → 花了多少" |
-| 流式 | 原样透传，同时从流里取用量；硬上限只在请求开始前检查，不在流中途掐断（D53） |
-| 可选 | 提示词 / 回复的 DLP 检查、记录（默认不记录内容，只记元数据）、失败时切换到备用上游 |
-| 安全 | Rust 实现、依赖最少；不打包 Python 网关（LiteLLM 2026-03 的供应链攻击）；网关可以单独关闭 |
+模型网关的完整设计（Claude Code、Codex 两种协议，放进 MVP 和 AgentIM Lite）见 [11](11-model-gateway.md)。
 
 **预留接口：模型消息传递 / 服务端托管 Agent（以后做）**：服务端可以直接托管一类 Agent：注册时只配置模型、系统提示、工具（MCP）和接收方式；被唤醒时（[09 §2](09-agent-communication.md)）服务端自己取上下文、通过网关调模型、把回复流式发回会话。这样不用部署任何 Agent 程序，Agent 之间的交流完全在 IM 里完成。现在先把三样东西设计成可复用的：唤醒事件、上下文接口、网关调用；托管 Agent 只是把这三样串起来的一个内置运行器。
 
