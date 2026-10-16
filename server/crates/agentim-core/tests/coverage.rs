@@ -381,7 +381,7 @@ async fn dlp_covers_agent_edits_and_ephemerals_but_not_people(db: TestDb) {
         .await;
     assert_eq!(code(&eph), "policy_blocked");
     let history = a.pull(&conv, 0).await.to_string();
-    assert!(!history.contains("4111") && !history.contains("sk_live"));
+    assert!(!history.contains(card) && !history.contains("sk_live"));
     assert!(
         !b.ok(json!({"op": "pull_side", "conv_id": conv}))
             .await

@@ -203,6 +203,15 @@ impl Shard {
         self.call_local(op).await
     }
 
+    /// Whether this node does the database's upkeep (always on a single
+    /// node).
+    pub fn holds_upkeep(&self) -> bool {
+        self.shared.cluster.get().is_none_or(|c| {
+            c.held(self.idx, crate::cluster::maintenance_shard(c.shards()))
+                .is_some()
+        })
+    }
+
     /// Queues a command on this node's writer and waits for its result
     /// (ACK after commit).
     pub async fn call_local(&self, op: Op) -> ApiResult<Value> {

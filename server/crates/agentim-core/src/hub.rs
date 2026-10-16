@@ -158,6 +158,15 @@ impl Drop for Session {
 
 impl Hub {
     pub async fn open(cfg: Config, hub_cfg: HubConfig) -> ApiResult<Hub> {
+        let hub = Self::open_deferred(cfg, hub_cfg).await?;
+        hub.finish_open().await?;
+        Ok(hub)
+    }
+
+    /// The databases and writers, without the start-up reads and repairs:
+    /// a cluster attaches itself (`attach_cluster`) before `finish_open`,
+    /// so those writes are routed to the nodes holding their shards.
+    pub async fn open_deferred(cfg: Config, hub_cfg: HubConfig) -> ApiResult<Hub> {
         cfg.validate().map_err(|e| err("config", e))?;
         hub_cfg.edition.check(&cfg).map_err(|e| err("config", e))?;
         m::init();
@@ -248,9 +257,40 @@ impl Hub {
                 index_dirty: Mutex::default(),
             }),
         };
-        hub.load().await?;
-        hub.load_agent_flags().await?;
         Ok(hub)
+    }
+
+    /// The start-up reads (users, tokens, directory) and, on a single node,
+    /// the repairs after a crash. In a cluster the repairs run where the
+    /// shards are taken over.
+    pub async fn finish_open(&self) -> ApiResult<()> {
+        self.load().await?;
+        self.load_agent_flags().await?;
+        Ok(())
+    }
+
+    /// Joins a cluster (before `finish_open`).
+    pub fn attach_cluster(&self, c: Arc<dyn crate::cluster::Cluster>) {
+        let _ = self.inner.sh.cluster.set(c);
+    }
+
+    pub fn clustered(&self) -> bool {
+        self.inner.sh.cluster.get().is_some()
+    }
+
+    /// The writer of database `idx`, for a cluster's forwarded commands.
+    pub fn shard(&self, idx: usize) -> Option<&Shard> {
+        self.inner.shards.get(idx)
+    }
+
+    pub fn database_names(&self) -> &[String] {
+        &self.inner.sh.db_names
+    }
+
+    /// Repairs the directory and indexes after a crash (the control shard's
+    /// holder runs it in a cluster).
+    pub async fn repair(&self) -> ApiResult<()> {
+        self.reconcile().await
     }
 
     /// Rebuilds in-memory directories from the databases, repairs the
@@ -356,9 +396,11 @@ impl Hub {
                 }),
             );
         }
-        self.reconcile().await?;
-        for s in &self.inner.shards {
-            s.call(Op::Recover { shards: None }).await?;
+        if !self.clustered() {
+            self.reconcile().await?;
+            for s in &self.inner.shards {
+                s.call(Op::Recover { shards: None }).await?;
+            }
         }
         Ok(())
     }

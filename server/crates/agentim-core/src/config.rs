@@ -52,6 +52,9 @@ pub struct Config {
     /// Agent registration (docs/10-agent-ecosystem.md §5.1).
     #[serde(default)]
     pub agents: AgentsConfig,
+    /// Several nodes on the same databases (docs/11-cluster.md).
+    #[serde(default)]
+    pub cluster: ClusterConfig,
     /// The MCP endpoint `/mcp` (docs/10-agent-ecosystem.md §5.1).
     #[serde(default)]
     pub mcp: McpConfig,
@@ -496,6 +499,81 @@ pub enum HookFailure {
     Reject,
 }
 
+/// A node of a cluster (docs/11-cluster.md §4.4, D73). Times are in
+/// milliseconds; the defaults keep `renew + 2 × op_timeout ≤ stop < lease`
+/// and `lease / stop ≥ 1.5`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ClusterConfig {
+    pub enabled: bool,
+    /// Stable name of this node (letters, digits, `-`), unique in the
+    /// cluster.
+    pub node_id: String,
+    /// Where other nodes connect (cluster traffic, TLS).
+    pub listen: String,
+    /// The address other nodes use for this one (default: `listen`).
+    pub advertise: Option<String>,
+    /// Shards per database; fixed when the cluster is first set up.
+    pub shards: u32,
+    pub lease_ms: u64,
+    pub renew_ms: u64,
+    pub stop_ms: u64,
+    pub op_timeout_ms: u64,
+}
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        ClusterConfig {
+            enabled: false,
+            node_id: String::new(),
+            listen: "0.0.0.0:7946".into(),
+            advertise: None,
+            shards: 256,
+            lease_ms: 15_000,
+            renew_ms: 3_000,
+            stop_ms: 10_000,
+            op_timeout_ms: 2_000,
+        }
+    }
+}
+
+impl ClusterConfig {
+    /// The timing rules of docs/11 §4.4.
+    pub fn check(&self) -> Result<(), String> {
+        let (d, r, f, t) = (
+            self.lease_ms,
+            self.renew_ms,
+            self.stop_ms,
+            self.op_timeout_ms,
+        );
+        if r == 0 || t == 0 || f == 0 || d == 0 {
+            return Err("cluster times must be > 0".into());
+        }
+        if r + 2 * t > f {
+            return Err(format!(
+                "cluster: renew_ms + 2 × op_timeout_ms ({}) must be ≤ stop_ms ({f})",
+                r + 2 * t
+            ));
+        }
+        if f >= d {
+            return Err(format!("cluster: stop_ms ({f}) must be < lease_ms ({d})"));
+        }
+        if d * 2 < f * 3 {
+            return Err(format!(
+                "cluster: lease_ms / stop_ms must be ≥ 1.5 ({d} / {f})"
+            ));
+        }
+        if !(1..=4096).contains(&self.shards) {
+            return Err("cluster.shards must be 1..4096".into());
+        }
+        let ok = |c: char| c.is_ascii_alphanumeric() || c == '-';
+        if self.node_id.is_empty() || self.node_id.len() > 63 || !self.node_id.chars().all(ok) {
+            return Err("cluster.node_id: 1..63 letters, digits or -".into());
+        }
+        Ok(())
+    }
+}
+
 /// Client compatibility (docs/02-architecture.md §2.5) and per-person
 /// limits (D95).
 #[derive(Debug, Clone, Deserialize)]
@@ -618,6 +696,7 @@ impl Config {
             retention: Default::default(),
             agents: Default::default(),
             mcp: Default::default(),
+            cluster: Default::default(),
         }
     }
 
@@ -637,6 +716,20 @@ impl Config {
             .collect();
         if names.is_empty() {
             return Err("storage.databases is empty".into());
+        }
+        if self.cluster.enabled {
+            self.cluster.check()?;
+            if let Some(d) = self
+                .storage
+                .databases
+                .iter()
+                .find(|d| d.url.starts_with("sqlite"))
+            {
+                return Err(format!(
+                    "a cluster needs PostgreSQL or MySQL; database {} is SQLite (docs/11 §1)",
+                    d.name
+                ));
+            }
         }
         for (i, n) in names.iter().enumerate() {
             if names[..i].contains(n) {
@@ -852,6 +945,7 @@ mod tests {
             retention: Default::default(),
             agents: Default::default(),
             mcp: Default::default(),
+            cluster: Default::default(),
         }
     }
 

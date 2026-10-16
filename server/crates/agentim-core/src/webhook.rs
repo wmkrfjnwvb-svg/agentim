@@ -113,23 +113,38 @@ pub async fn deliver_loop(
     http: reqwest::Client,
 ) {
     let key = cursor_key(&wh.name);
-    let mut cursor = loop {
-        let row = sqlx::query(shard.dialect.q("SELECT v FROM meta WHERE k = ?"))
-            .bind(key.clone())
-            .fetch_optional(&shard.read)
-            .await;
-        match row {
-            Ok(r) => {
-                break r
-                    .and_then(|r| r.try_get::<String, _>(0).ok())
-                    .and_then(|v| v.parse::<i64>().ok())
-                    .unwrap_or(0);
+    let read_cursor = || async {
+        loop {
+            let row = sqlx::query(shard.dialect.q("SELECT v FROM meta WHERE k = ?"))
+                .bind(key.clone())
+                .fetch_optional(&shard.read)
+                .await;
+            match row {
+                Ok(r) => {
+                    break r
+                        .and_then(|r| r.try_get::<String, _>(0).ok())
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(0);
+                }
+                Err(_) => tokio::time::sleep(Duration::from_secs(1)).await,
             }
-            Err(_) => tokio::time::sleep(Duration::from_secs(1)).await,
         }
     };
+    let mut cursor = read_cursor().await;
     let timeout = Duration::from_millis(wh.timeout_ms);
+    let mut idle = false;
     loop {
+        // In a cluster, one node delivers: the one doing the database's
+        // upkeep; it continues from the stored position.
+        if !shard.holds_upkeep() {
+            idle = true;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        }
+        if idle {
+            idle = false;
+            cursor = read_cursor().await;
+        }
         let rows = outbox_page(&shard, cursor).await;
         let rows: Vec<(i64, String, String)> = match rows {
             Ok(rows) => rows,

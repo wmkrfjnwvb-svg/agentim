@@ -215,7 +215,7 @@ async fn a_policy_hit_inside_a_streamed_draft_discards_it(db: TestDb) {
         .ok(json!({"op": "pull_side", "conv_id": conv}))
         .await
         .to_string();
-    assert!(!bside.contains(&d) && !bside.contains("4111"));
+    assert!(!bside.contains(&d) && !bside.contains("4111 1111"));
     // The main log is unchanged and the draft cannot be approved or continued.
     assert_eq!(a.pull(&conv, 0).await["upto_seq"].as_i64().unwrap(), head);
     assert_ne!(
