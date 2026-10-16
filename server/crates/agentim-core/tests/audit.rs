@@ -7,6 +7,7 @@ mod common;
 use agentim_core::model::*;
 use common::*;
 use serde_json::{Value, json};
+use sqlx::Connection;
 
 backend_tests!(
     deactivating_an_owner_stops_their_agents,
@@ -16,6 +17,8 @@ backend_tests!(
     unread_counts_start_at_what_a_member_can_see,
     edits_of_older_messages_stay_hidden_from_new_members,
     a_recalled_message_leaves_no_draft_copy,
+    a_failed_index_write_is_repaired,
+    race_remove_and_add_back_keep_the_index_true,
 );
 
 fn code(v: &Value) -> &str {
@@ -342,4 +345,152 @@ async fn a_recalled_message_leaves_no_draft_copy(db: TestDb) {
         code(&a.call(json!({"op": "recall", "msg_id": gone})).await),
         "conflict"
     );
+}
+
+/// Rows of `sql` (one bound user id and conversation) in a database.
+async fn rows(db: &TestDb, sql: &str, conv: &str, user: &str) -> i64 {
+    sqlx::any::install_default_drivers();
+    let mut c = sqlx::AnyConnection::connect(&db.url.replace("mariadb://", "mysql://"))
+        .await
+        .unwrap();
+    let q = if db.url.starts_with("postgres") {
+        sql.replacen('?', "$1", 1).replacen('?', "$2", 1)
+    } else {
+        sql.to_string()
+    };
+    sqlx::Row::get(
+        &sqlx::query(sqlx::AssertSqlSafe(q))
+            .bind(conv.to_string())
+            .bind(user.to_string())
+            .fetch_one(&mut c)
+            .await
+            .unwrap(),
+        0,
+    )
+}
+
+/// What the control database says about one member: (indexed, departed).
+async fn control_view(db: &TestDb, conv: &str, user: &str) -> (i64, i64) {
+    (
+        rows(
+            db,
+            "SELECT COUNT(*) FROM member_index WHERE conv_id = ? AND user_id = ?",
+            conv,
+            user,
+        )
+        .await,
+        rows(
+            db,
+            "SELECT COUNT(*) FROM departures WHERE conv_id = ? AND user_id = ?",
+            conv,
+            user,
+        )
+        .await,
+    )
+}
+
+fn lists(v: &Value, conv: &str) -> bool {
+    v["convs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["conv_id"] == conv)
+}
+
+/// H5: a member change committed in a unit's database stands when the
+/// control database then fails; nobody removed keeps seeing the
+/// conversation, and the index is repaired (in the background or at the
+/// next start).
+async fn a_failed_index_write_is_repaired(db: TestDb) {
+    let Some(secret) = new_db(Backend::Sqlite).await else {
+        return;
+    };
+    let cfg = two(&db.url, &secret.url, "secret");
+    let hub = open(cfg.clone()).await;
+    let carol = user_in(&hub, "carol", "b").await;
+    let dave = user_in(&hub, "dave", "b").await;
+    let c = Conn::new(&hub, &carol);
+    let conv = c.group(&[&dave]).await;
+    let d = Conn::new(&hub, &dave);
+    assert!(lists(&d.ok(json!({"op": "list_convs"})).await, &conv));
+    // Removed: the control write fails, the removal is still reported done.
+    hub.inject_job_failures("main", 1);
+    c.ok(json!({"op": "remove_member", "conv_id": conv, "user_id": dave.id}))
+        .await;
+    assert_eq!(control_view(&db, &conv, &dave.id).await, (1, 0), "stale");
+    assert!(!lists(&d.ok(json!({"op": "list_convs"})).await, &conv));
+    assert_eq!(code(&d.send(&conv, "still here?").await), "forbidden");
+    hub.repair_indexes().await;
+    assert_eq!(control_view(&db, &conv, &dave.id).await, (0, 1), "repaired");
+    // Added back, same failure: repaired, and visible again.
+    hub.inject_job_failures("main", 1);
+    c.ok(json!({"op": "add_member", "conv_id": conv, "user_id": dave.id}))
+        .await;
+    assert_eq!(control_view(&db, &conv, &dave.id).await, (0, 1), "stale");
+    hub.repair_indexes().await;
+    assert_eq!(control_view(&db, &conv, &dave.id).await, (1, 0));
+    assert!(lists(&d.ok(json!({"op": "list_convs"})).await, &conv));
+    // Repairing again changes nothing.
+    hub.repair_indexes().await;
+    assert_eq!(control_view(&db, &conv, &dave.id).await, (1, 0));
+    // The control database fails for good (a failed commit stops its
+    // writes until a restart): the next start repairs.
+    hub.inject_commit_failures("main", 1);
+    d.ok(json!({"op": "leave", "conv_id": conv})).await;
+    drop((c, d));
+    drop(hub);
+    let hub = open(cfg).await;
+    assert_eq!(control_view(&db, &conv, &dave.id).await, (0, 1));
+    assert_eq!(control_view(&db, &conv, &carol.id).await, (1, 0));
+    let _ = hub;
+}
+
+/// H5: removing someone and adding them back at the same time leaves the
+/// index agreeing with the membership, whichever wins.
+async fn race_remove_and_add_back_keep_the_index_true(db: TestDb) {
+    let Some(secret) = new_db(Backend::Sqlite).await else {
+        return;
+    };
+    let hub = open(two(&db.url, &secret.url, "secret")).await;
+    let carol = user_in(&hub, "carol", "b").await;
+    let dave = user_in(&hub, "dave", "b").await;
+    let c = Conn::new(&hub, &carol);
+    let conv = c.group(&[&dave]).await;
+    let d = Conn::new(&hub, &dave);
+    for round in 0..30 {
+        let remove = json!({"op": "remove_member", "conv_id": conv, "user_id": dave.id});
+        let add = json!({"op": "add_member", "conv_id": conv, "user_id": dave.id});
+        let (r1, r2) = if round % 2 == 0 {
+            tokio::join!(c.call(remove), c.call(add))
+        } else {
+            let (a, r) = tokio::join!(c.call(add), c.call(remove));
+            (r, a)
+        };
+        let _ = (r1, r2);
+        let member = c.ok(json!({"op": "list_convs"})).await["convs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["conv_id"] == conv)
+            .unwrap()["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["user_id"] == json!(dave.id));
+        let want = if member { (1, 0) } else { (0, 1) };
+        assert_eq!(
+            control_view(&db, &conv, &dave.id).await,
+            want,
+            "round {round}"
+        );
+        assert_eq!(
+            lists(&d.ok(json!({"op": "list_convs"})).await, &conv),
+            member
+        );
+        // Start every round from "member".
+        if !member {
+            c.ok(json!({"op": "add_member", "conv_id": conv, "user_id": dave.id}))
+                .await;
+        }
+    }
 }

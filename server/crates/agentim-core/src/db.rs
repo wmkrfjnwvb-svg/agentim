@@ -1098,6 +1098,18 @@ impl Db<'_> {
         Ok(out)
     }
 
+    /// Who the index says is in a conversation.
+    pub async fn member_index_of(&mut self, conv_id: &str) -> ApiResult<Vec<String>> {
+        let rows = sqlx::query(
+            self.d
+                .q("SELECT user_id FROM member_index WHERE conv_id = ?"),
+        )
+        .bind(conv_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter().map(|r| Ok(r.try_get(0)?)).collect()
+    }
+
     pub async fn member_index_remove(&mut self, conv_id: &str, user_id: &str) -> ApiResult<()> {
         sqlx::query(
             self.d

@@ -64,12 +64,38 @@ struct Inner {
     /// Password hashing slots, and how many callers hold or wait for one.
     hash_slots: tokio::sync::Semaphore,
     hash_callers: std::sync::atomic::AtomicUsize,
+    /// Member changes of one conversation run one at a time, index included.
+    member_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Conversations whose control index a failed write left behind, with
+    /// the departure seq of members known to have left.
+    index_dirty: Mutex<HashMap<String, HashMap<String, i64>>>,
 }
 
 fn hash_slot_count(cfg: &Config) -> usize {
     match cfg.auth.max_concurrent_hashes {
         0 => std::thread::available_parallelism().map_or(4, |n| n.get()),
         n => n,
+    }
+}
+
+/// Held while a member change of one conversation runs; the lock entry is
+/// dropped when nobody else waits for it.
+struct MemberGuard {
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    hub: Hub,
+    conv: String,
+}
+
+impl Drop for MemberGuard {
+    fn drop(&mut self) {
+        self.guard.take();
+        let mut locks = self.hub.inner.member_locks.lock().unwrap();
+        if locks
+            .get(&self.conv)
+            .is_some_and(|m| Arc::strong_count(m) == 1)
+        {
+            locks.remove(&self.conv);
+        }
     }
 }
 
@@ -209,6 +235,8 @@ impl Hub {
                 dm_lock: tokio::sync::Mutex::new(()),
                 hash_slots: tokio::sync::Semaphore::new(hash_slots),
                 hash_callers: Default::default(),
+                member_locks: Mutex::default(),
+                index_dirty: Mutex::default(),
             }),
         };
         hub.load().await?;
@@ -380,14 +408,7 @@ impl Hub {
                     .await?;
             }
             if owner != sh.control {
-                for u in self.member_ids(owner, conv).await? {
-                    control
-                        .call(Op::MemberIndexAdd {
-                            conv_id: conv.clone(),
-                            user_id: u,
-                        })
-                        .await?;
-                }
+                self.repair_index_at(owner, conv).await?;
             }
         }
         let dangling: Vec<String> = sh
@@ -406,6 +427,121 @@ impl Hub {
             control.call(Op::DirDelete(c.clone())).await?;
             sh.dir_set(&c, None);
         }
+        Ok(())
+    }
+
+    /// Serialises member changes of one conversation (the database write
+    /// and the control index after it).
+    async fn member_lock(&self, conv: &str) -> MemberGuard {
+        let m = self
+            .inner
+            .member_locks
+            .lock()
+            .unwrap()
+            .entry(conv.to_string())
+            .or_default()
+            .clone();
+        MemberGuard {
+            guard: Some(m.clone().lock_owned().await),
+            hub: self.clone(),
+            conv: conv.to_string(),
+        }
+    }
+
+    /// Brings the control index of a conversation in another database in
+    /// line with what that database committed. A failure does not undo the
+    /// committed change: the conversation is queued and repaired from its
+    /// database later (background, next start or next member change).
+    async fn index_sync(&self, conv: &str, joined: Vec<String>, left: Vec<(String, i64)>) {
+        let r = self
+            .control()
+            .call(Op::IndexSync {
+                conv_id: conv.to_string(),
+                joined,
+                left: left.clone(),
+            })
+            .await;
+        if let Err(e) = r {
+            tracing::warn!(
+                conv,
+                error = e.message,
+                "control index not updated; queued for repair"
+            );
+            self.inner
+                .index_dirty
+                .lock()
+                .unwrap()
+                .entry(conv.to_string())
+                .or_default()
+                .extend(left);
+        }
+    }
+
+    /// Repairs the conversations a failed control write left behind.
+    pub async fn repair_indexes(&self) {
+        let convs: Vec<String> = self
+            .inner
+            .index_dirty
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        for c in convs {
+            let _g = self.member_lock(&c).await;
+            let at = self.inner.sh.dir_get(&c).map(|d| d.db);
+            let r = match at {
+                Some(i) if i != self.inner.sh.control => self.repair_index_at(i, &c).await,
+                _ => Ok(()),
+            };
+            if let Err(e) = r {
+                tracing::warn!(conv = c, error = e.message, "control index repair failed");
+            }
+        }
+    }
+
+    /// Sets the control index of `conv` (held in database `idx`) to its
+    /// members there; whoever else the index lists has left.
+    async fn repair_index_at(&self, idx: usize, conv: &str) -> ApiResult<()> {
+        let members = self.member_ids(idx, conv).await?;
+        let c = conv.to_string();
+        let indexed = self
+            .read(self.control(), move |db| {
+                Box::pin(async move { db.member_index_of(&c).await })
+            })
+            .await?;
+        let seqs = self
+            .inner
+            .index_dirty
+            .lock()
+            .unwrap()
+            .get(conv)
+            .cloned()
+            .unwrap_or_default();
+        let left: Vec<(String, i64)> = indexed
+            .into_iter()
+            .filter(|u| !members.contains(u))
+            .map(|u| {
+                let seq = seqs.get(&u).copied().unwrap_or(0);
+                (u, seq)
+            })
+            .collect();
+        let known: Vec<String> = seqs.keys().cloned().collect();
+        let mut left = left;
+        // Departures queued for people the index no longer lists.
+        for u in known {
+            if !members.contains(&u) && !left.iter().any(|(x, _)| *x == u) {
+                left.push((u.clone(), seqs[&u]));
+            }
+        }
+        self.control()
+            .call(Op::IndexSync {
+                conv_id: conv.to_string(),
+                joined: members,
+                left,
+            })
+            .await?;
+        self.inner.index_dirty.lock().unwrap().remove(conv);
         Ok(())
     }
 
@@ -464,6 +600,7 @@ impl Hub {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                     let _ = hub.reload_api_keys().await;
+                    hub.repair_indexes().await;
                 }
             }));
         let every = (self.inner.sh.cfg.coalesce / 2).max(std::time::Duration::from_millis(10));
@@ -1765,6 +1902,7 @@ impl Hub {
                         .ok_or_else(|| err("forbidden", "an agent without an owner adds nobody"))?;
                     self.agent_may_contact(me, &owner, &user).await?;
                 }
+                let _members = self.member_lock(&conv_id).await;
                 let mut attempt = 0;
                 let (v, shard) = loop {
                     let shard = self.conv_shard(&conv_id)?;
@@ -1782,18 +1920,7 @@ impl Hub {
                     }
                 };
                 if shard.idx != self.inner.sh.control {
-                    self.control()
-                        .call(Op::MemberIndexAdd {
-                            conv_id: conv_id.clone(),
-                            user_id: user.id.clone(),
-                        })
-                        .await?;
-                    self.control()
-                        .call(Op::Rejoined {
-                            user_id: user.id,
-                            conv_id,
-                        })
-                        .await?;
+                    self.index_sync(&conv_id, vec![user.id], vec![]).await;
                 }
                 Ok(v)
             }
@@ -2373,6 +2500,12 @@ impl Hub {
             let Some((row, members, unread)) = row else {
                 continue;
             };
+            // The index can lag its database (repaired later): trust only
+            // the conversation's own member list.
+            let reader = via.as_deref().unwrap_or(&me.id);
+            if !members.iter().any(|m| m.user_id == reader) {
+                continue;
+            }
             let members: Vec<Value> = members
                 .iter()
                 .map(|m| json!({"user_id": m.user_id, "name": m.name, "kind": m.kind, "owner_id": m.owner_id, "role": m.role, "trigger": m.trigger, "approval": m.approval}))
@@ -2424,6 +2557,7 @@ impl Hub {
     }
 
     async fn remove_member(&self, me: &User, conv_id: &str, user: User) -> ApiResult<Value> {
+        let _members = self.member_lock(conv_id).await;
         let mut attempt = 0;
         let (v, shard) = loop {
             let shard = self.conv_shard(conv_id)?;
@@ -2440,38 +2574,15 @@ impl Hub {
             }
         };
         if shard.idx != self.inner.sh.control {
-            self.control()
-                .call(Op::MemberIndexRemove {
-                    conv_id: conv_id.to_string(),
-                    user_id: user.id.clone(),
-                })
-                .await?;
-            self.control()
-                .call(Op::Departure {
-                    user_id: user.id,
-                    conv_id: conv_id.to_string(),
-                    seq: v["seq"].as_i64().unwrap_or(0),
-                    dissolved: false,
-                })
-                .await?;
-            // The person's agents that left with them.
-            for a in v["agents"].as_array().cloned().unwrap_or_default() {
-                let id = a["user_id"].as_str().unwrap_or_default().to_string();
-                self.control()
-                    .call(Op::MemberIndexRemove {
-                        conv_id: conv_id.to_string(),
-                        user_id: id.clone(),
-                    })
-                    .await?;
-                self.control()
-                    .call(Op::Departure {
-                        user_id: id,
-                        conv_id: conv_id.to_string(),
-                        seq: a["seq"].as_i64().unwrap_or(0),
-                        dissolved: false,
-                    })
-                    .await?;
+            // The person, and their agents that left with them.
+            let mut left = vec![(user.id, v["seq"].as_i64().unwrap_or(0))];
+            for a in v["agents"].as_array().into_iter().flatten() {
+                left.push((
+                    a["user_id"].as_str().unwrap_or_default().to_string(),
+                    a["seq"].as_i64().unwrap_or(0),
+                ));
             }
+            self.index_sync(conv_id, vec![], left).await;
         }
         Ok(v)
     }

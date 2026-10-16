@@ -524,6 +524,14 @@ pub enum Op {
         conv_id: String,
         user_id: String,
     },
+    /// The control database's view of a conversation in another database,
+    /// in one transaction: `joined` are members (indexed, no departure),
+    /// `left` are not (departure up to seq first, then off the index).
+    IndexSync {
+        conv_id: String,
+        joined: Vec<String>,
+        left: Vec<(String, i64)>,
+    },
     ForgetConv(String),
     SetBlock {
         user_id: String,
@@ -592,6 +600,7 @@ impl Op {
             Op::RemoveMember { .. } => "remove_member",
             Op::Dissolve { .. } => "dissolve",
             Op::MemberIndexRemove { .. } => "member_index_remove",
+            Op::IndexSync { .. } => "index_sync",
             Op::AckCursors { .. } => "ack_cursors",
             Op::DissolvedSeen { .. } => "dissolved_seen",
             Op::DropDevice { .. } => "drop_device",
@@ -1139,6 +1148,21 @@ impl Ctx<'_, '_> {
             }
             Op::MemberIndexRemove { conv_id, user_id } => {
                 self.db.member_index_remove(&conv_id, &user_id).await?;
+                Ok(json!({}))
+            }
+            Op::IndexSync {
+                conv_id,
+                joined,
+                left,
+            } => {
+                for u in &joined {
+                    self.db.member_index_add(&conv_id, u).await?;
+                    self.db.departure_clear(u, &conv_id).await?;
+                }
+                for (u, seq) in &left {
+                    self.db.departure_put(u, &conv_id, *seq, false).await?;
+                    self.db.member_index_remove(&conv_id, u).await?;
+                }
                 Ok(json!({}))
             }
             Op::ForgetConv(conv) => {
