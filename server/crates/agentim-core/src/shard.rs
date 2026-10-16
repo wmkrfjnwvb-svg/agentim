@@ -417,11 +417,43 @@ async fn queue_outbox(
     if patterns.is_empty() {
         return Ok(None);
     }
-    let rows: Vec<&crate::model::Event> = outs
+    // Recalls and dissolutions in this batch also cover its earlier events,
+    // which the commands' own cleanup could not see yet (D91).
+    let mut recalled = std::collections::HashSet::new();
+    let mut dissolved = std::collections::HashSet::new();
+    for o in outs {
+        if let Out::Event { ev, .. } = o {
+            match ev.kind.as_str() {
+                "msg.recalled" => {
+                    if let Some(m) = &ev.msg {
+                        recalled.insert(m.msg_id.as_str());
+                    }
+                }
+                "conv.dissolved" => {
+                    dissolved.insert(ev.conv_id.as_str());
+                }
+                _ => {}
+            }
+        }
+    }
+    let rows: Vec<std::borrow::Cow<crate::model::Event>> = outs
         .iter()
         .filter_map(|o| match o {
             Out::Event { ev, .. } if crate::webhook::matches(patterns, &ev.kind) => Some(ev),
             _ => None,
+        })
+        .filter(|ev| ev.kind == "conv.dissolved" || !dissolved.contains(ev.conv_id.as_str()))
+        .map(|ev| match &ev.msg {
+            Some(m) if ev.kind != "msg.recalled" && recalled.contains(m.msg_id.as_str()) => {
+                let mut ev = ev.clone();
+                if let Some(m) = ev.msg.as_mut() {
+                    m.content.clear();
+                    m.payload = None;
+                    m.mentions.clear();
+                }
+                std::borrow::Cow::Owned(ev)
+            }
+            _ => std::borrow::Cow::Borrowed(ev),
         })
         .collect();
     if rows.is_empty() {

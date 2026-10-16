@@ -1983,6 +1983,91 @@ impl Db<'_> {
         Ok(())
     }
 
+    /// Removes undelivered webhook bodies of a conversation: all of them
+    /// (dissolved), or those carrying one message (recalled). The
+    /// `msg.recalled` / `conv.dissolved` event that follows is the tombstone.
+    pub async fn forget_outbox(&mut self, conv_id: &str, msg_id: Option<&str>) -> ApiResult<()> {
+        let Some(msg_id) = msg_id else {
+            sqlx::query(self.d.q("DELETE FROM webhook_outbox WHERE conv_id = ?"))
+                .bind(conv_id)
+                .execute(&mut *self.c)
+                .await?;
+            return Ok(());
+        };
+        let rows = sqlx::query(
+            self.d
+                .q("SELECT id, body FROM webhook_outbox WHERE conv_id = ?"),
+        )
+        .bind(conv_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        self.preload(&rows, &["body"]).await?;
+        for r in rows {
+            let id: i64 = r.try_get(0)?;
+            let body: Value = serde_json::from_str(&dec(
+                self.cx,
+                &r,
+                "body",
+                &format!("webhook_outbox.body:{id}"),
+            )?)
+            .unwrap_or(Value::Null);
+            if body["data"]["event"]["msg"]["msg_id"] == msg_id {
+                sqlx::query(self.d.q("DELETE FROM webhook_outbox WHERE id = ?"))
+                    .bind(id)
+                    .execute(&mut *self.c)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Empties a draft whose published message was recalled, and the copy
+    /// of its text in the side channel.
+    pub async fn scrub_draft(&mut self, conv_id: &str, draft_id: &str) -> ApiResult<()> {
+        let empty = self
+            .seal(conv_id, &format!("drafts.content:{draft_id}"), "")
+            .await?;
+        sqlx::query(
+            self.d.q(
+                "UPDATE drafts SET content = ?, payload = NULL WHERE draft_id = ? AND conv_id = ?",
+            ),
+        )
+        .bind(empty)
+        .bind(draft_id)
+        .bind(conv_id)
+        .execute(&mut *self.c)
+        .await?;
+        let rows = sqlx::query(self.d.q(
+            "SELECT side_seq, payload FROM side_events WHERE conv_id = ? AND type = 'draft.created'",
+        ))
+        .bind(conv_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        self.preload(&rows, &["payload"]).await?;
+        for r in rows {
+            let seq: i64 = r.try_get(0)?;
+            let aad = format!("side_events.payload:{conv_id}:{seq}");
+            let mut p: Value =
+                serde_json::from_str(&dec(self.cx, &r, "payload", &aad)?).unwrap_or(Value::Null);
+            if p["draft_id"] != draft_id {
+                continue;
+            }
+            p["content"] = json!("");
+            p["payload"] = Value::Null;
+            let sealed = self.seal(conv_id, &aad, &p.to_string()).await?;
+            sqlx::query(
+                self.d
+                    .q("UPDATE side_events SET payload = ? WHERE conv_id = ? AND side_seq = ?"),
+            )
+            .bind(sealed)
+            .bind(conv_id)
+            .bind(seq)
+            .execute(&mut *self.c)
+            .await?;
+        }
+        Ok(())
+    }
+
     pub async fn pull(
         &mut self,
         conv_id: &str,

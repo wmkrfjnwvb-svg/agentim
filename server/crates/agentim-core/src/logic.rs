@@ -2302,6 +2302,7 @@ impl Ctx<'_, '_> {
         // The conversation's data keys go too (crypto-shredding).
         self.db.shred_scope(conv_id).await?;
         self.db.delete_conv_content(conv_id).await?;
+        self.db.forget_outbox(conv_id, None).await?;
         if self.idx == self.sh.control {
             self.db.forget_conv(conv_id).await?;
             // Members' devices learn it is gone at their next sync.
@@ -2618,6 +2619,21 @@ impl Ctx<'_, '_> {
         self.db
             .scrub_message(&msg.conv_id, msg_id, msg.created_seq)
             .await?;
+        // So are the copies: the approved draft and webhook bodies not yet
+        // delivered (D91).
+        let created = self
+            .db
+            .pull(&msg.conv_id, msg.created_seq - 1, 1)
+            .await?
+            .into_iter()
+            .next();
+        if let Some(d) = created
+            .as_ref()
+            .and_then(|e| e.data["approval"]["draft_id"].as_str())
+        {
+            self.db.scrub_draft(&msg.conv_id, d).await?;
+        }
+        self.db.forget_outbox(&msg.conv_id, Some(msg_id)).await?;
         if msg.sender_id != me.id {
             self.db
                 .audit(
@@ -3218,7 +3234,7 @@ impl Ctx<'_, '_> {
                 causation_id: d.causation_id.clone(),
                 reply_to: d.reply_to.clone(),
                 mentions: mentions.clone(),
-                approval: Some(json!({"by": me.id, "edited": edited})),
+                approval: Some(json!({"by": me.id, "edited": edited, "draft_id": draft_id})),
                 envelope: d.envelope.clone(),
                 root_id: root,
                 wake: Some(wake),

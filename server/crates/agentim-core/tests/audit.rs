@@ -15,6 +15,7 @@ backend_tests!(
     a_persons_agents_leave_with_them,
     unread_counts_start_at_what_a_member_can_see,
     edits_of_older_messages_stay_hidden_from_new_members,
+    a_recalled_message_leaves_no_draft_copy,
 );
 
 fn code(v: &Value) -> &str {
@@ -287,4 +288,58 @@ async fn edits_of_older_messages_stay_hidden_from_new_members(db: TestDb) {
     // Members who could see the message still get the edit.
     let p = Conn::new(&hub, &bob).pull(&conv, 0).await;
     assert!(p.to_string().contains("secret plan v2"));
+}
+
+/// H4: recalling an approved agent message also empties its draft, in the
+/// side channel the owner and the agent sync from.
+async fn a_recalled_message_leaves_no_draft_copy(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bob, &bot]).await;
+    a.ok(json!({"op": "set_agent_policy", "conv_id": conv, "agent_id": bot.id, "approval": true}))
+        .await;
+    let g = Conn::new(&hub, &bot);
+    let mut drafts = vec![];
+    for text in ["recall me", "keep me"] {
+        let d = g
+            .ok(json!({"op": "send", "conv_id": conv, "client_msg_id": text, "text": text}))
+            .await["draft_id"]
+            .clone();
+        a.ok(json!({"op": "approve", "draft_id": d})).await;
+        drafts.push(d);
+    }
+    let p = a.pull(&conv, 0).await;
+    let id = |t: &str| {
+        p["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["event"]["msg"]["content"] == t)
+            .unwrap()["event"]["msg"]["msg_id"]
+            .clone()
+    };
+    let gone = id("recall me");
+    // Recalled by its owner, and by the agent itself, are both covered.
+    a.ok(json!({"op": "recall", "msg_id": gone})).await;
+    for c in [&a, &g] {
+        let side = c
+            .ok(json!({"op": "pull_side", "conv_id": conv, "after_side_seq": 0}))
+            .await
+            .to_string();
+        assert!(!side.contains("recall me"), "{side}");
+        assert!(side.contains("keep me"), "other drafts stay: {side}");
+    }
+    let s = Conn::new(&hub, &bot)
+        .ok(json!({"op": "sync"}))
+        .await
+        .to_string();
+    assert!(!s.contains("recall me") && s.contains("keep me"), "{s}");
+    // Recalling again is a conflict and changes nothing.
+    assert_eq!(
+        code(&a.call(json!({"op": "recall", "msg_id": gone})).await),
+        "conflict"
+    );
 }

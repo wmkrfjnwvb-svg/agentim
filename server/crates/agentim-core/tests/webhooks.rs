@@ -30,6 +30,8 @@ backend_tests!(
     concurrent_senders_are_all_delivered_once,
     before_send_allows_rejects_and_replaces,
     before_send_failures_follow_the_configuration,
+    recalled_and_dissolved_content_is_not_delivered_later,
+    race_recall_and_dissolve_against_writes_in_one_batch,
 );
 
 const SECRET: &str = "whsec_test_secret_0123456789";
@@ -657,4 +659,77 @@ async fn before_send_failures_follow_the_configuration(db: TestDb) {
     let conv = a.group(&[&alice]).await;
     assert_eq!(a.send(&conv, "hi").await["error"]["code"], "policy_blocked");
     let _: Option<Hub> = None;
+}
+
+/// H4 / D91: content recalled or dissolved while a webhook was down is not
+/// delivered when it comes back; the tombstone events are.
+async fn recalled_and_dissolved_content_is_not_delivered_later(db: TestDb) {
+    let (rx, addr) = Receiver::start().await;
+    *rx.down.lock().unwrap() = true;
+    let hub = open(with(single(&db.url), vec![webhook(&addr, "main", &["*"])])).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bob]).await;
+    a.send(&conv, "keep this").await;
+    let gone = a.send(&conv, "recall this").await["msg_id"].clone();
+    a.ok(json!({"op": "edit", "msg_id": gone, "text": "recall this edit"}))
+        .await;
+    a.ok(json!({"op": "recall", "msg_id": gone})).await;
+    let other = a.group(&[&bob]).await;
+    a.send(&other, "dissolve this").await;
+    a.ok(json!({"op": "dissolve", "conv_id": other})).await;
+    *rx.down.lock().unwrap() = false;
+    let has = |t: &str| rx.bodies().iter().any(|b| b["type"] == t);
+    wait_until("the tombstones", || {
+        has("msg.recalled") && has("conv.dissolved")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let all = serde_json::to_string(&rx.bodies()).unwrap();
+    assert!(all.contains("keep this"));
+    assert!(
+        !all.contains("recall this") && !all.contains("dissolve this"),
+        "{all}"
+    );
+    // Only the dissolution itself is delivered for the dissolved conversation.
+    let of_other: Vec<Value> = rx
+        .bodies()
+        .into_iter()
+        .filter(|b| b["data"]["conv_id"] == json!(other))
+        .map(|b| b["type"].clone())
+        .collect();
+    assert_eq!(of_other, [json!("conv.dissolved")]);
+}
+
+/// The same when the edit or message and the recall or dissolution commit
+/// in one batch (the outbox is written once per batch).
+async fn race_recall_and_dissolve_against_writes_in_one_batch(db: TestDb) {
+    let (rx, addr) = Receiver::start().await;
+    *rx.down.lock().unwrap() = true;
+    let hub = open(with(single(&db.url), vec![webhook(&addr, "main", &["*"])])).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let b = Conn::new(&hub, &bob);
+    let conv = a.group(&[&bob]).await;
+    let rounds = 30;
+    for i in 0..rounds {
+        let m = a.send(&conv, "plain").await["msg_id"].clone();
+        let other = a.group(&[&bob]).await;
+        let edit = json!({"op": "edit", "msg_id": m, "text": format!("secret edit {i}")});
+        let recall = json!({"op": "recall", "msg_id": m});
+        let msg = json!({"op": "send", "conv_id": other, "client_msg_id": "x", "text": format!("secret talk {i}")});
+        let dissolve = json!({"op": "dissolve", "conv_id": other});
+        tokio::join!(a.call(edit), a.call(recall), b.call(msg), a.call(dissolve));
+    }
+    *rx.down.lock().unwrap() = false;
+    let count = |t: &str| rx.bodies().iter().filter(|b| b["type"] == t).count();
+    wait_until("the tombstones", || {
+        count("msg.recalled") == rounds && count("conv.dissolved") == rounds
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let all = serde_json::to_string(&rx.bodies()).unwrap();
+    assert!(!all.contains("secret"), "{all}");
 }
