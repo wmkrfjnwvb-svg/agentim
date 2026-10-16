@@ -15,13 +15,14 @@
 | 同步位置 | 表 `device_cursors (device_id, conv_id, user_id, acked_seq, acked_side_seq)`，表结构 v3；确认只前进（取较大值） | `db.rs` `ack_cursor` |
 | 协议 | `sync {limit?}`、`ack {acks: [{conv_id, seq, side_seq}]}`、`unread`、`set_mute {conv_id, mode, until?}`、`set_prefs {read_silences_others?}`、`observe {conv_id, agent_id, after_seq?, limit?}`；客户端的 `pull`、`pull_side` 返回 `bad_request` | `hub/sync.rs` |
 | 一条通道 | 设备的连接从一开始就只按顺序收实时推送（seq 正好接上已下发的位置）：第一次 `sync` 之前、接不上的、以及某个会话正在被 `sync` 读取期间到达的推送都不发，改发 `resync`（立即发出，不等下一帧），由下一次 `sync` 补齐；所以同一事件不会既被推送又出现在同步结果里 | `registry.rs` `in_order`、`sync_begin` |
-| 起点规则 | 没有位置：设备存在之后加入的会话从可见起点开始，否则按新设备窗口；位置落后于保留期或超过 `max_gap`：重置，响应里带 `reset.from_seq` | `hub/sync.rs` |
+| 起点规则 | 没有位置：设备存在之后加入的会话从可见起点开始，否则按新设备窗口；位置落后于保留期或超过 `max_gap`：重置，响应里带 `reset.from_seq`；比位置有效期还老的设备在某个会话没有位置、按窗口起步又跳过了事件时也报 `reset`（M6）；被移出又拉回、设备落在移出前：先补发移出前那段，再从新的可见起点继续，中间那段不发（D92，表 `past_members`） | `hub/sync.rs` |
 | 新成员历史 | 成员记录 `visible_from`；拉人时 `history` 可选带多少条（≤ `share_max`）；默认人带最近 `member_messages` 条（`member_days` 天内），Agent 不带 | `logic.rs` `add_member` |
 | 移出、解散 | 控制库表 `departures`：被移出的设备同步到移出事件为止，`left` 报告到设备的位置越过移出事件为止；解散对每台设备只报告一次 `dissolved: true`（控制库里记下这台设备已知道）；重新加入时清除 | `logic.rs`、`hub/sync.rs` |
-| 设备下线、长期不在线 | 吊销令牌删除这台设备的全部位置；超过 `device_ttl_days` 没确认的位置由定时任务删除 | `hub.rs`、`logic.rs` 定时任务 |
-| 已读、免打扰 | 事件帧带 `notify`；用户设置 `read_silences_others`（默认开）；免打扰 `none / all / mentions`，可设到期时间，同步到用户其他设备（`mute` 帧） | `model.rs` `notified_by` |
-| 限流 | 每个连接的 `sync` 令牌桶，Agent 更严，超出返回 `rate_limited` | `hub/sync.rs` |
-| 保留期 | `[retention] days`（默认 180，0 表示永久），定时删除事件、侧信道事件和消息 | `db.rs` `purge_before` |
+| 设备下线、长期不在线 | 吊销令牌删除这台设备的全部位置；一台设备在这个库里**全部**位置都超过 `device_ttl_days` 没确认才一起删除（安静的会话不会被单独删掉，M6） | `hub.rs`、`logic.rs` 定时任务 |
+| 已读、免打扰 | 事件帧带 `notify`；用户设置 `read_silences_others`（默认开）；免打扰 `none / all / mentions`，可设到期时间，同步到用户其他设备（`mute` 帧） | `model.rs` `notified_by`；推送队列满丢掉的 `read` / `mute` 帧会让这个会话欠一次 `resync`，`sync` 的会话条目带 `read_seq` 和 `mute`（这台设备还没确认收到过的才带，确认时记在 `device_cursors.told_state`，M8）；自己发言把已读推进到这条（D93） |
+| 限流 | `sync`、信号、人的发送都按**用户**算（所有连接合计，M12）；Agent 的同步更严；超出返回 `rate_limited` | `hub.rs` `user_bucket` |
+| 保留期 | `[retention] days`（默认 180，0 表示永久）：每个会话只删日志的**前缀**（按 seq，系统时钟回拨也不会删出空洞），每轮最多 2 万条，衍生数据一起删：消息、侧信道、摘要、反馈、卡片回答、认领、已决定的草稿和请求、过期的 Webhook 发件箱（M15） | `db.rs` `purge_before` |
+| 侧信道分页、自己的 `client_msg_id` | 侧信道按页读（每次查询 500 条、每个会话每轮最多扫 5000 条），没读完 `has_more` 为真（M5）；`msg.created` 只对发送者带它自己的 `client_msg_id`（实时推送、同步、读取都一样），客户端据此合并「发出的」和「同步回来的」（M17） | `hub/sync.rs`、`registry.rs` |
 | 开放 API | 服务端身份保留按 seq 读取（`messages:read`） | `open_api.rs` |
 
 **还没做**：会话按"最近活跃"排序下发（现在按成员关系的顺序，一次调用最多 `limit` 条，没发完的下次继续）；保留期对被举报、法律保全内容的例外（随 M10 合规）；按组织单元覆盖同步配置（随 AgentIM 的多库组织单元）。
@@ -33,7 +34,7 @@
 - 每台设备（M3 已有设备表，令牌属于某台设备）对每个会话有一条记录：`(device_id, conv_id, acked_seq, acked_side_seq)`。
 - 客户端**不再提交"从哪个 seq 开始"**，只说"同步"；服务端从这台设备的 `acked_seq` 往后发。
 - 客户端只能**确认**（`ack(conv, seq)`），服务端检查：
-  - 不能确认还没发给它的 seq（超过本连接已下发的位置 → `bad_request`）；
+  - 不能确认还没发给它的 seq（超过本连接**送达过**的最远位置 → `bad_request`；推送队列满丢掉一条只让下一次同步重发，不会让合法的确认失败，M7）；
   - 不能往回退（小于已确认的位置 → 忽略）。
 - 所以伪造只能让自己少收消息，不能让服务端重复发送或发送全量。
 
