@@ -89,6 +89,7 @@ Nightly CI on a standard GitHub runner adds 20,000 connections with a reconnect 
 | [10 和 Agent 生态的关系](docs/10-agent-ecosystem.md) | Agent SDK、周边组件、大模型基础设施全景；AgentIM 要提供的集成、自己做的、不做的 |
 | [11 集群](docs/11-cluster.md) | 多节点高可用：数据库租约决定分片归属、节点间转发和通知、数据库主从切换不丢已确认的消息、完整测试计划（设计，待确认） |
 | [调研：集群](docs/research/cluster.md) | Temporal、Patroni、Redis Cluster、Synapse、Quartz 等的源码和社区问题单；PostgreSQL / MySQL 切主；Jepsen 等测试方法 |
+| [调研：开源 IM 踩过的坑](docs/research/im-issues.md) | OpenIM、Matrix、Zulip、Tinode、XMPP 的问题单和各家安全公告，逐条对照我们的代码：已防住的、确认有的、需要定规则的 |
 | [调研：市场与竞品](docs/research/market-and-competitors.md) | 平台动向、竞品功能与分层 |
 | [调研：开发者需求](docs/research/developer-needs.md) | IM 开发者需要什么、同行提供了哪些开发者支持、对照现状和对 MVP 的调整 |
 
