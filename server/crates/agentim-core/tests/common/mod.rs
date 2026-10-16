@@ -131,6 +131,22 @@ pub fn hub_cfg() -> HubConfig {
             cooldown: Duration::from_secs(60),
             ..Default::default()
         },
+        // Per-user limits are tested on their own; elsewhere they would
+        // only slow tests that act quickly from many connections.
+        sync: agentim_core::config::SyncConfig {
+            rate: (1e6, 1e6),
+            agent_rate: (1e6, 1e6),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// Client limits generous enough for tests that send in bulk.
+pub fn test_clients() -> agentim_core::config::ClientsConfig {
+    agentim_core::config::ClientsConfig {
+        send_rate: 1e6,
+        send_burst: 1e6,
         ..Default::default()
     }
 }
@@ -158,7 +174,7 @@ pub fn single(url: &str) -> Config {
         },
         units: vec![],
         writer: WriterConfig::default(),
-        clients: Default::default(),
+        clients: test_clients(),
         webhooks: vec![],
         before_send: None,
         open_api: Default::default(),
@@ -197,7 +213,7 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
             database: unit_b_in.into(),
         }],
         writer: WriterConfig::default(),
-        clients: Default::default(),
+        clients: test_clients(),
         webhooks: vec![],
         before_send: None,
         open_api: Default::default(),

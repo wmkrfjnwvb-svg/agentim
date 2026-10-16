@@ -24,6 +24,8 @@ backend_tests!(
     search_and_export_see_the_latest_text,
     text_that_looks_encrypted_is_kept_as_text,
     revocations_by_another_process_take_effect,
+    a_persons_limits_count_all_their_connections,
+    groups_have_a_size_limit,
 );
 
 fn code(v: &Value) -> &str {
@@ -695,4 +697,84 @@ async fn revocations_by_another_process_take_effect(db: TestDb) {
     cli.set_deactivated(&carol.id, false).await.unwrap();
     server.refresh_auth().await.unwrap();
     assert!(!server.is_deactivated(&carol.id));
+}
+
+/// M12 / D95: a person's sends and syncs are limited per person, however
+/// many connections they open; refusals leave nothing in the log.
+async fn a_persons_limits_count_all_their_connections(db: TestDb) {
+    let mut cfg = single(&db.url);
+    cfg.clients.send_rate = 0.5;
+    cfg.clients.send_burst = 3.0;
+    let mut h = hub_cfg();
+    h.sync.rate = (0.5, 2.0);
+    let hub = agentim_core::hub::Hub::open(cfg, h).await.unwrap();
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let conns: Vec<Conn> = (0..3).map(|_| Conn::new(&hub, &alice)).collect();
+    let conv = conns[0].group(&[&bob, &bot]).await;
+    for (i, c) in conns.iter().enumerate() {
+        c.ok(json!({"op": "send", "conv_id": conv, "client_msg_id": format!("{i}"), "text": "hi"}))
+            .await;
+    }
+    let head = last_seq(&conns[0], &conv).await;
+    let r = conns[1].send(&conv, "one too many").await;
+    assert_eq!(code(&r), "rate_limited", "{r}");
+    assert_eq!(last_seq(&conns[0], &conv).await, head, "no trace");
+    // Other people, and agents (they have their own limits), are not affected.
+    Conn::new(&hub, &bob)
+        .ok(json!({"op": "send", "conv_id": conv, "client_msg_id": "b", "text": "hi"}))
+        .await;
+    Conn::new(&hub, &bot)
+        .ok(json!({"op": "send", "conv_id": conv, "client_msg_id": "g", "text": "hi"}))
+        .await;
+    // Sync: two rounds, then refused on any connection.
+    conns[0].ok(json!({"op": "sync"})).await;
+    conns[1].ok(json!({"op": "sync"})).await;
+    assert_eq!(
+        code(&conns[2].call(json!({"op": "sync"})).await),
+        "rate_limited"
+    );
+}
+
+/// D95: groups have at most `clients.max_group_members` members.
+async fn groups_have_a_size_limit(db: TestDb) {
+    let mut cfg = single(&db.url);
+    cfg.clients.max_group_members = 3;
+    let hub = open(cfg).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let dave = user(&hub, "dave", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let r = a
+        .call(json!({"op": "create_conv", "kind": "group", "title": "g", "members": [bob.id, carol.id, dave.id]}))
+        .await;
+    assert_eq!(code(&r), "bad_request", "{r}");
+    let listed = a.ok(json!({"op": "list_convs"})).await;
+    assert!(
+        listed["convs"].as_array().unwrap().is_empty(),
+        "nothing created"
+    );
+    let conv = a.group(&[&bob, &carol]).await;
+    let head = last_seq(&a, &conv).await;
+    let r = a
+        .call(json!({"op": "add_member", "conv_id": conv, "user_id": dave.id}))
+        .await;
+    assert_eq!(code(&r), "conflict", "{r}");
+    assert_eq!(last_seq(&a, &conv).await, head, "no trace");
+    // Re-adding someone already in is the usual answer, not "full".
+    let r = a
+        .call(json!({"op": "add_member", "conv_id": conv, "user_id": bob.id}))
+        .await;
+    assert_ne!(
+        r["error"]["message"].as_str().unwrap_or(""),
+        "the group is full (3 members)"
+    );
+    // A place frees up when someone leaves.
+    Conn::new(&hub, &carol)
+        .ok(json!({"op": "leave", "conv_id": conv}))
+        .await;
+    a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": dave.id}))
+        .await;
 }

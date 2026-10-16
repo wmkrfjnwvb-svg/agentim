@@ -489,13 +489,38 @@ pub enum HookFailure {
     Reject,
 }
 
-/// Client compatibility (docs/02-architecture.md §2.5).
-#[derive(Debug, Clone, Default, Deserialize)]
+/// Client compatibility (docs/02-architecture.md §2.5) and per-person
+/// limits (D95).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct ClientsConfig {
     /// Lowest supported version per client name, e.g. `agentim-js = "1.2.0"`.
     /// Older clients are refused in `hello` with `client_too_old`.
-    #[serde(default)]
     pub min_versions: std::collections::BTreeMap<String, String>,
+    /// Messages a person may send per second, and the burst (all their
+    /// connections together).
+    pub send_rate: f64,
+    pub send_burst: f64,
+    /// Connections (WebSocket and MCP sessions) per user at once.
+    pub max_connections: usize,
+    /// Members of a group, at creation and later.
+    pub max_group_members: usize,
+    /// A WebSocket that sends nothing (not even a pong) for this long is
+    /// closed; the server pings at a third of it.
+    pub idle_secs: u64,
+}
+
+impl Default for ClientsConfig {
+    fn default() -> Self {
+        ClientsConfig {
+            min_versions: Default::default(),
+            send_rate: 10.0,
+            send_burst: 30.0,
+            max_connections: 10,
+            max_group_members: 1000,
+            idle_secs: 90,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

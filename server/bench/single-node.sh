@@ -56,7 +56,8 @@ start_server() { # <url> <log>; sets server_pid and ready_secs
   if curl -s -m 1 -o /dev/null "http://$ADDR/healthz"; then
     echo "port $PORT is already in use; stop the other server first" >&2; exit 1
   fi
-  printf '[storage]\ncontrol = "main"\n[[storage.databases]]\nname = "main"\nurl = "%s"\nread_pool = 8\n' "$1" > "$OUT/bench.toml"
+  # Throughput is measured, so the per-person send limit (D95) is lifted.
+  printf '[storage]\ncontrol = "main"\n[[storage.databases]]\nname = "main"\nurl = "%s"\nread_pool = 8\n[clients]\nsend_rate = 1000000.0\nsend_burst = 1000000.0\nmax_connections = 100000\n' "$1" > "$OUT/bench.toml"
   local t0=$(date +%s%N)
   "$BIN" --demo --config "$OUT/bench.toml" --addr "$ADDR" < /dev/null > "$2" 2>&1 &
   server_pid=$!

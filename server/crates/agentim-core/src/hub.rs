@@ -124,15 +124,11 @@ pub struct Session {
     kicked: Arc<tokio::sync::Notify>,
     /// Negotiated protocol and what the client said about itself in `hello`.
     client: std::sync::Mutex<ClientState>,
-    /// Signal rate window: (start, count).
-    signals: std::sync::Mutex<(Instant, u32)>,
-    /// Sync rate bucket: (tokens, last refill).
-    sync_bucket: std::sync::Mutex<Option<(f64, Instant)>>,
     /// When this session's device was registered (cached).
     device_created: std::sync::Mutex<Option<i64>>,
 }
 
-/// Signals one connection may send per second.
+/// Signals one user may send per second.
 pub const SIGNALS_PER_SECOND: u32 = 20;
 
 #[derive(Debug, Clone)]
@@ -441,6 +437,62 @@ impl Hub {
             sh.dir_set(&c, None);
         }
         Ok(())
+    }
+
+    /// A token bucket per user and kind of request: `rate` a second, at
+    /// most `burst` at once.
+    pub(crate) fn user_bucket(
+        &self,
+        user: &str,
+        kind: &'static str,
+        rate: f64,
+        burst: f64,
+    ) -> ApiResult<()> {
+        let now = Instant::now();
+        let mut b = self.inner.read_buckets.lock().unwrap();
+        let (tokens, at) = b.entry((user.to_string(), kind)).or_insert((burst, now));
+        *tokens = (*tokens + now.duration_since(*at).as_secs_f64() * rate).min(burst);
+        *at = now;
+        if *tokens < 1.0 {
+            let wait = ((1.0 - *tokens) / rate * 1000.0).ceil() as i64;
+            return Err(err(
+                "rate_limited",
+                format!("too many {kind} requests; retry in {wait} ms"),
+            ));
+        }
+        *tokens -= 1.0;
+        Ok(())
+    }
+
+    /// A WebSocket session for an authenticated token, and why it must be
+    /// closed right away, if so. Checked once registered: a logout from
+    /// then on reaches the session, one before shows here (M13); too many
+    /// connections of one user are refused the same way (D95).
+    pub fn open_device_session(
+        &self,
+        user: User,
+        device: String,
+        token: &str,
+    ) -> (Session, Pushes, Option<&'static str>) {
+        let user_id = user.id.clone();
+        let (s, p) = self.connect_device(user, Some(device));
+        let refused = if self.authenticate_device(token).is_none() {
+            Some("logged_out")
+        } else if self.connections_of(&user_id) > self.inner.cfg.clients.max_connections {
+            Some("too_many_connections")
+        } else {
+            None
+        };
+        (s, p, refused)
+    }
+
+    /// Open connections of a user.
+    pub fn connections_of(&self, user_id: &str) -> usize {
+        self.inner.sh.reg.sessions_of_user(user_id)
+    }
+
+    pub fn clients_config(&self) -> &crate::config::ClientsConfig {
+        &self.inner.cfg.clients
     }
 
     /// Picks up token revocations and deactivations written by another
@@ -1177,8 +1229,6 @@ impl Hub {
                 info: None,
                 features: Vec::new(),
             }),
-            signals: std::sync::Mutex::new((Instant::now(), 0)),
-            sync_bucket: std::sync::Mutex::new(None),
             device_created: std::sync::Mutex::new(None),
         };
         self.dispatch(&sess, msg).await
@@ -1614,8 +1664,6 @@ impl Hub {
                     info: None,
                     features: Vec::new(),
                 }),
-                signals: std::sync::Mutex::new((Instant::now(), 0)),
-                sync_bucket: std::sync::Mutex::new(None),
                 device_created: std::sync::Mutex::new(None),
             },
             rx,
@@ -1872,6 +1920,11 @@ impl Hub {
                 "your owner stopped you; wait until you are resumed",
             ));
         }
+        // People's sends are limited per person, over all connections (D95).
+        if me.kind == UserKind::Human && matches!(msg, ClientMsg::Send { .. }) {
+            let c = &self.inner.cfg.clients;
+            self.user_bucket(&me.id, "send", c.send_rate, c.send_burst)?;
+        }
         match msg {
             ClientMsg::Hello {
                 protocol: requested,
@@ -2005,6 +2058,7 @@ impl Hub {
                             actor: me.clone(),
                             user: user.clone(),
                             history,
+                            cap: self.inner.cfg.clients.max_group_members,
                         })
                         .await
                     {
@@ -2399,17 +2453,13 @@ impl Hub {
         if let Some(d) = &data {
             crate::logic::check_json_object(d, "data", crate::logic::MAX_SIGNAL_BYTES)?;
         }
-        {
-            let mut w = sess.signals.lock().unwrap();
-            let now = Instant::now();
-            if now.duration_since(w.0) >= std::time::Duration::from_secs(1) {
-                *w = (now, 0);
-            }
-            if w.1 >= SIGNALS_PER_SECOND {
-                return Err(err("rate_limited", "too many signals"));
-            }
-            w.1 += 1;
-        }
+        // Per user, over all connections (M12).
+        self.user_bucket(
+            &me.id,
+            "signal",
+            SIGNALS_PER_SECOND as f64,
+            SIGNALS_PER_SECOND as f64,
+        )?;
         let shard = self.conv_shard(conv_id)?;
         let (conv, members) = {
             let c = conv_id.to_string();
@@ -2733,6 +2783,10 @@ impl Hub {
         }
         if assignee.is_some() && kind != "task" {
             return Err(err("bad_request", "only a task has an assignee"));
+        }
+        let cap = self.inner.cfg.clients.max_group_members;
+        if members.len() + 1 > cap {
+            return Err(err("bad_request", format!("at most {cap} members")));
         }
         if title.is_empty() || title.len() > 255 || title.contains('\0') {
             return Err(err("bad_request", "title must be 1..255 bytes"));

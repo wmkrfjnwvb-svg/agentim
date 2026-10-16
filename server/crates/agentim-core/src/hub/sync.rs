@@ -3,7 +3,6 @@
 //! and moves it forward when the device acknowledges what it stored.
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 /// Side entries read per query, and at most per conversation and sync.
 const SIDE_PAGE: i64 = 500;
@@ -41,7 +40,13 @@ impl Hub {
     /// One sync round for a session (`sync`).
     pub(super) async fn sync(&self, sess: &Session, limit: Option<i64>) -> ApiResult<Value> {
         let me = &sess.user;
-        sess.sync_allowed(&self.inner.sh.cfg.sync)?;
+        // Per user over all connections (M12); agents more strictly.
+        let (rate, burst) = if sess.user.kind == UserKind::Agent {
+            self.inner.sh.cfg.sync.agent_rate
+        } else {
+            self.inner.sh.cfg.sync.rate
+        };
+        self.user_bucket(&sess.user.id, "sync", rate, burst)?;
         let sh = &self.inner.sh;
         sh.reg.sync_enable(sess.sid);
         let cfg = sh.cfg.sync.clone();
@@ -594,33 +599,6 @@ fn decorate(
         );
     }
     v
-}
-
-impl Session {
-    /// Sync rounds are rate limited per session (D38); agents more strictly.
-    fn sync_allowed(&self, cfg: &crate::config::SyncConfig) -> ApiResult<()> {
-        let (rate, burst) = if self.user.kind == UserKind::Agent {
-            cfg.agent_rate
-        } else {
-            cfg.rate
-        };
-        let mut b = self.sync_bucket.lock().unwrap();
-        let now = Instant::now();
-        let tokens = match b.as_ref() {
-            Some((t, at)) => (t + now.duration_since(*at).as_secs_f64() * rate).min(burst),
-            None => burst,
-        };
-        if tokens < 1.0 {
-            let wait = ((1.0 - tokens) / rate * 1000.0).ceil() as i64;
-            *b = Some((tokens, now));
-            return Err(err(
-                "rate_limited",
-                format!("too many sync calls; retry in {wait} ms"),
-            ));
-        }
-        *b = Some((tokens - 1.0, now));
-        Ok(())
-    }
 }
 
 /// Ends a sync read of one conversation however the call leaves.

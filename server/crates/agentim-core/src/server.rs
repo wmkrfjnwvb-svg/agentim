@@ -354,12 +354,20 @@ async fn ws(
         .read_buffer_size(4 * 1024)
         .write_buffer_size(0)
         .max_message_size(1 << 20)
-        .on_upgrade(move |socket| run_socket(st.hub, user, device, version, socket))
+        .on_upgrade(move |socket| run_socket(st.hub, user, device, q.token, version, socket))
 }
 
-async fn run_socket(hub: Hub, user: User, device: String, version: u32, socket: WebSocket) {
-    let (session, mut pushes) = hub.connect_device(user.clone(), Some(device));
+async fn run_socket(
+    hub: Hub,
+    user: User,
+    device: String,
+    token: String,
+    version: u32,
+    socket: WebSocket,
+) {
+    let (session, mut pushes, refused) = hub.open_device_session(user.clone(), device, &token);
     session.set_protocol(version);
+    let idle = std::time::Duration::from_secs(hub.clients_config().idle_secs.max(3));
     let (mut sink, mut stream) = socket.split();
     let (res_tx, mut res_rx) = tokio::sync::mpsc::channel::<Message>(64);
     let writer = tokio::spawn(async move {
@@ -381,14 +389,43 @@ async fn run_socket(hub: Hub, user: User, device: String, version: u32, socket: 
     welcome["type"] = json!("welcome");
     welcome["protocol"] = json!(version);
     welcome["me"] = json!(user);
-    let _ = res_tx.send(Message::Text(welcome.to_string().into())).await;
+    if let Some(reason) = refused {
+        let _ = res_tx
+            .send(Message::Close(Some(CloseFrame {
+                code: close_code::POLICY,
+                reason: reason.into(),
+            })))
+            .await;
+    } else {
+        let _ = res_tx.send(Message::Text(welcome.to_string().into())).await;
+    }
+    // A peer that sends nothing, not even a pong, is closed (M16).
+    let mut ping = tokio::time::interval(idle / 3);
+    ping.tick().await;
+    let mut heard = tokio::time::Instant::now();
     // Requests of one connection are processed one at a time, in order.
-    loop {
+    while refused.is_none() {
         let msg = tokio::select! {
             m = stream.next() => match m {
-                Some(Ok(m)) => m,
+                Some(Ok(m)) => {
+                    heard = tokio::time::Instant::now();
+                    m
+                }
                 _ => break,
             },
+            _ = ping.tick() => {
+                if heard.elapsed() >= idle {
+                    let _ = res_tx
+                        .send(Message::Close(Some(CloseFrame {
+                            code: close_code::AWAY,
+                            reason: "idle".into(),
+                        })))
+                        .await;
+                    break;
+                }
+                let _ = res_tx.send(Message::Ping(Vec::new().into())).await;
+                continue;
+            }
             // Logged out: tell the client why, then close.
             _ = session.kicked() => {
                 let _ = res_tx

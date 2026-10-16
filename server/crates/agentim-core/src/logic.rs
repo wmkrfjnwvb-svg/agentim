@@ -473,6 +473,8 @@ pub enum Op {
         actor: User,
         user: User,
         history: Option<i64>,
+        /// Most members a group may have (`clients.max_group_members`).
+        cap: usize,
     },
     /// Removal by someone else, or leaving when `user` is the actor.
     RemoveMember {
@@ -1095,7 +1097,8 @@ impl Ctx<'_, '_> {
                 actor,
                 user,
                 history,
-            } => self.add_member(&conv_id, &actor, &user, history).await,
+                cap,
+            } => self.add_member(&conv_id, &actor, &user, history, cap).await,
             Op::RemoveMember {
                 conv_id,
                 actor,
@@ -2042,6 +2045,7 @@ impl Ctx<'_, '_> {
         me: &User,
         u: &User,
         history: Option<i64>,
+        cap: usize,
     ) -> ApiResult<Value> {
         self.own_conv(conv_id)?;
         let cfg = &self.sh.cfg.sync;
@@ -2077,6 +2081,13 @@ impl Ctx<'_, '_> {
             return Err(err(
                 "bad_request",
                 "a direct conversation has fixed members",
+            ));
+        }
+        let members = self.members(conv_id).await?;
+        if members.len() >= cap && !members.iter().any(|m| m.user_id == u.id) {
+            return Err(err(
+                "conflict",
+                format!("the group is full ({cap} members)"),
             ));
         }
         // How much of the past the new member sees (docs/08 §2.4): people get

@@ -352,3 +352,135 @@ async fn open_registration_over_http() {
     assert_eq!(r.status().as_u16(), 409, "name taken");
     assert!(hub.login("bob", pw, None, None, None).await.is_ok());
 }
+
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn open_ws(addr: &str, token: &str) -> Ws {
+    tokio_tungstenite::connect_async(format!("ws://{addr}/ws?token={token}"))
+        .await
+        .unwrap()
+        .0
+}
+
+/// The next text frame, or the close reason.
+async fn next_frame(ws: &mut Ws) -> String {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), ws.next()).await {
+            Ok(Some(Ok(Message::Text(t)))) => return t.to_string(),
+            Ok(Some(Ok(Message::Close(c)))) => {
+                return format!(
+                    "close:{}",
+                    c.map(|c| c.reason.to_string()).unwrap_or_default()
+                );
+            }
+            Ok(Some(Ok(_))) => continue,
+            other => return format!("end:{other:?}"),
+        }
+    }
+}
+
+/// D95, M16: connections per user are capped; a connection that sends
+/// nothing, not even a pong, is closed; one that answers pings stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connections_are_capped_and_idle_ones_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = cfg(&dir);
+    c.clients.max_connections = 2;
+    c.clients.idle_secs = 3;
+    let (addr, hub) = plain(c, false).await;
+    let (alice, token) = hub
+        .create_user("alice", UserKind::Human, None, None)
+        .await
+        .unwrap();
+    let mut a = open_ws(&addr, &token).await;
+    let mut b = open_ws(&addr, &token).await;
+    assert!(next_frame(&mut a).await.contains("welcome"));
+    assert!(next_frame(&mut b).await.contains("welcome"));
+    let mut third = open_ws(&addr, &token).await;
+    assert_eq!(next_frame(&mut third).await, "close:too_many_connections");
+    // `a` keeps reading (and so answers pings); `b` reads nothing.
+    let reader = tokio::spawn(async move {
+        use futures_util::{SinkExt, StreamExt};
+        let t = std::time::Instant::now();
+        while t.elapsed() < Duration::from_secs(5) {
+            let _ = tokio::time::timeout(Duration::from_millis(200), a.next()).await;
+        }
+        a.send(tokio_tungstenite::tungstenite::Message::Text(
+            r#"{"op":"unread"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        next_frame(&mut a).await
+    });
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    // The server closed `b` (reading it now may hit the closed socket first).
+    let f = next_frame(&mut b).await;
+    assert!(f == "close:idle" || f.starts_with("end:"), "{f}");
+    assert_eq!(
+        hub.connections_of(&alice.id),
+        1,
+        "only the live one is left"
+    );
+    assert!(
+        reader.await.unwrap().contains("\"ok\":true"),
+        "the live one still works"
+    );
+}
+
+/// M13: a logout between checking the token and registering the
+/// connection is caught once it is registered.
+#[tokio::test]
+async fn a_logout_before_registration_is_caught() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = Hub::open(cfg(&dir), hub_cfg()).await.unwrap();
+    let (alice, token) = hub
+        .create_user("alice", UserKind::Human, None, None)
+        .await
+        .unwrap();
+    let (user, device) = hub.authenticate_device(&token).unwrap();
+    hub.revoke_tokens(&alice.id, Some(&device)).await.unwrap();
+    let (_s, _p, refused) = hub.open_device_session(user, device, &token);
+    assert_eq!(refused, Some("logged_out"));
+}
+
+/// M13: a logout racing the handshake never leaves a connection open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn race_logout_during_the_handshake() {
+    let dir = tempfile::tempdir().unwrap();
+    let (addr, hub) = plain(cfg(&dir), false).await;
+    let (alice, _) = hub
+        .create_user("alice", UserKind::Human, None, None)
+        .await
+        .unwrap();
+    for round in 0..30 {
+        let (token, row) = hub
+            .issue_token(&alice.id, Some("racer"), None, None, "test")
+            .await
+            .unwrap();
+        let a = addr.clone();
+        let conn = tokio::spawn(async move {
+            let mut ws = open_ws(&a, &token).await;
+            let first = next_frame(&mut ws).await;
+            (ws, first)
+        });
+        tokio::time::sleep(Duration::from_micros(round * 150)).await;
+        hub.revoke_tokens(&alice.id, Some(&row.device_id))
+            .await
+            .unwrap();
+        let (mut ws, first) = conn.await.unwrap();
+        if !first.starts_with("close:") {
+            // Welcomed before the logout: the logout closes it.
+            assert_eq!(
+                next_frame(&mut ws).await,
+                "close:logged_out",
+                "round {round}"
+            );
+        }
+        drop(ws);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(hub.connections_of(&alice.id), 0);
+}

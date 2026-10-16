@@ -638,7 +638,7 @@ async fn signal_permissions_and_limits(db: TestDb) {
     assert!(b.drain().is_empty());
     a.ok(sig(&conv, "typing", Value::Null)).await;
     assert_eq!(b.drain().len(), 1);
-    // Rate limit: 20 per second per connection, then rate_limited; recovers.
+    // Rate limit: 20 per second per user, then rate_limited; recovers.
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let fresh = Conn::new(&hub, &alice);
     for i in 0..20 {
@@ -649,8 +649,13 @@ async fn signal_permissions_and_limits(db: TestDb) {
         code(&fresh.call(sig(&conv, "typing", Value::Null)).await),
         "rate_limited"
     );
-    // Another connection has its own budget.
-    a.ok(sig(&conv, "typing", Value::Null)).await;
+    // Another connection of the same user shares it (M12); another user
+    // has their own.
+    assert_eq!(
+        code(&a.call(sig(&conv, "typing", Value::Null)).await),
+        "rate_limited"
+    );
+    b.ok(sig(&conv, "typing", Value::Null)).await;
     tokio::time::sleep(Duration::from_millis(1100)).await;
     fresh.ok(sig(&conv, "typing", Value::Null)).await;
 }

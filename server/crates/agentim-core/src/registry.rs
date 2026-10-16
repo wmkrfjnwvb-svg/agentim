@@ -442,6 +442,10 @@ impl Registry {
         v
     }
 
+    pub fn sessions_of_user(&self, user_id: &str) -> usize {
+        self.lock().by_user.get(user_id).map_or(0, |s| s.len())
+    }
+
     pub fn session_count(&self) -> usize {
         self.lock().sessions.len()
     }

@@ -849,8 +849,14 @@ async fn sync_is_rate_limited(db: TestDb) {
         "rate_limited",
         "agents are stricter"
     );
-    // Another session has its own budget; time refills it.
-    Conn::new(&hub, &alice).ok(json!({"op": "sync"})).await;
+    // The budget is per user (M12): another connection shares it; other
+    // users have their own; time refills it.
+    assert_eq!(
+        code(&Conn::new(&hub, &alice).call(json!({"op": "sync"})).await),
+        "rate_limited"
+    );
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    Conn::new(&hub, &bob).ok(json!({"op": "sync"})).await;
     tokio::time::sleep(Duration::from_millis(1100)).await;
     a.ok(json!({"op": "sync"})).await;
 }

@@ -36,6 +36,14 @@ max_batch = 512          # commands per transaction (one fsync)
 queue_capacity = 10000   # bounded queue per database; full => "overloaded"
 commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 
+# Per-person limits, over all of a person's connections.
+# [clients]
+# send_rate = 10.0           # messages a second...
+# send_burst = 30.0          # ...with bursts up to this many
+# max_connections = 10       # WebSocket connections per user
+# max_group_members = 1000   # at creation and later
+# idle_secs = 90             # a WebSocket silent this long (no pong) is closed
+
 # Lowest supported client versions (docs/02-architecture.md §2.5). Older
 # clients are refused in `hello` with "client_too_old" and disconnected.
 # [clients.min_versions]
