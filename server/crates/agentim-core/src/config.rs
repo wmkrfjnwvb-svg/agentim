@@ -368,6 +368,11 @@ pub struct AuthConfig {
     /// Failed logins before the account is locked, and for how long.
     pub max_failures: i64,
     pub lock_minutes: i64,
+    /// People's device tokens end after this many days unused, and this
+    /// many days after login whatever happens (0: never); agent keys do not
+    /// expire (D94).
+    pub token_idle_days: i64,
+    pub token_max_days: i64,
     /// Password hashes computed at once (each takes 19 MiB and a core);
     /// 0 means one per core. Callers beyond four times this wait-list are
     /// refused with `rate_limited`.
@@ -381,6 +386,8 @@ impl Default for AuthConfig {
             max_failures: 10,
             lock_minutes: 15,
             max_concurrent_hashes: 0,
+            token_idle_days: 30,
+            token_max_days: 365,
         }
     }
 }

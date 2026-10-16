@@ -37,6 +37,8 @@ struct ConvState {
     /// The member's previous membership (visible_from, removal seq), when
     /// they were removed and added back (D92).
     past: Option<(i64, i64)>,
+    /// The read/mute state this device confirmed it received.
+    told: Option<Value>,
 }
 
 impl Hub {
@@ -304,7 +306,11 @@ impl Hub {
             // not muted) is what a device assumes.
             let default = st.read_seq == 0 && state["mute"]["mode"] == "none";
             let state_new = !state.is_null()
-                && match sh.reg.sync_state(sess.sid, &conv, &state) {
+                && match sh
+                    .reg
+                    .sync_state(sess.sid, &conv, &state)
+                    .or(st.told.clone())
+                {
                     None => !default,
                     Some(prev) => prev != state,
                 };
@@ -352,6 +358,7 @@ impl Hub {
                         device_id: d.clone(),
                         user_id: sess.user.id.clone(),
                         acks: vec![(conv.to_string(), seq, 0)],
+                        told: vec![],
                     })
                     .await?;
             }
@@ -393,6 +400,13 @@ impl Hub {
                     Some(_) => db.past_member(&c, &me_id).await?,
                     None => None,
                 };
+                let told = match &device {
+                    Some(d) => db
+                        .cursor_told(d, &c)
+                        .await?
+                        .and_then(|t| serde_json::from_str(&t).ok()),
+                    None => None,
+                };
                 Ok(Some(ConvState {
                     conv_id: c,
                     member,
@@ -403,6 +417,7 @@ impl Hub {
                     read_seq,
                     until,
                     past,
+                    told,
                 }))
             })
         })
@@ -473,7 +488,6 @@ impl Hub {
         if acks.is_empty() || acks.len() > 1000 {
             return Err(err("bad_request", "1..1000 acks per call"));
         }
-        let mut by_shard: HashMap<usize, Vec<(String, i64, i64)>> = HashMap::new();
         for a in &acks {
             if a.seq < 0 || a.side_seq < 0 {
                 return Err(err("bad_request", "positions are >= 0"));
@@ -489,16 +503,31 @@ impl Hub {
                 ));
             }
         }
-        for a in acks {
-            let Some(d) = sh.dir_get(&a.conv_id) else {
+        let acks = acks
+            .into_iter()
+            .map(|a| (a.conv_id, a.seq, a.side_seq))
+            .collect();
+        self.store_acks(sess, acks).await
+    }
+
+    /// Stores positions a device acknowledged (already checked).
+    pub(crate) async fn store_acks(
+        &self,
+        sess: &Session,
+        acks: Vec<(String, i64, i64)>,
+    ) -> ApiResult<Value> {
+        let sh = &self.inner.sh;
+        let mut by_shard: HashMap<usize, Vec<(String, i64, i64)>> = HashMap::new();
+        for (conv_id, seq, side_seq) in acks {
+            let Some(d) = sh.dir_get(&conv_id) else {
                 continue;
             };
             match &sess.device_id {
-                None => sh.reg.mem_ack(sess.sid, &a.conv_id, a.seq, a.side_seq),
+                None => sh.reg.mem_ack(sess.sid, &conv_id, seq, side_seq),
                 Some(_) => by_shard
                     .entry(d.db)
                     .or_default()
-                    .push((a.conv_id, a.seq, a.side_seq)),
+                    .push((conv_id, seq, side_seq)),
             }
         }
         let mut stored = 0;
@@ -508,6 +537,14 @@ impl Hub {
                     .call(Op::AckCursors {
                         device_id: device.clone(),
                         user_id: sess.user.id.clone(),
+                        told: acks
+                            .iter()
+                            .filter_map(|(c, _, _)| {
+                                sh.reg
+                                    .sync_told(sess.sid, c)
+                                    .map(|t| (c.clone(), t.to_string()))
+                            })
+                            .collect(),
                         acks,
                     })
                     .await?;

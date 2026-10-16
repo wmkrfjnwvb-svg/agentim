@@ -22,6 +22,8 @@ use crate::shard::Shard;
 
 /// A token bucket: tokens left and when they were counted.
 type Bucket = (f64, Instant);
+/// (conversation, seq, side seq) positions to acknowledge.
+type Acks = Vec<(String, i64, i64)>;
 
 mod agents;
 mod export;
@@ -64,6 +66,9 @@ struct Inner {
     /// Password hashing slots, and how many callers hold or wait for one.
     hash_slots: tokio::sync::Semaphore,
     hash_callers: std::sync::atomic::AtomicUsize,
+    /// MCP `get_updates`: the batch each device was given last and not yet
+    /// acknowledged (id, positions); the next call acknowledges it (D96).
+    mcp_pending: Mutex<HashMap<String, (String, Acks)>>,
     /// The control database's token/deactivation counter last loaded.
     auth_epoch: std::sync::atomic::AtomicI64,
     /// Agent transfers run one at a time (owner row and member rows agree).
@@ -238,6 +243,7 @@ impl Hub {
                 member_locks: Mutex::default(),
                 transfer_lock: tokio::sync::Mutex::new(()),
                 auth_epoch: Default::default(),
+                mcp_pending: Mutex::default(),
                 index_dirty: Mutex::default(),
             }),
         };
@@ -437,6 +443,57 @@ impl Hub {
             sh.dir_set(&c, None);
         }
         Ok(())
+    }
+
+    /// The positions of a device's last MCP batch, taken for acknowledging:
+    /// with `ack`, only if it names that batch (a stale retry acknowledges
+    /// nothing, so the batch comes again).
+    pub(crate) fn take_mcp_pending(
+        &self,
+        device: &str,
+        ack: Option<&str>,
+    ) -> Vec<(String, i64, i64)> {
+        let mut p = self.inner.mcp_pending.lock().unwrap();
+        match (p.get(device), ack) {
+            (Some((id, _)), Some(a)) if id != a => vec![],
+            (Some(_), _) => p.remove(device).map(|(_, v)| v).unwrap_or_default(),
+            (None, _) => vec![],
+        }
+    }
+
+    /// Records a device's new MCP batch; returns its id.
+    pub(crate) fn put_mcp_pending(
+        &self,
+        device: &str,
+        acks: Vec<(String, i64, i64)>,
+    ) -> Option<String> {
+        if acks.is_empty() {
+            return None;
+        }
+        let id = format!("b_{}", new_id());
+        let mut p = self.inner.mcp_pending.lock().unwrap();
+        if p.len() > 100_000 {
+            p.clear();
+        }
+        p.insert(device.to_string(), (id.clone(), acks));
+        Some(id)
+    }
+
+    /// Ends people's device tokens past their idle or absolute lifetime
+    /// (D94). Returns how many.
+    pub async fn expire_tokens(&self) -> ApiResult<u64> {
+        let a = &self.inner.cfg.auth;
+        let now = now_ms();
+        let day = 86_400_000i64;
+        let before = |days: i64| if days > 0 { now - days * day } else { 0 };
+        let v = self
+            .control()
+            .call(Op::ExpireTokens {
+                idle_before: before(a.token_idle_days),
+                issued_before: before(a.token_max_days),
+            })
+            .await?;
+        Ok(v["expired"].as_u64().unwrap_or(0))
     }
 
     /// A token bucket per user and kind of request: `rate` a second, at
@@ -716,6 +773,7 @@ impl Hub {
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                     let _ = hub.reload_api_keys().await;
                     hub.repair_indexes().await;
+                    let _ = hub.expire_tokens().await;
                 }
             }));
         let hub = self.clone();

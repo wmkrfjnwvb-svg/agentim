@@ -1433,6 +1433,7 @@ struct EditReq {
     who: Option<String>,
     text: String,
     payload: Option<Value>,
+    base_version: Option<i64>,
 }
 
 async fn edit_message(
@@ -1452,6 +1453,7 @@ async fn edit_message(
                 msg_id: id.clone(),
                 text: req.text,
                 payload: req.payload,
+                base_version: req.base_version,
             },
         )
         .await?;

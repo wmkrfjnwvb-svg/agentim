@@ -187,7 +187,20 @@ async fn an_old_database_is_migrated_with_its_data(db: TestDb) {
         // Everything written before the upgrade reads back the same, for
         // both members, and the conversation keeps working.
         assert_eq!(content(&hub, &alice, &conv).await, before, "from {from}");
-        assert_eq!(content(&hub, &bob, &conv).await, before, "from {from}");
+        // Bob sees the same; each sees only their own client_msg_id (M17).
+        let strip = |mut v: Vec<Value>| {
+            for e in &mut v {
+                if let Some(m) = e["event"]["msg"].as_object_mut() {
+                    m.remove("client_msg_id");
+                }
+            }
+            v
+        };
+        assert_eq!(
+            strip(content(&hub, &bob, &conv).await),
+            strip(before.clone()),
+            "from {from}"
+        );
         let b = Conn::new(&hub, &bob);
         let r = b.send(&conv, "after the upgrade").await;
         assert_eq!(r["ok"], true, "{r}");

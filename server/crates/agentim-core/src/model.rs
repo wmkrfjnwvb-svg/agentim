@@ -360,6 +360,10 @@ pub enum ClientMsg {
         /// Custom kinds only: replaces the payload when given.
         #[serde(default)]
         payload: Option<Value>,
+        /// The version the edit is based on: refused with `conflict` when
+        /// the message has changed since (D88).
+        #[serde(default)]
+        base_version: Option<i64>,
     },
     /// Ephemeral event to the online members: no storage, no seq.
     Signal {

@@ -27,6 +27,10 @@ backend_tests!(
     a_persons_limits_count_all_their_connections,
     groups_have_a_size_limit,
     retention_takes_a_prefix_and_what_derives_from_it,
+    edits_recompute_mentions,
+    edits_can_require_a_version,
+    writing_counts_as_reading,
+    idle_and_old_tokens_expire,
 );
 
 fn code(v: &Value) -> &str {
@@ -876,4 +880,159 @@ async fn retention_takes_a_prefix_and_what_derives_from_it(db: TestDb) {
     // New messages continue the log.
     a.send(&old, "new").await;
     assert_eq!(seqs(&a.pull(&old, 0).await).len(), 1);
+}
+
+/// D87: an edit recomputes mentions: new ones notify (and wake agents),
+/// removed ones stop counting as unread mentions.
+async fn edits_recompute_mentions(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bob, &carol, &bot]).await;
+    let m = a.send(&conv, "hi @bob").await["msg_id"].clone();
+    let b = Conn::new(&hub, &bob);
+    assert_eq!(b.ok(json!({"op": "unread"})).await["mentions"], 1);
+    let mut c = Conn::new(&hub, &carol);
+    let mut g = Conn::new(&hub, &bot);
+    c.drain();
+    g.drain();
+    a.ok(json!({"op": "edit", "msg_id": m, "text": "hi @carol and @bot"}))
+        .await;
+    assert_eq!(
+        b.ok(json!({"op": "unread"})).await["mentions"],
+        0,
+        "no longer mentioned"
+    );
+    assert_eq!(c.ok(json!({"op": "unread"})).await["mentions"], 1);
+    let cf = c.drain();
+    assert!(
+        cf.iter()
+            .any(|f| f["event"]["type"] == "msg.updated" && f["notify"] == true),
+        "{cf:?}"
+    );
+    let gf = g.drain();
+    assert!(
+        gf.iter()
+            .any(|f| f["event"]["type"] == "msg.updated" && f["wake"] == true),
+        "{gf:?}"
+    );
+    // Editing again without new mentions notifies nobody.
+    c.drain();
+    a.ok(json!({"op": "edit", "msg_id": m, "text": "hi @carol and @bot!"}))
+        .await;
+    assert!(c.drain().iter().all(|f| f["notify"] != true));
+}
+
+/// D88: an edit based on an older version is refused, leaving no trace.
+async fn edits_can_require_a_version(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[]).await;
+    let m = a.send(&conv, "v1").await["msg_id"].clone();
+    a.ok(json!({"op": "edit", "msg_id": m, "text": "v2", "base_version": 1}))
+        .await;
+    let head = last_seq(&a, &conv).await;
+    let r = a
+        .call(json!({"op": "edit", "msg_id": m, "text": "stale", "base_version": 1}))
+        .await;
+    assert_eq!(code(&r), "conflict", "{r}");
+    assert_eq!(last_seq(&a, &conv).await, head, "no trace");
+    a.ok(json!({"op": "edit", "msg_id": m, "text": "v3", "base_version": 2}))
+        .await;
+    // Without base_version, the last edit wins as before.
+    a.ok(json!({"op": "edit", "msg_id": m, "text": "v4"})).await;
+}
+
+/// D93: a person's own message moves their read position.
+async fn writing_counts_as_reading(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bob, &bot]).await;
+    let b = Conn::new(&hub, &bob);
+    for i in 0..3 {
+        a.send(&conv, &format!("{i}")).await;
+    }
+    assert_eq!(b.ok(json!({"op": "unread"})).await["total"], 3);
+    let mut other = Conn::new(&hub, &bob);
+    other.drain();
+    b.send(&conv, "my answer").await;
+    assert_eq!(b.ok(json!({"op": "unread"})).await["total"], 0);
+    assert!(
+        other.drain().iter().any(|f| f["type"] == "read"),
+        "other devices learn it"
+    );
+    // An agent's message does not move anyone's position.
+    Conn::new(&hub, &bot)
+        .ok(json!({"op": "send", "conv_id": conv, "client_msg_id": "x", "text": "agent"}))
+        .await;
+    assert_eq!(
+        a.ok(json!({"op": "unread"})).await["total"],
+        2,
+        "bob's answer and the agent's"
+    );
+}
+
+/// D94: people's tokens end after the idle or absolute lifetime; agent keys
+/// do not.
+async fn idle_and_old_tokens_expire(db: TestDb) {
+    let mut cfg = single(&db.url);
+    cfg.auth.token_idle_days = 30;
+    cfg.auth.token_max_days = 365;
+    let hub = open(cfg).await;
+    let (alice, old) = hub
+        .create_user("alice", UserKind::Human, None, None)
+        .await
+        .unwrap();
+    let (_, idle) = hub
+        .issue_token(&alice.id, Some("idle"), None, None, "test")
+        .await
+        .unwrap();
+    let (_, fresh) = hub
+        .issue_token(&alice.id, Some("fresh"), None, None, "test")
+        .await
+        .unwrap();
+    let (bot, key) = hub
+        .create_user("bot", UserKind::Agent, Some(&alice.id), None)
+        .await
+        .unwrap();
+    let day = 86_400_000i64;
+    let now = agentim_core::model::now_ms();
+    let set = |sql: String| {
+        let db = &db;
+        async move { exec(db, &sql, "unused").await }
+    };
+    set(format!("UPDATE tokens SET created_at = {} WHERE user_id = '{}' AND device_name = 'first device' AND ? <> ''", now - 400 * day, alice.id)).await;
+    set(format!(
+        "UPDATE tokens SET last_seen = {} WHERE device_name = 'idle' AND ? <> ''",
+        now - 31 * day
+    ))
+    .await;
+    set(format!(
+        "UPDATE tokens SET created_at = {}, last_seen = {} WHERE user_id = '{}' AND ? <> ''",
+        now - 400 * day,
+        now - 400 * day,
+        bot.id
+    ))
+    .await;
+    let _ = (idle, fresh);
+    assert_eq!(hub.expire_tokens().await.unwrap(), 2);
+    assert!(hub.authenticate_device(&old).is_none(), "older than a year");
+    let devices = hub.devices(&alice.id).await.unwrap();
+    let names: Vec<_> = devices
+        .iter()
+        .filter_map(|d| d.device_name.clone())
+        .collect();
+    assert_eq!(names, ["fresh"]);
+    assert!(
+        hub.authenticate_device(&key).is_some(),
+        "agent keys do not expire"
+    );
+    assert_eq!(hub.expire_tokens().await.unwrap(), 0, "idempotent");
 }

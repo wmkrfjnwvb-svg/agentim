@@ -804,11 +804,11 @@ async fn unread_counts(db: TestDb) {
     let c1 = a.group(&[&bob]).await;
     let c2 = a.group(&[&bob]).await;
     assert_eq!(a.ok(json!({"op": "unread"})).await["total"], 0);
+    a.send(&c1, "my own does not count").await;
     b.send(&c1, "one").await;
     b.send(&c1, "two").await;
     b.ok(json!({"op": "send", "conv_id": c2, "client_msg_id": "x", "text": "@alice"}))
         .await;
-    a.send(&c1, "my own does not count").await;
     let u = a.ok(json!({"op": "unread"})).await;
     assert_eq!(u["total"], 3, "{u}");
     assert_eq!(u["mentions"], 1);
@@ -1249,8 +1249,11 @@ async fn read_and_mute_state_reach_every_device(db: TestDb) {
     let l = Conn::device(&hub, &bob, &laptop);
     let r = round(&l).await;
     assert_eq!(state(&r), Some((json!(head), json!("all"))), "{r}");
-    // Given once: a later sync with nothing new leaves it out.
+    // Given once: a later sync with nothing new leaves it out, also on a
+    // new connection of the device (it acknowledged the state).
     let r = round(&l).await;
+    assert_eq!(state(&r), None, "{r}");
+    let r = round(&Conn::device(&hub, &bob, &laptop)).await;
     assert_eq!(state(&r), None, "{r}");
     // A change shows up in the next sync of the other device.
     p.ok(json!({"op": "set_mute", "conv_id": conv, "mode": "none"}))

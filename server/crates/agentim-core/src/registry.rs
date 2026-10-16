@@ -323,6 +323,15 @@ impl Registry {
         st.told.insert(conv_id.to_string(), state.clone())
     }
 
+    /// The member state last given to a session for a conversation.
+    pub fn sync_told(&self, sid: u64, conv_id: &str) -> Option<Value> {
+        let g = self.lock();
+        g.sessions
+            .get(&sid)
+            .and_then(|e| e.sync.as_ref())
+            .and_then(|st| st.told.get(conv_id).cloned())
+    }
+
     /// The furthest positions that reached a session (what it may ack).
     pub fn sync_delivered(&self, sid: u64, conv_id: &str) -> (i64, i64) {
         let g = self.lock();
@@ -483,7 +492,11 @@ impl Registry {
                     }
                 }
                 Out::ToSession { sid, frame } => {
-                    send(&mut g, sid, frame.to_string().into(), None);
+                    // As for ToUser: a dropped read or mute change is owed (M8).
+                    let conv = matches!(frame["type"].as_str(), Some("read" | "mute"))
+                        .then(|| frame["conv_id"].as_str().map(String::from))
+                        .flatten();
+                    send(&mut g, sid, frame.to_string().into(), conv.as_deref());
                 }
                 Out::Unfocus { conv_id, user_id } => {
                     let sids: Vec<u64> = g

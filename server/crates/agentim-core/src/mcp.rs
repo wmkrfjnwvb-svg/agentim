@@ -431,10 +431,10 @@ fn tools() -> Value {
         {
             "name": "get_updates",
             "title": "Get updates",
-            "description": "What is new in your conversations since your last call, in order: messages, edits, recalls, membership changes, and private notes from your owner. Each call moves your position forward, so the same events are not returned twice. If `more` is true, call again.",
+            "description": "What is new in your conversations since your last call, in order: messages, edits, recalls, membership changes, and private notes from your owner. Calling again confirms you received the previous answer, so the same events are not returned twice; if an answer was lost, they come again. If `more` is true, call again.",
             "inputSchema": {
                 "type": "object",
-                "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500, "description": "Most events to return (default 100)."}},
+                "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500, "description": "Most events to return (default 100)."}, "ack": {"type": "string", "description": "The `ack` of the answer you are confirming (optional; without it, the last answer counts as received)."}},
                 "additionalProperties": false,
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
@@ -953,7 +953,8 @@ async fn call_tool(
             Ok((text, v))
         }
         "get_updates" => {
-            only(args, &["limit"])?;
+            only(args, &["limit", "ack"])?;
+            let ack = arg_str(args, "ack", false)?;
             let limit = match args.get("limit") {
                 None | Some(Value::Null) => 100,
                 Some(v) => v
@@ -962,17 +963,27 @@ async fn call_tool(
                     .ok_or_else(|| ApiError::new("bad_request", "limit must be 1..500"))?,
             };
             let _one_at_a_time = hub.device_lock(&device).await;
-            let v = run(json!({"op": "sync", "limit": limit})).await?;
+            // This call shows the previous answer arrived: acknowledge that
+            // batch now, not when it was sent (D96), so a lost answer is
+            // sent again.
+            let prev = hub.take_mcp_pending(&device, ack.as_deref());
+            if !prev.is_empty() {
+                hub.store_acks(&sess, prev).await?;
+            }
+            let mut v = run(json!({"op": "sync", "limit": limit})).await?;
             let convs = v["convs"].as_array().cloned().unwrap_or_default();
-            // Handed to the model = delivered: acknowledge in the same call.
-            let acks: Vec<Value> = convs
+            let acks: Vec<(String, i64, i64)> = convs
                 .iter()
                 .filter(|c| c.get("upto").is_some())
-                .map(|c| json!({"conv_id": c["conv_id"], "seq": c["upto"], "side_seq": c["side_upto"]}))
+                .map(|c| {
+                    (
+                        c["conv_id"].as_str().unwrap_or_default().to_string(),
+                        c["upto"].as_i64().unwrap_or(0),
+                        c["side_upto"].as_i64().unwrap_or(0),
+                    )
+                })
                 .collect();
-            if !acks.is_empty() {
-                run(json!({"op": "ack", "acks": acks})).await?;
-            }
+            v["ack"] = json!(hub.put_mcp_pending(&device, acks));
             Ok((render_updates(&convs, v["more"] == true), v))
         }
         "send_message" => {

@@ -365,6 +365,12 @@ pub enum Op {
         user_id: String,
         device_id: Option<String>,
     },
+    /// Control database: deletes people's tokens unused since `idle_before`
+    /// or issued before `issued_before` (D94).
+    ExpireTokens {
+        idle_before: i64,
+        issued_before: i64,
+    },
     TouchToken {
         hash: String,
     },
@@ -492,6 +498,9 @@ pub enum Op {
         device_id: String,
         user_id: String,
         acks: Vec<(String, i64, i64)>,
+        /// Read/mute state per conversation the acknowledged responses
+        /// carried (M8).
+        told: Vec<(String, String)>,
     },
     /// A device was told a conversation was dissolved (control database):
     /// it is not told again.
@@ -590,6 +599,7 @@ impl Op {
             Op::LoadToken { .. } => "load_token",
             Op::RevokeTokens { .. } => "revoke_tokens",
             Op::TouchToken { .. } => "touch_token",
+            Op::ExpireTokens { .. } => "expire_tokens",
             Op::UpdateUser { .. } => "update_user",
             Op::SetDeactivated { .. } => "set_deactivated",
             Op::StatePut { .. } => "state_put",
@@ -892,6 +902,21 @@ impl Ctx<'_, '_> {
                 });
                 Ok(json!({"hashes": gone}))
             }
+            Op::ExpireTokens {
+                idle_before,
+                issued_before,
+            } => {
+                let gone = self.db.expire_tokens(idle_before, issued_before).await?;
+                let n = gone.len();
+                if n > 0 {
+                    self.out.push(Out::Tokens {
+                        add: vec![],
+                        remove: gone.iter().map(|(h, _, _)| h.clone()).collect(),
+                        kick: gone.into_iter().map(|(_, u, d)| (u, Some(d))).collect(),
+                    });
+                }
+                Ok(json!({"expired": n}))
+            }
             Op::TouchToken { hash } => {
                 self.db.touch_token(&hash).await?;
                 Ok(json!({}))
@@ -1122,6 +1147,7 @@ impl Ctx<'_, '_> {
                 device_id,
                 user_id,
                 acks,
+                told,
             } => {
                 let mut n = 0;
                 for (conv, seq, side) in acks {
@@ -1137,6 +1163,9 @@ impl Ctx<'_, '_> {
                         .ack_cursor(&device_id, &conv, &user_id, seq, side)
                         .await?;
                     n += 1;
+                }
+                for (conv, state) in told {
+                    self.db.set_cursor_told(&device_id, &conv, &state).await?;
                 }
                 Ok(json!({"stored": n}))
             }
@@ -1337,7 +1366,8 @@ impl Ctx<'_, '_> {
                 msg_id,
                 text,
                 payload,
-            } => self.edit(me, &msg_id, &text, payload).await,
+                base_version,
+            } => self.edit(me, &msg_id, &text, payload, base_version).await,
             ClientMsg::Recall { msg_id } => self.recall(me, &msg_id).await,
             ClientMsg::SetMute {
                 conv_id,
@@ -1876,6 +1906,19 @@ impl Ctx<'_, '_> {
                 let mut r = (*recips).clone();
                 for (mb, x) in members.iter().zip(r.iter_mut()) {
                     x.notify = mb.notified_by(msg, now);
+                }
+                Arc::new(r)
+            }
+            // An edit notifies whom it newly mentions (D87).
+            (Some(msg), "msg.updated") if ev.data.get("mentions_added").is_some() => {
+                let now = now_ms();
+                let added = &ev.data["mentions_added"];
+                let mut r = (*recips).clone();
+                for (mb, x) in members.iter().zip(r.iter_mut()) {
+                    let named = added
+                        .as_array()
+                        .is_some_and(|a| a.iter().any(|u| u == &mb.user_id));
+                    x.notify = named && x.visible && mb.notified_by(msg, now);
                 }
                 Arc::new(r)
             }
@@ -2667,7 +2710,16 @@ impl Ctx<'_, '_> {
                 let msg = ev.msg.as_ref().unwrap();
                 self.charge(msg).await?;
                 let v = json!({"seq": ev.seq, "msg_id": msg.msg_id, "hop": msg.hop, "root_id": msg.root_id, "wake": ev.data["wake"]});
+                let seq = ev.seq;
                 self.emit(ev).await?;
+                // Writing means having read up to here (D93).
+                if me.kind == UserKind::Human {
+                    self.db.set_read(conv_id, &me.id, seq).await?;
+                    self.out.push(Out::ToUser {
+                        user_id: me.id.clone(),
+                        frame: json!({"type": "read", "conv_id": conv_id, "seq": seq}),
+                    });
+                }
                 Ok(v)
             }
         }
@@ -2707,6 +2759,7 @@ impl Ctx<'_, '_> {
         msg_id: &str,
         text: &str,
         payload: Option<Value>,
+        base_version: Option<i64>,
     ) -> ApiResult<Value> {
         let msg = self
             .db
@@ -2719,6 +2772,12 @@ impl Ctx<'_, '_> {
         }
         if msg.state == "streaming" || msg.state == "recalled" {
             return Err(err("conflict", format!("message is {}", msg.state)));
+        }
+        if base_version.is_some_and(|v| v != msg.version) {
+            return Err(err(
+                "conflict",
+                format!("the message changed since (now version {})", msg.version),
+            ));
         }
         check_text(text)?;
         if let Some(p) = &payload {
@@ -2739,9 +2798,37 @@ impl Ctx<'_, '_> {
         if payload.is_some() {
             self.db.set_payload(msg_id, payload.as_ref()).await?;
         }
+        // Mentions follow the new text (D87): new ones notify and wake,
+        // removed ones stop counting.
+        let mentions = self.mentions(&msg.conv_id, text).await?;
+        let added: Vec<String> = mentions
+            .iter()
+            .filter(|m| !msg.mentions.contains(m) && **m != msg.sender_id)
+            .cloned()
+            .collect();
+        self.db.set_mentions(msg_id, &mentions).await?;
+        let wake: Vec<String> = {
+            let members = self.members(&msg.conv_id).await?;
+            added
+                .iter()
+                .filter(|u| {
+                    members
+                        .iter()
+                        .any(|m| m.user_id == **u && m.kind == UserKind::Agent)
+                })
+                .cloned()
+                .collect()
+        };
+        let mut data = json!({});
+        if !added.is_empty() {
+            data["mentions_added"] = json!(added);
+        }
+        if !wake.is_empty() {
+            data["wake"] = json!(wake);
+        }
         let ev = self
             .db
-            .update_message(msg_id, "msg.updated", &me.id, Some(text), None, None)
+            .update_message_with(msg_id, "msg.updated", &me.id, Some(text), None, None, data)
             .await?;
         if msg.sender_id != me.id {
             self.db

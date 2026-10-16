@@ -709,8 +709,9 @@ async fn read_cursors_drive_unread_counts(db: TestDb) {
         1,
         "read beyond the head is clamped"
     );
-    // Cursors are per user and survive a restart.
-    assert_eq!(conv_info(&b, &conv).await["unread"], 1);
+    // Cursors are per user and survive a restart; bob wrote the last
+    // message, which counts as reading up to it (D93).
+    assert_eq!(conv_info(&b, &conv).await["unread"], 0);
     drop((a, b));
     drop(hub);
     let hub = open(single(&db.url)).await;

@@ -12,7 +12,7 @@ use crate::model::{ApiError, ApiResult};
 
 /// Version of the schema in `TABLES`. Bump it together with a new entry in
 /// `MIGRATIONS` (docs/02-architecture.md §5.3).
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -515,6 +515,8 @@ pub const TABLES: &[Table] = &[
             c("acked_seq", Big),
             c("acked_side_seq", Big),
             c("updated_at", Big),
+            // v5: the read/mute state the device confirmed it received (M8).
+            n("told_state", Text),
         ],
         pk: &["device_id", "conv_id"],
         indexes: &[("device_cursors_conv_user", &["conv_id", "user_id"], false)],
@@ -907,6 +909,15 @@ pub const MIGRATIONS: &[Migration] = &[
         steps: &[Step::AddColumn {
             table: "users",
             column: "agent_scope",
+        }],
+    },
+    Migration {
+        version: 5,
+        compat: 1,
+        about: "read and mute state each device received",
+        steps: &[Step::AddColumn {
+            table: "device_cursors",
+            column: "told_state",
         }],
     },
 ];

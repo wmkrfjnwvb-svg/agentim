@@ -32,6 +32,7 @@ backend_tests!(
     agents_keep_checkpoints,
     stopped_and_destroyed_agents_are_refused,
     agents_use_cards_progress_sources_and_handoff,
+    a_lost_answer_comes_again,
 );
 
 const V: &str = "2026-07-28";
@@ -918,17 +919,34 @@ async fn keys_and_positions_survive_a_restart(db: TestDb) {
                 .unwrap()
                 .contains("@helper one")
         );
+        // The next call confirms it (D96).
+        m.ok(&key, "get_updates", json!({})).await;
+        Conn::new(&m.hub, &alice).send(&conv, "@helper two").await;
+        let r = m.tool(&key, "get_updates", json!({})).await;
+        assert!(
+            r["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("@helper two")
+        );
+        // ...and this answer is not confirmed before the restart.
     }
     let m = serve(single(&db.url)).await;
-    Conn::new(&m.hub, &alice).send(&conv, "@helper two").await;
+    Conn::new(&m.hub, &alice).send(&conv, "@helper three").await;
+    let texts = |u: &Value| -> Vec<String> {
+        u["convs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|c| c["events"].as_array().unwrap().clone())
+            .filter_map(|e| e["event"]["msg"]["content"].as_str().map(String::from))
+            .collect()
+    };
+    // Confirmed positions survive; the unconfirmed answer comes again.
     let u = m.ok(&key, "get_updates", json!({})).await;
-    let texts: Vec<&str> = u["convs"][0]["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|e| e["event"]["msg"]["content"].as_str())
-        .collect();
-    assert_eq!(texts, vec!["@helper two"]);
+    assert_eq!(texts(&u), ["@helper two", "@helper three"]);
+    let u = m.ok(&key, "get_updates", json!({})).await;
+    assert!(texts(&u).is_empty());
 }
 
 /// Concurrent get_updates on one key while people send: every event is
@@ -1725,4 +1743,41 @@ async fn agents_use_cards_progress_sources_and_handoff(db: TestDb) {
             .await,
         "taken_over"
     );
+}
+
+/// D96: a batch counts as received when the next call comes; with `ack`
+/// only the batch it names, so a retry after a lost answer gets it again.
+async fn a_lost_answer_comes_again(db: TestDb) {
+    let m = serve(single(&db.url)).await;
+    let (alice, _helper, key, conv) = setup(&m).await;
+    let a = Conn::new(&m.hub, &alice);
+    a.send(&conv, "@helper one").await;
+    let first = m.ok(&key, "get_updates", json!({})).await;
+    let batch = first["ack"].as_str().unwrap().to_string();
+    let got = seqs_of(&first, &conv);
+    assert!(!got.is_empty());
+    // The answer was lost: the agent retries without having seen `ack`,
+    // naming an older batch it has (none) -> the batch comes again.
+    let again = m.ok(&key, "get_updates", json!({"ack": "b_unknown"})).await;
+    assert_eq!(seqs_of(&again, &conv), got, "lost answers come again");
+    // Confirming the latest batch moves on.
+    let batch = again["ack"].as_str().unwrap_or(&batch).to_string();
+    a.send(&conv, "@helper two").await;
+    let next = m.ok(&key, "get_updates", json!({"ack": batch})).await;
+    let new = seqs_of(&next, &conv);
+    assert!(
+        !new.is_empty() && new.iter().all(|s| s > got.last().unwrap()),
+        "{new:?}"
+    );
+    // Without `ack`, calling again confirms the previous answer.
+    let r = m.tool(&key, "get_updates", json!({})).await;
+    assert_eq!(r["content"][0]["text"], "Nothing new.");
+    assert!(
+        r["structuredContent"]["ack"].is_null(),
+        "nothing to confirm"
+    );
+    // The positions are stored: a restart does not resend confirmed batches.
+    drop(a);
+    let hub2 = open(single(&db.url)).await;
+    let _ = hub2;
 }

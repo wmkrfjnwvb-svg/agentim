@@ -882,6 +882,38 @@ impl Db<'_> {
         })
     }
 
+    /// People's tokens unused since `idle_before` or issued before
+    /// `issued_before` (0 disables either): deleted, returned as
+    /// (hash, user, device).
+    pub async fn expire_tokens(
+        &mut self,
+        idle_before: i64,
+        issued_before: i64,
+    ) -> ApiResult<Vec<(String, String, String)>> {
+        let rows = sqlx::query(self.d.q(
+            "SELECT t.hash, t.user_id, t.device_id FROM tokens t JOIN users u ON u.id = t.user_id
+             WHERE u.kind = 'human' AND (t.created_at < ? OR COALESCE(t.last_seen, t.created_at) < ?)",
+        ))
+        .bind(issued_before)
+        .bind(idle_before)
+        .fetch_all(&mut *self.c)
+        .await?;
+        let gone: Vec<(String, String, String)> = rows
+            .iter()
+            .map(|r| Ok((r.try_get(0)?, r.try_get(1)?, r.try_get(2)?)))
+            .collect::<sqlx::Result<_>>()?;
+        for (h, _, _) in &gone {
+            sqlx::query(self.d.q("DELETE FROM tokens WHERE hash = ?"))
+                .bind(h)
+                .execute(&mut *self.c)
+                .await?;
+        }
+        if !gone.is_empty() {
+            self.bump_meta(AUTH_EPOCH).await?;
+        }
+        Ok(gone)
+    }
+
     pub async fn touch_token(&mut self, hash: &str) -> ApiResult<()> {
         sqlx::query(self.d.q("UPDATE tokens SET last_seen = ? WHERE hash = ?"))
             .bind(now_ms())
@@ -1980,6 +2012,18 @@ impl Db<'_> {
     }
 
     /// Replaces a custom kind's payload (before `update_message` announces it).
+    pub async fn set_mentions(&mut self, msg_id: &str, mentions: &[String]) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("UPDATE messages SET mentions = ? WHERE msg_id = ?"),
+        )
+        .bind(serde_json::to_string(mentions).unwrap())
+        .bind(msg_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
     pub async fn set_payload(&mut self, msg_id: &str, payload: Option<&Value>) -> ApiResult<()> {
         let conv = self.msg_conv(msg_id).await?.unwrap_or_default();
         let sealed = self
@@ -2283,6 +2327,43 @@ impl Db<'_> {
     // ------------------------------------------------- sync (docs/08)
 
     /// A device's acknowledged (seq, side seq) for a conversation.
+    /// The read/mute state a device confirmed it received for a conversation.
+    pub async fn cursor_told(
+        &mut self,
+        device_id: &str,
+        conv_id: &str,
+    ) -> ApiResult<Option<String>> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT told_state FROM device_cursors WHERE device_id = ? AND conv_id = ?"),
+        )
+        .bind(device_id)
+        .bind(conv_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        Ok(r.map(|r| r.try_get::<Option<String>, _>(0))
+            .transpose()?
+            .flatten())
+    }
+
+    pub async fn set_cursor_told(
+        &mut self,
+        device_id: &str,
+        conv_id: &str,
+        state: &str,
+    ) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("UPDATE device_cursors SET told_state = ? WHERE device_id = ? AND conv_id = ?"),
+        )
+        .bind(state)
+        .bind(device_id)
+        .bind(conv_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
     pub async fn cursor(
         &mut self,
         device_id: &str,
