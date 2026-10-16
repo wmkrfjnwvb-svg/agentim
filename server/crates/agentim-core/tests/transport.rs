@@ -462,16 +462,21 @@ async fn race_logout_during_the_handshake() {
             .unwrap();
         let a = addr.clone();
         let conn = tokio::spawn(async move {
-            let mut ws = open_ws(&a, &token).await;
+            // Logged out before the handshake: refused with 401.
+            let mut ws = tokio_tungstenite::connect_async(format!("ws://{a}/ws?token={token}"))
+                .await
+                .ok()?
+                .0;
             let first = next_frame(&mut ws).await;
-            (ws, first)
+            Some((ws, first))
         });
         tokio::time::sleep(Duration::from_micros(round * 150)).await;
         hub.revoke_tokens(&alice.id, Some(&row.device_id))
             .await
             .unwrap();
-        let (mut ws, first) = conn.await.unwrap();
-        if !first.starts_with("close:") {
+        if let Some((mut ws, first)) = conn.await.unwrap()
+            && !first.starts_with("close:")
+        {
             // Welcomed before the logout: the logout closes it.
             assert_eq!(
                 next_frame(&mut ws).await,
@@ -479,7 +484,6 @@ async fn race_logout_during_the_handshake() {
                 "round {round}"
             );
         }
-        drop(ws);
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(hub.connections_of(&alice.id), 0);
