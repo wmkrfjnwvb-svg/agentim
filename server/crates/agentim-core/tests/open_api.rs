@@ -375,9 +375,27 @@ async fn address_rules(db: TestDb) {
         api.raw("GET", "/v1/users/alice", Some(&far), None, &other)
             .await
             .0,
-        403,
-        "the first hop counts"
+        200,
+        "the entry the proxy added counts"
     );
+    // A client forging an allowed address in front of its real one.
+    let forged = [("x-forwarded-for", "10.1.2.3, 192.0.2.1")];
+    assert_eq!(
+        api.raw("GET", "/v1/users/alice", Some(&far), None, &forged)
+            .await
+            .0,
+        403,
+        "a forged first entry does not count"
+    );
+    // No usable entry behind a proxy: no address, so the list refuses.
+    for h in [[("x-forwarded-for", "garbage")], [("x-forwarded-for", "")]] {
+        assert_eq!(
+            api.raw("GET", "/v1/users/alice", Some(&far), None, &h)
+                .await
+                .0,
+            403
+        );
+    }
 }
 
 async fn users_lifecycle(db: TestDb) {

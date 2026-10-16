@@ -159,18 +159,24 @@ fn net_contains((net, bits): (IpAddr, u8), ip: IpAddr) -> bool {
     }
 }
 
-/// The caller's address: the TCP peer, or the first `X-Forwarded-For`
-/// entry when the server is configured to run behind a proxy.
+/// The caller's address: the TCP peer, or behind proxies the
+/// `X-Forwarded-For` entry the outermost trusted proxy added (M9: the
+/// first entry is whatever the client sent).
 fn client_ip(hub: &Hub, req: &Request) -> Option<IpAddr> {
-    if hub.open_api_config().behind_proxy
-        && let Some(ip) = req
+    let cfg = hub.open_api_config();
+    if cfg.behind_proxy {
+        let hops: Vec<&str> = req
             .headers()
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-            .and_then(|v| v.trim().parse().ok())
-    {
-        return Some(ip);
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .map(str::trim)
+            .collect();
+        return hops
+            .len()
+            .checked_sub(cfg.proxy_hops.max(1))
+            .and_then(|i| hops[i].parse().ok());
     }
     peer_ip(req)
 }

@@ -100,7 +100,8 @@ impl Hub {
                 continue;
             }
             let member = self.reader_member(&agent, c, None).await?;
-            let mut events = vec![];
+            let mut events: Vec<Value> = vec![];
+            let mut at = std::collections::HashMap::new();
             let mut pos = member.visible_from - 1;
             loop {
                 let (cid, m, sh) = (c.clone(), member.clone(), self.inner.sh.clone());
@@ -122,26 +123,39 @@ impl Hub {
                     .await?;
                 for v in batch {
                     let ev = &v["event"];
-                    let kind = ev["type"].as_str().unwrap_or("");
-                    if !matches!(kind, "msg.created" | "msg.edited") {
-                        continue;
-                    }
                     let msg = &ev["msg"];
-                    events.push(json!({
-                        "seq": ev["seq"],
-                        "type": kind,
-                        "msg_id": msg["msg_id"],
-                        "sender": msg["sender_name"],
-                        "sender_type": msg["sender_type"],
-                        "content": msg["content"],
-                        "created_at": ev["created_at"],
-                    }));
+                    match ev["type"].as_str().unwrap_or("") {
+                        "msg.created" => {
+                            at.insert(msg["msg_id"].to_string(), events.len());
+                            events.push(json!({
+                                "seq": ev["seq"],
+                                "type": "msg.created",
+                                "msg_id": msg["msg_id"],
+                                "sender": msg["sender_name"],
+                                "sender_type": msg["sender_type"],
+                                "content": msg["content"],
+                                "created_at": ev["created_at"],
+                            }));
+                        }
+                        // Edits and completed streams carry the latest text;
+                        // recalled messages are left out (M4).
+                        "msg.updated" | "msg.recalled" => {
+                            if let Some(&i) = at.get(&msg["msg_id"].to_string()) {
+                                events[i]["content"] = msg["content"].clone();
+                                if ev["type"] == "msg.recalled" {
+                                    events[i] = Value::Null;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 pos = last;
                 if done {
                     break;
                 }
             }
+            events.retain(|e| !e.is_null());
             conversations.push(
                 json!({"conv_id": c, "title": row.title, "kind": row.kind, "events": events}),
             );

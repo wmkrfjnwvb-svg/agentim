@@ -32,6 +32,7 @@ backend_tests!(
     before_send_failures_follow_the_configuration,
     recalled_and_dissolved_content_is_not_delivered_later,
     race_recall_and_dissolve_against_writes_in_one_batch,
+    before_send_skips_retries_and_non_members,
 );
 
 const SECRET: &str = "whsec_test_secret_0123456789";
@@ -732,4 +733,39 @@ async fn race_recall_and_dissolve_against_writes_in_one_batch(db: TestDb) {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let all = serde_json::to_string(&rx.bodies()).unwrap();
     assert!(!all.contains("secret"), "{all}");
+}
+
+/// M1: a retry of a committed message, and a message from someone who is
+/// not a member, never reach the before-send hook (the hook answers
+/// `slow…` after 800 ms, so a call shows in the time taken).
+async fn before_send_skips_retries_and_non_members(db: TestDb) {
+    let (_rx, addr) = Receiver::start().await;
+    let mut cfg = single(&db.url);
+    cfg.before_send = Some(before(&addr, HookFailure::Allow, 2000));
+    let hub = open(cfg).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let eve = user(&hub, "eve", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[]).await;
+    let msg = json!({"op": "send", "conv_id": conv, "client_msg_id": "x", "text": "slow hello"});
+    let t = std::time::Instant::now();
+    let first = a.ok(msg.clone()).await;
+    assert!(
+        t.elapsed() >= Duration::from_millis(700),
+        "the hook was asked"
+    );
+    let t = std::time::Instant::now();
+    let again = a.ok(msg).await;
+    assert!(t.elapsed() < Duration::from_millis(400), "a retry is not");
+    assert_eq!(
+        (again["msg_id"].clone(), again["duplicate"].clone()),
+        (first["msg_id"].clone(), json!(true))
+    );
+    let t = std::time::Instant::now();
+    let r = Conn::new(&hub, &eve).send(&conv, "slow intruder").await;
+    assert_eq!(r["error"]["code"], "forbidden");
+    assert!(
+        t.elapsed() < Duration::from_millis(400),
+        "nor a non-member's text"
+    );
 }

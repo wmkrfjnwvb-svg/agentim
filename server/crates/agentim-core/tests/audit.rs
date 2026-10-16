@@ -19,6 +19,10 @@ backend_tests!(
     a_recalled_message_leaves_no_draft_copy,
     a_failed_index_write_is_repaired,
     race_remove_and_add_back_keep_the_index_true,
+    a_retry_gets_its_original_result_whatever_changed,
+    targeted_messages_and_drafts_are_deduplicated,
+    search_and_export_see_the_latest_text,
+    text_that_looks_encrypted_is_kept_as_text,
 );
 
 fn code(v: &Value) -> &str {
@@ -493,4 +497,164 @@ async fn race_remove_and_add_back_keep_the_index_true(db: TestDb) {
                 .await;
         }
     }
+}
+
+/// M1: a retry of a committed message returns its result, even after the
+/// sender was removed, and does not count again against guards.
+async fn a_retry_gets_its_original_result_whatever_changed(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&bob)).await;
+    let b = Conn::new(&hub, &bob);
+    let conv = b.group(&[&alice, &bot]).await;
+    let a = Conn::new(&hub, &alice);
+    let msg = json!({"op": "send", "conv_id": conv, "client_msg_id": "m1", "text": "hello"});
+    let first = a.ok(msg.clone()).await;
+    b.ok(json!({"op": "remove_member", "conv_id": conv, "user_id": alice.id}))
+        .await;
+    let head = last_seq(&b, &conv).await;
+    let again = a.ok(msg).await;
+    assert_eq!(
+        (again["seq"].clone(), again["msg_id"].clone()),
+        (first["seq"].clone(), first["msg_id"].clone())
+    );
+    assert_eq!(again["duplicate"], true);
+    assert_eq!(last_seq(&b, &conv).await, head, "nothing new");
+    // A new message is refused as before.
+    assert_eq!(code(&a.send(&conv, "new").await), "forbidden");
+    // An agent's retries do not trip the repeat guard (three equal texts).
+    let g = Conn::new(&hub, &bot);
+    let m = json!({"op": "send", "conv_id": conv, "client_msg_id": "g1", "text": "same"});
+    let first = g.ok(m.clone()).await;
+    for _ in 0..5 {
+        assert_eq!(g.ok(m.clone()).await["msg_id"], first["msg_id"]);
+    }
+    g.ok(json!({"op": "send", "conv_id": conv, "client_msg_id": "g2", "text": "other"}))
+        .await;
+    // An emergency stop is different: a stopped agent gets nothing back.
+    b.ok(json!({"op": "stop_agent", "agent_id": bot.id})).await;
+    assert_eq!(code(&Conn::new(&hub, &bot).call(m).await), "conflict");
+}
+
+/// M2: retries of a message to one person and of a message waiting for
+/// approval do not deliver or queue it twice.
+async fn targeted_messages_and_drafts_are_deduplicated(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bob, &bot]).await;
+    let to_bob = json!({"op": "send", "conv_id": conv, "client_msg_id": "w1", "text": "just you", "to_user": bob.id});
+    let first = a.ok(to_bob.clone()).await;
+    let again = a.ok(to_bob).await;
+    assert_eq!(again["side_seq"], first["side_seq"]);
+    assert_eq!(again["duplicate"], true);
+    let side = Conn::new(&hub, &bob)
+        .ok(json!({"op": "pull_side", "conv_id": conv, "after_side_seq": 0}))
+        .await;
+    let n = side["side_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["data"]["text"] == "just you")
+        .count();
+    assert_eq!(n, 1, "{side}");
+    a.ok(json!({"op": "set_agent_policy", "conv_id": conv, "agent_id": bot.id, "approval": true}))
+        .await;
+    let g = Conn::new(&hub, &bot);
+    let d = json!({"op": "send", "conv_id": conv, "client_msg_id": "d1", "text": "draft"});
+    let first = g.ok(d.clone()).await;
+    assert_eq!(g.ok(d).await["draft_id"], first["draft_id"]);
+    let s = json!({"op": "stream_start", "conv_id": conv, "client_msg_id": "s1"});
+    let first_s = g.ok(s.clone()).await;
+    assert_eq!(g.ok(s).await["msg_id"], first_s["msg_id"]);
+    let drafts = a.ok(json!({"op": "list_drafts"})).await;
+    assert_eq!(drafts["drafts"].as_array().unwrap().len(), 1, "{drafts}");
+}
+
+/// M4: search and export find edited text and completed streams, not the
+/// old or recalled text.
+async fn search_and_export_see_the_latest_text(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bot]).await;
+    a.ok(json!({"op": "set_agent_policy", "conv_id": conv, "agent_id": bot.id, "trigger": "all"}))
+        .await;
+    let m = a.send(&conv, "first draft wording").await["msg_id"].clone();
+    a.ok(json!({"op": "edit", "msg_id": m, "text": "final wording"}))
+        .await;
+    let gone = a.send(&conv, "recalled wording").await["msg_id"].clone();
+    a.ok(json!({"op": "recall", "msg_id": gone})).await;
+    let g = Conn::new(&hub, &bot);
+    let s = g
+        .ok(json!({"op": "stream_start", "conv_id": conv, "client_msg_id": "s"}))
+        .await["msg_id"]
+        .clone();
+    g.ok(json!({"op": "stream_append", "msg_id": s, "idx": 0, "text": "streamed wording"}))
+        .await;
+    g.ok(json!({"op": "stream_end", "msg_id": s})).await;
+    let find = |q: &str| json!({"op": "search", "query": q, "conv_id": conv});
+    let hits = |v: Value| v["hits"].as_array().unwrap().len();
+    assert_eq!(hits(g.ok(find("final")).await), 1);
+    assert_eq!(
+        hits(g.ok(find("first draft")).await),
+        0,
+        "the old text is gone"
+    );
+    assert_eq!(hits(g.ok(find("recalled")).await), 0);
+    let streamed = g.ok(find("streamed")).await;
+    assert_eq!(hits(streamed.clone()), 1);
+    assert_eq!(streamed["hits"][0]["msg_id"], s);
+    // One hit per message, at the message's own seq.
+    assert_eq!(hits(g.ok(find("wording")).await), 2);
+    let pkg = hub.export_agent(&alice, &bot.id, true).await.unwrap();
+    let text = pkg["conversations"][0]["events"].to_string();
+    assert!(
+        text.contains("final wording") && text.contains("streamed wording"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("first draft") && !text.contains("recalled"),
+        "{text}"
+    );
+}
+
+/// M11: with encryption off, text shaped like ciphertext is just text.
+async fn text_that_looks_encrypted_is_kept_as_text(db: TestDb) {
+    let mut cfg = single(&db.url);
+    cfg.encryption.mode = agentim_core::config::EncryptionMode::Off;
+    let hub = open(cfg.clone()).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bot]).await;
+    for t in ["enc:v1:k_x:AAAA", "enc:raw:literally", "enc:"] {
+        a.send(&conv, t).await;
+    }
+    let p = a.pull(&conv, 0).await;
+    let texts: Vec<&str> = p["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["event"]["msg"]["content"].as_str())
+        .collect();
+    assert_eq!(texts, ["enc:v1:k_x:AAAA", "enc:raw:literally", "enc:"]);
+    Conn::new(&hub, &bot)
+        .ok(json!({"op": "history", "conv_id": conv}))
+        .await;
+    // Encrypting later keeps the text as written.
+    drop(a);
+    drop(hub);
+    cfg.encryption = test_encryption();
+    let hub = open(cfg).await;
+    hub.encrypt_existing().await.unwrap();
+    let p = Conn::new(&hub, &alice).pull(&conv, 0).await.to_string();
+    assert!(
+        p.contains("enc:v1:k_x:AAAA") && p.contains("enc:raw:literally"),
+        "{p}"
+    );
 }

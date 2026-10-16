@@ -1886,6 +1886,22 @@ impl Ctx<'_, '_> {
         Ok(())
     }
 
+    /// The result of an earlier write with this `client_msg_id`, marked as
+    /// a duplicate.
+    async fn duplicate(
+        &mut self,
+        conv_id: &str,
+        sender: &str,
+        cid: &str,
+    ) -> ApiResult<Option<Value>> {
+        let Some(mut v) = self.db.dedup_get(conv_id, sender, cid).await? else {
+            return Ok(None);
+        };
+        metrics::counter!(m::DEDUP_HITS).increment(1);
+        v["duplicate"] = json!(true);
+        Ok(Some(v))
+    }
+
     async fn notify_owner(
         &mut self,
         conv_id: &str,
@@ -2471,6 +2487,11 @@ impl Ctx<'_, '_> {
         to_user: Option<String>,
         envelope: routing::EnvelopeIn,
     ) -> ApiResult<Value> {
+        // A retry of a committed write gets its result back before any other
+        // check: membership, guards or budgets may have changed since (M1).
+        if let Some(prev) = self.duplicate(conv_id, &me.id, client_msg_id).await? {
+            return Ok(prev);
+        }
         let member = self.require_member(conv_id, &me.id).await?;
         check_text(text)?;
         let kind = check_kind(kind, &payload)?;
@@ -2543,7 +2564,11 @@ impl Ctx<'_, '_> {
                 .await?;
             let side_seq = side.side_seq;
             self.out.push(Out::Side(side));
-            return Ok(json!({"side_seq": side_seq}));
+            let res = json!({"side_seq": side_seq});
+            self.db
+                .dedup_put(conv_id, &me.id, client_msg_id, &res)
+                .await?;
+            return Ok(res);
         }
 
         if me.kind == UserKind::Agent && member.approval {
@@ -2576,7 +2601,11 @@ impl Ctx<'_, '_> {
                 .await?;
             metrics::counter!(m::DRAFTS, "state" => "pending").increment(1);
             self.out.push(Out::Side(side));
-            return Ok(json!({"draft_id": d.draft_id, "state": "pending_approval"}));
+            let res = json!({"draft_id": d.draft_id, "state": "pending_approval"});
+            self.db
+                .dedup_put(conv_id, &me.id, client_msg_id, &res)
+                .await?;
+            return Ok(res);
         }
 
         let mentions = self.mentions(conv_id, text).await?;
@@ -2788,6 +2817,9 @@ impl Ctx<'_, '_> {
         if me.kind != UserKind::Agent {
             return Err(err("forbidden", "only agents stream"));
         }
+        if let Some(prev) = self.duplicate(conv_id, &me.id, client_msg_id).await? {
+            return Ok(prev);
+        }
         let member = self.require_member(conv_id, &me.id).await?;
         let active = self
             .st
@@ -2809,13 +2841,17 @@ impl Ctx<'_, '_> {
         self.agent_gate(me, conv_id, hop, "").await?;
         let now = Instant::now();
         let (msg_id, target, seq) = if member.approval {
-            (
-                format!("d_{}", crate::db::new_id()),
-                Target::Draft {
-                    audience: self.approvers(conv_id, me).await?,
-                },
-                None,
-            )
+            let id = format!("d_{}", crate::db::new_id());
+            let audience = self.approvers(conv_id, me).await?;
+            self.db
+                .dedup_put(
+                    conv_id,
+                    &me.id,
+                    client_msg_id,
+                    &json!({"msg_id": id, "seq": null, "pending_approval": true, "hop": hop}),
+                )
+                .await?;
+            (id, Target::Draft { audience }, None)
         } else {
             let res = self
                 .db

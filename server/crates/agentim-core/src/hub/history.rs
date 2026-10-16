@@ -344,16 +344,23 @@ impl Hub {
                 .await?;
             complete &= !s.more;
             let before = hits.len();
+            // Newest first: the latest version of each message decides
+            // (edits and completed streams are `msg.updated`, M4).
+            let mut seen = std::collections::HashSet::new();
             for v in s.events.iter().rev() {
                 let ev = &v["event"];
-                if !matches!(ev["type"].as_str(), Some("msg.created" | "msg.edited")) {
+                if !matches!(
+                    ev["type"].as_str(),
+                    Some("msg.created" | "msg.updated" | "msg.recalled")
+                ) || !seen.insert(ev["msg"]["msg_id"].to_string())
+                {
                     continue;
                 }
                 let Some(text) = ev["msg"]["content"].as_str() else {
                     continue;
                 };
                 if let Some(x) = excerpt(text, &needle) {
-                    hits.push(json!({"conv_id": conv, "seq": ev["seq"], "msg_id": ev["msg"]["msg_id"], "sender_id": ev["msg"]["sender_id"], "sender_name": ev["msg"]["sender_name"], "sender_type": ev["msg"]["sender_type"], "excerpt": x, "trust": v["trust"]}));
+                    hits.push(json!({"conv_id": conv, "seq": ev["msg"]["created_seq"], "msg_id": ev["msg"]["msg_id"], "sender_id": ev["msg"]["sender_id"], "sender_name": ev["msg"]["sender_name"], "sender_type": ev["msg"]["sender_type"], "excerpt": x, "trust": v["trust"]}));
                     if hits.len() as i64 >= limit {
                         break;
                     }

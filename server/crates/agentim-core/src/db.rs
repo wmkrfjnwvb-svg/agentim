@@ -468,7 +468,7 @@ impl Db<'_> {
     /// Encrypts content (empty strings stay empty; off = plaintext).
     pub async fn seal(&mut self, scope: &str, aad: &str, plain: &str) -> ApiResult<String> {
         if plain.is_empty() || !self.cx.enabled() {
-            return Ok(plain.to_string());
+            return Ok(crate::crypto::store_plain(plain).into_owned());
         }
         let k = self.key_for(scope).await?;
         self.cx.seal(&k, aad, plain)
@@ -591,7 +591,8 @@ impl Db<'_> {
                     continue;
                 }
                 let aad = format!("{table}.{c}:{}", key_vals.join(":"));
-                vals.push(self.seal(&sc, &aad, &v).await?);
+                let plain = v.strip_prefix(crate::crypto::RAW).unwrap_or(&v).to_string();
+                vals.push(self.seal(&sc, &aad, &plain).await?);
                 sets.push(format!("{c} = ?"));
             }
             let wh = keys
@@ -1689,22 +1690,55 @@ impl Db<'_> {
 
     /// Dedup + seq assignment + persistence; the caller's transaction makes
     /// them atomic.
-    pub async fn commit_message(&mut self, m: NewMsg<'_>) -> ApiResult<Committed> {
-        if let Some(cid) = m.client_msg_id {
-            let prev = sqlx::query(self.d.q("SELECT result FROM dedup WHERE conv_id = ? AND sender_id = ? AND client_msg_id = ?"))
-                .bind(m.conv_id)
-                .bind(&m.sender.id)
-                .bind(cid)
-                .fetch_optional(&mut *self.c)
-                .await?;
-            if let Some(prev) = prev {
-                let v: Value =
-                    serde_json::from_str(&prev.try_get::<String, _>(0)?).unwrap_or(Value::Null);
-                return Ok(Committed::Duplicate {
-                    seq: v["seq"].as_i64().unwrap_or(0),
-                    msg_id: v["msg_id"].as_str().unwrap_or("").to_string(),
-                });
+    /// The recorded result of an earlier write with this `client_msg_id`.
+    pub async fn dedup_get(
+        &mut self,
+        conv_id: &str,
+        sender_id: &str,
+        cid: &str,
+    ) -> ApiResult<Option<Value>> {
+        let prev = sqlx::query(self.d.q(
+            "SELECT result FROM dedup WHERE conv_id = ? AND sender_id = ? AND client_msg_id = ?",
+        ))
+        .bind(conv_id)
+        .bind(sender_id)
+        .bind(cid)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        Ok(match prev {
+            Some(r) => {
+                Some(serde_json::from_str(&r.try_get::<String, _>(0)?).unwrap_or(Value::Null))
             }
+            None => None,
+        })
+    }
+
+    pub async fn dedup_put(
+        &mut self,
+        conv_id: &str,
+        sender_id: &str,
+        cid: &str,
+        result: &Value,
+    ) -> ApiResult<()> {
+        sqlx::query(self.d.q("INSERT INTO dedup (conv_id, sender_id, client_msg_id, result, created_at) VALUES (?, ?, ?, ?, ?)"))
+            .bind(conv_id)
+            .bind(sender_id)
+            .bind(cid)
+            .bind(result.to_string())
+            .bind(now_ms())
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn commit_message(&mut self, m: NewMsg<'_>) -> ApiResult<Committed> {
+        if let Some(cid) = m.client_msg_id
+            && let Some(v) = self.dedup_get(m.conv_id, &m.sender.id, cid).await?
+        {
+            return Ok(Committed::Duplicate {
+                seq: v["seq"].as_i64().unwrap_or(0),
+                msg_id: v["msg_id"].as_str().unwrap_or("").to_string(),
+            });
         }
         let seq = self.next_seq(m.conv_id).await?;
         let ts = now_ms();
@@ -1781,14 +1815,13 @@ impl Db<'_> {
         .execute(&mut *self.c)
         .await?;
         if let Some(cid) = m.client_msg_id {
-            sqlx::query(self.d.q("INSERT INTO dedup (conv_id, sender_id, client_msg_id, result, created_at) VALUES (?, ?, ?, ?, ?)"))
-                .bind(m.conv_id)
-                .bind(&m.sender.id)
-                .bind(cid)
-                .bind(json!({"seq": seq, "msg_id": view.msg_id}).to_string())
-                .bind(ts)
-                .execute(&mut *self.c)
-                .await?;
+            self.dedup_put(
+                m.conv_id,
+                &m.sender.id,
+                cid,
+                &json!({"seq": seq, "msg_id": view.msg_id}),
+            )
+            .await?;
         }
         let sender_id = view.sender_id.clone();
         let ev = self

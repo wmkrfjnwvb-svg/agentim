@@ -414,6 +414,10 @@ pub struct OpenApiConfig {
     /// Behind a TLS-terminating proxy: accept plain HTTP from anywhere and
     /// take the client address from `X-Forwarded-For`.
     pub behind_proxy: bool,
+    /// Trusted proxies in front of the server: the client address is this
+    /// many entries from the right of `X-Forwarded-For` (entries further
+    /// left come from the client and can be forged).
+    pub proxy_hops: usize,
     /// Requests per second per key, and the burst allowed.
     pub rate_per_second: f64,
     pub burst: f64,
@@ -423,6 +427,7 @@ impl Default for OpenApiConfig {
     fn default() -> Self {
         OpenApiConfig {
             behind_proxy: false,
+            proxy_hops: 1,
             rate_per_second: 100.0,
             burst: 200.0,
         }

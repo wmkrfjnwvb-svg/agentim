@@ -14,6 +14,18 @@ use ring::rand::{SecureRandom, SystemRandom};
 use crate::model::{ApiError, ApiResult};
 
 pub const PREFIX: &str = "enc:v1:";
+/// Plaintext that itself starts with `enc:` is stored behind this prefix,
+/// so it is never mistaken for ciphertext (M11).
+pub const RAW: &str = "enc:raw:";
+
+/// How plaintext is stored when it is not encrypted.
+pub fn store_plain(plain: &str) -> std::borrow::Cow<'_, str> {
+    if plain.starts_with("enc:") {
+        format!("{RAW}{plain}").into()
+    } else {
+        plain.into()
+    }
+}
 /// Data keys rotate every 30 days.
 pub const PERIOD_MS: i64 = 30 * 86_400_000;
 
@@ -246,6 +258,9 @@ impl Crypto {
     /// Opens a stored value. Values without the prefix, or naming a key this
     /// database never had, were written as plaintext.
     pub fn open(&self, aad: &str, stored: &str) -> Result<String, String> {
+        if let Some(plain) = stored.strip_prefix(RAW) {
+            return Ok(plain.to_string());
+        }
         let Some((key_id, data)) = parse(stored) else {
             return Ok(stored.to_string());
         };
@@ -294,6 +309,13 @@ mod tests {
         // Plaintext from before encryption reads as is.
         assert_eq!(c.open("x", "hello").unwrap(), "hello");
         assert_eq!(c.open("x", "enc:v1:notakey").unwrap(), "enc:v1:notakey");
+        // Plaintext that looks like ciphertext is escaped when stored.
+        let looks = "enc:v1:k_x:AAAA";
+        let stored = store_plain(looks);
+        assert_eq!(stored, "enc:raw:enc:v1:k_x:AAAA");
+        assert_eq!(c.open("x", &stored).unwrap(), looks);
+        assert_eq!(store_plain("hello"), "hello");
+        assert_eq!(c.open("x", &store_plain("enc:raw:x")).unwrap(), "enc:raw:x");
         // The wrapped key opens only with its master key and its id.
         let other = cx();
         assert!(other.load(&k, &wrapped).is_err());

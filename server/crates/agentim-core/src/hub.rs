@@ -2237,6 +2237,33 @@ impl Hub {
         let Some(cfg) = &self.inner.cfg.before_send else {
             return Ok(msg);
         };
+        // A retry of a committed message skips the hook (it already saw it),
+        // and nobody's content goes out for a conversation they are not in (M1).
+        if let ClientMsg::Send {
+            conv_id,
+            client_msg_id,
+            ..
+        } = &msg
+        {
+            let shard = self.conv_shard(conv_id)?;
+            let (c, u, cid) = (conv_id.clone(), me.id.clone(), client_msg_id.clone());
+            let (member, dup) = self
+                .read(shard, move |db| {
+                    Box::pin(async move {
+                        Ok((
+                            db.member(&c, &u).await?.is_some(),
+                            db.dedup_get(&c, &u, &cid).await?.is_some(),
+                        ))
+                    })
+                })
+                .await?;
+            if dup {
+                return Ok(msg);
+            }
+            if !member {
+                return Err(err("forbidden", "not a member of this conversation"));
+            }
+        }
         let ClientMsg::Send {
             conv_id,
             client_msg_id,
