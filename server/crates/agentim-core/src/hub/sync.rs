@@ -193,8 +193,9 @@ impl Hub {
                         let mut events = vec![];
                         for e in raw {
                             if let Some(m) = &member
-                                && m.kind == UserKind::Agent
-                                && !Ctx::agent_can_see(db, m, &e).await?
+                                && (!m.sees(&e)
+                                    || m.kind == UserKind::Agent
+                                        && !Ctx::agent_can_see(db, m, &e).await?)
                             {
                                 continue;
                             }

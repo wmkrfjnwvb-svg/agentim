@@ -132,6 +132,17 @@ pub struct Member {
 }
 
 impl Member {
+    /// Whether this member may see an event at all: not before they could
+    /// see the log, and not about a message from before then (an edit or
+    /// recall of an older message would otherwise reveal it).
+    pub fn sees(&self, ev: &Event) -> bool {
+        ev.seq >= self.visible_from
+            && ev
+                .msg
+                .as_ref()
+                .is_none_or(|m| m.created_seq >= self.visible_from)
+    }
+
     /// Whether an event should notify this member (docs/08 §2.6): never for
     /// their own messages, nor while muted (`mentions` still notifies when
     /// they are mentioned).

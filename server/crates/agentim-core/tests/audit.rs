@@ -14,6 +14,7 @@ backend_tests!(
     an_own_agent_sees_no_more_than_its_adder,
     a_persons_agents_leave_with_them,
     unread_counts_start_at_what_a_member_can_see,
+    edits_of_older_messages_stay_hidden_from_new_members,
 );
 
 fn code(v: &Value) -> &str {
@@ -216,4 +217,74 @@ async fn a_persons_agents_leave_with_them(db: TestDb) {
         })
         .count();
     assert_eq!(reasons, 2);
+}
+
+/// H3: editing or recalling a message from before someone joined (without
+/// history) tells them nothing: not live, not in sync, not in reads, and
+/// not to an agent that hears everything.
+async fn edits_of_older_messages_stay_hidden_from_new_members(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let (carol, token) = hub
+        .create_user("carol", UserKind::Human, None, None)
+        .await
+        .unwrap();
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bob]).await;
+    let old = a.send(&conv, "secret plan").await["msg_id"].clone();
+    let gone = a.send(&conv, "another secret").await["msg_id"].clone();
+    for u in [&carol, &bot] {
+        a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": u.id, "history": 0}))
+            .await;
+    }
+    a.ok(json!({"op": "set_agent_policy", "conv_id": conv, "agent_id": bot.id, "trigger": "all"}))
+        .await;
+    let mut c = Conn::new(&hub, &carol);
+    let mut g = Conn::new(&hub, &bot);
+    c.drain();
+    g.drain();
+    let new = a.send(&conv, "after carol").await["msg_id"].clone();
+    a.ok(json!({"op": "edit", "msg_id": old, "text": "secret plan v2"}))
+        .await;
+    a.ok(json!({"op": "recall", "msg_id": gone})).await;
+    a.ok(json!({"op": "edit", "msg_id": new, "text": "after carol v2"}))
+        .await;
+    let ids = |evs: Vec<Value>| -> Vec<String> {
+        evs.iter()
+            .filter(|f| f["type"] == "event")
+            .filter_map(|f| f["event"]["msg"]["msg_id"].as_str().map(String::from))
+            .collect()
+    };
+    let want = vec![new.as_str().unwrap().to_string(); 2];
+    assert_eq!(ids(c.drain()), want, "live, person");
+    assert_eq!(ids(g.drain()), want, "live, agent with trigger all");
+    // A device syncs, the agent syncs, reads go through the server.
+    let (_, device) = hub.authenticate_device(&token).unwrap();
+    for (who, conn) in [
+        ("sync, person", Conn::device(&hub, &carol, &device)),
+        ("sync, agent", Conn::new(&hub, &bot)),
+    ] {
+        let s = conn.ok(json!({"op": "sync"})).await;
+        let evs: Vec<Value> = s["convs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|c| c["events"].as_array().unwrap().clone())
+            .collect();
+        assert!(ids(evs).iter().all(|i| *i == new), "{who}: {s}");
+    }
+    for conn in [Conn::new(&hub, &carol), Conn::new(&hub, &bot)] {
+        let p = conn.pull(&conv, 0).await;
+        let evs = p["events"].as_array().unwrap().clone();
+        assert!(ids(evs).iter().all(|i| *i == new), "{p}");
+    }
+    let h = Conn::new(&hub, &bot)
+        .ok(json!({"op": "history", "conv_id": conv}))
+        .await;
+    assert!(!h.to_string().contains("secret"), "{h}");
+    // Members who could see the message still get the edit.
+    let p = Conn::new(&hub, &bob).pull(&conv, 0).await;
+    assert!(p.to_string().contains("secret plan v2"));
 }

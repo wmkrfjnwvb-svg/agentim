@@ -1650,7 +1650,7 @@ impl Ctx<'_, '_> {
 
     /// What an agent member may read (bounded by its trigger mode).
     pub async fn agent_can_see(db: &mut Db<'_>, m: &Member, ev: &Event) -> ApiResult<bool> {
-        if ev.seq < m.visible_from {
+        if !m.sees(ev) {
             return Ok(false);
         }
         let Some(msg) = &ev.msg else { return Ok(true) };
@@ -1728,6 +1728,21 @@ impl Ctx<'_, '_> {
             Arc::new(recips)
         } else {
             base
+        };
+        // Events about a message from before a member could see the log
+        // (edits, recalls) stay hidden from them.
+        let recips = match &ev.msg {
+            Some(msg) if members.iter().any(|mb| msg.created_seq < mb.visible_from) => {
+                let mut r = (*recips).clone();
+                for (mb, x) in members.iter().zip(r.iter_mut()) {
+                    if !mb.sees(&ev) {
+                        x.visible = false;
+                        x.wake = false;
+                    }
+                }
+                Arc::new(r)
+            }
+            _ => recips,
         };
         // New messages notify members who did not send them and have not
         // muted the conversation (docs/08 §2.6).

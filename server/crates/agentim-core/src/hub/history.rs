@@ -48,7 +48,7 @@ pub(super) async fn agent_view(
     m: &Member,
     e: Event,
 ) -> ApiResult<Option<Value>> {
-    if m.kind == UserKind::Agent && !Ctx::agent_can_see(db, m, &e).await? {
+    if !m.sees(&e) || m.kind == UserKind::Agent && !Ctx::agent_can_see(db, m, &e).await? {
         return Ok(None);
     }
     let mut v = json!({"type": "event", "event": e});
