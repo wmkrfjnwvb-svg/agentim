@@ -1,0 +1,219 @@
+//! Problems other IM servers had, checked against ours
+//! (docs/research/im-issues.md): each test reproduces one of them and
+//! fails without its fix.
+
+mod common;
+
+use agentim_core::model::*;
+use common::*;
+use serde_json::{Value, json};
+
+backend_tests!(
+    deactivating_an_owner_stops_their_agents,
+    deactivated_people_cannot_be_added,
+    an_own_agent_sees_no_more_than_its_adder,
+    a_persons_agents_leave_with_them,
+    unread_counts_start_at_what_a_member_can_see,
+);
+
+fn code(v: &Value) -> &str {
+    v["error"]["code"].as_str().unwrap_or("")
+}
+
+async fn last_seq(c: &Conn, conv: &str) -> i64 {
+    let p = c.pull(conv, 0).await;
+    seqs(&p).last().copied().unwrap_or(0)
+}
+
+/// H1: the agents' keys are in the deactivated person's hands.
+async fn deactivating_an_owner_stops_their_agents(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let other = user(&hub, "other", UserKind::Agent, Some(&bob)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bob, &bot]).await;
+    let g = Conn::new(&hub, &bot);
+    g.ok(json!({"op": "send", "conv_id": conv, "client_msg_id": "1", "text": "hi"}))
+        .await;
+    hub.set_deactivated(&alice.id, true).await.unwrap();
+    assert!(hub.is_stopped(&bot.id), "the owner's agent is stopped");
+    assert!(!hub.is_stopped(&other.id), "someone else's agent is not");
+    let g = Conn::new(&hub, &bot);
+    let r = g
+        .call(json!({"op": "send", "conv_id": conv, "client_msg_id": "2", "text": "still here"}))
+        .await;
+    assert_eq!(code(&r), "conflict", "{r}");
+    // Deactivating again, and reactivating, leave it stopped: the owner
+    // decides when it runs again.
+    hub.set_deactivated(&alice.id, true).await.unwrap();
+    hub.set_deactivated(&alice.id, false).await.unwrap();
+    assert!(hub.is_stopped(&bot.id));
+    // It survives a restart.
+    drop((a, g));
+    let hub = open(single(&db.url)).await;
+    assert!(hub.is_stopped(&bot.id));
+}
+
+async fn deactivated_people_cannot_be_added(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bob]).await;
+    hub.set_deactivated(&carol.id, true).await.unwrap();
+    let head = last_seq(&a, &conv).await;
+    let r = a
+        .call(json!({"op": "add_member", "conv_id": conv, "user_id": carol.id}))
+        .await;
+    assert_eq!(code(&r), "not_found", "{r}");
+    assert_eq!(last_seq(&a, &conv).await, head, "a refusal leaves no trace");
+    hub.set_deactivated(&carol.id, false).await.unwrap();
+    a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": carol.id}))
+        .await;
+}
+
+/// H6: a plain member who sees nothing from before they joined cannot read
+/// it through an agent they add with history.
+async fn an_own_agent_sees_no_more_than_its_adder(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let bobbot = user(&hub, "bobbot", UserKind::Agent, Some(&bob)).await;
+    let alicebot = user(&hub, "alicebot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&carol]).await;
+    for i in 0..5 {
+        a.send(&conv, &format!("before bob {i}")).await;
+    }
+    a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": bob.id, "history": 0}))
+        .await;
+    let joined = last_seq(&a, &conv).await;
+    let b = Conn::new(&hub, &bob);
+    b.ok(json!({"op": "add_member", "conv_id": conv, "user_id": bobbot.id, "history": 200}))
+        .await;
+    let g = Conn::new(&hub, &bobbot);
+    let h = g.ok(json!({"op": "history", "conv_id": conv})).await;
+    let early: Vec<&Value> = h["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["event"]["seq"].as_i64().unwrap() < joined)
+        .collect();
+    assert!(early.is_empty(), "{early:?}");
+    // The owner (a manager) can still share history with their agent.
+    a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": alicebot.id, "history": 200}))
+        .await;
+    let h = Conn::new(&hub, &alicebot)
+        .ok(json!({"op": "history", "conv_id": conv}))
+        .await;
+    assert!(
+        h["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["event"]["seq"].as_i64().unwrap() < joined)
+    );
+}
+
+/// M3: a new member's unread and mention counts start where they can see.
+async fn unread_counts_start_at_what_a_member_can_see(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let dave = user(&hub, "dave", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bob]).await;
+    for i in 0..5 {
+        a.send(&conv, &format!("old {i}")).await;
+    }
+    a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": carol.id, "history": 0}))
+        .await;
+    a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": dave.id, "history": 2}))
+        .await;
+    let c = Conn::new(&hub, &carol);
+    let u = c.ok(json!({"op": "unread"})).await;
+    assert_eq!(
+        (u["total"].clone(), u["mentions"].clone()),
+        (json!(0), json!(0)),
+        "{u}"
+    );
+    let d = Conn::new(&hub, &dave);
+    let u = d.ok(json!({"op": "unread"})).await;
+    assert!(u["total"].as_i64().unwrap() <= 2, "{u}");
+    // New messages count as usual.
+    a.send(&conv, "new").await;
+    assert_eq!(c.ok(json!({"op": "unread"})).await["total"], 1);
+    // Removed, mentioned while away, and added back without history.
+    a.ok(json!({"op": "remove_member", "conv_id": conv, "user_id": carol.id}))
+        .await;
+    a.send(&conv, "@carol while you were away").await;
+    a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": carol.id, "history": 0}))
+        .await;
+    let u = c.ok(json!({"op": "unread"})).await;
+    assert_eq!(
+        (u["total"].clone(), u["mentions"].clone()),
+        (json!(0), json!(0)),
+        "{u}"
+    );
+}
+
+/// H6: removed or gone, a person can no longer read or speak through their
+/// agents in that conversation.
+async fn a_persons_agents_leave_with_them(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let bobbot = user(&hub, "bobbot", UserKind::Agent, Some(&bob)).await;
+    let carolbot = user(&hub, "carolbot", UserKind::Agent, Some(&carol)).await;
+    let alicebot = user(&hub, "alicebot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a
+        .group(&[&bob, &carol, &bobbot, &carolbot, &alicebot])
+        .await;
+    let r = a
+        .ok(json!({"op": "remove_member", "conv_id": conv, "user_id": bob.id}))
+        .await;
+    assert_eq!(r["agents"].as_array().unwrap().len(), 1, "{r}");
+    Conn::new(&hub, &carol)
+        .ok(json!({"op": "leave", "conv_id": conv}))
+        .await;
+    let members: Vec<String> = a.ok(json!({"op": "list_convs"})).await["convs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["conv_id"] == conv)
+        .unwrap()["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["user_id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        !members.contains(&bobbot.id) && !members.contains(&carolbot.id),
+        "{members:?}"
+    );
+    assert!(members.contains(&alicebot.id), "other people's agents stay");
+    for bot in [&bobbot, &carolbot] {
+        let r = Conn::new(&hub, bot)
+            .call(json!({"op": "history", "conv_id": conv}))
+            .await;
+        assert_eq!(code(&r), "forbidden", "{r}");
+    }
+    // The log says why the agents left.
+    let p = a.pull(&conv, 0).await;
+    let reasons = p["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| {
+            e["event"]["type"] == "member.removed" && e["event"]["data"]["reason"] == "owner_left"
+        })
+        .count();
+    assert_eq!(reasons, 2);
+}

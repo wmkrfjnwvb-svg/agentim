@@ -965,7 +965,8 @@ impl Hub {
             .map(|_| ())
     }
 
-    /// Deactivating also revokes every token and disconnects the user.
+    /// Deactivating also revokes every token, disconnects the user and
+    /// stops their agents.
     pub async fn set_deactivated(&self, user_id: &str, on: bool) -> ApiResult<()> {
         self.control()
             .call(Op::SetDeactivated {
@@ -981,6 +982,7 @@ impl Hub {
                 .unwrap()
                 .insert(user_id.into());
             self.revoke_tokens(user_id, None).await?;
+            self.stop_agents_of(user_id).await?;
         } else {
             self.inner.sh.deactivated.write().unwrap().remove(user_id);
         }
@@ -2402,6 +2404,24 @@ impl Hub {
                     dissolved: false,
                 })
                 .await?;
+            // The person's agents that left with them.
+            for a in v["agents"].as_array().cloned().unwrap_or_default() {
+                let id = a["user_id"].as_str().unwrap_or_default().to_string();
+                self.control()
+                    .call(Op::MemberIndexRemove {
+                        conv_id: conv_id.to_string(),
+                        user_id: id.clone(),
+                    })
+                    .await?;
+                self.control()
+                    .call(Op::Departure {
+                        user_id: id,
+                        conv_id: conv_id.to_string(),
+                        seq: a["seq"].as_i64().unwrap_or(0),
+                        dissolved: false,
+                    })
+                    .await?;
+            }
         }
         Ok(v)
     }

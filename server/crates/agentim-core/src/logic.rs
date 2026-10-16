@@ -1910,6 +1910,9 @@ impl Ctx<'_, '_> {
                 "only the owner or an admin can add members",
             ));
         }
+        if self.sh.deactivated.read().unwrap().contains(&u.id) {
+            return Err(err("not_found", "no such user"));
+        }
         if self.sh.blocked(&u.id, &me.id) {
             return Err(err(
                 "blocked",
@@ -1940,6 +1943,14 @@ impl Ctx<'_, '_> {
             .db
             .window_start(conv_id, conv.last_seq, n, since)
             .await?;
+        // A plain member adding their own agent cannot give it more of the
+        // past than they can see themselves (it would let them read it
+        // through the agent).
+        let from = if is_manager(&mine.role) {
+            from
+        } else {
+            from.max(mine.visible_from)
+        };
         let history_from = (from <= conv.last_seq).then_some(from);
         let ev = self
             .db
@@ -2031,6 +2042,42 @@ impl Ctx<'_, '_> {
                 return Err(err("forbidden", "you cannot remove this member"));
             }
         }
+        let seq = self.detach(conv_id, me, u, leaving, None).await?;
+        // The person holds their agents' keys: the agents leave with them,
+        // or the person could go on reading and speaking through them.
+        let mut agents = vec![];
+        if u.kind == UserKind::Human {
+            let theirs: Vec<Member> = self
+                .members(conv_id)
+                .await?
+                .iter()
+                .filter(|m| {
+                    m.kind == UserKind::Agent && m.owner_id.as_deref() == Some(u.id.as_str())
+                })
+                .cloned()
+                .collect();
+            for m in theirs {
+                let Some(agent) = self.sh.user(&m.user_id) else {
+                    continue;
+                };
+                let s = self
+                    .detach(conv_id, me, &agent, false, Some("owner_left"))
+                    .await?;
+                agents.push(json!({"user_id": agent.id, "seq": s}));
+            }
+        }
+        Ok(json!({"seq": seq, "agents": agents}))
+    }
+
+    /// Takes a member out of a conversation (permissions already checked).
+    async fn detach(
+        &mut self,
+        conv_id: &str,
+        me: &User,
+        u: &User,
+        leaving: bool,
+        reason: Option<&str>,
+    ) -> ApiResult<i64> {
         if u.kind == UserKind::Agent {
             // Its live streams end visibly before it goes; drafts are dropped.
             let ids: Vec<String> = self
@@ -2059,7 +2106,7 @@ impl Ctx<'_, '_> {
                 kind,
                 Some(&me.id),
                 None,
-                json!({"user_id": u.id, "name": u.name, "kind": u.kind, "by": me.id}),
+                json!({"user_id": u.id, "name": u.name, "kind": u.kind, "by": me.id, "reason": reason}),
             )
             .await?;
         let seq = ev.seq;
@@ -2080,7 +2127,7 @@ impl Ctx<'_, '_> {
         self.db
             .audit(Some(&me.id), kind, Some(conv_id), Some(&u.id), json!({}))
             .await?;
-        Ok(json!({"seq": seq}))
+        Ok(seq)
     }
 
     async fn set_role(

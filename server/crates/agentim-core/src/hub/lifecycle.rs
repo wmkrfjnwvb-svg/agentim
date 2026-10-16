@@ -72,11 +72,22 @@ impl Hub {
         {
             return Err(err("bad_request", "reason must be 1..500 bytes"));
         }
+        self.stop_agent_by(agent, &me.id, note).await
+    }
+
+    /// Stops an agent on behalf of `by` (its owner, or the system when the
+    /// owner is deactivated).
+    pub(super) async fn stop_agent_by(
+        &self,
+        agent: User,
+        by: &str,
+        note: Option<String>,
+    ) -> ApiResult<Value> {
         self.control()
             .call(Op::SetStopped {
                 agent_id: agent.id.clone(),
                 on: true,
-                by: me.id.clone(),
+                by: by.to_string(),
             })
             .await?;
         // From here every writer refuses the agent; its connections go.
@@ -93,7 +104,7 @@ impl Hub {
                 conv_id: c.clone(),
                 agent: agent.clone(),
                 on: true,
-                by: me.id.clone(),
+                by: by.to_string(),
                 reason: note.clone(),
             })
             .await?;
@@ -101,6 +112,39 @@ impl Hub {
         Ok(
             json!({"agent_id": agent.id, "stopped": true, "conversations": convs.len(), "disconnected": kicked}),
         )
+    }
+
+    /// The person's live agents are stopped when the person is
+    /// deactivated: their keys are in that person's hands (docs/03
+    /// §9.3.1). Reactivating does not resume them; the owner does.
+    pub(super) async fn stop_agents_of(&self, owner_id: &str) -> ApiResult<()> {
+        let owner = owner_id.to_string();
+        let ids = self
+            .read(self.control(), move |db| {
+                Box::pin(async move { db.agent_ids_of(&owner).await })
+            })
+            .await?;
+        let mut agents = vec![];
+        for id in ids {
+            if let Some(a) = self.user_or_load(&id).await? {
+                agents.push(a);
+            }
+        }
+        for a in agents {
+            if self.is_destroyed(&a.id) || self.is_stopped(&a.id) {
+                continue;
+            }
+            match self
+                .stop_agent_by(a, "system", Some("owner deactivated".into()))
+                .await
+            {
+                Err(e) if e.code == "conflict" => {}
+                r => {
+                    r?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub async fn resume_agent(&self, me: &User, agent_id: &str) -> ApiResult<Value> {

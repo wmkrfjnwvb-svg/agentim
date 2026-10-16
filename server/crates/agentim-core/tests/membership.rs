@@ -797,24 +797,12 @@ async fn removed_members_cannot_act_on_anything_in_the_conversation(db: TestDb) 
     // Others cannot target the removed member either.
     let to_bob = json!({"op": "send", "conv_id": conv, "client_msg_id": "e2", "text": "for bob", "to_user": bob.id});
     assert_eq!(code(&a.call(to_bob).await), "forbidden");
-    // bob's agent is still a member, so bob may still see the side events
-    // addressed to him as its owner, and nothing else.
-    assert_eq!(bb.send(&conv, "bobbot still here").await["ok"], true);
-    let side = b1.ok(json!({"op": "pull_side", "conv_id": conv})).await;
-    assert!(
-        side["side_events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|e| e["audience"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|u| u == bob.id.as_str())),
-        "{side}"
+    // bob's agent left with him (he holds its key): it cannot speak, and
+    // bob cannot read or act through it.
+    assert_eq!(
+        code(&bb.send(&conv, "bobbot still here").await),
+        "forbidden"
     );
-    // Removing the agent too ends bob's observation through it.
-    a.ok(remove(&conv, &bobbot)).await;
     for r in [
         b1.call(json!({"op": "pull", "conv_id": conv, "as_agent": bobbot.id})).await,
         b1.call(json!({"op": "whisper", "conv_id": conv, "agent_id": bobbot.id, "text": "x"})).await,

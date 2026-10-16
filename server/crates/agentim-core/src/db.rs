@@ -942,6 +942,19 @@ impl Db<'_> {
         Ok(r.try_get::<i64, _>(0)?)
     }
 
+    /// Ids of the agents a person owns (not destroyed).
+    pub async fn agent_ids_of(&mut self, owner_id: &str) -> ApiResult<Vec<String>> {
+        let rows = sqlx::query(self.d.q(
+            "SELECT id FROM users WHERE owner_id = ? AND kind = 'agent' AND destroyed_at IS NULL",
+        ))
+        .bind(owner_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(|r| r.try_get::<String, _>(0).map_err(Into::into))
+            .collect()
+    }
+
     pub async fn tokens_all(&mut self) -> ApiResult<Vec<TokenRow>> {
         let rows = sqlx::query("SELECT hash, user_id, device_id, device_name, platform, issued_by, created_at, expires_at, last_seen FROM tokens")
             .fetch_all(&mut *self.c)
@@ -2243,9 +2256,28 @@ impl Db<'_> {
         Ok(())
     }
 
+    /// Messages at or below this seq do not count as unread: what the user
+    /// read, and everything before they could see the conversation.
+    async fn unread_floor(&mut self, conv_id: &str, user_id: &str) -> ApiResult<i64> {
+        let read = self.read_seq(conv_id, user_id).await?;
+        let r = sqlx::query(
+            self.d
+                .q("SELECT visible_from FROM members WHERE conv_id = ? AND user_id = ?"),
+        )
+        .bind(conv_id)
+        .bind(user_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        let visible = match r {
+            Some(r) => r.try_get::<Option<i64>, _>(0)?.unwrap_or(1),
+            None => 1,
+        };
+        Ok(read.max(visible - 1))
+    }
+
     /// Unread messages that mention the user.
     pub async fn unread_mentions(&mut self, conv_id: &str, user_id: &str) -> ApiResult<i64> {
-        let read = self.read_seq(conv_id, user_id).await?;
+        let read = self.unread_floor(conv_id, user_id).await?;
         let r = sqlx::query(self.d.q(
             "SELECT COUNT(*) FROM messages WHERE conv_id = ? AND created_seq > ? AND sender_id <> ? AND state <> ? AND mentions LIKE ?",
         ))
@@ -2307,7 +2339,7 @@ impl Db<'_> {
     /// Unread counts only new messages from others (not edits, recalls or
     /// system events).
     pub async fn unread(&mut self, conv_id: &str, user_id: &str) -> ApiResult<i64> {
-        let read = self.read_seq(conv_id, user_id).await?;
+        let read = self.unread_floor(conv_id, user_id).await?;
         let r = sqlx::query(self.d.q(
             "SELECT COUNT(*) FROM messages WHERE conv_id = ? AND created_seq > ? AND sender_id <> ? AND state <> ?",
         ))
