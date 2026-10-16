@@ -51,6 +51,7 @@ pub(super) async fn agent_view(
     if !m.sees(&e) || m.kind == UserKind::Agent && !Ctx::agent_can_see(db, m, &e).await? {
         return Ok(None);
     }
+    let e = e.for_reader(&m.user_id).into_owned();
     let mut v = json!({"type": "event", "event": e});
     if m.kind == UserKind::Agent
         && e.kind == "msg.created"

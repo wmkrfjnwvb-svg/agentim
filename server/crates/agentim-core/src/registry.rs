@@ -639,17 +639,22 @@ fn send(g: &mut Inner, sid: u64, f: Frame, resync_conv: Option<&str>) -> bool {
     false
 }
 
-fn deliver_event(g: &mut Inner, ev: &Event, recips: &[Recip]) {
-    let quiet: Frame = json!({"type": "event", "event": ev, "notify": false})
+fn deliver_event(g: &mut Inner, full: &Event, recips: &[Recip]) {
+    // Everyone but the sender gets it without the sender's client_msg_id.
+    let public = full.for_reader("");
+    let quiet: Frame = json!({"type": "event", "event": public, "notify": false})
         .to_string()
         .into();
-    let loud: Frame = json!({"type": "event", "event": ev, "notify": true})
+    let loud: Frame = json!({"type": "event", "event": public, "notify": true})
         .to_string()
         .into();
     for r in recips {
         if !r.visible {
             continue;
         }
+        let ev = full.for_reader(&r.user_id);
+        let ev = ev.as_ref();
+        let own = full.msg.as_ref().is_some_and(|m| m.sender_id == r.user_id);
         let frame = if r.kind == UserKind::Agent {
             // Agents also get the trust label and whether to act.
             let mut v = json!({"type": "event", "event": ev, "notify": r.notify, "wake": r.wake});
@@ -658,6 +663,10 @@ fn deliver_event(g: &mut Inner, ev: &Event, recips: &[Recip]) {
                 v["flags"] = json!(flags);
             }
             v.to_string().into()
+        } else if own {
+            json!({"type": "event", "event": ev, "notify": r.notify})
+                .to_string()
+                .into()
         } else if r.notify {
             loud.clone()
         } else {

@@ -34,6 +34,9 @@ struct ConvState {
     read_seq: i64,
     /// Departed members get events up to this seq only.
     until: Option<i64>,
+    /// The member's previous membership (visible_from, removal seq), when
+    /// they were removed and added back (D92).
+    past: Option<(i64, i64)>,
 }
 
 impl Hub {
@@ -169,7 +172,14 @@ impl Hub {
                     sh.reg.sync_forget(sess.sid, &conv);
                     s
                 }
-                Some(b) => (b + 1).max(visible_from),
+                // Removed and added back while this device was behind: it
+                // gets the rest of what it could see before (D92).
+                Some(b) => match st.past {
+                    Some((from, until)) if b < until && b + 1 < visible_from => {
+                        (b + 1).max(from).max(st.floor)
+                    }
+                    _ => (b + 1).max(visible_from),
+                },
             };
             let head = st.until.map(|u| u.min(st.last_seq)).unwrap_or(st.last_seq);
             // A first sync (or a reset) records where this device starts, so
@@ -193,6 +203,7 @@ impl Hub {
                 (a, s, None) => Some(a.map(|a| a.1).unwrap_or(0).max(s.unwrap_or(0))),
             };
             let member = st.member.clone();
+            let past = st.past;
             let (c, me_id) = (conv.clone(), me.id.clone());
             let read_seq = st.read_seq;
             let policy_sh = sh.clone();
@@ -208,7 +219,21 @@ impl Hub {
                         let upto = raw.last().map(|e| e.seq).unwrap_or(start - 1);
                         let mut events = vec![];
                         for e in raw {
-                            if let Some(m) = &member
+                            // Events of the previous membership are seen as
+                            // that member saw them; the gap after it not at all.
+                            let as_then = match (&member, past) {
+                                (Some(m), Some((from, until))) if e.seq < m.visible_from => {
+                                    if e.seq > until {
+                                        continue;
+                                    }
+                                    Some(Member {
+                                        visible_from: from,
+                                        ..m.clone()
+                                    })
+                                }
+                                _ => None,
+                            };
+                            if let Some(m) = as_then.as_ref().or(member.as_ref())
                                 && (!m.sees(&e)
                                     || m.kind == UserKind::Agent
                                         && !Ctx::agent_can_see(db, m, &e).await?)
@@ -364,6 +389,10 @@ impl Hub {
                 };
                 let floor = db.first_seq(&c).await?.unwrap_or(row.last_seq + 1);
                 let read_seq = db.read_seq(&c, &me_id).await?;
+                let past = match &member {
+                    Some(_) => db.past_member(&c, &me_id).await?,
+                    None => None,
+                };
                 Ok(Some(ConvState {
                     conv_id: c,
                     member,
@@ -373,6 +402,7 @@ impl Hub {
                     joined_at,
                     read_seq,
                     until,
+                    past,
                 }))
             })
         })
@@ -570,6 +600,7 @@ fn decorate(
     silenced: bool,
     now: i64,
 ) -> Value {
+    let e = e.for_reader(me_id).into_owned();
     let mut v = json!({"type": "event", "event": e});
     let notify = match (&e.msg, e.kind.as_str(), member) {
         (Some(msg), "msg.created", Some(m)) => {

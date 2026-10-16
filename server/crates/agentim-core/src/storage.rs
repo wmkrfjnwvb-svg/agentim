@@ -489,6 +489,21 @@ pub const TABLES: &[Table] = &[
         indexes: &[],
         conv_key: None,
     },
+    // v4: a removed member's last stretch of the log (from its first visible
+    // seq to its removal), so devices that were offline get it after the
+    // member is added back (D92).
+    Table {
+        name: "past_members",
+        cols: &[
+            c("conv_id", Id),
+            c("user_id", Id),
+            c("visible_from", Big),
+            c("until_seq", Big),
+        ],
+        pk: &["conv_id", "user_id"],
+        indexes: &[],
+        conv_key: Some("conv_id"),
+    },
     // v3: how far each device has received and acknowledged a conversation
     // (docs/08-sync-and-client.md §2.1). Kept by the server; clients only ack.
     Table {

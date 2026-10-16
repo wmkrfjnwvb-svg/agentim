@@ -2279,6 +2279,11 @@ impl Ctx<'_, '_> {
         let seq = ev.seq;
         // The member still receives this event; nothing after it.
         self.emit(ev).await?;
+        if let Some(m) = self.db.member(conv_id, &u.id).await? {
+            self.db
+                .remember_past(conv_id, &u.id, m.visible_from, seq)
+                .await?;
+        }
         self.db.remove_member(conv_id, &u.id).await?;
         self.st.members.remove(conv_id);
         self.st.recips.remove(conv_id);

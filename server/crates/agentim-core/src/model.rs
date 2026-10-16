@@ -168,6 +168,10 @@ impl Member {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgView {
     pub msg_id: String,
+    /// The sender's own id for the message, shown only to the sender (to
+    /// merge a message it sent with the copy sync brings back, M17).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_msg_id: Option<String>,
     pub conv_id: String,
     pub created_seq: i64,
     pub sender_id: String,
@@ -212,6 +216,23 @@ pub struct Event {
     pub msg: Option<MsgView>,
     pub data: Value,
     pub created_at: i64,
+}
+
+impl Event {
+    /// The event as `reader` receives it: the sender's `client_msg_id` is
+    /// for the sender only.
+    pub fn for_reader(&self, reader: &str) -> std::borrow::Cow<'_, Event> {
+        match &self.msg {
+            Some(m) if m.client_msg_id.is_some() && m.sender_id != reader => {
+                let mut e = self.clone();
+                if let Some(m) = e.msg.as_mut() {
+                    m.client_msg_id = None;
+                }
+                std::borrow::Cow::Owned(e)
+            }
+            _ => std::borrow::Cow::Borrowed(self),
+        }
+    }
 }
 
 /// One entry of a conversation's side channel: content with targeted

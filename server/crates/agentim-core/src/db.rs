@@ -309,6 +309,7 @@ fn row_msg(r: &AnyRow, cx: &crate::crypto::Crypto) -> sqlx::Result<MsgView> {
         payload: dec_json(cx, r, "payload", &format!("messages.payload:{id}"))?,
         envelope: dec_json(cx, r, "envelope", &format!("messages.envelope:{id}"))?,
         root_id: r.try_get("root_id")?,
+        client_msg_id: None,
         msg_id: id,
         conv_id: r.try_get("conv_id")?,
         created_seq: r.try_get("created_seq")?,
@@ -1525,6 +1526,53 @@ impl Db<'_> {
         r.as_ref().map(row_member).transpose().map_err(Into::into)
     }
 
+    /// Remembers a removed member's last visible stretch (D92).
+    pub async fn remember_past(
+        &mut self,
+        conv_id: &str,
+        user_id: &str,
+        visible_from: i64,
+        until_seq: i64,
+    ) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("DELETE FROM past_members WHERE conv_id = ? AND user_id = ?"),
+        )
+        .bind(conv_id)
+        .bind(user_id)
+        .execute(&mut *self.c)
+        .await?;
+        sqlx::query(self.d.q(
+            "INSERT INTO past_members (conv_id, user_id, visible_from, until_seq) VALUES (?, ?, ?, ?)",
+        ))
+        .bind(conv_id)
+        .bind(user_id)
+        .bind(visible_from)
+        .bind(until_seq)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
+    /// (visible_from, until_seq) of a member's previous membership.
+    pub async fn past_member(
+        &mut self,
+        conv_id: &str,
+        user_id: &str,
+    ) -> ApiResult<Option<(i64, i64)>> {
+        let r = sqlx::query(self.d.q(
+            "SELECT visible_from, until_seq FROM past_members WHERE conv_id = ? AND user_id = ?",
+        ))
+        .bind(conv_id)
+        .bind(user_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        Ok(match r {
+            Some(r) => Some((r.try_get(0)?, r.try_get(1)?)),
+            None => None,
+        })
+    }
+
     pub async fn remove_member(&mut self, conv_id: &str, user_id: &str) -> ApiResult<()> {
         for q in [
             "DELETE FROM members WHERE conv_id = ? AND user_id = ?",
@@ -1751,6 +1799,7 @@ impl Db<'_> {
         let ts = now_ms();
         let view = MsgView {
             msg_id: format!("m_{}", new_id()),
+            client_msg_id: m.client_msg_id.map(String::from),
             conv_id: m.conv_id.to_string(),
             created_seq: seq,
             sender_id: m.sender.id.clone(),

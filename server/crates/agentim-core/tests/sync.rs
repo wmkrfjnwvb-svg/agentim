@@ -42,6 +42,8 @@ backend_tests!(
     a_side_channel_backlog_comes_in_full,
     a_quiet_conversation_keeps_its_position,
     read_and_mute_state_reach_every_device,
+    the_sender_gets_its_client_msg_id_back,
+    removed_and_added_back_while_offline,
 );
 
 fn code(v: &Value) -> &str {
@@ -1276,4 +1278,103 @@ async fn read_and_mute_state_reach_every_device(db: TestDb) {
         Some(json!("none")),
         "{r}"
     );
+}
+
+/// M17: the sender's devices get `client_msg_id` with the message (live and
+/// in sync), so they can merge it with what they sent; nobody else does.
+async fn the_sender_gets_its_client_msg_id_back(db: TestDb) {
+    let hub = hub_with(&db, |_| {}).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bob, &bot]).await;
+    a.ok(json!({"op": "set_agent_policy", "conv_id": conv, "agent_id": bot.id, "trigger": "all"}))
+        .await;
+    let (ad, bd) = (device(&hub, &alice).await, device(&hub, &bob).await);
+    let mut a2 = Conn::device(&hub, &alice, &ad);
+    let mut b2 = Conn::device(&hub, &bob, &bd);
+    let mut g = Conn::new(&hub, &bot);
+    sync_all(&a2).await;
+    sync_all(&b2).await;
+    a2.drain();
+    b2.drain();
+    g.drain();
+    a.ok(json!({"op": "send", "conv_id": conv, "client_msg_id": "my-local-id", "text": "hi"}))
+        .await;
+    let has = |frames: Vec<Value>| frames.iter().any(|f| f.to_string().contains("my-local-id"));
+    assert!(has(a2.drain()), "the sender's other device, live");
+    assert!(!has(b2.drain()), "not other people");
+    assert!(!has(g.drain()), "not agents");
+    // In sync and reads.
+    let fresh_a = Conn::device(&hub, &alice, &device(&hub, &alice).await);
+    assert!(round(&fresh_a).await.to_string().contains("my-local-id"));
+    let fresh_b = Conn::device(&hub, &bob, &device(&hub, &bob).await);
+    assert!(!round(&fresh_b).await.to_string().contains("my-local-id"));
+    assert!(
+        !Conn::new(&hub, &bob)
+            .pull(&conv, 0)
+            .await
+            .to_string()
+            .contains("my-local-id")
+    );
+    assert!(
+        !Conn::new(&hub, &bot)
+            .ok(json!({"op": "history", "conv_id": conv}))
+            .await
+            .to_string()
+            .contains("my-local-id")
+    );
+}
+
+/// M14 / D92: removed and added back while a device was offline, it gets
+/// what it could see before the removal, then the new stretch; nothing of
+/// the time in between.
+async fn removed_and_added_back_while_offline(db: TestDb) {
+    let hub = hub_with(&db, |_| {}).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let dev = device(&hub, &bob).await;
+    let conv = a.group(&[&bob]).await;
+    sync_all(&Conn::device(&hub, &bob, &dev)).await;
+    let before: Vec<i64> = {
+        let mut v = vec![];
+        for i in 0..3 {
+            v.push(
+                a.send(&conv, &format!("before {i}")).await["seq"]
+                    .as_i64()
+                    .unwrap(),
+            );
+        }
+        v
+    };
+    let removed = a
+        .ok(json!({"op": "remove_member", "conv_id": conv, "user_id": bob.id}))
+        .await["seq"]
+        .as_i64()
+        .unwrap();
+    a.send(&conv, "while away").await;
+    let back = a
+        .ok(json!({"op": "add_member", "conv_id": conv, "user_id": bob.id, "history": 0}))
+        .await["seq"]
+        .as_i64()
+        .unwrap();
+    let after = a.send(&conv, "welcome back").await["seq"].as_i64().unwrap();
+    let got = sync_all(&Conn::device(&hub, &bob, &dev)).await;
+    let mut want = before.clone();
+    want.push(removed);
+    want.extend([back, after]);
+    assert_eq!(got[&conv], want);
+    // Twice removed: the latest stretch counts; a device that saw it all
+    // gets nothing again.
+    assert!(
+        sync_all(&Conn::device(&hub, &bob, &dev))
+            .await
+            .get(&conv)
+            .is_none_or(|v| v.is_empty())
+    );
+    // A new device starts from the new membership only.
+    let fresh = sync_all(&Conn::device(&hub, &bob, &device(&hub, &bob).await)).await;
+    assert!(fresh[&conv].iter().all(|s| *s >= back), "{fresh:?}");
 }
