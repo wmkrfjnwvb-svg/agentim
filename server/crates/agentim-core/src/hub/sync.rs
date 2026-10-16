@@ -5,6 +5,10 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+/// Side entries read per query, and at most per conversation and sync.
+const SIDE_PAGE: i64 = 500;
+const SIDE_SCAN: i64 = 5000;
+
 use serde_json::{Value, json};
 
 use super::{Hub, Session, err};
@@ -144,7 +148,14 @@ impl Hub {
                     {
                         visible_from.max(st.floor)
                     } else {
-                        bootstrap(self.window(&conv, st.last_seq, &cfg).await?)
+                        let s = bootstrap(self.window(&conv, st.last_seq, &cfg).await?);
+                        // A device older than the position lifetime may have
+                        // had a position here that expired: if the window
+                        // skips events, say so (M6).
+                        if device_start < now - ttl && s > visible_from.max(st.floor) {
+                            reset = Some(s);
+                        }
+                        s
                     }
                 }
                 Some(b) if b + 1 < st.floor || st.last_seq - b > cfg.max_gap => {
@@ -209,29 +220,44 @@ impl Hub {
                                 now,
                             ));
                         }
-                        let side_all = db.pull_side(&c, side_after.unwrap_or(0)).await?;
+                        // Side entries up to the main log's position, in
+                        // pages; `side_more` when some are left (M5).
                         let mut side = vec![];
                         let mut side_upto = side_after.unwrap_or(0);
-                        for s in side_all {
-                            if side.len() as i64 >= side_cap || s.anchor_seq > upto {
+                        let mut side_more = false;
+                        let mut scanned = 0;
+                        'pages: loop {
+                            let page = db.pull_side(&c, side_upto, SIDE_PAGE).await?;
+                            let full = page.len() as i64 == SIDE_PAGE;
+                            for s in page {
+                                if s.anchor_seq > upto {
+                                    break 'pages;
+                                }
+                                if side.len() as i64 >= side_cap || scanned >= SIDE_SCAN {
+                                    side_more = true;
+                                    break 'pages;
+                                }
+                                scanned += 1;
+                                side_upto = s.side_seq;
+                                if side_after.is_none() && s.anchor_seq < start {
+                                    continue;
+                                }
+                                if s.audience.contains(&me_id) {
+                                    side.push(s);
+                                }
+                            }
+                            if !full {
                                 break;
                             }
-                            side_upto = s.side_seq;
-                            if side_after.is_none() && s.anchor_seq < start {
-                                continue;
-                            }
-                            if s.audience.contains(&me_id) {
-                                side.push(s);
-                            }
                         }
-                        Ok((events, side, upto, side_upto))
+                        Ok((events, side, upto, side_upto, side_more))
                     })
                 })
                 .await;
-            let (events, side, upto, side_upto) = read?;
+            let (events, side, upto, side_upto, side_more) = read?;
             sh.reg.sync_mark(sess.sid, &conv, upto, side_upto);
             budget -= upto - (start - 1);
-            let has_more = upto < head;
+            let has_more = upto < head || side_more;
             more |= has_more;
             // A departure is reported until the device's position passes it
             // (acknowledged, or already sent on this connection).

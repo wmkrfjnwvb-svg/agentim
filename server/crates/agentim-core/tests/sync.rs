@@ -39,6 +39,8 @@ backend_tests!(
     positions_survive_a_restart,
     race_senders_while_a_device_syncs_get_every_event_once,
     race_two_sessions_of_one_device_ack_monotonically,
+    a_side_channel_backlog_comes_in_full,
+    a_quiet_conversation_keeps_its_position,
 );
 
 fn code(v: &Value) -> &str {
@@ -79,9 +81,15 @@ async fn round(c: &Conn) -> Value {
 
 /// Syncs until nothing more is owed: seqs per conversation, in order received.
 async fn sync_all(c: &Conn) -> BTreeMap<String, Vec<i64>> {
+    sync_all_with(c, |_| {}).await
+}
+
+/// `sync_all`, showing each response to `seen`.
+async fn sync_all_with(c: &Conn, mut seen: impl FnMut(&Value)) -> BTreeMap<String, Vec<i64>> {
     let mut out: BTreeMap<String, Vec<i64>> = BTreeMap::new();
     for _ in 0..500 {
         let r = round(c).await;
+        seen(&r);
         for x in r["convs"].as_array().unwrap() {
             let e = out
                 .entry(x["conv_id"].as_str().unwrap().to_string())
@@ -553,13 +561,19 @@ async fn devices_far_behind_or_silent_too_long_start_over(db: TestDb) {
     let a = Conn::new(&hub, &alice);
     a.send(&conv, "after").await;
     let d = Conn::device(&hub, &alice, &dev);
-    let got = sync_all(&d).await;
+    let mut resets = vec![];
+    let got = sync_all_with(&d, |r| {
+        for x in r["convs"].as_array().unwrap() {
+            if !x["reset"].is_null() {
+                resets.push(x["reset"]["from_seq"].clone());
+            }
+        }
+    })
+    .await;
     let head = last_seq(&a, &conv).await;
-    assert_eq!(
-        got[&conv],
-        range(head - 2, head),
-        "starts like a new device"
-    );
+    // Starts like a new device, and says events were skipped (M6).
+    assert_eq!(got[&conv], range(head - 2, head));
+    assert_eq!(resets, [json!(head - 2)]);
 }
 
 async fn removal_and_dissolution_reach_offline_devices(db: TestDb) {
@@ -1099,5 +1113,99 @@ async fn positions_move_with_a_conversation_between_databases() {
         got[&conv],
         vec![last_seq(&c, &conv).await],
         "only what is new after the move"
+    );
+}
+
+/// M5: more side entries than one batch, with no main-log events after
+/// them, all arrive (the response says there is more).
+async fn a_side_channel_backlog_comes_in_full(db: TestDb) {
+    let hub = hub_with(&db, |h| h.sync.batch_size = 7).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bob, &carol]).await;
+    let mut d = Conn::device(&hub, &bob, &device(&hub, &bob).await);
+    sync_all(&d).await;
+    for i in 0..25 {
+        a.ok(json!({"op": "send", "conv_id": conv, "client_msg_id": format!("b{i}"), "text": format!("to bob {i}"), "to_user": bob.id}))
+            .await;
+        // Entries for others are skipped, not counted.
+        a.ok(json!({"op": "send", "conv_id": conv, "client_msg_id": format!("c{i}"), "text": format!("to carol {i}"), "to_user": carol.id}))
+            .await;
+    }
+    // What came live, then what sync owes.
+    let mut got: Vec<String> = d
+        .drain()
+        .iter()
+        .filter_map(|f| {
+            f["side_event"]["data"]["text"]
+                .as_str()
+                .or(f["event"]["data"]["text"].as_str())
+        })
+        .map(String::from)
+        .collect();
+    let live = got.len();
+    for _ in 0..50 {
+        let r = round(&d).await;
+        for x in r["convs"].as_array().unwrap() {
+            for s in x["side_events"].as_array().into_iter().flatten() {
+                got.push(s["data"]["text"].as_str().unwrap().to_string());
+            }
+        }
+        if r["more"] != true {
+            break;
+        }
+    }
+    let want: Vec<String> = (0..25).map(|i| format!("to bob {i}")).collect();
+    assert_eq!(got, want, "{live} came live");
+    assert!(live < 25, "most of it came through sync");
+    // The server-side read pages too.
+    let p = Conn::new(&hub, &bob)
+        .ok(json!({"op": "pull_side", "conv_id": conv, "after_side_seq": 0}))
+        .await;
+    assert_eq!(p["has_more"], false);
+    assert_eq!(p["side_events"].as_array().unwrap().len(), 25);
+}
+
+/// M6: a device in daily use keeps its position in a conversation that was
+/// quiet for longer than the position lifetime.
+async fn a_quiet_conversation_keeps_its_position(db: TestDb) {
+    let hub = hub_with(&db, |h| {
+        h.sync.device_ttl = Duration::from_millis(400);
+        h.sync.max_messages = 3;
+    })
+    .await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let dev = device(&hub, &bob).await;
+    let a = Conn::new(&hub, &alice);
+    let busy = a.group(&[&bob]).await;
+    let quiet = a.group(&[&bob]).await;
+    let d = Conn::device(&hub, &bob, &dev);
+    sync_all(&d).await;
+    // The busy conversation moves on, the device keeps up; the quiet one
+    // has nothing for longer than the lifetime.
+    drop(d);
+    for i in 0..12 {
+        a.send(&busy, &format!("busy {i}")).await;
+        // Through sync, so the device acknowledges it.
+        sync_all(&Conn::device(&hub, &bob, &dev)).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    hub.tick().await;
+    let before = last_seq(&a, &quiet).await;
+    for i in 0..10 {
+        a.send(&quiet, &format!("quiet {i}")).await;
+    }
+    let d = Conn::device(&hub, &bob, &dev);
+    let mut reset = false;
+    let got = sync_all_with(&d, |r| reset |= r.to_string().contains("reset")).await;
+    assert!(!reset);
+    let head = last_seq(&a, &quiet).await;
+    assert_eq!(
+        got[&quiet],
+        range(before + 1, head),
+        "everything, not a window"
     );
 }

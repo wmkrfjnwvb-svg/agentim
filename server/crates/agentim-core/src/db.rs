@@ -2172,13 +2172,20 @@ impl Db<'_> {
             .map_err(Into::into)
     }
 
-    pub async fn pull_side(&mut self, conv_id: &str, after: i64) -> ApiResult<Vec<SideEvent>> {
+    /// Side events after `after`, at most `limit` (M5: never unbounded).
+    pub async fn pull_side(
+        &mut self,
+        conv_id: &str,
+        after: i64,
+        limit: i64,
+    ) -> ApiResult<Vec<SideEvent>> {
         let rows = sqlx::query(self.d.q(
             "SELECT conv_id, side_seq, anchor_seq, audience, type, actor_id, payload, created_at FROM side_events
-             WHERE conv_id = ? AND side_seq > ? ORDER BY side_seq",
+             WHERE conv_id = ? AND side_seq > ? ORDER BY side_seq LIMIT ?",
         ))
         .bind(conv_id)
         .bind(after)
+        .bind(limit)
         .fetch_all(&mut *self.c)
         .await?;
         self.preload(&rows, &["payload"]).await?;
@@ -2367,10 +2374,12 @@ impl Db<'_> {
         )
     }
 
-    /// Devices silent since `before` lose their positions (docs/08 §2.5).
+    /// Devices silent since `before` lose their positions (docs/08 §2.5):
+    /// all of a device's positions go together, so a quiet conversation of
+    /// an active device keeps its position (M6).
     pub async fn drop_stale_cursors(&mut self, before: i64) -> ApiResult<u64> {
         Ok(
-            sqlx::query(self.d.q("DELETE FROM device_cursors WHERE updated_at < ?"))
+            sqlx::query(self.d.q("DELETE FROM device_cursors WHERE device_id IN (SELECT device_id FROM (SELECT device_id FROM device_cursors GROUP BY device_id HAVING MAX(updated_at) < ?) silent)"))
                 .bind(before)
                 .execute(&mut *self.c)
                 .await?

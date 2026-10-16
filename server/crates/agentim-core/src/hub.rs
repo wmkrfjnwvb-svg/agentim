@@ -2502,15 +2502,19 @@ impl Hub {
         }
         let c = conv.to_string();
         let me_id = me.id.clone();
-        let list: Vec<SideEvent> = self
+        const PAGE: i64 = 1000;
+        let page = self
             .read(shard, move |db| {
-                Box::pin(async move { db.pull_side(&c, after).await })
+                Box::pin(async move { db.pull_side(&c, after, PAGE).await })
             })
-            .await?
+            .await?;
+        let has_more = page.len() as i64 == PAGE;
+        let upto = page.last().map_or(after, |s| s.side_seq);
+        let list: Vec<SideEvent> = page
             .into_iter()
             .filter(|s| s.audience.contains(&me_id))
             .collect();
-        Ok(json!({"conv_id": conv, "side_events": list}))
+        Ok(json!({"conv_id": conv, "side_events": list, "side_upto": upto, "has_more": has_more}))
     }
 
     async fn list_convs(&self, me: &User) -> ApiResult<Value> {
