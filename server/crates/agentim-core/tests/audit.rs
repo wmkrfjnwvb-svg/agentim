@@ -26,6 +26,7 @@ backend_tests!(
     revocations_by_another_process_take_effect,
     a_persons_limits_count_all_their_connections,
     groups_have_a_size_limit,
+    retention_takes_a_prefix_and_what_derives_from_it,
 );
 
 fn code(v: &Value) -> &str {
@@ -777,4 +778,102 @@ async fn groups_have_a_size_limit(db: TestDb) {
         .await;
     a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": dave.id}))
         .await;
+}
+
+/// Runs one statement with a conversation id bound to its `?`.
+async fn exec(db: &TestDb, sql: &str, conv: &str) {
+    sqlx::any::install_default_drivers();
+    let mut c = sqlx::AnyConnection::connect(&db.url.replace("mariadb://", "mysql://"))
+        .await
+        .unwrap();
+    let q = if db.url.starts_with("postgres") {
+        sql.replace('?', "$1")
+    } else {
+        sql.to_string()
+    };
+    sqlx::query(sqlx::AssertSqlSafe(q))
+        .bind(conv.to_string())
+        .execute(&mut c)
+        .await
+        .unwrap();
+}
+
+/// M15: retention deletes only a prefix of a log (a clock set back cannot
+/// cut a hole), and with it what derives from the deleted part.
+async fn retention_takes_a_prefix_and_what_derives_from_it(db: TestDb) {
+    let mut h = hub_cfg();
+    h.gc_every = std::time::Duration::ZERO;
+    h.sync.retention = Some(std::time::Duration::from_secs(3600));
+    let hub = agentim_core::hub::Hub::open(single(&db.url), h)
+        .await
+        .unwrap();
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    // One conversation whose clock jumped back in the middle.
+    let conv = a.group(&[]).await;
+    for i in 0..6 {
+        a.send(&conv, &format!("m{i}")).await;
+    }
+    exec(
+        &db,
+        "UPDATE events SET created_at = 1 WHERE conv_id = ? AND seq = 5",
+        &conv,
+    )
+    .await;
+    hub.tick().await;
+    assert_eq!(seqs(&a.pull(&conv, 0).await).len(), 8, "no hole");
+    // One old conversation, with feedback and drafts.
+    let old = a.group(&[&bot]).await;
+    a.ok(json!({"op": "set_agent_policy", "conv_id": old, "agent_id": bot.id, "approval": true}))
+        .await;
+    let g = Conn::new(&hub, &bot);
+    let d1 = g
+        .ok(json!({"op": "send", "conv_id": old, "client_msg_id": "1", "text": "one"}))
+        .await["draft_id"]
+        .clone();
+    g.ok(json!({"op": "send", "conv_id": old, "client_msg_id": "2", "text": "two"}))
+        .await;
+    a.ok(json!({"op": "approve", "draft_id": d1})).await;
+    let m = a.pull(&old, 0).await["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|e| e["event"]["type"] == "msg.created")
+        .unwrap()["event"]["msg"]["msg_id"]
+        .clone();
+    a.ok(json!({"op": "feedback", "msg_id": m, "rating": "up"}))
+        .await;
+    for t in ["events", "messages", "side_events", "feedback", "drafts"] {
+        exec(
+            &db,
+            &format!("UPDATE {t} SET created_at = 1 WHERE conv_id = ?"),
+            &old,
+        )
+        .await;
+    }
+    hub.tick().await;
+    assert!(
+        seqs(&a.pull(&old, 0).await).is_empty(),
+        "the old log is gone"
+    );
+    let n = |t: &'static str| {
+        let (db, old) = (&db, old.clone());
+        async move {
+            rows(
+                db,
+                &format!("SELECT COUNT(*) FROM {t} WHERE conv_id = ? AND conv_id = ?"),
+                &old,
+                &old,
+            )
+            .await
+        }
+    };
+    assert_eq!(n("messages").await, 0);
+    assert_eq!(n("feedback").await, 0);
+    assert_eq!(n("drafts").await, 1, "the pending draft stays");
+    // New messages continue the log.
+    a.send(&old, "new").await;
+    assert_eq!(seqs(&a.pull(&old, 0).await).len(), 1);
 }

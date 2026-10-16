@@ -2445,15 +2445,94 @@ impl Db<'_> {
 
     /// Deletes conversation content older than `before` (retention). The
     /// conversation keeps its `last_seq`, so new events continue the log.
-    pub async fn purge_before(&mut self, before: i64) -> ApiResult<u64> {
-        let mut n = 0;
-        for t in ["events", "side_events", "messages"] {
-            n += sqlx::query(self.d.q(&format!("DELETE FROM {t} WHERE created_at < ?")))
-                .bind(before)
-                .execute(&mut *self.c)
-                .await?
-                .rows_affected();
+    pub async fn purge_before(&mut self, before: i64, max_rows: i64) -> ApiResult<u64> {
+        // M15: only a prefix of each log goes (a clock set back cannot cut a
+        // hole in the middle), in bounded steps (the writer is not held up),
+        // with what is derived from it.
+        let convs: Vec<String> = sqlx::query(self.d.q("SELECT id FROM conversations"))
+            .fetch_all(&mut *self.c)
+            .await?
+            .iter()
+            .map(|r| r.try_get(0))
+            .collect::<sqlx::Result<_>>()?;
+        let mut n = 0u64;
+        for conv in convs {
+            if n as i64 >= max_rows {
+                break;
+            }
+            let Some(first) = self.first_seq(&conv).await? else {
+                continue;
+            };
+            let keep_from = match sqlx::query(self.d.q(
+                "SELECT seq FROM events WHERE conv_id = ? AND created_at >= ? ORDER BY seq LIMIT 1",
+            ))
+            .bind(&conv)
+            .bind(before)
+            .fetch_optional(&mut *self.c)
+            .await?
+            {
+                Some(r) => r.try_get::<i64, _>(0)?,
+                None => i64::MAX,
+            };
+            let upto = keep_from.min(first + (max_rows - n as i64));
+            if upto <= first {
+                continue;
+            }
+            for (q, by_seq) in [
+                ("DELETE FROM events WHERE conv_id = ? AND seq < ?", true),
+                (
+                    "DELETE FROM messages WHERE conv_id = ? AND created_seq < ?",
+                    true,
+                ),
+                (
+                    "DELETE FROM side_events WHERE conv_id = ? AND anchor_seq < ?",
+                    true,
+                ),
+                (
+                    "DELETE FROM summaries WHERE conv_id = ? AND to_seq < ?",
+                    true,
+                ),
+                (
+                    "DELETE FROM feedback WHERE conv_id = ? AND created_at < ?",
+                    false,
+                ),
+                (
+                    "DELETE FROM card_responses WHERE conv_id = ? AND created_at < ?",
+                    false,
+                ),
+                (
+                    "DELETE FROM claims WHERE conv_id = ? AND created_at < ?",
+                    false,
+                ),
+                (
+                    "DELETE FROM drafts WHERE conv_id = ? AND state <> 'pending' AND created_at < ?",
+                    false,
+                ),
+                (
+                    "DELETE FROM request_assignees WHERE conv_id = ? AND request_id IN (SELECT request_id FROM requests WHERE state <> 'pending' AND created_at < ?)",
+                    false,
+                ),
+                (
+                    "DELETE FROM requests WHERE conv_id = ? AND state <> 'pending' AND created_at < ?",
+                    false,
+                ),
+            ] {
+                let r = sqlx::query(self.d.q(q))
+                    .bind(&conv)
+                    .bind(if by_seq { upto } else { before })
+                    .execute(&mut *self.c)
+                    .await?
+                    .rows_affected();
+                if q.starts_with("DELETE FROM events") {
+                    n += r;
+                }
+            }
         }
+        // Undelivered webhook bodies older than the retention go too.
+        sqlx::query(self.d.q("DELETE FROM webhook_outbox WHERE created_at < ?"))
+            .bind(before)
+            .execute(&mut *self.c)
+            .await?;
         Ok(n)
     }
 

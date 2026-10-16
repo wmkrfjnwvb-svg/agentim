@@ -646,6 +646,9 @@ fn is_manager(role: &str) -> bool {
 
 /// The sender's id of a message (retries reuse it): 1..128 bytes, as on
 /// the open API.
+/// Events retention deletes per clean-up round, at most.
+const PURGE_BATCH: i64 = 20_000;
+
 pub fn check_client_msg_id(id: &str) -> ApiResult<()> {
     if id.is_empty() || id.len() > 128 || id.contains('\0') {
         return Err(ApiError::new(
@@ -3294,7 +3297,10 @@ impl Ctx<'_, '_> {
             self.db.drop_stale_cursors(stale).await?;
             self.db.drop_old_departures(stale).await?;
             if let Some(keep) = sync.retention {
-                let n = self.db.purge_before(now - keep.as_millis() as i64).await?;
+                let n = self
+                    .db
+                    .purge_before(now - keep.as_millis() as i64, PURGE_BATCH)
+                    .await?;
                 if n > 0 {
                     tracing::info!(rows = n, "retention: deleted old conversation content");
                 }
