@@ -258,7 +258,7 @@ pub struct Envelope {
     pub msg: ClientMsg,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ClientMsg {
     /// Handshake (docs/02-architecture.md §2.5). Every field is optional so
@@ -835,7 +835,7 @@ impl ClientMsg {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AckItem {
     pub conv_id: String,
     #[serde(default)]

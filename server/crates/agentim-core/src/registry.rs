@@ -26,7 +26,7 @@ use crate::model::*;
 pub type Frame = Arc<str>;
 
 /// Something to deliver once the batch that produced it has committed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[allow(clippy::large_enum_variant)]
 pub enum Out {
     Event {
@@ -64,10 +64,19 @@ pub enum Out {
         remove: Vec<String>,
         kick: Vec<(String, Option<String>)>,
     },
+    /// A stream opened (`conv`) or ended (None), for every node's index.
+    Stream {
+        msg_id: String,
+        db: usize,
+        conv: Option<String>,
+    },
+    /// Security caches changed (blocks, stops, deactivations...): other
+    /// nodes reload them now rather than at their next poll.
+    Invalidate,
 }
 
 /// A conversation member as seen by fan-out for one event.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Recip {
     pub user_id: String,
     pub kind: UserKind,
@@ -523,6 +532,8 @@ impl Registry {
                         }
                     }
                 }
+                // Caches, not connections (see Shared::apply_tokens).
+                Out::Stream { .. } | Out::Invalidate => {}
                 Out::Tokens { kick, .. } => {
                     for (user_id, device_id) in kick {
                         for sid in g.by_user.get(&user_id).into_iter().flatten() {

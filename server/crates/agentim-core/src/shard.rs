@@ -95,6 +95,8 @@ pub struct Shard {
     tx: mpsc::Sender<Job>,
     /// Encryption at rest of this database.
     pub crypto: Arc<crate::crypto::Crypto>,
+    /// For the cluster (routing to the node holding a shard).
+    shared: Arc<Shared>,
 }
 
 impl Shard {
@@ -124,6 +126,7 @@ impl Shard {
             }
         }
         let crypto = Arc::new(open_crypto(&mut conn, dialect, &cfg.name, master_key).await?);
+        storage::writer_timeouts(&mut conn, dialect).await?;
         let read = storage::open_pool(&cfg.url, dialect, cfg.read_pool.unwrap_or(8)).await?;
         // Webhook outbox: next id, and cursors for webhooks new to this
         // database start at the end (no replay of history).
@@ -155,7 +158,7 @@ impl Shard {
             dialect,
             idx,
             name: cfg.name.clone(),
-            shared,
+            shared: shared.clone(),
             health: health.clone(),
             cfg: wcfg.clone(),
             outbox_next: max + 1,
@@ -179,13 +182,30 @@ impl Shard {
                 queue_capacity: wcfg.queue_capacity,
                 tx,
                 crypto,
+                shared,
             },
             wake,
         ))
     }
 
-    /// Queues a command and waits for its result (ACK after commit).
+    /// Runs a command where it belongs: on this node's writer, or in a
+    /// cluster on the node holding the command's shard (docs/11 §5).
     pub async fn call(&self, op: Op) -> ApiResult<Value> {
+        let Some(c) = self.shared.cluster.get() else {
+            return self.call_local(op).await;
+        };
+        let Some(shard) = crate::cluster::shard_for(&op.route(), c.shards()) else {
+            return self.call_local(op).await;
+        };
+        if c.held(self.idx, shard).is_none() {
+            return c.forward(self.idx, shard, op).await;
+        }
+        self.call_local(op).await
+    }
+
+    /// Queues a command on this node's writer and waits for its result
+    /// (ACK after commit).
+    pub async fn call_local(&self, op: Op) -> ApiResult<Value> {
         if let Some(r) = self.health.failed() {
             metrics::counter!(m::WRITE_REJECTED, "reason" => "storage_failed").increment(1);
             return Err(ApiError::new("storage_unavailable", r));
@@ -285,11 +305,42 @@ impl Writer {
     }
 
     async fn run_batch(&mut self, st: &mut ShardState, batch: Vec<Job>) {
+        // Cluster: commands for shards this node does not hold go back to
+        // be routed again (they may have just moved).
+        let cluster = self.shared.cluster.get().cloned();
+        let mut batch = batch;
+        let mut routed = std::collections::BTreeSet::new();
+        if let Some(c) = &cluster {
+            let mut keep = Vec::with_capacity(batch.len());
+            for j in batch {
+                let shards: Vec<u32> = match j.op.route() {
+                    crate::cluster::Route::Shards(s) => s,
+                    r => crate::cluster::shard_for(&r, c.shards())
+                        .into_iter()
+                        .collect(),
+                };
+                if shards.iter().any(|s| c.held(self.idx, *s).is_none()) {
+                    let _ = j.reply.send(Err(ApiError::new(
+                        "not_owner",
+                        "this node does not hold the shard",
+                    )));
+                    continue;
+                }
+                routed.extend(shards);
+                keep.push(j);
+            }
+            batch = keep;
+            if batch.is_empty() {
+                return;
+            }
+        }
         let n = batch.len();
         let started = Instant::now();
         let mut replies: Vec<(oneshot::Sender<ApiResult<Value>>, ApiResult<Value>)> =
             Vec::with_capacity(n);
         let mut outs: Vec<Out> = Vec::new();
+        let mut touched = routed;
+        let mut lost: Vec<u32> = vec![];
         let result: Result<Option<i64>, String> = async {
             // SQLite: take the write lock when the batch starts. A deferred
             // transaction that has read and then must write fails at once
@@ -301,7 +352,8 @@ impl Writer {
                 Connection::begin(&mut self.conn).await
             }
             .map_err(|e| e.to_string())?;
-            for job in batch {
+            let mut jobs = batch.into_iter();
+            while let Some(job) = jobs.next() {
                 let mut sp = Connection::begin(&mut *tx)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -319,6 +371,7 @@ impl Writer {
                         out: &mut out,
                         idx: self.idx,
                         commit_on_error: false,
+                        touched: &mut touched,
                     };
                     let injected = !job.op.is_tick() && take_one(&self.health.fail_next_jobs);
                     let res = if injected {
@@ -341,6 +394,16 @@ impl Writer {
                     && e.code == "storage"
                 {
                     metrics::counter!(m::STORAGE_ERRORS, "kind" => "statement").increment(1);
+                    // MySQL rolls back the whole transaction on a deadlock:
+                    // nothing of the batch can be kept (E2).
+                    if storage::is_transient(&e.message) {
+                        replies.push((job.reply, Err(e.clone())));
+                        for j in jobs.by_ref() {
+                            replies.push((j.reply, Err(e.clone())));
+                        }
+                        let _ = tx.rollback().await;
+                        return Err(TRANSIENT.to_string());
+                    }
                 }
                 replies.push((job.reply, res));
             }
@@ -352,16 +415,58 @@ impl Writer {
                 &self.crypto,
                 &mut tx,
                 &outs,
+                cluster.is_some(),
             )
             .await
             .map_err(|e| e.message)?;
+            // Cluster: every shard this batch wrote must still be held by
+            // this node, checked under the lease rows' locks until commit
+            // (docs/11 §4.3); otherwise nothing of the batch is kept.
+            if let Some(c) = &cluster {
+                for s in outs.iter().filter_map(|o| match o {
+                    Out::Event { ev, .. } => Some(ev.conv_id.as_str()),
+                    Out::Side(s) => Some(s.conv_id.as_str()),
+                    _ => None,
+                }) {
+                    touched.insert(crate::cluster::shard_of(s, c.shards()));
+                }
+                for s in &touched {
+                    let ok = match c.held(self.idx, *s) {
+                        None => false,
+                        Some(l) => {
+                            sqlx::query(self.dialect.q(
+                                "UPDATE shard_lease SET fence_count = fence_count + 1 WHERE db = ? AND shard_id = ? AND owner = ? AND epoch = ?",
+                            ))
+                            .bind(&self.name)
+                            .bind(i64::from(*s))
+                            .bind(&l.owner)
+                            .bind(l.epoch)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| e.to_string())?
+                            .rows_affected()
+                                == 1
+                        }
+                    };
+                    if !ok {
+                        lost.push(*s);
+                    }
+                }
+                if !lost.is_empty() {
+                    let _ = tx.rollback().await;
+                    return Err(FENCED.to_string());
+                }
+            }
             if self.health.fail_next_commits.load(Ordering::SeqCst) > 0 {
                 self.health.fail_next_commits.fetch_sub(1, Ordering::SeqCst);
                 let _ = tx.rollback().await;
                 return Err("injected commit failure".to_string());
             }
             let t = Instant::now();
-            tx.commit().await.map_err(|e| e.to_string())?;
+            tx.commit().await.map_err(|e| {
+                let e = e.to_string();
+                if storage::is_transient(&e) { TRANSIENT.to_string() } else { e }
+            })?;
             metrics::histogram!(m::COMMIT_DURATION, "database" => self.name.clone())
                 .record(t.elapsed().as_secs_f64());
             Ok(queued)
@@ -380,6 +485,9 @@ impl Writer {
                     self.wake.send_replace(last);
                 }
                 self.shared.apply_tokens(&outs);
+                if let Some(c) = &cluster {
+                    c.publish(self.idx, &outs);
+                }
                 self.shared.reg.deliver(outs);
                 for (r, res) in replies {
                     let _ = r.send(res);
@@ -390,6 +498,33 @@ impl Writer {
                     elapsed_us = started.elapsed().as_micros() as u64,
                     "batch committed"
                 );
+            }
+            Err(e) if e == TRANSIENT => {
+                // Rolled back whole; nothing is wrong with the database.
+                self.crypto.abort();
+                metrics::counter!(m::STORAGE_ERRORS, "kind" => "transient").increment(1);
+                for (r, _) in replies {
+                    let _ = r.send(Err(ApiError::new(
+                        "unavailable",
+                        "the database was busy; retry with the same client_msg_id",
+                    )));
+                }
+            }
+            Err(e) if e == FENCED => {
+                // Not a storage failure: another node holds a shard now.
+                self.crypto.abort();
+                metrics::counter!(m::FENCE_FAILURES).increment(1);
+                if let Some(c) = &cluster {
+                    for s in &lost {
+                        c.lost(self.idx, *s);
+                    }
+                }
+                for (r, _) in replies {
+                    let _ = r.send(Err(ApiError::new(
+                        "unavailable",
+                        "the conversation moved to another node; retry",
+                    )));
+                }
             }
             Err(e) => {
                 self.crypto.abort();
@@ -403,8 +538,14 @@ impl Writer {
     }
 }
 
+/// A batch whose lease check failed (not a storage failure).
+const FENCED: &str = "\u{0}fenced";
+/// A batch rolled back by a deadlock or lock timeout (retryable).
+const TRANSIENT: &str = "\u{0}transient";
+
 /// Writes the batch's subscribed events to the webhook outbox, inside
 /// the batch transaction. Returns the last id written.
+#[allow(clippy::too_many_arguments)]
 async fn queue_outbox(
     next: &mut i64,
     patterns: &[String],
@@ -413,6 +554,7 @@ async fn queue_outbox(
     crypto: &crate::crypto::Crypto,
     tx: &mut AnyConnection,
     outs: &[Out],
+    cluster: bool,
 ) -> ApiResult<Option<i64>> {
     if patterns.is_empty() {
         return Ok(None);
@@ -459,6 +601,12 @@ async fn queue_outbox(
     if rows.is_empty() {
         return Ok(None);
     }
+    if cluster {
+        // Several nodes write this outbox: ids come from a counter row held
+        // locked until commit, so they also commit in id order (the
+        // deliverer never passes an id committed later).
+        *next = outbox_ids(dialect, tx, rows.len() as i64).await?;
+    }
     let first = *next;
     let now = now_ms();
     // Bodies hold message content: encrypted with the database's data key.
@@ -501,6 +649,32 @@ async fn queue_outbox(
         }
     }
     Ok(Some(*next - 1))
+}
+
+/// Takes `n` outbox ids from the shared counter; returns the first.
+async fn outbox_ids(dialect: Dialect, tx: &mut AnyConnection, n: i64) -> ApiResult<i64> {
+    let cur = sqlx::query(dialect.q("SELECT v FROM meta WHERE k = 'outbox_next' FOR UPDATE"))
+        .fetch_optional(&mut *tx)
+        .await?;
+    let first = match cur {
+        Some(r) => r.try_get::<String, _>(0)?.parse::<i64>().unwrap_or(1),
+        None => {
+            let max: Option<i64> = sqlx::query("SELECT MAX(id) FROM webhook_outbox")
+                .fetch_one(&mut *tx)
+                .await?
+                .try_get(0)?;
+            sqlx::query(dialect.q("INSERT INTO meta (k, v) VALUES ('outbox_next', ?)"))
+                .bind((max.unwrap_or(0) + 1).to_string())
+                .execute(&mut *tx)
+                .await?;
+            max.unwrap_or(0) + 1
+        }
+    };
+    sqlx::query(dialect.q("UPDATE meta SET v = ? WHERE k = 'outbox_next'"))
+        .bind((first + n).to_string())
+        .execute(&mut *tx)
+        .await?;
+    Ok(first)
 }
 
 /// Opens the database's encryption: refuses a database whose content is

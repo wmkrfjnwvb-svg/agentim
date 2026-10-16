@@ -163,7 +163,7 @@ pub struct Credentials {
 }
 
 /// An open API key (only its hash is stored).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ApiKeyRow {
     pub key_id: String,
     pub app_id: String,
@@ -199,7 +199,7 @@ fn row_api_key(r: &AnyRow) -> sqlx::Result<ApiKeyRow> {
 }
 
 /// One client token = one device.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TokenRow {
     pub hash: String,
     pub user_id: String,
@@ -233,7 +233,7 @@ fn row_token(r: &AnyRow) -> sqlx::Result<TokenRow> {
     })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct DirEntry {
     pub conv_id: String,
     pub database: String,
@@ -277,7 +277,7 @@ pub enum Committed {
 }
 
 /// One row of a per-conversation table, for migration between databases.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum Cell {
     S(Option<String>),
     I(Option<i64>),
@@ -1268,6 +1268,33 @@ impl Db<'_> {
             .fetch_optional(&mut *self.c)
             .await?;
         Ok(r.map(|r| r.try_get(0)).transpose()?)
+    }
+
+    /// Claims a pair's direct conversation for `conv_id`, unless another
+    /// claimed it (being created, or existing; a dissolved one's claim is
+    /// gone with it, a failed creation releases its claim): returns that
+    /// one then.
+    pub async fn dm_claim(&mut self, pair_key: &str, conv_id: &str) -> ApiResult<Option<String>> {
+        if let Some(c) = self.dm_get(pair_key).await?
+            && c != conv_id
+        {
+            return Ok(Some(c));
+        }
+        self.dm_put(pair_key, conv_id).await?;
+        Ok(None)
+    }
+
+    /// Releases a claim made for a conversation that was not created.
+    pub async fn dm_release(&mut self, pair_key: &str, conv_id: &str) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("DELETE FROM dm_index WHERE pair_key = ? AND conv_id = ?"),
+        )
+        .bind(pair_key)
+        .bind(conv_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
     }
 
     pub async fn dm_put(&mut self, pair_key: &str, conv_id: &str) -> ApiResult<()> {
@@ -2526,7 +2553,15 @@ impl Db<'_> {
 
     /// Deletes conversation content older than `before` (retention). The
     /// conversation keeps its `last_seq`, so new events continue the log.
-    pub async fn purge_before(&mut self, before: i64, max_rows: i64) -> ApiResult<u64> {
+    /// Returns the rows deleted and the conversations they were in; only
+    /// conversations `mine` accepts are cleaned (a cluster node cleans the
+    /// ones it holds).
+    pub async fn purge_before(
+        &mut self,
+        before: i64,
+        max_rows: i64,
+        mine: impl Fn(&str) -> bool,
+    ) -> ApiResult<(u64, Vec<String>)> {
         // M15: only a prefix of each log goes (a clock set back cannot cut a
         // hole in the middle), in bounded steps (the writer is not held up),
         // with what is derived from it.
@@ -2537,7 +2572,8 @@ impl Db<'_> {
             .map(|r| r.try_get(0))
             .collect::<sqlx::Result<_>>()?;
         let mut n = 0u64;
-        for conv in convs {
+        let mut purged = vec![];
+        for conv in convs.into_iter().filter(|c| mine(c)) {
             if n as i64 >= max_rows {
                 break;
             }
@@ -2559,6 +2595,7 @@ impl Db<'_> {
             if upto <= first {
                 continue;
             }
+            purged.push(conv.clone());
             for (q, by_seq) in [
                 ("DELETE FROM events WHERE conv_id = ? AND seq < ?", true),
                 (
@@ -2614,7 +2651,7 @@ impl Db<'_> {
             .bind(before)
             .execute(&mut *self.c)
             .await?;
-        Ok(n)
+        Ok((n, purged))
     }
 
     /// When an event was written (None: no longer stored).
@@ -4097,10 +4134,7 @@ impl Db<'_> {
     // ----------------------------------------------- migration between DBs
 
     /// Every row of every per-conversation table for one conversation.
-    pub async fn export_conv(
-        &mut self,
-        conv_id: &str,
-    ) -> ApiResult<Vec<(&'static str, Vec<Vec<Cell>>)>> {
+    pub async fn export_conv(&mut self, conv_id: &str) -> ApiResult<Vec<(String, Vec<Vec<Cell>>)>> {
         let mut out = vec![];
         for t in TABLES.iter().filter(|t| t.conv_key.is_some()) {
             let cols: Vec<&str> = t.cols.iter().map(|c| c.name).collect();
@@ -4126,7 +4160,7 @@ impl Db<'_> {
                 }
                 data.push(cells);
             }
-            out.push((t.name, data));
+            out.push((t.name.to_string(), data));
         }
         Ok(out)
     }
@@ -4162,7 +4196,7 @@ impl Db<'_> {
     pub async fn import_conv(
         &mut self,
         conv_id: &str,
-        rows: &[(&'static str, Vec<Vec<Cell>>)],
+        rows: &[(String, Vec<Vec<Cell>>)],
     ) -> ApiResult<()> {
         self.delete_conv(conv_id).await?;
         for (name, data) in rows {
@@ -4194,7 +4228,7 @@ impl Db<'_> {
 
 /// Content fingerprint of an exported conversation, used to verify a
 /// migration before switching the directory.
-pub fn fingerprint(rows: &[(&'static str, Vec<Vec<Cell>>)]) -> String {
+pub fn fingerprint(rows: &[(String, Vec<Vec<Cell>>)]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     for (name, data) in rows {

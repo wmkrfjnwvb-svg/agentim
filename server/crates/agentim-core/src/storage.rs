@@ -80,8 +80,14 @@ pub(crate) fn driver_url(url: &str) -> String {
 
 /// The single connection a database's writer owns.
 pub async fn open_writer(url: &str, d: Dialect) -> ApiResult<AnyConnection> {
-    let mut c = AnyConnection::connect(&driver_url(url))
+    let mut c = tokio::time::timeout(CONNECT_TIMEOUT, AnyConnection::connect(&driver_url(url)))
         .await
+        .map_err(|_| {
+            ApiError::new(
+                "storage_unavailable",
+                "connecting to the database timed out",
+            )
+        })?
         .map_err(conn_err)?;
     if d == Dialect::Sqlite {
         // secure_delete: deleted content (e.g. a conversation moved to another
@@ -97,6 +103,45 @@ pub async fn open_writer(url: &str, d: Dialect) -> ApiResult<AnyConnection> {
         }
     }
     Ok(c)
+}
+
+/// Most time to open a database connection.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bounds on how long the writer waits for a lock or holds a transaction
+/// open (docs/11 §4.4, E1): a lock held by another process (a migration,
+/// another cluster node) fails the batch instead of stalling every write.
+pub async fn writer_timeouts(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
+    let stmts: &[&str] = match d {
+        Dialect::Postgres => &[
+            "SET lock_timeout = '2s'",
+            "SET idle_in_transaction_session_timeout = '30s'",
+        ],
+        Dialect::Mysql => &["SET SESSION innodb_lock_wait_timeout = 2"],
+        Dialect::Sqlite => &[],
+    };
+    for s in stmts {
+        sqlx::query(AssertSqlSafe(*s)).execute(&mut *c).await?;
+    }
+    Ok(())
+}
+
+/// A database error that leaves nothing behind and may succeed if tried
+/// again: a deadlock, a lock wait that timed out, a serialization failure
+/// (E2). The batch is rolled back and answered as retryable.
+pub fn is_transient(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    [
+        "deadlock",
+        "lock wait timeout",
+        "lock timeout",
+        "could not serialize",
+        "serialization failure",
+        "try restarting transaction",
+        "database is locked",
+    ]
+    .iter()
+    .any(|p| m.contains(p))
 }
 
 /// Read pool. Reads never go through the writer; they see committed data only.

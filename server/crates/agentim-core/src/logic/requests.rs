@@ -283,7 +283,9 @@ impl Ctx<'_, '_> {
     /// Pending requests past their time become `expired` (timer).
     pub(super) async fn expire_requests(&mut self) -> ApiResult<()> {
         for q in self.db.expired_requests(now_ms()).await? {
-            if self.sh.dir_get(&q.conv_id).is_none_or(|d| d.db != self.idx) {
+            if self.sh.dir_get(&q.conv_id).is_none_or(|d| d.db != self.idx)
+                || !self.owns(&q.conv_id)
+            {
                 continue;
             }
             let (owner, assignees) = self.deciders(&q).await?;

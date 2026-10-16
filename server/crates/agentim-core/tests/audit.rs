@@ -31,6 +31,7 @@ backend_tests!(
     edits_can_require_a_version,
     writing_counts_as_reading,
     idle_and_old_tokens_expire,
+    a_lock_held_elsewhere_fails_the_batch_not_the_database,
 );
 
 fn code(v: &Value) -> &str {
@@ -1035,4 +1036,50 @@ async fn idle_and_old_tokens_expire(db: TestDb) {
         "agent keys do not expire"
     );
     assert_eq!(hub.expire_tokens().await.unwrap(), 0, "idempotent");
+}
+
+/// E1 / E2: a lock held by another process makes the writer give up after
+/// its lock timeout with a retryable error; the database keeps working and
+/// nothing of the batch is kept.
+async fn a_lock_held_elsewhere_fails_the_batch_not_the_database(db: TestDb) {
+    if db.url.starts_with("sqlite") {
+        return; // one writer process; covered by the busy timeout
+    }
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[]).await;
+    let head = last_seq(&a, &conv).await;
+    sqlx::any::install_default_drivers();
+    let mut other = sqlx::AnyConnection::connect(&db.url.replace("mariadb://", "mysql://"))
+        .await
+        .unwrap();
+    let q = if db.url.starts_with("postgres") {
+        "SELECT id FROM conversations WHERE id = $1 FOR UPDATE"
+    } else {
+        "SELECT id FROM conversations WHERE id = ? FOR UPDATE"
+    };
+    let mut tx = sqlx::Connection::begin(&mut other).await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(q.to_string()))
+        .bind(conv.clone())
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    let t = std::time::Instant::now();
+    let r = a.send(&conv, "blocked").await;
+    assert_eq!(code(&r), "unavailable", "{r}");
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(8),
+        "gave up in time"
+    );
+    tx.rollback().await.unwrap();
+    // The database is fine and the retry goes through once.
+    let msg = json!({"op": "send", "conv_id": conv, "client_msg_id": "x", "text": "after"});
+    let first = a.ok(msg.clone()).await;
+    assert_eq!(a.ok(msg).await["msg_id"], first["msg_id"]);
+    assert_eq!(
+        last_seq(&a, &conv).await,
+        head + 1,
+        "the blocked batch left nothing"
+    );
 }

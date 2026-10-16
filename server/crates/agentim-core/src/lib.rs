@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod cli;
+pub mod cluster;
 pub mod config;
 pub mod crypto;
 pub mod db;

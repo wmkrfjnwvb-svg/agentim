@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::db::{Cell, Committed, Db, DirEntry, NewMsg};
@@ -103,7 +104,7 @@ pub struct DirInfo {
 
 /// State shared by the hub and every writer. All of it is either derived
 /// from the databases (and rebuilt at startup) or soft state.
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize)]
 pub enum CredChange {
     SetPassword(String),
     Failed { max: i64, lock_ms: i64 },
@@ -113,7 +114,7 @@ pub enum CredChange {
     TotpDisable,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenInfo {
     pub user_id: String,
     pub device_id: String,
@@ -147,7 +148,12 @@ pub struct Shared {
     pub progress_buckets: std::sync::Mutex<HashMap<(String, String), (f64, std::time::Instant)>>,
     pub dir: std::sync::RwLock<HashMap<String, DirInfo>>,
     /// Active stream (or streamed draft) id → database index.
-    pub stream_index: std::sync::Mutex<HashMap<String, usize>>,
+    /// Open streams: message id -> (database, conversation). Every node
+    /// learns them (`Out::Stream`), so stream requests reach the writer
+    /// holding the stream wherever the agent is connected.
+    pub stream_index: std::sync::Mutex<HashMap<String, (usize, String)>>,
+    /// The cluster this node belongs to; unset on a single node.
+    pub cluster: std::sync::OnceLock<Arc<dyn crate::cluster::Cluster>>,
     pub policy: PolicyChain,
     pub cfg: HubConfig,
     pub budgets: crate::guard::Budgets,
@@ -158,17 +164,28 @@ pub struct Shared {
 }
 
 impl Shared {
-    /// Token cache changes of committed writes, in write order.
+    /// Token cache and stream index changes of committed writes, in write
+    /// order (also those other nodes committed).
     pub fn apply_tokens(&self, outs: &[Out]) {
         for o in outs {
-            if let Out::Tokens { add, remove, .. } = o {
-                let mut t = self.tokens.write().unwrap();
-                for h in remove {
-                    t.remove(h);
+            match o {
+                Out::Tokens { add, remove, .. } => {
+                    let mut t = self.tokens.write().unwrap();
+                    for h in remove {
+                        t.remove(h);
+                    }
+                    for (h, info) in add {
+                        t.insert(h.clone(), info.clone());
+                    }
                 }
-                for (h, info) in add {
-                    t.insert(h.clone(), info.clone());
+                Out::Stream { msg_id, db, conv } => {
+                    let mut s = self.stream_index.lock().unwrap_or_else(|e| e.into_inner());
+                    match conv {
+                        Some(c) => s.insert(msg_id.clone(), (*db, c.clone())),
+                        None => s.remove(msg_id),
+                    };
                 }
+                _ => {}
             }
         }
     }
@@ -315,20 +332,34 @@ impl ShardState {
 
 // ------------------------------------------------------------------- ops
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SessCtx {
     pub sid: u64,
     pub user: User,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Op {
     Client {
         sess: SessCtx,
+        /// The conversation the request is about (its shard decides where
+        /// it runs in a cluster).
+        conv: String,
         msg: ClientMsg,
     },
     Tick,
-    Recover,
+    /// Cluster: this node lost these shards; their in-memory state (open
+    /// streams, member caches) goes.
+    Forget {
+        shards: Vec<u32>,
+    },
+    /// Member caches go (memberships may have changed elsewhere).
+    ClearCaches,
+    /// Ends streams a crash left open: all of them (single node, at start),
+    /// or those of shards just taken over (cluster).
+    Recover {
+        shards: Option<Vec<u32>>,
+    },
     /// A webhook handled the outbox up to `upto`; `dropped` gave up.
     WebhookAck {
         name: String,
@@ -565,10 +596,18 @@ pub enum Op {
         pair_key: String,
         conv_id: String,
     },
+    /// One direct conversation per pair, also across cluster nodes: claims
+    /// the pair for a new conversation or returns the existing one.
+    DmClaim {
+        pair_key: String,
+        conv_id: String,
+        /// Gives the claim back (the conversation was not created).
+        release: bool,
+    },
     StopConvStreams(String),
     ImportConv {
         conv_id: String,
-        rows: Vec<(&'static str, Vec<Vec<Cell>>)>,
+        rows: Vec<(String, Vec<Vec<Cell>>)>,
     },
     DeleteConv(String),
     Audit {
@@ -582,6 +621,71 @@ pub enum Op {
 }
 
 impl Op {
+    /// Where the command must run in a cluster (docs/11 §5).
+    pub fn route(&self) -> crate::cluster::Route {
+        use crate::cluster::Route;
+        match self {
+            Op::Client { conv, .. } => Route::Conv(conv.clone()),
+            Op::Recover { shards: Some(s) } => Route::Shards(s.clone()),
+            Op::Recover { shards: None } => Route::Local,
+            Op::Tick
+            | Op::Forget { .. }
+            | Op::ClearCaches
+            | Op::Barrier
+            | Op::AgentGone(_)
+            | Op::Stats => Route::Local,
+            Op::WebhookAck { .. } | Op::EncryptExisting { .. } | Op::RewrapKeys { .. } => {
+                Route::Maintenance
+            }
+            Op::CreateConv { id, .. } => Route::Conv(id.clone()),
+            Op::AddMember { conv_id, .. }
+            | Op::RemoveMember { conv_id, .. }
+            | Op::Dissolve { conv_id, .. }
+            | Op::AgentStopped { conv_id, .. }
+            | Op::RemoveDestroyed { conv_id, .. }
+            | Op::ImportConv { conv_id, .. } => Route::Conv(conv_id.clone()),
+            Op::StopConvStreams(c) | Op::DeleteConv(c) => Route::Conv(c.clone()),
+            Op::TouchToken { .. }
+            | Op::AckCursors { .. }
+            | Op::DropDevice { .. }
+            | Op::SetMemberOwner { .. }
+            | Op::Audit { .. } => Route::Anywhere,
+            Op::CreateUser { .. }
+            | Op::IssueToken { .. }
+            | Op::LoadToken { .. }
+            | Op::RevokeTokens { .. }
+            | Op::ExpireTokens { .. }
+            | Op::UpdateUser { .. }
+            | Op::SetDeactivated { .. }
+            | Op::StatePut { .. }
+            | Op::StateDelete { .. }
+            | Op::SetStopped { .. }
+            | Op::Destroy { .. }
+            | Op::Credentials { .. }
+            | Op::CreateApiKey(_)
+            | Op::RevokeApiKey { .. }
+            | Op::IdemPut { .. }
+            | Op::UpsertUnit { .. }
+            | Op::RegisterConv { .. }
+            | Op::MemberIndexAdd { .. }
+            | Op::DirPut(_)
+            | Op::DirDelete(_)
+            | Op::Departure { .. }
+            | Op::Rejoined { .. }
+            | Op::DissolvedSeen { .. }
+            | Op::SetPrefs { .. }
+            | Op::MemberIndexRemove { .. }
+            | Op::IndexSync { .. }
+            | Op::TransferAgent { .. }
+            | Op::ForgetConv(_)
+            | Op::SetBlock { .. }
+            | Op::DmPut { .. }
+            | Op::DmClaim { .. } => Route::Control,
+        }
+    }
+}
+
+impl Op {
     pub fn is_tick(&self) -> bool {
         matches!(self, Op::Tick)
     }
@@ -590,7 +694,9 @@ impl Op {
         match self {
             Op::Client { msg, .. } => msg.name(),
             Op::Tick => "tick",
-            Op::Recover => "recover",
+            Op::Forget { .. } => "forget",
+            Op::ClearCaches => "clear_caches",
+            Op::Recover { .. } => "recover",
             Op::WebhookAck { .. } => "webhook_ack",
             Op::AgentGone(_) => "agent_gone",
             Op::Barrier => "barrier",
@@ -636,6 +742,7 @@ impl Op {
             Op::ForgetConv(_) => "forget_conv",
             Op::SetBlock { .. } => "set_block",
             Op::DmPut { .. } => "dm_put",
+            Op::DmClaim { .. } => "dm_claim",
             Op::StopConvStreams(_) => "stop_conv_streams",
             Op::ImportConv { .. } => "import_conv",
             Op::DeleteConv(_) => "delete_conv",
@@ -760,12 +867,70 @@ pub struct Ctx<'a, 'c> {
     pub idx: usize,
     /// Keep this command's writes even though it returns an error.
     pub commit_on_error: bool,
+    /// Cluster: shards this batch wrote, whose leases it checks before
+    /// committing (docs/11 §4.3).
+    pub touched: &'a mut std::collections::BTreeSet<u32>,
 }
 
 impl Ctx<'_, '_> {
+    /// Whether this node may write the conversation (always on a single
+    /// node; in a cluster while it holds the conversation's shard).
+    pub fn owns(&self, conv_id: &str) -> bool {
+        match self.sh.cluster.get() {
+            None => true,
+            Some(c) => c
+                .held(self.idx, crate::cluster::shard_of(conv_id, c.shards()))
+                .is_some(),
+        }
+    }
+
+    /// Records that this batch writes a conversation's shard.
+    pub fn touch(&mut self, conv_id: &str) {
+        if let Some(c) = self.sh.cluster.get() {
+            self.touched
+                .insert(crate::cluster::shard_of(conv_id, c.shards()));
+        }
+    }
+
+    /// Whether this node does the database-wide upkeep; it is then part of
+    /// the batch's check.
+    fn upkeep(&mut self) -> bool {
+        match self.sh.cluster.get() {
+            None => true,
+            Some(c) => {
+                let m = crate::cluster::maintenance_shard(c.shards());
+                let held = c.held(self.idx, m).is_some();
+                if held {
+                    self.touched.insert(m);
+                }
+                held
+            }
+        }
+    }
+
     pub async fn run(&mut self, op: Op) -> ApiResult<Value> {
+        // Changes other processes keep in memory are counted, so they
+        // reload (CLI, other cluster nodes; docs/11 §6.5).
+        let invalidates = matches!(
+            op,
+            Op::SetStopped { .. }
+                | Op::Destroy { .. }
+                | Op::SetBlock { .. }
+                | Op::TransferAgent { .. }
+                | Op::SetMemberOwner { .. }
+                | Op::UpdateUser { .. }
+        );
+        let r = self.run_op(op).await;
+        if r.is_ok() && invalidates {
+            self.db.bump_meta(crate::db::AUTH_EPOCH).await?;
+            self.out.push(Out::Invalidate);
+        }
+        r
+    }
+
+    async fn run_op(&mut self, op: Op) -> ApiResult<Value> {
         match op {
-            Op::Client { sess, msg } => self.client(&sess, msg).await,
+            Op::Client { sess, msg, .. } => self.client(&sess, msg).await,
             Op::Tick => {
                 self.tick().await?;
                 Ok(json!({}))
@@ -790,8 +955,13 @@ impl Ctx<'_, '_> {
                 self.db.webhook_ack(&name, upto, &all).await?;
                 Ok(json!({}))
             }
-            Op::Recover => {
+            Op::Recover { shards } => {
                 for msg in self.db.streaming_messages().await? {
+                    if let (Some(s), Some(c)) = (&shards, self.sh.cluster.get())
+                        && !s.contains(&crate::cluster::shard_of(&msg.conv_id, c.shards()))
+                    {
+                        continue;
+                    }
                     let ev = self
                         .db
                         .update_message(
@@ -805,6 +975,31 @@ impl Ctx<'_, '_> {
                         .await?;
                     metrics::counter!(m::STREAMS_FINISHED, "state" => "failed", "reason" => "server_restart").increment(1);
                     self.emit(ev).await?;
+                }
+                Ok(json!({}))
+            }
+            Op::ClearCaches => {
+                self.st.members.clear();
+                self.st.recips.clear();
+                Ok(json!({}))
+            }
+            Op::Forget { shards } => {
+                if let Some(c) = self.sh.cluster.get() {
+                    let n = c.shards();
+                    let of = |conv: &str| shards.contains(&crate::cluster::shard_of(conv, n));
+                    let gone: Vec<String> = self
+                        .st
+                        .streams
+                        .values()
+                        .filter(|s| of(&s.conv_id))
+                        .map(|s| s.msg_id.clone())
+                        .collect();
+                    for id in gone {
+                        self.st.streams.remove(&id);
+                        self.stream_removed(&id);
+                    }
+                    self.st.members.retain(|conv, _| !of(conv));
+                    self.st.recips.retain(|conv, _| !of(conv));
                 }
                 Ok(json!({}))
             }
@@ -969,6 +1164,7 @@ impl Ctx<'_, '_> {
             } => self.state_delete(&agent_id, &key, version).await,
             Op::SetDeactivated { user_id, on } => {
                 self.db.set_deactivated(&user_id, on).await?;
+                self.out.push(Out::Invalidate);
                 Ok(json!({}))
             }
             Op::Credentials { user_id, change } => {
@@ -1265,6 +1461,21 @@ impl Ctx<'_, '_> {
             }
             Op::DmPut { pair_key, conv_id } => {
                 self.db.dm_put(&pair_key, &conv_id).await?;
+                Ok(json!({}))
+            }
+            Op::DmClaim {
+                pair_key,
+                conv_id,
+                release: false,
+            } => Ok(json!({
+                "existing": self.db.dm_claim(&pair_key, &conv_id).await?
+            })),
+            Op::DmClaim {
+                pair_key,
+                conv_id,
+                release: true,
+            } => {
+                self.db.dm_release(&pair_key, &conv_id).await?;
                 Ok(json!({}))
             }
             Op::StopConvStreams(conv) => {
@@ -1829,6 +2040,7 @@ impl Ctx<'_, '_> {
 
     /// Queues a committed event for fan-out with per-member visibility.
     async fn emit(&mut self, ev: Event) -> ApiResult<()> {
+        self.touch(&ev.conv_id);
         let members = self.members(&ev.conv_id).await?;
         let base = match self.st.recips.get(&ev.conv_id) {
             Some((m, r)) if Arc::ptr_eq(m, &members) => r.clone(),
@@ -3017,7 +3229,12 @@ impl Ctx<'_, '_> {
             .stream_index
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(msg_id.clone(), self.idx);
+            .insert(msg_id.clone(), (self.idx, conv_id.to_string()));
+        self.out.push(Out::Stream {
+            msg_id: msg_id.clone(),
+            db: self.idx,
+            conv: Some(conv_id.to_string()),
+        });
         metrics::gauge!(m::STREAMS_ACTIVE).increment(1.0);
         Ok(json!({"msg_id": msg_id, "seq": seq, "pending_approval": pending_approval, "hop": hop}))
     }
@@ -3133,6 +3350,11 @@ impl Ctx<'_, '_> {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(msg_id);
+        self.out.push(Out::Stream {
+            msg_id: msg_id.to_string(),
+            db: self.idx,
+            conv: None,
+        });
         metrics::gauge!(m::STREAMS_ACTIVE).decrement(1.0);
     }
 
@@ -3332,17 +3554,18 @@ impl Ctx<'_, '_> {
         }
         if now.duration_since(self.st.last_checkpoint) >= self.sh.cfg.checkpoint_every {
             self.st.last_checkpoint = now;
-            let dirty: Vec<(String, String)> = self
+            let dirty: Vec<(String, String, String)> = self
                 .st
                 .streams
                 .values_mut()
                 .filter(|s| matches!(s.target, Target::Main) && s.buf.len() != s.checkpointed)
                 .map(|s| {
                     s.checkpointed = s.buf.len();
-                    (s.msg_id.clone(), s.buf.clone())
+                    (s.msg_id.clone(), s.conv_id.clone(), s.buf.clone())
                 })
                 .collect();
-            for (id, content) in dirty {
+            for (id, conv, content) in dirty {
+                self.touch(&conv);
                 self.db.checkpoint(&id, &content).await?;
             }
         }
@@ -3373,7 +3596,7 @@ impl Ctx<'_, '_> {
             self.st.last_expiry = now;
             self.expire_requests().await?;
         }
-        if self.st.last_gc.elapsed() > self.sh.cfg.gc_every {
+        if self.st.last_gc.elapsed() > self.sh.cfg.gc_every && self.upkeep() {
             self.st.last_gc = now;
             self.db
                 .dedup_gc(now_ms() - self.sh.cfg.dedup_ttl.as_millis() as i64)
@@ -3384,10 +3607,24 @@ impl Ctx<'_, '_> {
             self.db.drop_stale_cursors(stale).await?;
             self.db.drop_old_departures(stale).await?;
             if let Some(keep) = sync.retention {
-                let n = self
+                let owned: Option<std::collections::HashSet<u32>> =
+                    self.sh.cluster.get().map(|c| {
+                        (0..c.shards())
+                            .filter(|s| c.held(self.idx, *s).is_some())
+                            .collect()
+                    });
+                let shards = self.sh.cluster.get().map_or(1, |c| c.shards());
+                let (n, purged) = self
                     .db
-                    .purge_before(now - keep.as_millis() as i64, PURGE_BATCH)
+                    .purge_before(now - keep.as_millis() as i64, PURGE_BATCH, |c| {
+                        owned
+                            .as_ref()
+                            .is_none_or(|o| o.contains(&crate::cluster::shard_of(c, shards)))
+                    })
                     .await?;
+                for c in purged {
+                    self.touch(&c);
+                }
                 if n > 0 {
                     tracing::info!(rows = n, "retention: deleted old conversation content");
                 }

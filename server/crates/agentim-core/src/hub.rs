@@ -183,6 +183,7 @@ impl Hub {
             progress_per_second: cfg.agents.progress_per_second as f64,
             dir: Default::default(),
             stream_index: Default::default(),
+            cluster: Default::default(),
             policy: PolicyChain::default_chain(),
             budgets: Default::default(),
             control,
@@ -357,7 +358,7 @@ impl Hub {
         }
         self.reconcile().await?;
         for s in &self.inner.shards {
-            s.call(Op::Recover).await?;
+            s.call(Op::Recover { shards: None }).await?;
         }
         Ok(())
     }
@@ -564,9 +565,16 @@ impl Hub {
         if epoch == self.inner.auth_epoch.load(SeqCst) {
             return Ok(false);
         }
-        let (tokens, users) = self
+        let (tokens, users, blocks, flags) = self
             .read(control, |db| {
-                Box::pin(async move { Ok((db.tokens_all().await?, db.load_users().await?)) })
+                Box::pin(async move {
+                    Ok((
+                        db.tokens_all().await?,
+                        db.load_users().await?,
+                        db.blocks_all().await?,
+                        db.agent_flags().await?,
+                    ))
+                })
             })
             .await?;
         let sh = &self.inner.sh;
@@ -585,13 +593,33 @@ impl Hub {
         }
         {
             let mut d = sh.deactivated.write().unwrap();
+            let mut all = sh.users.write().unwrap();
             for (u, off) in users {
                 if off && d.insert(u.id.clone()) {
                     kick.push((u.id.clone(), None));
                 } else if !off {
                     d.remove(&u.id);
                 }
+                all.insert(u.id.clone(), u);
             }
+        }
+        *sh.blocks.write().unwrap() = blocks.into_iter().collect();
+        {
+            let mut stopped = sh.stopped.write().unwrap();
+            let mut destroyed = sh.destroyed.write().unwrap();
+            stopped.clear();
+            destroyed.clear();
+            for (id, s, d) in flags {
+                if s {
+                    stopped.insert(id.clone());
+                }
+                if d {
+                    destroyed.insert(id);
+                }
+            }
+        }
+        for s in &self.inner.shards {
+            s.post(Op::ClearCaches);
         }
         sh.reg.deliver(vec![Out::Tokens {
             add: vec![],
@@ -1939,6 +1967,7 @@ impl Hub {
                         sid: sess.sid,
                         user: sess.user.clone(),
                     },
+                    conv: conv.to_string(),
                     msg: msg.clone(),
                 })
                 .await;
@@ -2299,14 +2328,14 @@ impl Hub {
             ClientMsg::StreamAppend { ref msg_id, .. }
             | ClientMsg::StreamEnd { ref msg_id }
             | ClientMsg::StreamCancel { ref msg_id } => {
-                let idx = self
+                let (idx, conv) = self
                     .inner
                     .sh
                     .stream_index
                     .lock()
                     .unwrap()
                     .get(msg_id)
-                    .copied()
+                    .cloned()
                     .ok_or_else(|| err("not_found", "no active stream"))?;
                 self.inner.shards[idx]
                     .call(Op::Client {
@@ -2314,6 +2343,7 @@ impl Hub {
                             sid: sess.sid,
                             user: me.clone(),
                         },
+                        conv,
                         msg,
                     })
                     .await
@@ -2885,6 +2915,7 @@ impl Hub {
         if kind == "dm" && sh.blocked(&me.id, &users[0].id) {
             return Err(err("blocked", "unblock this user first"));
         }
+        let id = format!("c_{}", new_id());
         // One direct conversation per pair: creating it again returns it.
         let _dm_guard = if kind == "dm" {
             let guard = self.inner.dm_lock.lock().await;
@@ -2897,9 +2928,7 @@ impl Hub {
                     Box::pin(async move { db.dm_get(&k).await })
                 })
                 .await?;
-            if let Some(c) = existing
-                && sh.dir_get(&c).is_some()
-            {
+            if let Some(c) = existing {
                 return Ok(json!({"conv_id": c, "existing": true}));
             }
             Some((guard, key))
@@ -2929,7 +2958,21 @@ impl Hub {
         // New conversations live in the database of the creator's unit.
         let db_name = self.inner.cfg.unit_database(&me.unit_id).to_string();
         let idx = sh.db_names.iter().position(|n| *n == db_name).unwrap();
-        let id = format!("c_{}", new_id());
+        // The claim runs on the control shard's writer, so two nodes
+        // creating the same pair at once get one conversation.
+        if let Some((_, key)) = &_dm_guard {
+            let v = self
+                .control()
+                .call(Op::DmClaim {
+                    pair_key: key.clone(),
+                    conv_id: id.clone(),
+                    release: false,
+                })
+                .await?;
+            if let Some(c) = v["existing"].as_str() {
+                return Ok(json!({"conv_id": c, "existing": true}));
+            }
+        }
         // Routable before its first events are pushed.
         sh.dir_set(
             &id,
@@ -2953,6 +2996,16 @@ impl Hub {
             .await;
         if let Err(e) = res {
             sh.dir_set(&id, None);
+            if let Some((_, key)) = &_dm_guard {
+                let _ = self
+                    .control()
+                    .call(Op::DmClaim {
+                        pair_key: key.clone(),
+                        conv_id: id.clone(),
+                        release: true,
+                    })
+                    .await;
+            }
             return Err(e);
         }
         if idx != sh.control {
@@ -2971,14 +3024,7 @@ impl Hub {
                 })
                 .await?;
         }
-        if let Some((_, key)) = &_dm_guard {
-            self.control()
-                .call(Op::DmPut {
-                    pair_key: key.clone(),
-                    conv_id: id.clone(),
-                })
-                .await?;
-        }
+
         if agent_owner.is_some() {
             self.agent_conversation_allowed(&me.id, true);
         }

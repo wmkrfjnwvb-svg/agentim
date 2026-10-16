@@ -1,6 +1,6 @@
 # 11 集群
 
-> 状态：**设计，待你确认**（待确认项在 [06 §1.1](06-plan.md) 的 D72–D84、D86）。确认前不写代码。
+> 状态：**已确认，开发中**（2026-10-16 你确认开始开发；D72–D84、D86 按 [06 §1.1](06-plan.md) 的建议执行）。
 > 依据：[调研：集群](research/cluster.md)（Temporal、Patroni、client-go、Quartz、Airflow、db-scheduler、ShedLock、Redis Cluster、Mattermost、Synapse、Centrifuge、PostgreSQL / MySQL 切主、Jepsen 等的源码和社区问题单）。下文的"〔调研 2.x〕"指那份文档的对应小节。
 > 已确认的方向（2026-10-12）：所有版本免费；**除数据库外不依赖任何组件**；节点平等，没有主从；会话分片由数据库租约决定归属，**没有选举**；节点之间全互连；做成独立的 Rust crate；测试按 §12 做全。
 
