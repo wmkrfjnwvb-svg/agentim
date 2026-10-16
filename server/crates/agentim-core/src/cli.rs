@@ -212,7 +212,15 @@ fn init_logging(format: &str) {
 }
 
 /// Runs the server or a command, as `agentim` or `agentim-lite`.
+/// Joins a cluster with an opened (deferred) hub and starts the node; the
+/// `agentim-cluster` crate provides it (docs/11).
+pub type ClusterJoin = fn(Hub) -> crate::cluster::BoxFuture<Result<(), String>>;
+
 pub async fn run(edition: Edition) {
+    run_with(edition, None).await
+}
+
+pub async fn run_with(edition: Edition, cluster: Option<ClusterJoin>) {
     let cmd = Args::command()
         .name(edition.binary())
         .about(format!("{} server", edition.product()));
@@ -244,13 +252,28 @@ pub async fn run(edition: Edition) {
         },
         ..Default::default()
     };
-    let hub = match Hub::open(cfg, hub_cfg).await {
+    let clustered = cfg.cluster.enabled;
+    let hub = match Hub::open_deferred(cfg, hub_cfg).await {
         Ok(h) => h,
         Err(e) => {
             tracing::error!(code = e.code, error = e.message, "startup failed");
             std::process::exit(1)
         }
     };
+    if clustered {
+        let Some(join) = cluster else {
+            tracing::error!("this build has no cluster support");
+            std::process::exit(1)
+        };
+        if let Err(e) = join(hub.clone()).await {
+            tracing::error!(error = e, "joining the cluster failed");
+            std::process::exit(1)
+        }
+    }
+    if let Err(e) = hub.finish_open().await {
+        tracing::error!(code = e.code, error = e.message, "startup failed");
+        std::process::exit(1)
+    }
 
     if let Some(Cmd::Encryption { action }) = &args.cmd {
         let r = match action {

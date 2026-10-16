@@ -283,6 +283,65 @@ impl Hub {
         self.inner.shards.get(idx)
     }
 
+    /// What another node's writer committed on database `db`: tokens and
+    /// streams it changed, pushes for this node's connections, and cache
+    /// invalidations (docs/11 §6.4, §6.5).
+    pub fn deliver_published(&self, outs: Vec<crate::registry::Out>) {
+        let sh = &self.inner.sh;
+        sh.apply_tokens(&outs);
+        if outs
+            .iter()
+            .any(|o| matches!(o, crate::registry::Out::Invalidate))
+        {
+            let hub = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = hub.refresh_auth().await {
+                    tracing::warn!(error = e.message, "cache refresh failed");
+                }
+            });
+        }
+        sh.reg.deliver(outs);
+    }
+
+    /// In a cluster, a conversation another node created may not have
+    /// reached this node's directory yet: it is read from the database.
+    pub async fn dir_ensure(&self, conv: &str) {
+        let sh = &self.inner.sh;
+        if !self.clustered() || sh.dir_get(conv).is_some() {
+            return;
+        }
+        let c = conv.to_string();
+        let Ok(Some(e)) = self
+            .read(self.control(), move |db| {
+                Box::pin(async move { db.dir_one(&c).await })
+            })
+            .await
+        else {
+            return;
+        };
+        if let Some(i) = sh.db_names.iter().position(|n| *n == e.database) {
+            sh.dir_set_local(
+                conv,
+                Some(DirInfo {
+                    db: i,
+                    unit: e.unit_id,
+                    migrating: e.migrating,
+                }),
+            );
+        }
+    }
+
+    /// Session ids of this node start at `slot << 32` (unique in a cluster).
+    pub fn set_session_slot(&self, slot: u32) {
+        self.inner.sh.reg.set_slot(slot);
+    }
+
+    /// Every connection of this node is told to sync (after pushes from
+    /// another node may have been lost).
+    pub fn resync_all(&self) {
+        self.inner.sh.reg.resync_all();
+    }
+
     pub fn database_names(&self) -> &[String] {
         &self.inner.sh.db_names
     }
@@ -290,6 +349,30 @@ impl Hub {
     /// Repairs the directory and indexes after a crash (the control shard's
     /// holder runs it in a cluster).
     pub async fn repair(&self) -> ApiResult<()> {
+        if self.clustered() {
+            // Other nodes changed the directory meanwhile: start from what
+            // is stored.
+            let sh = &self.inner.sh;
+            let entries = self
+                .read(self.control(), |db| {
+                    Box::pin(async move { db.dir_all().await })
+                })
+                .await?;
+            let mut fresh = HashMap::new();
+            for e in entries {
+                if let Some(db) = sh.db_names.iter().position(|n| *n == e.database) {
+                    fresh.insert(
+                        e.conv_id,
+                        DirInfo {
+                            db,
+                            unit: e.unit_id,
+                            migrating: e.migrating,
+                        },
+                    );
+                }
+            }
+            *sh.dir.write().unwrap() = fresh;
+        }
         self.reconcile().await
     }
 
@@ -455,7 +538,9 @@ impl Hub {
                     i
                 }
             };
-            for (i, _) in copies.iter().filter(|(i, _)| *i != owner) {
+            // In a cluster a migration may be running on another node.
+            let moving = self.clustered() && dir.as_ref().is_some_and(|d| d.migrating);
+            for (i, _) in copies.iter().filter(|(i, _)| *i != owner && !moving) {
                 tracing::warn!(
                     conv,
                     database = sh.db_names[*i],
@@ -1935,6 +2020,9 @@ impl Hub {
     ) -> ApiResult<Value> {
         let op = msg.name();
         let t = Instant::now();
+        if let Some(c) = msg.conv_id() {
+            self.dir_ensure(c).await;
+        }
         let res = self.dispatch(sess, msg).await;
         let secs = t.elapsed().as_secs_f64();
         let code = match &res {
@@ -2683,11 +2771,13 @@ impl Hub {
         after: i64,
         limit: i64,
     ) -> ApiResult<Value> {
+        self.dir_ensure(conv).await;
         self.pull_as(me, conv, after, limit, None).await
     }
 
     /// Side events of a conversation addressed to `me` (server-side read).
     pub async fn read_side(&self, me: &User, conv: &str, after: i64) -> ApiResult<Value> {
+        self.dir_ensure(conv).await;
         self.pull_side(me, conv, after).await
     }
 

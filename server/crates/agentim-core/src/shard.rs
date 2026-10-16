@@ -200,7 +200,12 @@ impl Shard {
         if c.held(self.idx, shard).is_none() {
             return c.forward(self.idx, shard, op).await;
         }
-        self.call_local(op).await
+        // The lease can go between the check and the batch: the writer
+        // hands the command back untouched, and it goes to the new holder.
+        match self.call_local(op.clone()).await {
+            Err(e) if e.code == "not_owner" => c.forward(self.idx, shard, op).await,
+            r => r,
+        }
     }
 
     /// Whether this node does the database's upkeep (always on a single

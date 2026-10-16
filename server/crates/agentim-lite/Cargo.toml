@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 agentim-core = { path = "../agentim-core" }
+agentim-cluster = { path = "../agentim-cluster" }
 tokio = { version = "1.53.2", features = ["full"] }
 
 [dev-dependencies]

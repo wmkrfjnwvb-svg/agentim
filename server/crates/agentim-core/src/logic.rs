@@ -95,7 +95,7 @@ impl Default for HubConfig {
 
 // ------------------------------------------------------------ shared state
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirInfo {
     pub db: usize,
     pub unit: String,
@@ -104,7 +104,7 @@ pub struct DirInfo {
 
 /// State shared by the hub and every writer. All of it is either derived
 /// from the databases (and rebuilt at startup) or soft state.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum CredChange {
     SetPassword(String),
     Failed { max: i64, lock_ms: i64 },
@@ -178,6 +178,19 @@ impl Shared {
                         t.insert(h.clone(), info.clone());
                     }
                 }
+                Out::Dir { conv_id, info } => self.dir_set_local(conv_id, info.clone()),
+                Out::Block {
+                    user_id,
+                    target,
+                    on,
+                } => {
+                    let mut b = self.blocks.write().unwrap_or_else(|e| e.into_inner());
+                    if *on {
+                        b.insert((user_id.clone(), target.clone()));
+                    } else {
+                        b.remove(&(user_id.clone(), target.clone()));
+                    }
+                }
                 Out::Stream { msg_id, db, conv } => {
                     let mut s = self.stream_index.lock().unwrap_or_else(|e| e.into_inner());
                     match conv {
@@ -243,7 +256,21 @@ impl Shared {
             .cloned()
     }
 
+    /// Sets a directory entry, and in a cluster on every node.
     pub fn dir_set(&self, conv: &str, info: Option<DirInfo>) {
+        if let Some(c) = self.cluster.get() {
+            c.publish(
+                self.control,
+                &[Out::Dir {
+                    conv_id: conv.to_string(),
+                    info: info.clone(),
+                }],
+            );
+        }
+        self.dir_set_local(conv, info);
+    }
+
+    pub fn dir_set_local(&self, conv: &str, info: Option<DirInfo>) {
         let mut d = self.dir.write().unwrap_or_else(|e| e.into_inner());
         match info {
             Some(i) => {
@@ -338,7 +365,7 @@ pub struct SessCtx {
     pub user: User,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Op {
     Client {
         sess: SessCtx,
@@ -1451,12 +1478,12 @@ impl Ctx<'_, '_> {
                 on,
             } => {
                 self.db.set_block(&user_id, &target, on).await?;
-                let mut b = self.sh.blocks.write().unwrap_or_else(|e| e.into_inner());
-                if on {
-                    b.insert((user_id, target));
-                } else {
-                    b.remove(&(user_id, target));
-                }
+                // The caches change when the write is durable, on every node.
+                self.out.push(Out::Block {
+                    user_id,
+                    target,
+                    on,
+                });
                 Ok(json!({}))
             }
             Op::DmPut { pair_key, conv_id } => {
@@ -2324,7 +2351,7 @@ impl Ctx<'_, '_> {
         if self.sh.deactivated.read().unwrap().contains(&u.id) {
             return Err(err("not_found", "no such user"));
         }
-        if self.sh.blocked(&u.id, &me.id) {
+        if self.blocked_now(&u.id, &me.id).await? {
             return Err(err(
                 "blocked",
                 "this user does not accept invitations from you",
@@ -2400,6 +2427,16 @@ impl Ctx<'_, '_> {
         Ok(self.db.conv(conv_id).await?.is_some_and(|c| c.kind == "dm"))
     }
 
+    /// Whether `a` blocked `b`. In a cluster another node may have just
+    /// written the block: when this writer's database holds the blocks
+    /// (a single database), it reads them in its own transaction.
+    async fn blocked_now(&mut self, a: &str, b: &str) -> ApiResult<bool> {
+        if self.sh.cluster.get().is_some() && self.idx == self.sh.control {
+            return self.db.is_blocked(a, b).await;
+        }
+        Ok(self.sh.blocked(a, b))
+    }
+
     /// In a direct conversation, a block in either direction stops messages.
     async fn check_dm_block(&mut self, conv_id: &str, me: &str) -> ApiResult<()> {
         let members = self.members(conv_id).await?;
@@ -2409,7 +2446,8 @@ impl Ctx<'_, '_> {
         let Some(other) = members.iter().find(|m| m.user_id != me) else {
             return Ok(());
         };
-        if !self.sh.blocked_either(&other.user_id, me) {
+        let other = other.user_id.clone();
+        if !(self.blocked_now(&other, me).await? || self.blocked_now(me, &other).await?) {
             return Ok(());
         }
         let dm = self.db.conv(conv_id).await?.is_some_and(|c| c.kind == "dm");
@@ -2819,7 +2857,7 @@ impl Ctx<'_, '_> {
         if let Some(target) = to_user {
             let t = self.resolve_user(&target)?;
             self.require_member(conv_id, &t.id).await?;
-            if self.sh.blocked_either(&t.id, &me.id) {
+            if self.blocked_now(&t.id, &me.id).await? || self.blocked_now(&me.id, &t.id).await? {
                 return Err(err("blocked", "you cannot message this user"));
             }
             let mut audience = self.audience(conv_id, me).await?;

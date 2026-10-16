@@ -519,6 +519,9 @@ pub struct ClusterConfig {
     pub renew_ms: u64,
     pub stop_ms: u64,
     pub op_timeout_ms: u64,
+    /// Protects the cluster's certificate authority in the database (the
+    /// same on every node); the encryption master key when not set.
+    pub secret: Option<String>,
 }
 
 impl Default for ClusterConfig {
@@ -533,6 +536,7 @@ impl Default for ClusterConfig {
             renew_ms: 3_000,
             stop_ms: 10_000,
             op_timeout_ms: 2_000,
+            secret: None,
         }
     }
 }

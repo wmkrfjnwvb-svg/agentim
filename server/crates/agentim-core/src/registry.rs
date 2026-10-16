@@ -70,6 +70,17 @@ pub enum Out {
         db: usize,
         conv: Option<String>,
     },
+    /// A block was set or lifted (for every node's cache, after commit).
+    Block {
+        user_id: String,
+        target: String,
+        on: bool,
+    },
+    /// A conversation directory entry changed (for the other nodes' caches).
+    Dir {
+        conv_id: String,
+        info: Option<crate::logic::DirInfo>,
+    },
     /// Security caches changed (blocks, stops, deactivations...): other
     /// nodes reload them now rather than at their next poll.
     Invalidate,
@@ -219,6 +230,37 @@ impl Registry {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Session ids of this process start at `slot << 32`, so that ids named
+    /// in published outputs are unique across a cluster (the slot is the
+    /// node's row in the node table; 0 on a single node). Kept below 2^53
+    /// for JavaScript clients.
+    pub fn set_slot(&self, slot: u32) {
+        let mut g = self.lock();
+        let base = u64::from(slot & 0x000f_ffff) << 32;
+        if g.next < base {
+            g.next = base;
+        }
+    }
+
+    /// Every session owes a resync of each conversation it has seen or
+    /// focuses: pushes from another node may have been lost.
+    pub fn resync_all(&self) {
+        let g = self.lock();
+        for e in g.sessions.values() {
+            let mut convs: HashSet<&String> = HashSet::new();
+            if let Some(s) = &e.sync {
+                convs.extend(s.sent.keys());
+                convs.extend(s.delivered.keys());
+            }
+            if let Some((c, _)) = &e.focus {
+                convs.insert(c);
+            }
+            for c in convs {
+                owe(&e.resync, c);
+            }
+        }
     }
 
     pub fn add(&self, user: &User) -> (u64, Pushes) {
@@ -533,7 +575,7 @@ impl Registry {
                     }
                 }
                 // Caches, not connections (see Shared::apply_tokens).
-                Out::Stream { .. } | Out::Invalidate => {}
+                Out::Stream { .. } | Out::Dir { .. } | Out::Block { .. } | Out::Invalidate => {}
                 Out::Tokens { kick, .. } => {
                     for (user_id, device_id) in kick {
                         for sid in g.by_user.get(&user_id).into_iter().flatten() {

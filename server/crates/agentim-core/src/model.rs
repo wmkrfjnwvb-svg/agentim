@@ -864,6 +864,28 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    /// An error received from another node: its code as one of this
+    /// program's codes (codes are a closed set; anything unknown is
+    /// `unavailable`, the retryable answer).
+    pub fn from_wire(code: &str, message: String) -> Self {
+        static CODES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+        let mut known = CODES.lock().unwrap_or_else(|e| e.into_inner());
+        let code = match known.iter().find(|c| **c == code) {
+            Some(c) => *c,
+            None if known.len() < 256
+                && !code.is_empty()
+                && code.len() <= 40
+                && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') =>
+            {
+                let c: &'static str = Box::leak(code.to_string().into_boxed_str());
+                known.push(c);
+                c
+            }
+            None => "unavailable",
+        };
+        ApiError { code, message }
+    }
 }
 
 impl From<sqlx::Error> for ApiError {

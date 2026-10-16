@@ -2,5 +2,9 @@
 
 #[tokio::main]
 async fn main() {
-    agentim_core::cli::run(agentim_core::edition::Edition::Lite).await
+    agentim_core::cli::run_with(
+        agentim_core::edition::Edition::Lite,
+        Some(agentim_cluster::join_and_start),
+    )
+    .await
 }

@@ -1101,6 +1101,25 @@ impl Db<'_> {
             .map_err(Into::into)
     }
 
+    pub async fn dir_one(&mut self, conv_id: &str) -> ApiResult<Option<DirEntry>> {
+        let r = sqlx::query(self.d.q(
+            "SELECT conv_id, database_name, unit_id, migrating FROM conv_dir WHERE conv_id = ?",
+        ))
+        .bind(conv_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        r.map(|r| {
+            Ok(DirEntry {
+                conv_id: r.try_get("conv_id")?,
+                database: r.try_get("database_name")?,
+                unit_id: r.try_get("unit_id")?,
+                migrating: r.try_get::<i64, _>("migrating")? != 0,
+            })
+        })
+        .transpose()
+        .map_err(|e: sqlx::Error| e.into())
+    }
+
     pub async fn dir_put(&mut self, e: &DirEntry) -> ApiResult<()> {
         let n = sqlx::query(self.d.q(
             "UPDATE conv_dir SET database_name = ?, unit_id = ?, migrating = ? WHERE conv_id = ?",
@@ -1250,6 +1269,19 @@ impl Db<'_> {
             .await?;
         }
         Ok(())
+    }
+
+    /// Whether `a` blocked `b`, as stored now.
+    pub async fn is_blocked(&mut self, a: &str, b: &str) -> ApiResult<bool> {
+        Ok(sqlx::query(
+            self.d
+                .q("SELECT 1 FROM blocks WHERE user_id = ? AND blocked_id = ?"),
+        )
+        .bind(a)
+        .bind(b)
+        .fetch_optional(&mut *self.c)
+        .await?
+        .is_some())
     }
 
     pub async fn blocks_all(&mut self) -> ApiResult<Vec<(String, String)>> {
