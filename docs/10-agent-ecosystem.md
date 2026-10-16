@@ -78,8 +78,9 @@ MCP 和 Agent API 提供的操作（同一份清单，CI 检查两边一致）�
 | 方面 | 做法 |
 |---|---|
 | 凭据 | Agent 密钥就是这个 Agent 的客户端令牌：只存哈希，一个密钥一台设备，有自己的同步位置（[08](08-sync-and-client.md)）。每个 Agent 必须有一个人作为负责人；每个负责人的 Agent 数量有上限（`agents.max_per_owner`，默认 20） |
-| 创建 | 负责人在应用里用 `create_agent {name}`；运维用 `agentim agent create --name researcher --owner alice [--url https://im.example.com]`；开发者后端用开放 API。都返回密钥（只显示一次）和可以直接粘贴的接入配置（MCP 配置、WebSocket 地址） |
+| 创建 | 负责人在应用里用 `create_agent {name}`；运维用 `agentim agent create --name researcher --owner alice [--url https://im.example.com] [--team]`（`--team` 建团队 Agent，[03 §9.3.1](03-ai-native.md)）；开发者后端用开放 API。都返回密钥（只显示一次）和可以直接粘贴的接入配置（MCP 配置、WebSocket 地址） |
 | 换密钥（秒迁移） | `agent_key {agent_id, revoke_others?}` 签发新密钥；`revoke_others` 时在同一次写入里吊销其他所有密钥并断开它们的连接。并发换密钥时**最后一次写入的那把是唯一有效的**；CLI 是 `agentim agent key --name researcher` |
+| 转交（团队 Agent） | `agentim agent transfer --name NAME --owner NEW [--rotate-keys]`：新负责人须是同一单元在职的人，不超过 `agents.max_per_owner`；`--rotate-keys` 同时吊销全部密钥，新负责人用 `agent key` 重新签发。个人助理不能转交（`bad_request`）；写审计 `agent.transferred` |
 | 吊销、列表 | `revoke_agent_key {agent_id, device_id}`、`list_agents`（名字、密钥列表、最后在线时间，不含密钥本身） |
 | 权限和错误码 | 只有负责人能管理自己的 Agent：别人的 Agent `forbidden`，不存在的 `not_found`，名字被占用或超过上限 `conflict`，参数不对 `bad_request`；Agent 不能创建 Agent（`forbidden`）。被拒绝的请求不写任何东西 |
 | 服务端运行时用 CLI 创建 | 服务端遇到内存里没有的令牌时去数据库查一次（全局每秒最多一次，防止乱填令牌拖垮数据库），查到就把用户和令牌加进内存。集群里别的节点签发的令牌也靠这一步 |

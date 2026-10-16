@@ -64,6 +64,8 @@ struct Inner {
     /// Password hashing slots, and how many callers hold or wait for one.
     hash_slots: tokio::sync::Semaphore,
     hash_callers: std::sync::atomic::AtomicUsize,
+    /// Agent transfers run one at a time (owner row and member rows agree).
+    transfer_lock: tokio::sync::Mutex<()>,
     /// Member changes of one conversation run one at a time, index included.
     member_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Conversations whose control index a failed write left behind, with
@@ -236,6 +238,7 @@ impl Hub {
                 hash_slots: tokio::sync::Semaphore::new(hash_slots),
                 hash_callers: Default::default(),
                 member_locks: Mutex::default(),
+                transfer_lock: tokio::sync::Mutex::new(()),
                 index_dirty: Mutex::default(),
             }),
         };
@@ -288,6 +291,7 @@ impl Hub {
                 kind: UserKind::System,
                 owner_id: None,
                 unit_id: UNIT_DEFAULT.into(),
+                team: false,
             };
             control
                 .call(Op::CreateUser {
@@ -1559,6 +1563,24 @@ impl Hub {
         owner: Option<&str>,
         unit: Option<&str>,
     ) -> ApiResult<(User, String)> {
+        self.create_user_with(name, kind, owner, unit, false).await
+    }
+
+    /// `create_user`, for a team agent when `team` (docs/03 §9.3.1).
+    pub async fn create_user_with(
+        &self,
+        name: &str,
+        kind: UserKind,
+        owner: Option<&str>,
+        unit: Option<&str>,
+        team: bool,
+    ) -> ApiResult<(User, String)> {
+        if team && (kind != UserKind::Agent || owner.is_none()) {
+            return Err(err(
+                "bad_request",
+                "only agents with an owner are team agents",
+            ));
+        }
         let unit = unit.unwrap_or(UNIT_DEFAULT).to_string();
         if unit != UNIT_DEFAULT && !self.inner.cfg.units.iter().any(|u| u.name == unit) {
             return Err(err("bad_request", format!("unknown unit {unit}")));
@@ -1575,6 +1597,7 @@ impl Hub {
             kind,
             owner_id: owner.map(String::from),
             unit_id: unit,
+            team,
         };
         self.control()
             .call(Op::CreateUser {
@@ -2353,11 +2376,24 @@ impl Hub {
         if who == SYSTEM_ID {
             return Ok(system_member());
         }
-        self.read(shard, move |db| {
-            Box::pin(async move { db.member(&conv, &who).await })
-        })
-        .await?
-        .ok_or_else(|| err("forbidden", "not a member of this conversation"))
+        // Observing through an agent needs the owner to be a member too
+        // (docs/03 §9.3.1).
+        let owner = (who != me.id).then(|| me.id.clone());
+        let (m, owner_in) = self
+            .read(shard, move |db| {
+                Box::pin(async move {
+                    let owner_in = match &owner {
+                        Some(o) => db.member(&conv, o).await?.is_some(),
+                        None => true,
+                    };
+                    Ok((db.member(&conv, &who).await?, owner_in))
+                })
+            })
+            .await?;
+        if !owner_in {
+            return Err(err("forbidden", "not a member of this conversation"));
+        }
+        m.ok_or_else(|| err("forbidden", "not a member of this conversation"))
     }
 
     /// Server-side reads by seq for the open API, tests and owners
@@ -2434,11 +2470,7 @@ impl Hub {
                 Box::pin(async move { db.members(&c).await })
             })
             .await?;
-        let is_member = members.iter().any(|m| m.user_id == me.id);
-        let owns_member = members
-            .iter()
-            .any(|m| m.owner_id.as_deref() == Some(me.id.as_str()));
-        if !is_member && !owns_member {
+        if !members.iter().any(|m| m.user_id == me.id) {
             return Err(err("forbidden", "no access"));
         }
         let c = conv.to_string();
@@ -2456,31 +2488,20 @@ impl Hub {
 
     async fn list_convs(&self, me: &User) -> ApiResult<Value> {
         let sh = &self.inner.sh;
-        let mut ids = vec![me.id.clone()];
-        ids.extend(sh.agents_of(&me.id).into_iter().map(|a| a.id));
+        // Only conversations the person is in: their agents' other
+        // conversations are not theirs to see (docs/03 §9.3.1).
+        let ids = vec![me.id.clone()];
         let pairs = self
             .read(self.control(), move |db| {
                 Box::pin(async move { db.member_index_for(&ids).await })
             })
             .await?;
-        // conv → None (direct member) or Some(agent) (observable through an agent)
-        let mut convs: BTreeMap<String, Option<String>> = BTreeMap::new();
-        for (conv, user) in pairs {
-            let via = if user == me.id { None } else { Some(user) };
-            match convs.get(&conv) {
-                Some(None) => {}
-                _ => {
-                    if via.is_none() || !convs.contains_key(&conv) {
-                        convs.insert(conv, via);
-                    }
-                }
-            }
-        }
+        let convs: std::collections::BTreeSet<String> = pairs.into_iter().map(|(c, _)| c).collect();
         let mut out = vec![];
-        for (conv, via) in convs {
+        for conv in convs {
             let Some(d) = sh.dir_get(&conv) else { continue };
             let shard = &self.inner.shards[d.db];
-            let (c, me_id, direct) = (conv.clone(), me.id.clone(), via.is_none());
+            let (c, me_id) = (conv.clone(), me.id.clone());
             let row = self
                 .read(shard, move |db| {
                     Box::pin(async move {
@@ -2488,11 +2509,7 @@ impl Hub {
                             return Ok(None);
                         };
                         let members = db.members(&c).await?;
-                        let unread = if direct {
-                            db.unread(&c, &me_id).await?
-                        } else {
-                            0
-                        };
+                        let unread = db.unread(&c, &me_id).await?;
                         Ok(Some((row, members, unread)))
                     })
                 })
@@ -2502,15 +2519,14 @@ impl Hub {
             };
             // The index can lag its database (repaired later): trust only
             // the conversation's own member list.
-            let reader = via.as_deref().unwrap_or(&me.id);
-            if !members.iter().any(|m| m.user_id == reader) {
+            if !members.iter().any(|m| m.user_id == me.id) {
                 continue;
             }
             let members: Vec<Value> = members
                 .iter()
                 .map(|m| json!({"user_id": m.user_id, "name": m.name, "kind": m.kind, "owner_id": m.owner_id, "role": m.role, "trigger": m.trigger, "approval": m.approval}))
                 .collect();
-            out.push(json!({"conv_id": row.id, "kind": row.kind, "title": row.title, "unit": row.unit_id, "database": sh.db_names[d.db], "last_seq": row.last_seq, "unread": unread, "members": members, "observer_via": via}));
+            out.push(json!({"conv_id": row.id, "kind": row.kind, "title": row.title, "unit": row.unit_id, "database": sh.db_names[d.db], "last_seq": row.last_seq, "unread": unread, "members": members}));
         }
         Ok(json!({"convs": out}))
     }

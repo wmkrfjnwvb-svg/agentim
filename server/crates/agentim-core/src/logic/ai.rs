@@ -299,11 +299,12 @@ impl Ctx<'_, '_> {
             .sh
             .user(&msg.sender_id)
             .ok_or_else(|| err("not_found", "the agent is gone"))?;
+        let audience = self.audience(&msg.conv_id, &agent).await?;
         let side = self
             .db
             .append_side(
                 &msg.conv_id,
-                &Self::agent_audience(&agent),
+                &audience,
                 "feedback",
                 Some(&me.id),
                 json!({"msg_id": msg_id, "rating": rating, "reason": reason, "by": me.id}),

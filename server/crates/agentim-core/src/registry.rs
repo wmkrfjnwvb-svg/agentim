@@ -590,7 +590,6 @@ fn deliver_event(g: &mut Inner, ev: &Event, recips: &[Recip]) {
     let loud: Frame = json!({"type": "event", "event": ev, "notify": true})
         .to_string()
         .into();
-    let members: HashSet<&str> = recips.iter().map(|r| r.user_id.as_str()).collect();
     for r in recips {
         if !r.visible {
             continue;
@@ -613,32 +612,6 @@ fn deliver_event(g: &mut Inner, ev: &Event, recips: &[Recip]) {
                 send(g, sid, frame.clone(), Some(&ev.conv_id));
             }
         }
-        // Owners observing through this agent get the agent's scope.
-        if r.kind == UserKind::Agent
-            && let Some(owner) = &r.owner_id
-        {
-            if members.contains(owner.as_str()) {
-                continue;
-            }
-            let observing: Vec<u64> = sessions_of(g, owner)
-                .into_iter()
-                .filter(|sid| {
-                    g.sessions
-                        .get(sid)
-                        .and_then(|e| e.focus.as_ref())
-                        .map(|(c, a)| c == &ev.conv_id && a.as_deref() == Some(r.user_id.as_str()))
-                        .unwrap_or(false)
-                })
-                .collect();
-            if !observing.is_empty() {
-                let f: Frame = json!({"type": "event", "event": ev, "observing": r.user_id})
-                    .to_string()
-                    .into();
-                for sid in observing {
-                    send(g, sid, f.clone(), Some(&ev.conv_id));
-                }
-            }
-        }
     }
 }
 
@@ -653,6 +626,7 @@ mod tests {
             kind: UserKind::Human,
             owner_id: None,
             unit_id: UNIT_DEFAULT.into(),
+            team: false,
         }
     }
 
@@ -741,6 +715,7 @@ mod sync_tests {
             kind: UserKind::Human,
             owner_id: None,
             unit_id: UNIT_DEFAULT.into(),
+            team: false,
         }
     }
 

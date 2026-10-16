@@ -120,13 +120,13 @@ await bob.locator('.msg.agent').last().hover();
 await bob.locator('.msg.agent').last().locator('button:has-text("👍")').click();
 await bob.waitForTimeout(500);
 await shot(bob, '08c-card-answered');
-await conv(alice, 'Bob · Aria');
-check(await alice.isVisible('#observing') && !(await alice.isVisible('#composer')), 'owner observes through the agent read-only');
-await shot(alice, '09-observe');
+// alice owns Aria but is not in bob's chat with it: she does not see it
+// (docs/03 §9.3.1).
+check(await alice.locator('#convs .conv:has-text("Bob · Aria")').count() === 0, 'an owner does not see conversations they are not in');
 
 await alice.click('#tab-stats');
 await alice.waitForSelector('#panel .log');
-check((await alice.textContent('#panel')).includes('observe'), 'observation is written to the audit log');
+check((await alice.textContent('#panel')).includes('draft.approved'), 'approvals are written to the audit log');
 await shot(alice, '10-audit');
 
 check(errors.length === 0, `no page errors ${errors.length ? JSON.stringify(errors) : ''}`);

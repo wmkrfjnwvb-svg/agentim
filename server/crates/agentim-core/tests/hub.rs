@@ -517,10 +517,11 @@ async fn group_agents_in_mention_mode_only_hear_what_is_addressed_to_them(db: Te
         .unwrap()
         .to_string();
     b.send(&bob_room, "side talk").await;
+    // Not even the agent's view of a room its owner is not in.
     let obs = a
-        .ok(json!({"op": "pull", "conv_id": bob_room, "as_agent": bot.id}))
+        .call(json!({"op": "pull", "conv_id": bob_room, "as_agent": bot.id}))
         .await;
-    assert!(!obs.to_string().contains("side talk"));
+    assert_eq!(obs["error"]["code"], "forbidden", "{obs}");
     assert_eq!(
         b.call(json!({"op": "pull", "conv_id": conv, "as_agent": bot.id}))
             .await["error"]["code"],

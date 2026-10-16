@@ -295,6 +295,7 @@ fn row_user(r: &AnyRow) -> sqlx::Result<User> {
         kind: UserKind::parse(&r.try_get::<String, _>("kind")?),
         owner_id: r.try_get("owner_id")?,
         unit_id: r.try_get("unit_id")?,
+        team: r.try_get::<Option<String>, _>("agent_scope")?.as_deref() == Some("team"),
     })
 }
 
@@ -659,7 +660,7 @@ impl Db<'_> {
     pub async fn insert_user(&mut self, u: &User) -> ApiResult<()> {
         let token = crate::auth::legacy_placeholder(&u.id);
         sqlx::query(self.d.q(
-            "INSERT INTO users (id, tenant_id, unit_id, name, kind, owner_id, token, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO users (id, tenant_id, unit_id, name, kind, owner_id, token, created_at, agent_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ))
         .bind(&u.id)
         .bind(TENANT_DEFAULT)
@@ -669,6 +670,7 @@ impl Db<'_> {
         .bind(&u.owner_id)
         .bind(&token)
         .bind(now_ms())
+        .bind(u.team.then_some("team"))
         .execute(&mut *self.c)
         .await
         .map_err(|e| ApiError::new("conflict", e.to_string()))?;
@@ -678,7 +680,7 @@ impl Db<'_> {
     /// All users and whether each is deactivated (the in-memory directory).
     pub async fn load_users(&mut self) -> ApiResult<Vec<(User, bool)>> {
         let rows = sqlx::query(
-            "SELECT id, name, kind, owner_id, unit_id, deactivated_at FROM users ORDER BY created_at, id",
+            "SELECT id, name, kind, owner_id, unit_id, agent_scope, deactivated_at FROM users ORDER BY created_at, id",
         )
         .fetch_all(&mut *self.c)
         .await?;
@@ -894,7 +896,7 @@ impl Db<'_> {
     pub async fn user_by_id(&mut self, id: &str) -> ApiResult<Option<(User, bool)>> {
         let r =
             sqlx::query(self.d.q(
-                "SELECT id, name, kind, owner_id, unit_id, deactivated_at FROM users WHERE id = ?",
+                "SELECT id, name, kind, owner_id, unit_id, agent_scope, deactivated_at FROM users WHERE id = ?",
             ))
             .bind(id)
             .fetch_optional(&mut *self.c)
@@ -909,7 +911,7 @@ impl Db<'_> {
     /// One user by name and whether it is deactivated.
     pub async fn user_by_name(&mut self, name: &str) -> ApiResult<Option<(User, bool)>> {
         let r = sqlx::query(self.d.q(
-            "SELECT id, name, kind, owner_id, unit_id, deactivated_at FROM users WHERE name = ?",
+            "SELECT id, name, kind, owner_id, unit_id, agent_scope, deactivated_at FROM users WHERE name = ?",
         ))
         .bind(name)
         .fetch_optional(&mut *self.c)
@@ -931,6 +933,42 @@ impl Db<'_> {
     }
 
     /// Agents a person owns.
+    /// Moves an agent to another owner; returns the previous one.
+    pub async fn set_agent_owner(
+        &mut self,
+        agent_id: &str,
+        owner_id: &str,
+    ) -> ApiResult<Option<String>> {
+        let prev: Option<String> = sqlx::query(self.d.q("SELECT owner_id FROM users WHERE id = ?"))
+            .bind(agent_id)
+            .fetch_optional(&mut *self.c)
+            .await?
+            .map(|r| r.try_get(0))
+            .transpose()?
+            .flatten();
+        sqlx::query(
+            self.d
+                .q("UPDATE users SET owner_id = ? WHERE id = ? AND kind = 'agent'"),
+        )
+        .bind(owner_id)
+        .bind(agent_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(prev)
+    }
+
+    pub async fn set_member_owner(&mut self, agent_id: &str, owner_id: &str) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("UPDATE members SET owner_id = ? WHERE user_id = ?"),
+        )
+        .bind(owner_id)
+        .bind(agent_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
+    }
+
     pub async fn count_agents_of(&mut self, owner_id: &str) -> ApiResult<i64> {
         let r = sqlx::query(
             self.d
@@ -1544,7 +1582,7 @@ impl Db<'_> {
     /// `{id, name, kind, owner_id, display_name, avatar, fields, deactivated_at, created_at}`.
     pub async fn user_profile(&mut self, id: &str) -> ApiResult<Option<Value>> {
         let r = sqlx::query(self.d.q(
-            "SELECT id, name, kind, owner_id, unit_id, display_name, avatar, fields, deactivated_at, created_at FROM users WHERE id = ?",
+            "SELECT id, name, kind, owner_id, unit_id, agent_scope, display_name, avatar, fields, deactivated_at, created_at FROM users WHERE id = ?",
         ))
         .bind(id)
         .fetch_optional(&mut *self.c)

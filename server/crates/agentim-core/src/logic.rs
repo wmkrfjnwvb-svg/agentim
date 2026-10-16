@@ -524,6 +524,18 @@ pub enum Op {
         conv_id: String,
         user_id: String,
     },
+    /// Control database: a team agent gets a new owner (checked here, so
+    /// concurrent transfers cannot pass `agents.max_per_owner`).
+    TransferAgent {
+        agent_id: String,
+        owner_id: String,
+        owner_cap: usize,
+    },
+    /// Every database: members rows carry their agent's owner.
+    SetMemberOwner {
+        agent_id: String,
+        owner_id: String,
+    },
     /// The control database's view of a conversation in another database,
     /// in one transaction: `joined` are members (indexed, no departure),
     /// `left` are not (departure up to seq first, then off the index).
@@ -601,6 +613,8 @@ impl Op {
             Op::Dissolve { .. } => "dissolve",
             Op::MemberIndexRemove { .. } => "member_index_remove",
             Op::IndexSync { .. } => "index_sync",
+            Op::TransferAgent { .. } => "transfer_agent",
+            Op::SetMemberOwner { .. } => "set_member_owner",
             Op::AckCursors { .. } => "ack_cursors",
             Op::DissolvedSeen { .. } => "dissolved_seen",
             Op::DropDevice { .. } => "drop_device",
@@ -1150,6 +1164,37 @@ impl Ctx<'_, '_> {
                 self.db.member_index_remove(&conv_id, &user_id).await?;
                 Ok(json!({}))
             }
+            Op::TransferAgent {
+                agent_id,
+                owner_id,
+                owner_cap,
+            } => {
+                if self.db.count_agents_of(&owner_id).await? >= owner_cap as i64 {
+                    return Err(ApiError::new(
+                        "conflict",
+                        format!(
+                            "the new owner already has {owner_cap} agents (agents.max_per_owner)"
+                        ),
+                    ));
+                }
+                let prev = self.db.set_agent_owner(&agent_id, &owner_id).await?;
+                self.db
+                    .audit(
+                        Some(SYSTEM_ID),
+                        "agent.transferred",
+                        None,
+                        Some(&agent_id),
+                        json!({"from": prev, "to": owner_id}),
+                    )
+                    .await?;
+                Ok(json!({"from": prev}))
+            }
+            Op::SetMemberOwner { agent_id, owner_id } => {
+                self.db.set_member_owner(&agent_id, &owner_id).await?;
+                self.st.members.clear();
+                self.st.recips.clear();
+                Ok(json!({}))
+            }
             Op::IndexSync {
                 conv_id,
                 joined,
@@ -1489,7 +1534,7 @@ impl Ctx<'_, '_> {
                 trigger,
                 topics,
             } => {
-                let agent = self.owned_agent(me, &agent_id)?;
+                let agent = self.policy_agent(me, &agent_id, &conv_id).await?;
                 self.require_member(&conv_id, &agent.id).await?;
                 self.check_mode(&conv_id, &agent.id, trigger, topics.as_deref())
                     .await?;
@@ -1569,7 +1614,7 @@ impl Ctx<'_, '_> {
                 self.transfer_owner(me, &conv_id, &user_id).await
             }
             ClientMsg::ResetGuard { conv_id, agent_id } => {
-                let agent = self.owned_agent(me, &agent_id)?;
+                let agent = self.policy_agent(me, &agent_id, &conv_id).await?;
                 self.require_member(&conv_id, &agent.id).await?;
                 if self.st.guards.is_tripped(&agent.id, &conv_id).is_none() {
                     return Err(err("conflict", "the agent's guard is not tripped"));
@@ -1664,12 +1709,61 @@ impl Ctx<'_, '_> {
             .ok_or_else(|| err("not_found", format!("user {key}")))
     }
 
-    fn agent_audience(agent: &User) -> Vec<String> {
+    /// The caller's agent, to act on it in a conversation: the owner has
+    /// these powers only where they are a member too (docs/03 §9.3.1).
+    async fn owned_agent_in(
+        &mut self,
+        me: &User,
+        agent_id: &str,
+        conv_id: &str,
+    ) -> ApiResult<User> {
+        let a = self.owned_agent(me, agent_id)?;
+        self.require_member(conv_id, &me.id).await?;
+        Ok(a)
+    }
+
+    /// Who may set an agent's policy or reset its guard in a conversation:
+    /// its owner there, and for a team agent the conversation's managers.
+    async fn policy_agent(&mut self, me: &User, agent_id: &str, conv_id: &str) -> ApiResult<User> {
+        match self.owned_agent_in(me, agent_id, conv_id).await {
+            Err(e) if e.code == "forbidden" => {
+                let manages = self
+                    .members(conv_id)
+                    .await?
+                    .iter()
+                    .any(|m| m.user_id == me.id && is_manager(&m.role));
+                match self.sh.user(agent_id) {
+                    Some(a) if a.team && manages => Ok(a),
+                    _ => Err(e),
+                }
+            }
+            r => r,
+        }
+    }
+
+    /// Who gets an agent's side-channel entries in a conversation: the
+    /// agent, and its owner while they are a member.
+    async fn audience(&mut self, conv_id: &str, agent: &User) -> ApiResult<Vec<String>> {
         let mut a = vec![agent.id.clone()];
-        if let Some(o) = &agent.owner_id {
+        if let Some(o) = &agent.owner_id
+            && self.members(conv_id).await?.iter().any(|m| m.user_id == *o)
+        {
             a.push(o.clone());
         }
-        a
+        Ok(a)
+    }
+
+    /// Who sees an agent's drafts in a conversation; somebody must be able
+    /// to approve them, so its owner has to be a member there.
+    async fn approvers(&mut self, conv_id: &str, agent: &User) -> ApiResult<Vec<String>> {
+        let a = self.audience(conv_id, agent).await?;
+        if a.len() < 2 {
+            return Err(err(
+                "conflict",
+                "nobody here can approve this agent's messages: its owner is not a member",
+            ));
+        }
+        Ok(a)
     }
 
     /// What an agent member may read (bounded by its trigger mode).
@@ -1799,7 +1893,7 @@ impl Ctx<'_, '_> {
         kind: &str,
         data: Value,
     ) -> ApiResult<()> {
-        let audience = Self::agent_audience(agent);
+        let audience = self.audience(conv_id, agent).await?;
         let side = self
             .db
             .append_side(conv_id, &audience, kind, Some(&agent.id), data)
@@ -2081,24 +2175,31 @@ impl Ctx<'_, '_> {
                 return Err(err("forbidden", "you cannot remove this member"));
             }
         }
-        let seq = self.detach(conv_id, me, u, leaving, None).await?;
-        // The person holds their agents' keys: the agents leave with them,
-        // or the person could go on reading and speaking through them.
-        let mut agents = vec![];
-        if u.kind == UserKind::Human {
-            let theirs: Vec<Member> = self
-                .members(conv_id)
+        // The person holds their agents' keys: their assistants leave with
+        // them, or they could go on reading and speaking through them. Team
+        // agents stay (docs/03 §9.3.1); a takeover by the person ends first,
+        // since they can no longer speak here.
+        let theirs: Vec<User> = if u.kind == UserKind::Human {
+            self.members(conv_id)
                 .await?
                 .iter()
-                .filter(|m| {
-                    m.kind == UserKind::Agent && m.owner_id.as_deref() == Some(u.id.as_str())
+                .filter_map(|m| self.sh.user(&m.user_id))
+                .filter(|a| {
+                    a.kind == UserKind::Agent && a.owner_id.as_deref() == Some(u.id.as_str())
                 })
-                .cloned()
-                .collect();
-            for m in theirs {
-                let Some(agent) = self.sh.user(&m.user_id) else {
-                    continue;
-                };
+                .collect()
+        } else {
+            vec![]
+        };
+        for a in theirs.iter().filter(|a| a.team) {
+            if self.db.takeover(conv_id, &a.id).await?.is_some() {
+                self.takeover(u, conv_id, &a.id, false).await?;
+            }
+        }
+        let seq = self.detach(conv_id, me, u, leaving, None).await?;
+        let mut agents = vec![];
+        {
+            for agent in theirs.into_iter().filter(|a| !a.team) {
                 let s = self
                     .detach(conv_id, me, &agent, false, Some("owner_left"))
                     .await?;
@@ -2426,7 +2527,7 @@ impl Ctx<'_, '_> {
             if self.sh.blocked_either(&t.id, &me.id) {
                 return Err(err("blocked", "you cannot message this user"));
             }
-            let mut audience = Self::agent_audience(me);
+            let mut audience = self.audience(conv_id, me).await?;
             if !audience.contains(&t.id) {
                 audience.push(t.id.clone());
             }
@@ -2446,7 +2547,7 @@ impl Ctx<'_, '_> {
         }
 
         if me.kind == UserKind::Agent && member.approval {
-            let audience = Self::agent_audience(me);
+            let audience = self.approvers(conv_id, me).await?;
             let draft_id = format!("d_{}", crate::db::new_id());
             let (d, side) = self
                 .db
@@ -2711,7 +2812,7 @@ impl Ctx<'_, '_> {
             (
                 format!("d_{}", crate::db::new_id()),
                 Target::Draft {
-                    audience: Self::agent_audience(me),
+                    audience: self.approvers(conv_id, me).await?,
                 },
                 None,
             )
@@ -3159,7 +3260,7 @@ impl Ctx<'_, '_> {
         agent_id: &str,
         text: &str,
     ) -> ApiResult<Value> {
-        let agent = self.owned_agent(me, agent_id)?;
+        let agent = self.owned_agent_in(me, agent_id, conv_id).await?;
         self.require_member(conv_id, &agent.id).await?;
         check_text(text)?;
         let audience = vec![agent.id.clone(), me.id.clone()];
@@ -3199,7 +3300,7 @@ impl Ctx<'_, '_> {
             .await?
             .ok_or_else(|| err("conv_moved", "draft not in this database"))?;
         self.own_conv(&d.conv_id)?;
-        let agent = self.owned_agent(me, &d.agent_id)?;
+        let agent = self.owned_agent_in(me, &d.agent_id, &d.conv_id).await?;
         if d.state != "pending" {
             return Err(err("conflict", "draft already decided"));
         }
@@ -3225,7 +3326,7 @@ impl Ctx<'_, '_> {
         if let Some(t) = &text {
             check_text(t)?;
         }
-        let audience = Self::agent_audience(&agent);
+        let audience = self.audience(&d.conv_id, &agent).await?;
         let side = self
             .db
             .decide_draft(draft_id, "approved", &me.id, &audience, &d.conv_id)
@@ -3295,8 +3396,8 @@ impl Ctx<'_, '_> {
             .await?
             .ok_or_else(|| err("conv_moved", "draft not in this database"))?;
         self.own_conv(&d.conv_id)?;
-        let agent = self.owned_agent(me, &d.agent_id)?;
-        let audience = Self::agent_audience(&agent);
+        let agent = self.owned_agent_in(me, &d.agent_id, &d.conv_id).await?;
+        let audience = self.audience(&d.conv_id, &agent).await?;
         let side = self
             .db
             .decide_draft(draft_id, "rejected", &me.id, &audience, &d.conv_id)
@@ -3324,7 +3425,7 @@ impl Ctx<'_, '_> {
         agent_id: &str,
         on: bool,
     ) -> ApiResult<Value> {
-        let agent = self.owned_agent(me, agent_id)?;
+        let agent = self.owned_agent_in(me, agent_id, conv_id).await?;
         self.require_member(conv_id, &agent.id).await?;
         let current = self.db.takeover(conv_id, &agent.id).await?;
         if on == current.is_some() {

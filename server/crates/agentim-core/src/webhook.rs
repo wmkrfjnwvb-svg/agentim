@@ -151,6 +151,11 @@ pub async fn deliver_loop(
                 let mut attempt = 0;
                 loop {
                     attempt += 1;
+                    // A recall or dissolution meanwhile removes the row
+                    // (D91): do not send what this page still holds.
+                    if !still_queued(&shard, id).await {
+                        break;
+                    }
                     match post(&http, &wh.url, &wh.secret, &wid, &body, timeout).await {
                         Ok(_) => {
                             metrics::counter!(m::WEBHOOK_DELIVERIES, "webhook" => wh.name.clone(), "result" => "ok").increment(1);
@@ -188,6 +193,19 @@ pub async fn deliver_loop(
         }
         cursor = ack(&shard, &wh.name, upto, &dropped, &all).await;
     }
+}
+
+/// Whether an outbox row is still there (true when the read fails: the
+/// retry then decides).
+async fn still_queued(shard: &Shard, id: i64) -> bool {
+    let Ok(mut c) = shard.read.acquire().await else {
+        return true;
+    };
+    sqlx::query(shard.dialect.q("SELECT 1 FROM webhook_outbox WHERE id = ?"))
+        .bind(id)
+        .fetch_optional(&mut *c)
+        .await
+        .map_or(true, |r| r.is_some())
 }
 
 /// The next undelivered outbox rows, decrypted.

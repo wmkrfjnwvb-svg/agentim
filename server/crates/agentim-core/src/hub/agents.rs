@@ -14,6 +14,12 @@ const KEY_NAME: &str = "agent key";
 
 impl Hub {
     pub async fn create_agent(&self, me: &User, name: &str) -> ApiResult<Value> {
+        self.create_agent_with(me, name, false).await
+    }
+
+    /// `create_agent`; a team agent when `team` (administrators only:
+    /// callers are the CLI and, later, the admin API; docs/03 §9.3.1).
+    pub async fn create_agent_with(&self, me: &User, name: &str, team: bool) -> ApiResult<Value> {
         if me.kind != UserKind::Human {
             return Err(err("forbidden", "only people own agents"));
         }
@@ -24,15 +30,20 @@ impl Hub {
             ));
         }
         let (agent, key) = self
-            .create_user(name, UserKind::Agent, Some(&me.id), Some(&me.unit_id))
+            .create_user_with(name, UserKind::Agent, Some(&me.id), Some(&me.unit_id), team)
             .await?;
         let device_id = self
             .devices(&agent.id)
             .await?
             .first()
             .map(|d| d.device_id.clone());
-        self.audit_user(me, "agent.create", &agent.id, json!({"name": name}))
-            .await;
+        self.audit_user(
+            me,
+            "agent.create",
+            &agent.id,
+            json!({"name": name, "team": team}),
+        )
+        .await;
         Ok(json!({
             "agent": agent,
             "key": key,

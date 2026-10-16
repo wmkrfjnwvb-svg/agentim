@@ -90,6 +90,22 @@ enum AgentCmd {
         /// (default: server.public_url).
         #[arg(long)]
         url: Option<String>,
+        /// A team agent: it stays when its owner leaves a conversation or
+        /// is deactivated (docs/03 §9.3.1).
+        #[arg(long)]
+        team: bool,
+    },
+    /// Gives a team agent a new owner (in the same unit).
+    Transfer {
+        #[arg(long)]
+        name: String,
+        /// The new owner (user name).
+        #[arg(long)]
+        owner: String,
+        /// Revoke the agent's keys (the previous owner may hold copies);
+        /// the new owner then issues new ones with `agent key`.
+        #[arg(long)]
+        rotate_keys: bool,
     },
     /// Issues another key for an agent (e.g. for a new environment).
     Key {
@@ -356,8 +372,13 @@ pub async fn run(edition: Edition) {
                 })
         };
         let out = match action {
-            AgentCmd::Create { name, owner, url } => match owner_of(owner) {
-                Ok(o) => hub.create_agent(&o, name).await.map(|mut v| {
+            AgentCmd::Create {
+                name,
+                owner,
+                url,
+                team,
+            } => match owner_of(owner) {
+                Ok(o) => hub.create_agent_with(&o, name, *team).await.map(|mut v| {
                     v["connect"] =
                         hub.connect_settings(v["key"].as_str().unwrap_or(""), url.as_deref());
                     v["note"] = serde_json::json!("store the key now; it is not shown again");
@@ -387,6 +408,22 @@ pub async fn run(edition: Edition) {
                     )),
                 }
             }
+            AgentCmd::Transfer {
+                name,
+                owner,
+                rotate_keys,
+            } => match (
+                hub.user_by_name(name)
+                    .filter(|u| u.kind == crate::model::UserKind::Agent),
+                owner_of(owner),
+            ) {
+                (Some(a), Ok(o)) => hub.transfer_agent(&a.id, &o.id, *rotate_keys).await,
+                (None, _) => Err(crate::model::ApiError::new(
+                    "not_found",
+                    format!("no agent named {name}"),
+                )),
+                (_, Err(e)) => Err(e),
+            },
             AgentCmd::List { owner } => match owner_of(owner) {
                 Ok(o) => hub.list_agents(&o).await,
                 Err(e) => Err(e),

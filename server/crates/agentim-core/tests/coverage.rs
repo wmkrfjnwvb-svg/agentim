@@ -410,9 +410,16 @@ async fn observing_through_an_agent_is_owner_only_and_audited(db: TestDb) {
     let b = Conn::new(&hub, &bob);
     let a = Conn::new(&hub, &alice);
     let c = Conn::new(&hub, &carol);
-    let conv = b.group(&[&bot]).await; // alice is not a member, her agent is
+    let conv = b.group(&[&bot, &carol]).await; // alice is not a member, her agent is
     b.send(&conv, "@bot hello").await;
     let observe = |who: &str| json!({"op": "pull", "conv_id": conv, "as_agent": who});
+    // An owner observes only where they are a member too (docs/03 §9.3.1),
+    // and does not see the conversation listed.
+    assert_eq!(code(&a.call(observe(&bot.id)).await), "forbidden");
+    let listed = a.ok(json!({"op": "list_convs"})).await;
+    assert!(!listed.to_string().contains(&conv), "{listed}");
+    b.ok(json!({"op": "add_member", "conv_id": conv, "user_id": alice.id, "history": 100}))
+        .await;
     let seen = a.ok(observe(&bot.id)).await;
     assert_eq!(seen["filtered"], true);
     assert!(seen.to_string().contains("@bot hello"));
@@ -427,27 +434,12 @@ async fn observing_through_an_agent_is_owner_only_and_audited(db: TestDb) {
         "not an agent"
     );
     assert_eq!(code(&a.call(observe("nobody")).await), "not_found");
-    assert_eq!(
-        code(&a.call(json!({"op": "pull", "conv_id": conv})).await),
-        "forbidden",
-        "not a member herself"
-    );
     assert!(
         hub.stats().await.unwrap()["audit"]
             .to_string()
             .contains("observe"),
         "observing is audited"
     );
-    let listed = a.ok(json!({"op": "list_convs"})).await;
-    let entry = listed["convs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["conv_id"] == conv.as_str())
-        .unwrap()
-        .clone();
-    assert_eq!(entry["observer_via"], bot.id.as_str());
-    assert_eq!(entry["unread"], 0, "unread counts only for direct members");
 }
 
 async fn focus_through_an_agent_and_focus_errors(db: TestDb) {
@@ -468,9 +460,19 @@ async fn focus_through_an_agent_and_focus_errors(db: TestDb) {
         "forbidden"
     );
     assert_eq!(
+        code(
+            &a.call(json!({"op": "focus", "conv_id": conv, "as_agent": bot.id}))
+                .await
+        ),
+        "forbidden",
+        "not through her agent either, while she is not a member"
+    );
+    assert_eq!(
         code(&a.call(json!({"op": "focus", "conv_id": "c_unknown"})).await),
         "not_found"
     );
+    b.ok(json!({"op": "add_member", "conv_id": conv, "user_id": alice.id}))
+        .await;
     a.ok(json!({"op": "focus", "conv_id": conv, "as_agent": bot.id}))
         .await;
     a.drain();

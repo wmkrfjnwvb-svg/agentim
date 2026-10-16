@@ -131,7 +131,8 @@ impl Hub {
             }
         }
         for a in agents {
-            if self.is_destroyed(&a.id) || self.is_stopped(&a.id) {
+            // Team agents keep working; an administrator transfers them.
+            if a.team || self.is_destroyed(&a.id) || self.is_stopped(&a.id) {
                 continue;
             }
             match self
@@ -145,6 +146,70 @@ impl Hub {
             }
         }
         Ok(())
+    }
+
+    /// Gives a team agent a new owner (an administrator's action, docs/03
+    /// §9.3.1). With `rotate_keys` its keys are revoked, so copies the
+    /// previous owner kept stop working; the new owner issues new ones.
+    pub async fn transfer_agent(
+        &self,
+        agent_id: &str,
+        new_owner: &str,
+        rotate_keys: bool,
+    ) -> ApiResult<Value> {
+        let _one = self.inner.transfer_lock.lock().await;
+        let a = self
+            .user_or_load(agent_id)
+            .await?
+            .filter(|u| u.kind == UserKind::Agent && !self.is_destroyed(&u.id))
+            .ok_or_else(|| err("not_found", "agent"))?;
+        if !a.team {
+            return Err(err(
+                "bad_request",
+                "only team agents change owner; a person's assistant stays theirs",
+            ));
+        }
+        let o = self
+            .user_or_load(new_owner)
+            .await?
+            .filter(|u| u.kind == UserKind::Human && !self.is_deactivated(&u.id))
+            .ok_or_else(|| err("not_found", "no such person"))?;
+        if o.unit_id != a.unit_id {
+            return Err(err(
+                "bad_request",
+                "the new owner must be in the agent's unit",
+            ));
+        }
+        if a.owner_id.as_deref() == Some(o.id.as_str()) {
+            return Err(err("conflict", "the agent already belongs to them"));
+        }
+        let v = self
+            .control()
+            .call(Op::TransferAgent {
+                agent_id: a.id.clone(),
+                owner_id: o.id.clone(),
+                owner_cap: self.inner.cfg.agents.max_per_owner,
+            })
+            .await?;
+        let mut moved = a.clone();
+        moved.owner_id = Some(o.id.clone());
+        self.inner
+            .sh
+            .users
+            .write()
+            .unwrap()
+            .insert(moved.id.clone(), moved);
+        for s in &self.inner.shards {
+            s.call(Op::SetMemberOwner {
+                agent_id: a.id.clone(),
+                owner_id: o.id.clone(),
+            })
+            .await?;
+        }
+        if rotate_keys {
+            self.revoke_tokens(&a.id, None).await?;
+        }
+        Ok(json!({"agent_id": a.id, "from": v["from"], "to": o.id, "keys_revoked": rotate_keys}))
     }
 
     pub async fn resume_agent(&self, me: &User, agent_id: &str) -> ApiResult<Value> {

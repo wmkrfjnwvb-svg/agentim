@@ -12,7 +12,7 @@ use crate::model::{ApiError, ApiResult};
 
 /// Version of the schema in `TABLES`. Bump it together with a new entry in
 /// `MIGRATIONS` (docs/02-architecture.md §5.3).
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -211,6 +211,8 @@ pub const TABLES: &[Table] = &[
             // v3: an agent stopped or destroyed by its owner (docs/09 §11.3).
             n("stopped_at", Big),
             n("destroyed_at", Big),
+            // v4: `team` for team agents; NULL is a person's assistant.
+            n("agent_scope", Id),
         ],
         pk: &["id"],
         indexes: &[
@@ -882,6 +884,15 @@ pub const MIGRATIONS: &[Migration] = &[
                 column: "envelope",
             },
         ],
+    },
+    Migration {
+        version: 4,
+        compat: 1,
+        about: "team agents",
+        steps: &[Step::AddColumn {
+            table: "users",
+            column: "agent_scope",
+        }],
     },
 ];
 

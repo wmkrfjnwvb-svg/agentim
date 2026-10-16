@@ -65,6 +65,10 @@ pub struct User {
     pub owner_id: Option<String>,
     /// Organisation unit; decides which database new conversations go to.
     pub unit_id: String,
+    /// A team agent (belongs to a group or the organisation; its owner only
+    /// maintains it) rather than a person's assistant (docs/03 §9.3.1).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub team: bool,
 }
 
 /// How an agent member is triggered in a conversation, which also bounds what

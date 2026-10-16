@@ -55,7 +55,7 @@ pub async fn seed(hub: &Hub) -> ApiResult<()> {
     let group = conv(call(&a, json!({"op": "create_conv", "kind": "group", "title": "产品讨论群", "members": [bob.id, carol.id, aria.id]})).await?);
     let support = conv(call(&b, json!({"op": "create_conv", "kind": "group", "title": "客服：退款工单", "members": [refund.id, alice.id]})).await?);
     call(&a, json!({"op": "set_agent_policy", "conv_id": support, "agent_id": refund.id, "approval": true, "trigger": "all"})).await?;
-    let lab = conv(call(&a, json!({"op": "create_conv", "kind": "group", "title": "Agent 循环实验室", "members": [ping.id, pong.id]})).await?);
+    let lab = conv(call(&a, json!({"op": "create_conv", "kind": "group", "title": "Agent 循环实验室", "members": [ping.id, pong.id, bob.id]})).await?);
     call(
         &a,
         json!({"op": "set_agent_policy", "conv_id": lab, "agent_id": ping.id, "trigger": "all"}),
