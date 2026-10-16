@@ -61,6 +61,16 @@ struct Inner {
     conv_buckets: Mutex<HashMap<String, (f64, Instant)>>,
     /// History and search reads per agent (docs/09 §11.1).
     read_buckets: Mutex<HashMap<(String, &'static str), Bucket>>,
+    /// Password hashing slots, and how many callers hold or wait for one.
+    hash_slots: tokio::sync::Semaphore,
+    hash_callers: std::sync::atomic::AtomicUsize,
+}
+
+fn hash_slot_count(cfg: &Config) -> usize {
+    match cfg.auth.max_concurrent_hashes {
+        0 => std::thread::available_parallelism().map_or(4, |n| n.get()),
+        n => n,
+    }
 }
 
 impl Drop for Inner {
@@ -180,6 +190,7 @@ impl Hub {
                 )));
             }
         }
+        let hash_slots = hash_slot_count(&cfg);
         let hub = Hub {
             inner: Arc::new(Inner {
                 sh,
@@ -196,6 +207,8 @@ impl Hub {
                 conv_buckets: Mutex::default(),
                 read_buckets: Mutex::default(),
                 dm_lock: tokio::sync::Mutex::new(()),
+                hash_slots: tokio::sync::Semaphore::new(hash_slots),
+                hash_callers: Default::default(),
             }),
         };
         hub.load().await?;
@@ -567,9 +580,9 @@ impl Hub {
         }
         crate::auth::check_password_policy(&user.name, new).map_err(|m| err("bad_request", m))?;
         let n = new.to_string();
-        let hash = tokio::task::spawn_blocking(move || crate::auth::hash_password(&n))
-            .await
-            .map_err(|e| err("internal", e.to_string()))?;
+        let hash = self
+            .hash_job(move || crate::auth::hash_password(&n))
+            .await?;
         self.cred(&user.id, crate::logic::CredChange::SetPassword(hash))
             .await?;
         for d in self.devices(&user.id).await? {
@@ -596,9 +609,9 @@ impl Hub {
         let c = self.credentials(&user.id).await?;
         if let Some(h) = c.password_hash {
             let cur = current.unwrap_or("").to_string();
-            let ok = tokio::task::spawn_blocking(move || crate::auth::verify_password(&cur, &h))
-                .await
-                .unwrap_or(false);
+            let ok = self
+                .hash_job(move || crate::auth::verify_password(&cur, &h))
+                .await?;
             if !ok {
                 return Err(err("forbidden", "the current password is wrong"));
             }
@@ -644,9 +657,9 @@ impl Hub {
             .clone()
             .unwrap_or_else(|| crate::auth::dummy_hash().to_string());
         let pw = password.to_string();
-        let ok = tokio::task::spawn_blocking(move || crate::auth::verify_password(&pw, &hash))
-            .await
-            .unwrap_or(false);
+        let ok = self
+            .hash_job(move || crate::auth::verify_password(&pw, &hash))
+            .await?;
         let (Some(user), true, true) = (user, ok, c.password_hash.is_some()) else {
             if let Some(u) = self
                 .inner
@@ -687,6 +700,43 @@ impl Hub {
             .issue_token(&user.id, device_name, platform, None, "password")
             .await?;
         Ok((token, row, user))
+    }
+
+    /// Runs a password hash or check in a bounded number of slots, so
+    /// unauthenticated logins cannot take all memory and threads.
+    async fn hash_job<T: Send + 'static>(
+        &self,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> ApiResult<T> {
+        use std::sync::atomic::Ordering::SeqCst;
+        struct Caller<'a>(&'a std::sync::atomic::AtomicUsize);
+        impl Drop for Caller<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, SeqCst);
+            }
+        }
+        let i = &self.inner;
+        let cap = 4 * self.hash_slot_count();
+        if i.hash_callers.fetch_add(1, SeqCst) >= cap {
+            i.hash_callers.fetch_sub(1, SeqCst);
+            return Err(err(
+                "rate_limited",
+                "too many logins at once; retry shortly",
+            ));
+        }
+        let _caller = Caller(&i.hash_callers);
+        let _slot = i
+            .hash_slots
+            .acquire()
+            .await
+            .map_err(|e| err("internal", e.to_string()))?;
+        tokio::task::spawn_blocking(f)
+            .await
+            .map_err(|e| err("internal", e.to_string()))
+    }
+
+    fn hash_slot_count(&self) -> usize {
+        hash_slot_count(&self.inner.cfg)
     }
 
     async fn login_failed(&self, user_id: &str) -> ApiResult<()> {

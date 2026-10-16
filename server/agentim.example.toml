@@ -69,6 +69,9 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 # open_registration = false   # anyone may sign up at /api/auth/register
 # max_failures = 10           # failed logins before the account locks
 # lock_minutes = 15
+# Password hashes at once (19 MiB and a core each; 0 = one per core).
+# Logins beyond four times this get rate_limited.
+# max_concurrent_hashes = 0
 
 # Encryption at rest (docs/04-security-compliance.md §2.6) is on by default.
 # The master key comes from key_file, else AGENTIM_MASTER_KEY; a single

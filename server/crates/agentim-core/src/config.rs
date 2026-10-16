@@ -368,6 +368,10 @@ pub struct AuthConfig {
     /// Failed logins before the account is locked, and for how long.
     pub max_failures: i64,
     pub lock_minutes: i64,
+    /// Password hashes computed at once (each takes 19 MiB and a core);
+    /// 0 means one per core. Callers beyond four times this wait-list are
+    /// refused with `rate_limited`.
+    pub max_concurrent_hashes: usize,
 }
 
 impl Default for AuthConfig {
@@ -376,6 +380,7 @@ impl Default for AuthConfig {
             open_registration: false,
             max_failures: 10,
             lock_minutes: 15,
+            max_concurrent_hashes: 0,
         }
     }
 }

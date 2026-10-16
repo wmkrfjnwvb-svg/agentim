@@ -24,6 +24,7 @@ backend_tests!(
     race_one_code_logs_in_once,
     two_factor_over_the_client_protocol,
     race_two_enables_with_one_setup,
+    race_password_hashing_is_bounded,
 );
 
 const PW: &str = "correct horse battery";
@@ -470,4 +471,33 @@ async fn race_two_enables_with_one_setup(db: TestDb) {
         assert_eq!(ok, 1, "round {round}: exactly one enable wins");
         assert!(hub.totp_setup(&u).await.is_err(), "two-factor login is on");
     }
+}
+
+/// H2 (docs/research/im-issues.md): a flood of logins cannot run unbounded
+/// password hashes; the excess is refused and leaves no failure count.
+async fn race_password_hashing_is_bounded(db: TestDb) {
+    let hub = hub_with(&db, |c| {
+        c.auth.max_concurrent_hashes = 1;
+        c.auth.max_failures = 40;
+    })
+    .await;
+    person(&hub, "alice").await;
+    let tries: Vec<_> = (0..40)
+        .map(|i| {
+            let hub = hub.clone();
+            let name = if i % 2 == 0 { "alice" } else { "nobody" };
+            tokio::spawn(async move { login(&hub, name, "bad password", None).await })
+        })
+        .collect();
+    let mut refused = 0;
+    for t in tries {
+        match t.await.unwrap().unwrap_err().code {
+            "rate_limited" => refused += 1,
+            "invalid_credentials" => {}
+            c => panic!("{c}"),
+        }
+    }
+    assert!(refused > 0, "at most four callers per slot get in");
+    // Refused tries were not counted: 40 failures would have locked alice.
+    assert!(login(&hub, "alice", PW, None).await.is_ok());
 }
