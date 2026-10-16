@@ -283,6 +283,9 @@ pub enum Cell {
     I(Option<i64>),
 }
 
+/// Meta key counting token deletions and deactivations.
+pub const AUTH_EPOCH: &str = "auth_epoch";
+
 const MSG_COLS: &str = "msg_id, conv_id, created_seq, sender_id, sender_name, sender_type, on_behalf_of, kind, content,
     version, state, state_reason, hop, causation_id, reply_to, mentions, created_at, updated_at, payload, envelope, root_id";
 const MEMBER_COLS: &str = "user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq, visible_from, mute_mode, mute_until, topics";
@@ -739,6 +742,9 @@ impl Db<'_> {
             .iter()
             .map(|r| r.try_get(0))
             .collect::<sqlx::Result<_>>()?;
+        if !hashes.is_empty() {
+            self.bump_meta(AUTH_EPOCH).await?;
+        }
         for h in &hashes {
             sqlx::query(self.d.q("DELETE FROM tokens WHERE hash = ?"))
                 .bind(h)
@@ -1577,6 +1583,7 @@ impl Db<'_> {
             .bind(id)
             .execute(&mut *self.c)
             .await?;
+        self.bump_meta(AUTH_EPOCH).await?;
         Ok(())
     }
 
@@ -3210,6 +3217,29 @@ impl Db<'_> {
                 .await?;
         }
         Ok(())
+    }
+
+    /// Counts a change other processes must notice (another server on the
+    /// same database, or the CLI writing while the server runs).
+    pub async fn bump_meta(&mut self, k: &str) -> ApiResult<i64> {
+        let n = self.meta_i64(k).await?;
+        let next = n.unwrap_or(0) + 1;
+        let sql = if n.is_some() {
+            "UPDATE meta SET v = ? WHERE k = ?"
+        } else {
+            "INSERT INTO meta (v, k) VALUES (?, ?)"
+        };
+        sqlx::query(self.d.q(sql))
+            .bind(next.to_string())
+            .bind(k)
+            .execute(&mut *self.c)
+            .await?;
+        Ok(next)
+    }
+
+    /// Changes to tokens and deactivations so far (M10).
+    pub async fn auth_epoch(&mut self) -> ApiResult<i64> {
+        Ok(self.meta_i64(AUTH_EPOCH).await?.unwrap_or(0))
     }
 
     async fn meta_i64(&mut self, k: &str) -> ApiResult<Option<i64>> {

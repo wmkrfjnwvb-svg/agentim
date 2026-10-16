@@ -23,6 +23,7 @@ backend_tests!(
     targeted_messages_and_drafts_are_deduplicated,
     search_and_export_see_the_latest_text,
     text_that_looks_encrypted_is_kept_as_text,
+    revocations_by_another_process_take_effect,
 );
 
 fn code(v: &Value) -> &str {
@@ -657,4 +658,41 @@ async fn text_that_looks_encrypted_is_kept_as_text(db: TestDb) {
         p.contains("enc:v1:k_x:AAAA") && p.contains("enc:raw:literally"),
         "{p}"
     );
+}
+
+/// M10: a password reset, logout or deactivation done by another process
+/// on the same database (the CLI while the server runs) takes effect in
+/// the running server.
+async fn revocations_by_another_process_take_effect(db: TestDb) {
+    let server = open(single(&db.url)).await;
+    let (alice, t1) = server
+        .create_user("alice", UserKind::Human, None, None)
+        .await
+        .unwrap();
+    let (bob, t2) = server
+        .create_user("bob", UserKind::Human, None, None)
+        .await
+        .unwrap();
+    let (carol, t3) = server
+        .create_user("carol", UserKind::Human, None, None)
+        .await
+        .unwrap();
+    assert!(!server.refresh_auth().await.unwrap(), "nothing changed");
+    let cli = open(single(&db.url)).await;
+    cli.reset_password(&alice, "a brand new password")
+        .await
+        .unwrap();
+    cli.revoke_tokens(&bob.id, None).await.unwrap();
+    cli.set_deactivated(&carol.id, true).await.unwrap();
+    // Still trusted until the server notices (at most a second later).
+    assert!(server.authenticate_device(&t1).is_some());
+    assert!(server.refresh_auth().await.unwrap());
+    assert!(server.authenticate_device(&t1).is_none(), "password reset");
+    assert!(server.authenticate_device(&t2).is_none(), "logged out");
+    assert!(server.is_deactivated(&carol.id), "deactivated");
+    let _ = t3;
+    // Reactivation is picked up too.
+    cli.set_deactivated(&carol.id, false).await.unwrap();
+    server.refresh_auth().await.unwrap();
+    assert!(!server.is_deactivated(&carol.id));
 }

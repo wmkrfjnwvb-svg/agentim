@@ -64,6 +64,8 @@ struct Inner {
     /// Password hashing slots, and how many callers hold or wait for one.
     hash_slots: tokio::sync::Semaphore,
     hash_callers: std::sync::atomic::AtomicUsize,
+    /// The control database's token/deactivation counter last loaded.
+    auth_epoch: std::sync::atomic::AtomicI64,
     /// Agent transfers run one at a time (owner row and member rows agree).
     transfer_lock: tokio::sync::Mutex<()>,
     /// Member changes of one conversation run one at a time, index included.
@@ -239,6 +241,7 @@ impl Hub {
                 hash_callers: Default::default(),
                 member_locks: Mutex::default(),
                 transfer_lock: tokio::sync::Mutex::new(()),
+                auth_epoch: Default::default(),
                 index_dirty: Mutex::default(),
             }),
         };
@@ -261,6 +264,12 @@ impl Hub {
             }
             sh.users.write().unwrap().insert(u.id.clone(), u);
         }
+        let epoch = self
+            .read(control, |db| Box::pin(async move { db.auth_epoch().await }))
+            .await?;
+        self.inner
+            .auth_epoch
+            .store(epoch, std::sync::atomic::Ordering::SeqCst);
         for t in self
             .read(control, |db| Box::pin(async move { db.tokens_all().await }))
             .await?
@@ -434,6 +443,56 @@ impl Hub {
         Ok(())
     }
 
+    /// Picks up token revocations and deactivations written by another
+    /// process (the CLI while the server runs, M10): tokens no longer in
+    /// the database stop working and their connections close.
+    pub async fn refresh_auth(&self) -> ApiResult<bool> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let control = self.control();
+        let epoch = self
+            .read(control, |db| Box::pin(async move { db.auth_epoch().await }))
+            .await?;
+        if epoch == self.inner.auth_epoch.load(SeqCst) {
+            return Ok(false);
+        }
+        let (tokens, users) = self
+            .read(control, |db| {
+                Box::pin(async move { Ok((db.tokens_all().await?, db.load_users().await?)) })
+            })
+            .await?;
+        let sh = &self.inner.sh;
+        let live: std::collections::HashSet<String> =
+            tokens.iter().map(|t| t.hash.clone()).collect();
+        let mut kick = vec![];
+        {
+            let mut t = sh.tokens.write().unwrap();
+            t.retain(|h, info| {
+                let keep = live.contains(h);
+                if !keep {
+                    kick.push((info.user_id.clone(), Some(info.device_id.clone())));
+                }
+                keep
+            });
+        }
+        {
+            let mut d = sh.deactivated.write().unwrap();
+            for (u, off) in users {
+                if off && d.insert(u.id.clone()) {
+                    kick.push((u.id.clone(), None));
+                } else if !off {
+                    d.remove(&u.id);
+                }
+            }
+        }
+        sh.reg.deliver(vec![Out::Tokens {
+            add: vec![],
+            remove: vec![],
+            kick,
+        }]);
+        self.inner.auth_epoch.store(epoch, SeqCst);
+        Ok(true)
+    }
+
     /// Serialises member changes of one conversation (the database write
     /// and the control index after it).
     async fn member_lock(&self, conv: &str) -> MemberGuard {
@@ -605,6 +664,17 @@ impl Hub {
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                     let _ = hub.reload_api_keys().await;
                     hub.repair_indexes().await;
+                }
+            }));
+        let hub = self.clone();
+        self.inner
+            .tickers
+            .lock()
+            .unwrap()
+            .push(tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    let _ = hub.refresh_auth().await;
                 }
             }));
         let every = (self.inner.sh.cfg.coalesce / 2).max(std::time::Duration::from_millis(10));
