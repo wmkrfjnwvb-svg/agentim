@@ -127,8 +127,16 @@ struct Entry {
 
 #[derive(Default)]
 struct SyncState {
+    /// Where the next push or sync continues from.
     sent: HashMap<String, i64>,
     sent_side: HashMap<String, i64>,
+    /// The furthest (seq, side seq) that ever reached the session: acks are
+    /// checked against it, so a dropped push (which rewinds `sent`) does
+    /// not turn a valid ack into an error (M7).
+    delivered: HashMap<String, (i64, i64)>,
+    /// Read position and mute state last given to the session per
+    /// conversation (sync includes them when they change).
+    told: HashMap<String, Value>,
     /// Acknowledged positions of sessions without a device (memory only).
     acked: HashMap<String, (i64, i64)>,
     /// Conversations a sync call is reading now: live pushes wait (they
@@ -307,6 +315,24 @@ impl Registry {
     }
 
     /// Highest (seq, side seq) sent to a session for a conversation.
+    /// Records the member state a sync response carries; returns what the
+    /// session was given before (None: nothing yet).
+    pub fn sync_state(&self, sid: u64, conv_id: &str, state: &Value) -> Option<Value> {
+        let mut g = self.lock();
+        let st = g.sessions.get_mut(&sid).and_then(|e| e.sync.as_mut())?;
+        st.told.insert(conv_id.to_string(), state.clone())
+    }
+
+    /// The furthest positions that reached a session (what it may ack).
+    pub fn sync_delivered(&self, sid: u64, conv_id: &str) -> (i64, i64) {
+        let g = self.lock();
+        g.sessions
+            .get(&sid)
+            .and_then(|e| e.sync.as_ref())
+            .and_then(|st| st.delivered.get(conv_id).copied())
+            .unwrap_or((0, 0))
+    }
+
     pub fn sync_sent(&self, sid: u64, conv_id: &str) -> (Option<i64>, Option<i64>) {
         let g = self.lock();
         match g.sessions.get(&sid).and_then(|e| e.sync.as_ref()) {
@@ -353,6 +379,8 @@ impl Registry {
             *s = (*s).max(seq);
             let s = st.sent_side.entry(conv_id.to_string()).or_insert(side_seq);
             *s = (*s).max(side_seq);
+            let d = st.delivered.entry(conv_id.to_string()).or_default();
+            *d = (d.0.max(seq), d.1.max(side_seq));
         }
         self.sync_end(sid, conv_id);
     }
@@ -363,6 +391,7 @@ impl Registry {
         if let Some(st) = g.sessions.get_mut(&sid).and_then(|e| e.sync.as_mut()) {
             st.sent.remove(conv_id);
             st.sent_side.remove(conv_id);
+            st.delivered.remove(conv_id);
             st.acked.remove(conv_id);
         }
     }
@@ -430,16 +459,23 @@ impl Registry {
                     let f: Frame = json!({"type": "side", "event": side}).to_string().into();
                     for u in &side.audience {
                         for sid in sessions_of(&g, u) {
-                            if in_order(&mut g, sid, &side.conv_id, side.side_seq, true) {
-                                send(&mut g, sid, f.clone(), Some(&side.conv_id));
+                            if in_order(&mut g, sid, &side.conv_id, side.side_seq, true)
+                                && send(&mut g, sid, f.clone(), Some(&side.conv_id))
+                            {
+                                mark_pushed(&mut g, sid, &side.conv_id, side.side_seq, true);
                             }
                         }
                     }
                 }
                 Out::ToUser { user_id, frame } => {
                     let f: Frame = frame.to_string().into();
+                    // A dropped read or mute change is owed as a resync of its
+                    // conversation; the sync response carries the state (M8).
+                    let conv = matches!(frame["type"].as_str(), Some("read" | "mute"))
+                        .then(|| frame["conv_id"].as_str().map(String::from))
+                        .flatten();
                     for sid in sessions_of(&g, &user_id) {
-                        send(&mut g, sid, f.clone(), None);
+                        send(&mut g, sid, f.clone(), conv.as_deref());
                     }
                 }
                 Out::ToSession { sid, frame } => {
@@ -524,6 +560,25 @@ fn sessions_of(g: &Inner, user_id: &str) -> Vec<u64> {
 /// For a session in sync mode: whether a live event continues what was sent
 /// (then it counts as sent); otherwise the session is told to sync. Sessions
 /// not in sync mode take every event.
+/// A live push that went out: it continues what was sent.
+fn mark_pushed(g: &mut Inner, sid: u64, conv_id: &str, seq: i64, side: bool) {
+    let Some(st) = g.sessions.get_mut(&sid).and_then(|e| e.sync.as_mut()) else {
+        return;
+    };
+    let map = if side {
+        &mut st.sent_side
+    } else {
+        &mut st.sent
+    };
+    map.insert(conv_id.to_string(), seq);
+    let d = st.delivered.entry(conv_id.to_string()).or_default();
+    if side {
+        d.1 = d.1.max(seq);
+    } else {
+        d.0 = d.0.max(seq);
+    }
+}
+
 fn in_order(g: &mut Inner, sid: u64, conv_id: &str, seq: i64, side: bool) -> bool {
     let Some(e) = g.sessions.get_mut(&sid) else {
         return false;
@@ -540,11 +595,8 @@ fn in_order(g: &mut Inner, sid: u64, conv_id: &str, seq: i64, side: bool) -> boo
     } else {
         &mut st.sent
     };
-    match map.get_mut(conv_id) {
-        Some(sent) if seq == *sent + 1 => {
-            *sent = seq;
-            true
-        }
+    match map.get(conv_id) {
+        Some(sent) if seq == *sent + 1 => true,
         Some(sent) if seq <= *sent => false,
         _ => {
             owe(&e.resync, conv_id);
@@ -608,8 +660,10 @@ fn deliver_event(g: &mut Inner, ev: &Event, recips: &[Recip]) {
             quiet.clone()
         };
         for sid in sessions_of(g, &r.user_id) {
-            if in_order(g, sid, &ev.conv_id, ev.seq, false) {
-                send(g, sid, frame.clone(), Some(&ev.conv_id));
+            if in_order(g, sid, &ev.conv_id, ev.seq, false)
+                && send(g, sid, frame.clone(), Some(&ev.conv_id))
+            {
+                mark_pushed(g, sid, &ev.conv_id, ev.seq, false);
             }
         }
     }
@@ -786,6 +840,8 @@ mod sync_tests {
             None,
             "the next sync resends from the ack"
         );
+        // What did reach the session can still be acknowledged (M7).
+        assert_eq!(reg.sync_delivered(sid, "c"), (1, 0));
         let f = drain(&mut rx);
         assert_eq!(f[0]["event"]["seq"], 1);
         assert_eq!(f[1]["type"], "resync");

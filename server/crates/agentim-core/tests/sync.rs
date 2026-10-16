@@ -41,6 +41,7 @@ backend_tests!(
     race_two_sessions_of_one_device_ack_monotonically,
     a_side_channel_backlog_comes_in_full,
     a_quiet_conversation_keeps_its_position,
+    read_and_mute_state_reach_every_device,
 );
 
 fn code(v: &Value) -> &str {
@@ -1207,5 +1208,66 @@ async fn a_quiet_conversation_keeps_its_position(db: TestDb) {
         got[&quiet],
         range(before + 1, head),
         "everything, not a window"
+    );
+}
+
+/// M8: a device that missed a read or mute change (offline, or the push
+/// was dropped) gets the current state from sync.
+async fn read_and_mute_state_reach_every_device(db: TestDb) {
+    let hub = hub_with(&db, |_| {}).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&bob]).await;
+    for i in 0..3 {
+        a.send(&conv, &format!("{i}")).await;
+    }
+    let (phone, laptop) = (device(&hub, &bob).await, device(&hub, &bob).await);
+    let p = Conn::device(&hub, &bob, &phone);
+    sync_all(&p).await;
+    let head = last_seq(&a, &conv).await;
+    p.ok(json!({"op": "read", "conv_id": conv, "seq": head}))
+        .await;
+    p.ok(json!({"op": "set_mute", "conv_id": conv, "mode": "all"}))
+        .await;
+    let state = |r: &Value| {
+        r["convs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["conv_id"] == conv.as_str())
+            .map(|x| (x["read_seq"].clone(), x["mute"]["mode"].clone()))
+    };
+    let l = Conn::device(&hub, &bob, &laptop);
+    let r = round(&l).await;
+    assert_eq!(state(&r), Some((json!(head), json!("all"))), "{r}");
+    // Given once: a later sync with nothing new leaves it out.
+    let r = round(&l).await;
+    assert_eq!(state(&r), None, "{r}");
+    // A change shows up in the next sync of the other device.
+    p.ok(json!({"op": "set_mute", "conv_id": conv, "mode": "none"}))
+        .await;
+    let r = round(&l).await;
+    assert_eq!(state(&r), Some((json!(head), json!("none"))), "{r}");
+    // Back to the default is a change too, for a device told otherwise.
+    let c = a.group(&[&bob]).await;
+    round(&l).await;
+    p.ok(json!({"op": "set_mute", "conv_id": c, "mode": "all"}))
+        .await;
+    let muted = round(&l).await.to_string();
+    assert!(muted.contains("\"all\""), "{muted}");
+    p.ok(json!({"op": "set_mute", "conv_id": c, "mode": "none"}))
+        .await;
+    let r = round(&l).await;
+    let x = r["convs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["conv_id"] == c.as_str())
+        .cloned();
+    assert_eq!(
+        x.map(|x| x["mute"]["mode"].clone()),
+        Some(json!("none")),
+        "{r}"
     );
 }

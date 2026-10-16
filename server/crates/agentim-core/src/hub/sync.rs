@@ -262,10 +262,27 @@ impl Hub {
             // A departure is reported until the device's position passes it
             // (acknowledged, or already sent on this connection).
             let told = base.is_some_and(|b| b >= head);
+            // The member's read position and mute state, whenever this
+            // session has not been given them yet (M8).
+            let state = match &st.member {
+                Some(m) => {
+                    json!({"read_seq": st.read_seq, "mute": {"mode": m.mute_mode, "until": m.mute_until}})
+                }
+                None => Value::Null,
+            };
+            // Without anything given before, the default (nothing read,
+            // not muted) is what a device assumes.
+            let default = st.read_seq == 0 && state["mute"]["mode"] == "none";
+            let state_new = !state.is_null()
+                && match sh.reg.sync_state(sess.sid, &conv, &state) {
+                    None => !default,
+                    Some(prev) => prev != state,
+                };
             if events.is_empty()
                 && side.is_empty()
                 && reset.is_none()
                 && !has_more
+                && !state_new
                 && (st.until.is_none() || told)
             {
                 continue;
@@ -281,6 +298,10 @@ impl Hub {
             });
             if let Some(from) = reset {
                 entry["reset"] = json!({"from_seq": from});
+            }
+            if !state.is_null() {
+                entry["read_seq"] = state["read_seq"].clone();
+                entry["mute"] = state["mute"].clone();
             }
             if st.until.is_some() && !has_more {
                 entry["left"] = json!(true);
@@ -422,8 +443,8 @@ impl Hub {
             if a.seq < 0 || a.side_seq < 0 {
                 return Err(err("bad_request", "positions are >= 0"));
             }
-            let (s, ss) = sh.reg.sync_sent(sess.sid, &a.conv_id);
-            if a.seq > s.unwrap_or(0) || a.side_seq > ss.unwrap_or(0) {
+            let (s, ss) = sh.reg.sync_delivered(sess.sid, &a.conv_id);
+            if a.seq > s || a.side_seq > ss {
                 return Err(err(
                     "bad_request",
                     format!(
