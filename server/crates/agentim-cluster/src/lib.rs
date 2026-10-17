@@ -87,6 +87,9 @@ struct DbLeases {
     owners: RwLock<HashMap<u32, Option<String>>>,
     /// Shards lost recently: not taken back for one lease period.
     cooldown: Mutex<HashMap<u32, Instant>>,
+    /// Shards taken from a node whose lease lapsed: not handed back to it
+    /// for a while (it may still be stuck; no ping-pong).
+    rescued: Mutex<HashMap<u32, Instant>>,
 }
 
 #[derive(Clone)]
@@ -121,6 +124,9 @@ struct Inner {
     listener: Mutex<Option<TcpListener>>,
     pub_addr: String,
     slot: AtomicU32,
+    /// Test faults: network cuts and a local clock offset (docs/11 §12.1).
+    faults: Arc<peer::Faults>,
+    skew_ms: std::sync::atomic::AtomicU64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -165,7 +171,7 @@ pub async fn join(hub: &Hub) -> Result<Node, String> {
                 d.name
             ));
         }
-        let pool = storage::open_pool(&d.url, dialect, 4)
+        let pool = storage::open_pool(&d.url, dialect, 2)
             .await
             .map_err(|e| e.message)?;
         sql::check_server(&pool, dialect)
@@ -258,6 +264,7 @@ pub async fn join(hub: &Hub) -> Result<Node, String> {
             held: Default::default(),
             owners: Default::default(),
             cooldown: Default::default(),
+            rescued: Default::default(),
         })
         .collect();
     let inner = Arc::new(Inner {
@@ -282,6 +289,8 @@ pub async fn join(hub: &Hub) -> Result<Node, String> {
         listener: Mutex::new(Some(listener)),
         pub_addr,
         slot: AtomicU32::new(slot),
+        faults: Default::default(),
+        skew_ms: Default::default(),
     });
     let _ = inner.hub.set(hub.clone());
     hub.attach_cluster(Arc::new(Handle(inner.clone())));
@@ -420,7 +429,7 @@ impl Node {
 
     /// Shards this node holds in database `db` (for tests and status).
     pub fn held(&self, db: usize) -> Vec<u32> {
-        let now = Instant::now();
+        let now = self.inner.now();
         let mut v: Vec<u32> = self.inner.dbs[db]
             .held
             .read()
@@ -476,6 +485,33 @@ impl Node {
         }
     }
 
+    /// Test fault: no traffic between this node and `other` either way
+    /// (call on both nodes for a full partition).
+    pub fn cut(&self, other: &str) {
+        lock(&self.inner.faults.cut_to).insert(other.into());
+        lock(&self.inner.faults.cut_from).insert(other.into());
+        if let Some(p) = lock(&self.inner.peers).get(other) {
+            p.stop_session();
+        }
+    }
+
+    /// Test fault: frames from this node to `other` are lost (one way).
+    pub fn cut_to(&self, other: &str) {
+        lock(&self.inner.faults.cut_to).insert(other.into());
+    }
+
+    pub fn heal(&self) {
+        lock(&self.inner.faults.cut_to).clear();
+        lock(&self.inner.faults.cut_from).clear();
+    }
+
+    /// Test fault: this node's clock jumps forward.
+    pub fn jump_clock(&self, by: Duration) {
+        self.inner
+            .skew_ms
+            .fetch_add(by.as_millis() as u64, Ordering::SeqCst);
+    }
+
     /// Stops like a crash: tasks and connections end, nothing is released
     /// (others take over when the leases expire). For tests.
     pub fn crash(&self) {
@@ -494,6 +530,33 @@ impl Node {
 }
 
 impl Inner {
+    /// This node's monotonic clock (tests can move it forward).
+    fn now(&self) -> Instant {
+        Instant::now() + Duration::from_millis(self.skew_ms.load(Ordering::Relaxed))
+    }
+
+    /// How long the lease loop waits for its own writer: never longer,
+    /// so a stuck writer cannot hold up renewals (the gate decides those).
+    fn writer_budget(&self) -> Duration {
+        Duration::from_millis(
+            self.cfg
+                .stop_ms
+                .saturating_sub(self.cfg.renew_ms + self.cfg.op_timeout_ms)
+                .max(100),
+        )
+    }
+
+    /// A writer command with a bounded wait; a command not answered in time
+    /// stays queued and runs before anything queued after it.
+    async fn bounded(
+        &self,
+        f: impl std::future::Future<Output = ApiResult<Value>>,
+    ) -> ApiResult<Value> {
+        tokio::time::timeout(self.writer_budget(), f)
+            .await
+            .unwrap_or_else(|_| Err(unavailable("the writer is busy")))
+    }
+
     fn hub(&self) -> &Hub {
         self.hub.get().expect("attached")
     }
@@ -587,6 +650,7 @@ impl Inner {
                             n.addr.clone(),
                             self.hello.clone(),
                             self.tls.client.clone(),
+                            self.faults.clone(),
                         ),
                     );
                 }
@@ -659,15 +723,39 @@ impl Inner {
         }
         let t = self.op_timeout();
         let lease_ms = self.cfg.lease_ms;
-        let t0 = Instant::now();
-        let renewed = matches!(
-            tokio::time::timeout(
-                t,
-                sql::renew(&db.pool, db.dialect, &db.name, &self.owner, lease_ms)
-            )
-            .await,
-            Ok(Ok(_))
+        let t0 = self.now();
+        // Renewal follows the writer's progress: a writer that is stuck or
+        // cut off from the database lets its leases lapse (docs/11 §4.6).
+        let budget = Duration::from_millis(
+            self.cfg
+                .stop_ms
+                .saturating_sub(self.cfg.renew_ms + self.cfg.op_timeout_ms)
+                .max(100),
         );
+        let gate_off = self
+            .hub()
+            .shared()
+            .failpoints
+            .hit("mutation.no_progress_gate")
+            .await
+            .is_err();
+        let writing = gate_off
+            || match self.hub().shard(db.idx) {
+                Some(w) => matches!(
+                    tokio::time::timeout(budget, w.call_local(Op::Barrier)).await,
+                    Ok(Ok(_))
+                ),
+                None => false,
+            };
+        let renewed = writing
+            && matches!(
+                tokio::time::timeout(
+                    t,
+                    sql::renew(&db.pool, db.dialect, &db.name, &self.owner, lease_ms)
+                )
+                .await,
+                Ok(Ok(_))
+            );
         let Ok(Ok((rows, now))) =
             tokio::time::timeout(t, sql::leases(&db.pool, db.dialect, &db.name)).await
         else {
@@ -697,7 +785,7 @@ impl Inner {
                         held.remove(&r.shard);
                         lost.push(r.shard);
                     }
-                    None if mine && renewed => handed.push((r.shard, r.epoch, until)),
+                    None if mine && renewed => handed.push((r.shard, r.epoch)),
                     None => {}
                 }
             }
@@ -716,7 +804,30 @@ impl Inner {
         let cooling: HashSet<u32> = lock(&db.cooldown).keys().copied().collect();
         let held_now: HashSet<u32> = db.held.read().unwrap().keys().copied().collect();
         let offset = (uuid::Uuid::new_v4().as_u128() % rows.len().max(1) as u128) as usize;
-        let mut taken = handed;
+        // Shards this node owns in the table but does not use (handed over
+        // to it, or given up after a writer failure) are taken again with a
+        // new epoch: that waits for any batch still holding the lease row,
+        // so the state reloaded afterwards is final (docs/11 §4.5).
+        let mut taken = vec![];
+        for (shard, epoch) in handed {
+            let t1 = self.now();
+            if let Ok(Ok(Some(e))) = tokio::time::timeout(
+                t,
+                sql::retake(
+                    &db.pool,
+                    db.dialect,
+                    &db.name,
+                    shard,
+                    &self.owner,
+                    epoch,
+                    lease_ms,
+                ),
+            )
+            .await
+            {
+                taken.push((shard, e, t1 + Duration::from_millis(self.cfg.stop_ms)));
+            }
+        }
         let mut tries = 0;
         for k in 0..rows.len() {
             let r = &rows[(offset + k) % rows.len()];
@@ -735,7 +846,7 @@ impl Inner {
                 continue;
             }
             tries += 1;
-            let t1 = Instant::now();
+            let t1 = self.now();
             if let Ok(Ok(Some(epoch))) = tokio::time::timeout(
                 t,
                 sql::acquire(
@@ -751,6 +862,12 @@ impl Inner {
             .await
             {
                 taken.push((r.shard, epoch, t1 + Duration::from_millis(self.cfg.stop_ms)));
+                if r.owner.as_deref().is_some_and(|o| o != self.owner) {
+                    lock(&db.rescued).insert(
+                        r.shard,
+                        Instant::now() + Duration::from_millis(self.cfg.lease_ms * 3),
+                    );
+                }
             }
         }
         if tries >= TAKE_PER_ROUND {
@@ -771,10 +888,10 @@ impl Inner {
         let Some(shard) = self.hub().shard(db.idx) else {
             return;
         };
-        let _ = shard
-            .call_local(Op::Forget {
+        let _ = self
+            .bounded(shard.call_local(Op::Forget {
                 shards: shards.clone(),
-            })
+            }))
             .await;
         {
             let mut held = db.held.write().unwrap();
@@ -798,10 +915,10 @@ impl Inner {
             .filter(|s| *s < self.shards)
             .collect();
         if !convs.is_empty()
-            && let Err(e) = shard
-                .call_local(Op::Recover {
+            && let Err(e) = self
+                .bounded(shard.call_local(Op::Recover {
                     shards: Some(convs),
-                })
+                }))
                 .await
         {
             tracing::warn!(
@@ -830,10 +947,10 @@ impl Inner {
         }
         tracing::warn!(node = self.node_id, database = db.name, shards = ?lost, "lost shards");
         if let Some(shard) = self.hub().shard(db.idx) {
-            let _ = shard
-                .call_local(Op::Forget {
+            let _ = self
+                .bounded(shard.call_local(Op::Forget {
                     shards: lost.to_vec(),
-                })
+                }))
                 .await;
         }
     }
@@ -857,6 +974,11 @@ impl Inner {
             let held = db.held.read().unwrap();
             let mut v: Vec<(u32, i64)> = held.iter().map(|(s, h)| (*s, h.epoch)).collect();
             v.sort();
+            let now = Instant::now();
+            let mut rescued = lock(&db.rescued);
+            rescued.retain(|_, until| *until > now);
+            v.retain(|(s, _)| !rescued.contains_key(s));
+            drop(rescued);
             v.into_iter().find_map(|(s, e)| {
                 let p = assign::preferred(live, &db.name, s)?;
                 (p != self.node_id).then(|| (s, e, p.to_string()))
@@ -896,7 +1018,9 @@ impl Inner {
         );
         db.owners.write().unwrap().insert(s, ok.then(|| to.clone()));
         if let Some(shard) = self.hub().shard(db.idx) {
-            let _ = shard.call_local(Op::Forget { shards: vec![s] }).await;
+            let _ = self
+                .bounded(shard.call_local(Op::Forget { shards: vec![s] }))
+                .await;
         }
         if ok {
             tracing::info!(
@@ -945,7 +1069,7 @@ impl Inner {
                     .read()
                     .unwrap()
                     .get(&shard)
-                    .is_some_and(|h| h.until > Instant::now())
+                    .is_some_and(|h| h.until > self.now())
                 {
                     let local = self
                         .hub()
@@ -992,7 +1116,7 @@ impl Cluster for Handle {
         let d = self.0.dbs.get(db)?;
         let g = d.held.read().unwrap();
         let h = g.get(&shard)?;
-        (Instant::now() < h.until).then(|| Lease {
+        (self.0.now() < h.until).then(|| Lease {
             owner: self.0.owner.clone(),
             epoch: h.epoch,
         })
@@ -1035,6 +1159,23 @@ impl Cluster for Handle {
         for p in peers {
             p.send(frame.clone());
         }
+    }
+
+    fn reset(&self, db: usize) {
+        let i = self.0.clone();
+        let shards: Vec<u32> = match i.dbs.get(db) {
+            Some(d) => d.held.write().unwrap().drain().map(|(s, _)| s).collect(),
+            None => return,
+        };
+        tokio::spawn(async move {
+            if let (Some(d), false) = (i.dbs.get(db), shards.is_empty()) {
+                tracing::warn!(node = i.node_id, database = d.name, shards = ?shards, "gave up shards after a writer failure");
+                if let Some(w) = i.hub().shard(db) {
+                    let _ = i.bounded(w.call_local(Op::Forget { shards })).await;
+                }
+            }
+            i.nudge.notify_one();
+        });
     }
 
     fn lost(&self, db: usize, shard: u32) {
@@ -1082,8 +1223,10 @@ impl peer::Serve for Handle {
             let Some(shard) = hub.shard(req.db) else {
                 return err("bad_request", "unknown database".into());
             };
-            if let agentim_core::cluster::Route::Conv(c) = op.route() {
-                hub.dir_ensure(&c).await;
+            if let agentim_core::cluster::Route::Conv(c) = op.route()
+                && let Err(e) = hub.dir_ensure(&c).await
+            {
+                return err(e.code, e.message);
             }
             // Only commands this node may run for the shard named.
             match tokio::time::timeout(FORWARD_WAIT, shard.call_local(op)).await {
@@ -1120,5 +1263,9 @@ impl peer::Serve for Handle {
 
     fn check(&self) {
         self.0.nudge.notify_one();
+    }
+
+    fn cut_from(&self, node: &str) -> bool {
+        self.0.faults.is_cut_from(node)
     }
 }

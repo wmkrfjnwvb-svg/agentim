@@ -9,19 +9,16 @@ use std::time::{Duration, Instant};
 
 use agentim_cluster::Node;
 use agentim_core::cluster::shard_of;
-use agentim_core::config::{ClusterConfig, Config};
 use agentim_core::hub::Hub;
 use agentim_core::model::*;
 use common::*;
-use serde_json::{Value, json};
+use serde_json::json;
 use sqlx::Connection;
 
-macro_rules! cluster_tests {
-    ($($name:ident),* $(,)?) => {
-        mod postgres { $( #[tokio::test(flavor = "multi_thread", worker_threads = 4)] async fn $name() { match $crate::common::new_db($crate::common::Backend::Postgres).await { Some(db) => super::$name(db).await, None => eprintln!("skipped: AGENTIM_TEST_PG not set") } } )* }
-        mod mysql { $( #[tokio::test(flavor = "multi_thread", worker_threads = 4)] async fn $name() { match $crate::common::new_db($crate::common::Backend::Mysql).await { Some(db) => super::$name(db).await, None => eprintln!("skipped: AGENTIM_TEST_MYSQL not set") } } )* }
-    };
-}
+#[macro_use]
+mod support;
+
+use support::*;
 
 cluster_tests!(
     requests_are_forwarded_and_pushes_reach_every_node,
@@ -34,136 +31,6 @@ cluster_tests!(
     leaving_hands_shards_over_at_once,
     start_up_refuses_bad_setups,
 );
-
-const SHARDS: u32 = 16;
-
-fn cluster_cfg(url: &str, node: &str) -> Config {
-    let mut c = single(url);
-    c.cluster = ClusterConfig {
-        enabled: true,
-        node_id: node.into(),
-        listen: "127.0.0.1:0".into(),
-        shards: SHARDS,
-        lease_ms: 3_000,
-        renew_ms: 500,
-        stop_ms: 2_000,
-        op_timeout_ms: 500,
-        ..Default::default()
-    };
-    c
-}
-
-async fn start_with(cfg: Config) -> Result<(Hub, Node), String> {
-    let hub = Hub::open_deferred(cfg, hub_cfg())
-        .await
-        .map_err(|e| e.message)?;
-    let node = agentim_cluster::join(&hub).await?;
-    node.start().await?;
-    hub.finish_open().await.map_err(|e| e.message)?;
-    Ok((hub, node))
-}
-
-async fn start(url: &str, node: &str) -> (Hub, Node) {
-    start_with(cluster_cfg(url, node))
-        .await
-        .expect("node starts")
-}
-
-async fn cluster(db: &TestDb, n: usize) -> Vec<(Hub, Node)> {
-    let mut v = vec![];
-    for i in 0..n {
-        v.push(start(&db.url, &format!("n{i}")).await);
-    }
-    settled(&v).await;
-    v
-}
-
-/// Every shard (and the control and upkeep shards) held by exactly one of
-/// the nodes, each node holding some.
-async fn settled(nodes: &[(Hub, Node)]) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let mut all = vec![];
-        for (_, n) in nodes {
-            all.extend(n.held(0));
-        }
-        let distinct: HashSet<u32> = all.iter().copied().collect();
-        let spread = nodes.iter().all(|(_, n)| !n.held(0).is_empty());
-        if all.len() == (SHARDS + 2) as usize && distinct.len() == all.len() && spread {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "not settled: {:?}",
-            nodes.iter().map(|(_, n)| n.held(0)).collect::<Vec<_>>()
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-fn holder(nodes: &[(Hub, Node)], conv: &str) -> Option<usize> {
-    let s = shard_of(conv, SHARDS);
-    nodes.iter().position(|(_, n)| n.held(0).contains(&s))
-}
-
-async fn wait_for<F: FnMut() -> bool>(what: &str, within: Duration, mut f: F) {
-    let deadline = Instant::now() + within;
-    while !f() {
-        assert!(Instant::now() < deadline, "timed out: {what}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// Retries a send with the same client_msg_id until it is accepted
-/// (`unavailable` means: retry).
-async fn send_until_ok(c: &Conn, conv: &str, cmid: &str, text: &str, within: Duration) -> Value {
-    let deadline = Instant::now() + within;
-    loop {
-        let r = c
-            .call(json!({"op": "send", "conv_id": conv, "client_msg_id": cmid, "text": text}))
-            .await;
-        if r["ok"] == true {
-            return r;
-        }
-        assert_eq!(r["error"]["code"], "unavailable", "{r}");
-        assert!(Instant::now() < deadline, "never accepted: {r}");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-/// The checks after every multi-node test (docs/11 §12.7): every accepted
-/// message is in the log once, sequences run 1..n without gaps, and each
-/// client_msg_id appears at most once per sender.
-async fn check_log(c: &Conn, conv: &str, accepted: &[String]) {
-    let log = c.pull(conv, 0).await;
-    let seqs = seqs(&log);
-    assert_eq!(seqs, (1..=seqs.len() as i64).collect::<Vec<_>>(), "gapless");
-    let ids: Vec<String> = log["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|e| e["event"]["msg"]["msg_id"].as_str().map(String::from))
-        .collect();
-    for a in accepted {
-        assert_eq!(
-            ids.iter().filter(|i| *i == a).count(),
-            1,
-            "accepted message {a} once"
-        );
-    }
-    let mut seen = HashSet::new();
-    for e in log["events"].as_array().unwrap() {
-        if let (Some(s), Some(m)) = (
-            e["event"]["msg"]["sender_id"].as_str(),
-            e["event"]["msg"]["client_msg_id"].as_str(),
-        ) {
-            assert!(
-                seen.insert((s.to_string(), m.to_string())),
-                "client_msg_id {m} twice"
-            );
-        }
-    }
-}
 
 async fn requests_are_forwarded_and_pushes_reach_every_node(db: TestDb) {
     let nodes = cluster(&db, 3).await;

@@ -193,6 +193,7 @@ impl Hub {
             dir: Default::default(),
             stream_index: Default::default(),
             cluster: Default::default(),
+            failpoints: Default::default(),
             policy: PolicyChain::default_chain(),
             budgets: Default::default(),
             control,
@@ -203,16 +204,13 @@ impl Hub {
         let mut shards = Vec::new();
         let master = cfg.master_key().map_err(|e| err("config", e))?;
         let mut wakes = Vec::new();
+        let mut wcfg = cfg.writer.clone();
+        if cfg.cluster.enabled {
+            wcfg.cluster_stop_ms = Some(cfg.cluster.stop_ms);
+        }
         for (i, d) in cfg.storage.databases.iter().enumerate() {
-            let (s, w) = Shard::open(
-                i,
-                d,
-                &cfg.writer,
-                sh.clone(),
-                &cfg.webhooks,
-                master.as_deref(),
-            )
-            .await?;
+            let (s, w) =
+                Shard::open(i, d, &wcfg, sh.clone(), &cfg.webhooks, master.as_deref()).await?;
             shards.push(s);
             wakes.push(w);
         }
@@ -305,19 +303,27 @@ impl Hub {
 
     /// In a cluster, a conversation another node created may not have
     /// reached this node's directory yet: it is read from the database.
-    pub async fn dir_ensure(&self, conv: &str) {
+    /// A lookup that fails answers `unavailable` (retryable), never
+    /// `not_found`.
+    pub async fn dir_ensure(&self, conv: &str) -> ApiResult<()> {
         let sh = &self.inner.sh;
         if !self.clustered() || sh.dir_get(conv).is_some() {
-            return;
+            return Ok(());
         }
         let c = conv.to_string();
-        let Ok(Some(e)) = self
+        let found = self
             .read(self.control(), move |db| {
                 Box::pin(async move { db.dir_one(&c).await })
             })
             .await
-        else {
-            return;
+            .map_err(|e| {
+                err(
+                    "unavailable",
+                    format!("conversation directory: {}; retry", e.message),
+                )
+            })?;
+        let Some(e) = found else {
+            return Ok(());
         };
         if let Some(i) = sh.db_names.iter().position(|n| *n == e.database) {
             sh.dir_set_local(
@@ -329,6 +335,7 @@ impl Hub {
                 }),
             );
         }
+        Ok(())
     }
 
     /// Session ids of this node start at `slot << 32` (unique in a cluster).
@@ -462,7 +469,9 @@ impl Hub {
                 ));
             };
             // A migration interrupted before the switch: the source is intact.
-            if e.migrating {
+            // (In a cluster one may be running on another node; the control
+            // shard's holder repairs.)
+            if e.migrating && !self.clustered() {
                 control
                     .call(Op::DirPut(DirEntry {
                         migrating: false,
@@ -470,14 +479,13 @@ impl Hub {
                     }))
                     .await?;
             }
-            sh.dir_set(
-                &e.conv_id,
-                Some(DirInfo {
-                    db: idx,
-                    unit: e.unit_id,
-                    migrating: false,
-                }),
-            );
+            // Local only: every node reads the same table; an entry already
+            // here came from a newer change.
+            sh.dir.write().unwrap().entry(e.conv_id).or_insert(DirInfo {
+                db: idx,
+                unit: e.unit_id,
+                migrating: e.migrating && self.clustered(),
+            });
         }
         if !self.clustered() {
             self.reconcile().await?;
@@ -2020,10 +2028,13 @@ impl Hub {
     ) -> ApiResult<Value> {
         let op = msg.name();
         let t = Instant::now();
-        if let Some(c) = msg.conv_id() {
-            self.dir_ensure(c).await;
-        }
-        let res = self.dispatch(sess, msg).await;
+        let res = match msg.conv_id() {
+            Some(c) => match self.dir_ensure(c).await {
+                Ok(()) => self.dispatch(sess, msg).await,
+                Err(e) => Err(e),
+            },
+            None => self.dispatch(sess, msg).await,
+        };
         let secs = t.elapsed().as_secs_f64();
         let code = match &res {
             Ok(_) => "ok",
@@ -2771,13 +2782,13 @@ impl Hub {
         after: i64,
         limit: i64,
     ) -> ApiResult<Value> {
-        self.dir_ensure(conv).await;
+        self.dir_ensure(conv).await?;
         self.pull_as(me, conv, after, limit, None).await
     }
 
     /// Side events of a conversation addressed to `me` (server-side read).
     pub async fn read_side(&self, me: &User, conv: &str, after: i64) -> ApiResult<Value> {
-        self.dir_ensure(conv).await;
+        self.dir_ensure(conv).await?;
         self.pull_side(me, conv, after).await
     }
 

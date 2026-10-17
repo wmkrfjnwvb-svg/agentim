@@ -25,6 +25,24 @@ const HANDSHAKE: Duration = Duration::from_secs(5);
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<ForwardResp>>>>;
 
+/// Network faults for tests (docs/11 §12.1): frames to the nodes in
+/// `cut_to` are dropped and no connection is made to them; frames from the
+/// nodes in `cut_from` are ignored (no answers, no pongs).
+#[derive(Default)]
+pub struct Faults {
+    pub cut_to: Mutex<std::collections::HashSet<String>>,
+    pub cut_from: Mutex<std::collections::HashSet<String>>,
+}
+
+impl Faults {
+    pub fn is_cut_to(&self, node: &str) -> bool {
+        lock(&self.cut_to).contains(node)
+    }
+    pub fn is_cut_from(&self, node: &str) -> bool {
+        lock(&self.cut_from).contains(node)
+    }
+}
+
 /// The outgoing connection to one peer (one boot of a node).
 pub struct Peer {
     pub node_id: String,
@@ -35,6 +53,7 @@ pub struct Peer {
     next: AtomicU64,
     kill: Notify,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    faults: Arc<Faults>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -49,6 +68,7 @@ impl Peer {
         addr: String,
         me: Hello,
         tls: Arc<rustls::ClientConfig>,
+        faults: Arc<Faults>,
     ) -> Arc<Peer> {
         let p = Arc::new(Peer {
             node_id,
@@ -59,6 +79,7 @@ impl Peer {
             next: AtomicU64::new(1),
             kill: Notify::new(),
             task: Mutex::new(None),
+            faults,
         });
         let t = tokio::spawn(p.clone().dial_loop(me, tls));
         *lock(&p.task) = Some(t);
@@ -86,6 +107,9 @@ impl Peer {
     /// Queues a frame; false when not connected. A full queue closes the
     /// connection (the peer resyncs its clients when it is back).
     pub fn send(&self, frame: Vec<u8>) -> bool {
+        if self.faults.is_cut_to(&self.node_id) {
+            return false;
+        }
         let mut g = lock(&self.tx);
         let Some(tx) = g.as_ref() else { return false };
         match tx.try_send(frame) {
@@ -146,6 +170,9 @@ impl Peer {
     }
 
     async fn session(&self, me: &Hello, tls: &Arc<rustls::ClientConfig>) -> Result<(), String> {
+        if self.faults.is_cut_to(&self.node_id) {
+            return Err("cut (test fault)".into());
+        }
         let tcp = tokio::time::timeout(HANDSHAKE, TcpStream::connect(&self.addr))
             .await
             .map_err(|_| "connect timed out")?
@@ -235,6 +262,8 @@ pub trait Serve: Send + Sync + 'static {
     fn forward(&self, req: codec::ForwardReq) -> crate::BoxFuture<ForwardResp>;
     fn publish(&self, body: &[u8]);
     fn check(&self);
+    /// Test fault: frames from this node are ignored.
+    fn cut_from(&self, node: &str) -> bool;
 }
 
 /// Accepts peers' connections.
@@ -299,6 +328,9 @@ async fn accepted(
             let Some((kind, body)) = f else {
                 return Ok::<(), String>(());
             };
+            if h.cut_from(&theirs.node_id) {
+                continue;
+            }
             match kind {
                 Some(Kind::ForwardReq) => {
                     let req: codec::ForwardReq =

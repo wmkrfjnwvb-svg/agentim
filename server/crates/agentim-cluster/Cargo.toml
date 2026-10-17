@@ -24,3 +24,4 @@ uuid = { version = "1.28.0", features = ["v4"] }
 futures-util = "0.3.34"
 tokio-tungstenite = "0.30.0"
 tempfile = "3.27.0"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

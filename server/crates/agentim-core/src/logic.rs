@@ -154,6 +154,8 @@ pub struct Shared {
     pub stream_index: std::sync::Mutex<HashMap<String, (usize, String)>>,
     /// The cluster this node belongs to; unset on a single node.
     pub cluster: std::sync::OnceLock<Arc<dyn crate::cluster::Cluster>>,
+    /// Fault points for tests (docs/11 §12.1).
+    pub failpoints: crate::failpoint::Failpoints,
     pub policy: PolicyChain,
     pub cfg: HubConfig,
     pub budgets: crate::guard::Budgets,

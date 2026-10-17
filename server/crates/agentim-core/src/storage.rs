@@ -111,17 +111,35 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bounds on how long the writer waits for a lock or holds a transaction
 /// open (docs/11 §4.4, E1): a lock held by another process (a migration,
 /// another cluster node) fails the batch instead of stalling every write.
-pub async fn writer_timeouts(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
-    let stmts: &[&str] = match d {
-        Dialect::Postgres => &[
-            "SET lock_timeout = '2s'",
-            "SET idle_in_transaction_session_timeout = '30s'",
+/// `stop_ms` (cluster): the session ends when idle that long, so a writer
+/// cut off from the database cannot keep lease rows locked (docs/11 §4.6).
+pub async fn writer_timeouts(
+    c: &mut AnyConnection,
+    d: Dialect,
+    stop_ms: Option<u64>,
+) -> ApiResult<()> {
+    let stmts: Vec<String> = match d {
+        Dialect::Postgres => vec![
+            "SET lock_timeout = '2s'".into(),
+            format!(
+                "SET idle_in_transaction_session_timeout = '{}ms'",
+                stop_ms.unwrap_or(30_000)
+            ),
         ],
-        Dialect::Mysql => &["SET SESSION innodb_lock_wait_timeout = 2"],
-        Dialect::Sqlite => &[],
+        Dialect::Mysql => {
+            let mut v = vec!["SET SESSION innodb_lock_wait_timeout = 2".to_string()];
+            if let Some(ms) = stop_ms {
+                v.push(format!(
+                    "SET SESSION wait_timeout = {}",
+                    ms.div_ceil(1000).max(1)
+                ));
+            }
+            v
+        }
+        Dialect::Sqlite => vec![],
     };
     for s in stmts {
-        sqlx::query(AssertSqlSafe(*s)).execute(&mut *c).await?;
+        sqlx::query(AssertSqlSafe(s)).execute(&mut *c).await?;
     }
     Ok(())
 }

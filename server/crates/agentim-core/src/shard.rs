@@ -126,7 +126,7 @@ impl Shard {
             }
         }
         let crypto = Arc::new(open_crypto(&mut conn, dialect, &cfg.name, master_key).await?);
-        storage::writer_timeouts(&mut conn, dialect).await?;
+        storage::writer_timeouts(&mut conn, dialect, wcfg.cluster_stop_ms).await?;
         let read = storage::open_pool(&cfg.url, dialect, cfg.read_pool.unwrap_or(8)).await?;
         // Webhook outbox: next id, and cursors for webhooks new to this
         // database start at the end (no replay of history).
@@ -155,6 +155,8 @@ impl Shard {
         metrics::gauge!(m::STORAGE_HEALTHY, "database" => cfg.name.clone()).set(1.0);
         let w = Writer {
             conn,
+            url: cfg.url.clone(),
+            broken: false,
             dialect,
             idx,
             name: cfg.name.clone(),
@@ -267,6 +269,9 @@ impl Shard {
 
 struct Writer {
     conn: AnyConnection,
+    url: String,
+    /// Cluster: the connection failed; reconnect before the next batch.
+    broken: bool,
     dialect: Dialect,
     idx: usize,
     name: String,
@@ -284,7 +289,25 @@ struct Writer {
 impl Writer {
     async fn run(mut self, mut rx: mpsc::Receiver<Job>) {
         let mut st = ShardState::new(&self.shared);
-        while let Some(first) = rx.recv().await {
+        // Cluster: an idle connection is checked a few times per stop time,
+        // so the database's idle limit never ends it and a dead one is
+        // noticed (docs/11 §4.6).
+        let keepalive = self
+            .cfg
+            .cluster_stop_ms
+            .map(|ms| Duration::from_millis((ms / 4).max(50)));
+        loop {
+            let first = match keepalive {
+                None => rx.recv().await,
+                Some(k) => match tokio::time::timeout(k, rx.recv()).await {
+                    Ok(j) => j,
+                    Err(_) => {
+                        self.ping().await;
+                        continue;
+                    }
+                },
+            };
+            let Some(first) = first else { break };
             if self.cfg.commit_delay_us > 0 && !rx.is_empty() {
                 tokio::time::sleep(Duration::from_micros(self.cfg.commit_delay_us)).await;
             }
@@ -318,10 +341,78 @@ impl Writer {
         }
     }
 
+    /// Cluster: a new writer connection after a failure.
+    async fn reconnect(&mut self) -> bool {
+        let r = async {
+            let mut c = storage::open_writer(&self.url, self.dialect).await?;
+            storage::writer_timeouts(&mut c, self.dialect, self.cfg.cluster_stop_ms).await?;
+            Ok::<_, ApiError>(c)
+        };
+        match tokio::time::timeout(Duration::from_secs(5), r).await {
+            Ok(Ok(c)) => {
+                self.conn = c;
+                self.broken = false;
+                tracing::info!(database = self.name, "writer reconnected");
+                true
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    database = self.name,
+                    error = e.message,
+                    "writer reconnect failed"
+                );
+                false
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Cluster: the writer's connection failed or a batch got stuck.
+    fn connection_lost(&mut self, why: &str) {
+        tracing::warn!(
+            database = self.name,
+            reason = why,
+            "writer connection lost; giving up this database's shards"
+        );
+        metrics::counter!(m::STORAGE_ERRORS, "kind" => "connection").increment(1);
+        self.broken = true;
+        if let Some(c) = self.shared.cluster.get() {
+            c.reset(self.idx);
+        }
+    }
+
+    /// Cluster keepalive on an idle writer.
+    async fn ping(&mut self) {
+        if self.broken {
+            self.reconnect().await;
+            return;
+        }
+        let ok = matches!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                sqlx::query("SELECT 1").execute(&mut self.conn)
+            )
+            .await,
+            Ok(Ok(_))
+        );
+        if !ok {
+            self.connection_lost("keepalive failed");
+        }
+    }
+
     async fn run_batch(&mut self, st: &mut ShardState, batch: Vec<Job>) {
         // Cluster: commands for shards this node does not hold go back to
         // be routed again (they may have just moved).
         let cluster = self.shared.cluster.get().cloned();
+        if self.broken && cluster.is_some() && !self.reconnect().await {
+            for j in batch {
+                let _ = j.reply.send(Err(ApiError::new(
+                    "unavailable",
+                    "the database cannot be reached; retry with the same client_msg_id",
+                )));
+            }
+            return;
+        }
         let mut batch = batch;
         let mut routed = std::collections::BTreeSet::new();
         if let Some(c) = &cluster {
@@ -350,12 +441,21 @@ impl Writer {
         }
         let n = batch.len();
         let started = Instant::now();
+        let fp = batch
+            .iter()
+            .any(|j| matches!(j.op, Op::Client { .. }))
+            .then(|| self.shared.clone());
         let mut replies: Vec<(oneshot::Sender<ApiResult<Value>>, ApiResult<Value>)> =
             Vec::with_capacity(n);
         let mut outs: Vec<Out> = Vec::new();
         let mut touched = routed;
         let mut lost: Vec<u32> = vec![];
-        let result: Result<Option<i64>, String> = async {
+        let stuck_after = self
+            .cfg
+            .cluster_stop_ms
+            .filter(|_| cluster.is_some())
+            .map(|ms| Duration::from_millis(ms * 3 / 4));
+        let work = async {
             // SQLite: take the write lock when the batch starts. A deferred
             // transaction that has read and then must write fails at once
             // (SQLITE_BUSY) if another connection committed in between;
@@ -433,10 +533,21 @@ impl Writer {
             )
             .await
             .map_err(|e| e.message)?;
+            if let Some(sh) = &fp {
+                sh.failpoints.hit(crate::failpoint::BEFORE_FENCE).await?;
+            }
             // Cluster: every shard this batch wrote must still be held by
             // this node, checked under the lease rows' locks until commit
             // (docs/11 §4.3); otherwise nothing of the batch is kept.
-            if let Some(c) = &cluster {
+            // Test-only mutation (docs/11 §12.1): without the check the
+            // stale-holder test must fail.
+            let no_fence = self
+                .shared
+                .failpoints
+                .hit("mutation.no_fence")
+                .await
+                .is_err();
+            if let Some(c) = cluster.as_ref().filter(|_| !no_fence) {
                 for s in outs.iter().filter_map(|o| match o {
                     Out::Event { ev, .. } => Some(ev.conv_id.as_str()),
                     Out::Side(s) => Some(s.conv_id.as_str()),
@@ -471,6 +582,9 @@ impl Writer {
                     return Err(FENCED.to_string());
                 }
             }
+            if let Some(sh) = &fp {
+                sh.failpoints.hit(crate::failpoint::BEFORE_COMMIT).await?;
+            }
             if self.health.fail_next_commits.load(Ordering::SeqCst) > 0 {
                 self.health.fail_next_commits.fetch_sub(1, Ordering::SeqCst);
                 let _ = tx.rollback().await;
@@ -479,13 +593,24 @@ impl Writer {
             let t = Instant::now();
             tx.commit().await.map_err(|e| {
                 let e = e.to_string();
-                if storage::is_transient(&e) { TRANSIENT.to_string() } else { e }
+                if storage::is_transient(&e) {
+                    TRANSIENT.to_string()
+                } else {
+                    e
+                }
             })?;
             metrics::histogram!(m::COMMIT_DURATION, "database" => self.name.clone())
                 .record(t.elapsed().as_secs_f64());
             Ok(queued)
-        }
-        .await;
+        };
+        // A batch that takes longer than the stop time is stuck (docs/11
+        // §4.6): its outcome is unknown and the connection is replaced.
+        let result: Result<Option<i64>, String> = match stuck_after {
+            None => work.await,
+            Some(t) => tokio::time::timeout(t, work)
+                .await
+                .unwrap_or_else(|_| Err(STUCK.to_string())),
+        };
 
         match result {
             Ok(queued) => {
@@ -494,6 +619,9 @@ impl Writer {
                 self.health.batches.fetch_add(1, Ordering::Relaxed);
                 self.health.max_batch.fetch_max(n as u64, Ordering::Relaxed);
                 metrics::histogram!(m::COMMIT_BATCH_SIZE).record(n as f64);
+                if let Some(sh) = &fp {
+                    let _ = sh.failpoints.hit(crate::failpoint::AFTER_COMMIT).await;
+                }
                 // Durable now: deliver, then acknowledge.
                 if let Some(last) = queued {
                     self.wake.send_replace(last);
@@ -540,6 +668,19 @@ impl Writer {
                     )));
                 }
             }
+            Err(e) if cluster.is_some() => {
+                // The outcome is unknown: give the shards up and let them be
+                // taken again with a new epoch; clients retry with the same
+                // client_msg_id (docs/11 §4.5).
+                self.crypto.abort();
+                self.connection_lost(&e);
+                for (r, _) in replies {
+                    let _ = r.send(Err(ApiError::new(
+                        "unavailable",
+                        "the result is unknown; retry with the same client_msg_id",
+                    )));
+                }
+            }
             Err(e) => {
                 self.crypto.abort();
                 metrics::counter!(m::STORAGE_ERRORS, "kind" => "commit").increment(1);
@@ -554,6 +695,8 @@ impl Writer {
 
 /// A batch whose lease check failed (not a storage failure).
 const FENCED: &str = "\u{0}fenced";
+/// A batch that ran past the stop time (cluster).
+const STUCK: &str = "batch stuck past the stop time";
 /// A batch rolled back by a deadlock or lock timeout (retryable).
 const TRANSIENT: &str = "\u{0}transient";
 

@@ -56,6 +56,10 @@ pub trait Cluster: Send + Sync + 'static {
     fn publish(&self, db: usize, outs: &[Out]);
     /// The writer found it no longer holds a shard (its check failed).
     fn lost(&self, db: usize, shard: u32);
+    /// The writer's connection failed or a batch got stuck: what it last
+    /// wrote is unknown, so every shard of the database is given up and
+    /// taken again with a new epoch and reloaded state (docs/11 §4.5).
+    fn reset(&self, db: usize);
 }
 
 pub fn control_shard(shards: u32) -> u32 {

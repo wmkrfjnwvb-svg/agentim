@@ -371,6 +371,35 @@ pub async fn acquire(
     Ok(Some(epoch))
 }
 
+/// Takes again a shard this process owns in the table but stopped using:
+/// the epoch moves on (after any batch still holding the row). The new
+/// epoch on success.
+pub async fn retake(
+    pool: &AnyPool,
+    d: Dialect,
+    db: &str,
+    shard: u32,
+    owner: &str,
+    epoch: i64,
+    lease_ms: u64,
+) -> Result<Option<i64>, String> {
+    let n = now(d);
+    let sql = format!(
+        "UPDATE shard_lease SET epoch = epoch + 1, expires_at = {n} + ? WHERE db = ? AND shard_id = ? AND owner = ? AND epoch = ?"
+    );
+    let hit = sqlx::query(d.q(&sql))
+        .bind(lease_ms as i64)
+        .bind(db)
+        .bind(i64::from(shard))
+        .bind(owner)
+        .bind(epoch)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected();
+    Ok((hit == 1).then_some(epoch + 1))
+}
+
 /// Hands a held shard to another owner (or to nobody), in one step.
 #[allow(clippy::too_many_arguments)]
 pub async fn hand_over(

@@ -644,6 +644,12 @@ pub struct WriterConfig {
     pub queue_capacity: usize,
     /// Optional wait before committing to collect a larger batch. 0 = never wait.
     pub commit_delay_us: u64,
+    /// Cluster: the stop time (docs/11 §4.4). A writer session idle in a
+    /// transaction this long is ended by the database (its lease row locks
+    /// go), a batch running this long counts as stuck, and an idle
+    /// connection is checked a few times within it. Set from `[cluster]`.
+    #[serde(skip)]
+    pub cluster_stop_ms: Option<u64>,
 }
 
 impl Default for WriterConfig {
@@ -652,6 +658,7 @@ impl Default for WriterConfig {
             max_batch: 512,
             queue_capacity: 10_000,
             commit_delay_us: 0,
+            cluster_stop_ms: None,
         }
     }
 }
