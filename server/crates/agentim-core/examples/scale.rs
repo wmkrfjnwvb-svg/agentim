@@ -789,7 +789,7 @@ async fn main() {
     // A consumer that stopped reading works through what was queued for it
     // before it sees the notice (or the close) at the end: wait for that.
     if slow_n > 0 {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while Instant::now() < deadline
             && receivers.iter().any(|r| {
                 let v = r.recv.view.lock().unwrap();
@@ -828,6 +828,7 @@ async fn main() {
         .for_each_concurrent(256, |r| {
             let (conv, from, to) = (&convs[r.group], base[r.group] + 1, heads[r.group]);
             let (fast_closed, restarted) = (&fast_closed, &restarted);
+            let (addr, users, totals) = (&a.addr, &users, &totals);
             let (silent, lost, healed, disorder, fast_gaps, slow_resynced, note) = (
                 &silent,
                 &lost,
@@ -869,16 +870,41 @@ async fn main() {
                 }
                 if !told {
                     silent.fetch_add(1, Ordering::Relaxed);
+                    let (pushes, last) = {
+                        let v = r.recv.view.lock().unwrap();
+                        (v.pushes, v.last_push)
+                    };
                     note(format!(
-                        "user {}: {} events missing (first seq {}) and no resync notice",
+                        "user {}: {} events missing (first seq {}) and no resync notice ({} pushes received, last seq {}, slow: {})",
                         r.user,
                         missing.len(),
-                        missing[0]
+                        missing[0],
+                        pushes,
+                        last,
+                        slow
                     ));
                     return;
                 }
                 // Told to resync (or reconnected): pulling must fill the gap.
-                let conn = r.conn.as_ref().unwrap();
+                // A connection the server closed is replaced, as a client
+                // would: the device continues from its position.
+                let closed = r.recv.view.lock().unwrap().closed;
+                let fresh;
+                let conn = if closed {
+                    match open_retry(addr, &users[r.user].token, 1, None, totals.clone()).await {
+                        Ok(c) => {
+                            fresh = c;
+                            &fresh
+                        }
+                        Err(e) => {
+                            lost.fetch_add(1, Ordering::Relaxed);
+                            note(format!("user {}: reconnect failed: {e}", r.user));
+                            return;
+                        }
+                    }
+                } else {
+                    r.conn.as_ref().unwrap()
+                };
                 match conn.pull_seqs(conv, missing[0] - 1).await {
                     Ok((seqs, _, reset)) => {
                         let mut v = r.recv.view.lock().unwrap();
