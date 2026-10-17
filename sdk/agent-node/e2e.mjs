@@ -208,8 +208,13 @@ try {
   console.log(`FAIL ${e.stack ?? e}`);
   failures++;
 } finally {
-  server?.kill();
-  fs.rmSync(DIR, { recursive: true, force: true });
+  // Windows keeps the database file locked until the process has exited.
+  if (server && server.exitCode === null) {
+    const exited = new Promise((r) => server.once('exit', r));
+    server.kill();
+    await Promise.race([exited, sleep(5000)]);
+  }
+  fs.rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
 if (failures) { console.error(`${failures} check(s) failed`); process.exit(1); }
 console.log('agent SDK end-to-end (Node) passed');

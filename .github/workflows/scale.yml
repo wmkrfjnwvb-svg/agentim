@@ -69,7 +69,9 @@ jobs:
           DURATION: ${{ inputs.duration || '120' }}
         run: |
           ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
-          ./target/release/agentim --demo --db "$RUNNER_TEMP/scale.db" --addr 127.0.0.1:8080 < /dev/null > "$RUNNER_TEMP/server.log" 2>&1 &
+          # Throughput is measured: the per-person send limit (D95) is lifted, as in bench/single-node.sh.
+          printf "[storage]\ncontrol = 'main'\n[[storage.databases]]\nname = 'main'\nurl = 'sqlite:%s?mode=rwc'\nread_pool = 8\n[clients]\nsend_rate = 1000000.0\nsend_burst = 1000000.0\nmax_connections = 100000\n" "scale-ci.db" > scale-ci.toml
+          ./target/release/agentim --demo --config scale-ci.toml --addr 127.0.0.1:8080 < /dev/null > "$RUNNER_TEMP/server.log" 2>&1 &
           server=$!
           ok=0
           trap 'set +e; kill $server; taskkill //F //IM agentim.exe > /dev/null 2>&1; [ $ok = 1 ] || tail -n 100 "$RUNNER_TEMP/server.log"' EXIT

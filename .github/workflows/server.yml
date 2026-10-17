@@ -113,7 +113,9 @@ jobs:
       # while a background process it started is still running.
       - name: load test with consistency checks
         run: |
-          ./target/release/agentim --demo --db "$RUNNER_TEMP/load.db" --addr 127.0.0.1:8080 < /dev/null > "$RUNNER_TEMP/server.log" 2>&1 &
+          # Throughput is measured: the per-person send limit (D95) is lifted, as in bench/single-node.sh.
+          printf "[storage]\ncontrol = 'main'\n[[storage.databases]]\nname = 'main'\nurl = 'sqlite:%s?mode=rwc'\nread_pool = 8\n[clients]\nsend_rate = 1000000.0\nsend_burst = 1000000.0\nmax_connections = 100000\n" "load-ci.db" > load-ci.toml
+          ./target/release/agentim --demo --config load-ci.toml --addr 127.0.0.1:8080 < /dev/null > "$RUNNER_TEMP/server.log" 2>&1 &
           server=$!
           ok=0
           trap 'set +e; curl -s http://127.0.0.1:8080/metrics | grep -E "^agentim_(commit_batch_size|commit_duration_seconds)_(sum|count)|^agentim_push_dropped|^agentim_write_rejected"; kill $server; taskkill //F //IM agentim.exe > /dev/null 2>&1; [ $ok = 1 ] || tail -n 200 "$RUNNER_TEMP/server.log"' EXIT
