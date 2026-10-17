@@ -272,6 +272,9 @@ struct View {
     /// The server closed the connection (a consumer that stops reading is
     /// closed after the idle time, M16): a real client reconnects and syncs.
     closed: bool,
+    /// A slow consumer that heard nothing (no notice, no close) for a
+    /// minute after it read again, and reconnected by itself.
+    timed_out: bool,
 }
 
 impl View {
@@ -798,6 +801,16 @@ async fn main() {
         {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
+        // A client that hears nothing for a minute reconnects and syncs, as
+        // the SDKs do: what it then gets must be complete (checked below).
+        for r in &receivers {
+            let mut v = r.recv.view.lock().unwrap();
+            if r.recv.paused.is_some() && !v.resync && !v.closed {
+                v.closed = true;
+                v.reconnected = true;
+                v.timed_out = true;
+            }
+        }
     }
     let rss_end = rss_mb(a.server_pid);
 
@@ -1002,6 +1015,16 @@ async fn main() {
         disorder
     );
     if slow_n > 0 {
+        let timed_out = receivers
+            .iter()
+            .filter(|r| r.recv.view.lock().unwrap().timed_out)
+            .count();
+        if timed_out > 0 {
+            println!(
+                "slow consumers: {timed_out} heard nothing for a minute after reading again and reconnected by themselves"
+            );
+            report.insert("slow_timed_out".into(), json!(timed_out));
+        }
         let restarted = restarted.load(Ordering::Relaxed);
         println!(
             "slow consumers: {slow_n} stopped reading; {slow_resynced} were told to resync; {restarted} were further behind than sync.max_gap and told to start over; {fast_gaps} other receivers had gaps"
