@@ -1181,7 +1181,7 @@ async fn a_side_channel_backlog_comes_in_full(db: TestDb) {
 /// quiet for longer than the position lifetime.
 async fn a_quiet_conversation_keeps_its_position(db: TestDb) {
     let hub = hub_with(&db, |h| {
-        h.sync.device_ttl = Duration::from_millis(400);
+        h.sync.device_ttl = Duration::from_millis(1_500);
         h.sync.max_messages = 3;
     })
     .await;
@@ -1196,11 +1196,16 @@ async fn a_quiet_conversation_keeps_its_position(db: TestDb) {
     // The busy conversation moves on, the device keeps up; the quiet one
     // has nothing for longer than the lifetime.
     drop(d);
-    for i in 0..12 {
+    // The device is seen every ~250 ms (well within its lifetime even on
+    // a slow machine); the quiet conversation is untouched for longer.
+    let t0 = std::time::Instant::now();
+    let mut i = 0;
+    while t0.elapsed() < Duration::from_millis(2_500) {
         a.send(&busy, &format!("busy {i}")).await;
         // Through sync, so the device acknowledges it.
         sync_all(&Conn::device(&hub, &bob, &dev)).await;
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        i += 1;
     }
     hub.tick().await;
     let before = last_seq(&a, &quiet).await;
