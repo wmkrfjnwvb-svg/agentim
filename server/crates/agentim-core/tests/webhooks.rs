@@ -246,7 +246,7 @@ async fn filters_choose_the_event_types(db: TestDb) {
         .to_string();
     // Each event is delivered before the next step: a recall withdraws
     // events of the message not yet delivered (tested on its own).
-    wait_until("msg.created", || rx.bodies().len() >= 1).await;
+    wait_until("msg.created", || !rx.bodies().is_empty()).await;
     a.ok(json!({"op": "edit", "msg_id": id, "text": "y"})).await;
     wait_until("msg.updated", || rx.bodies().len() >= 2).await;
     a.ok(json!({"op": "recall", "msg_id": id})).await;
