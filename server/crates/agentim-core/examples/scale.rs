@@ -269,6 +269,9 @@ struct View {
     out_of_order: u64,
     resync: bool,
     reconnected: bool,
+    /// The server closed the connection (a consumer that stops reading is
+    /// closed after the idle time, M16): a real client reconnects and syncs.
+    closed: bool,
 }
 
 impl View {
@@ -430,6 +433,11 @@ impl Conn {
                 }
             }
             p2.lock().unwrap().clear(); // fail outstanding calls
+            if let Some(r) = &recv {
+                let mut v = r.view.lock().unwrap();
+                v.closed = true;
+                v.reconnected = true;
+            }
         });
         Ok(Conn {
             sink: tokio::sync::Mutex::new(sink),
@@ -461,8 +469,16 @@ impl Conn {
     /// Every seq of `conv` after `after` up to the head, and the head. Clients only sync
     /// (docs/08): take what follows the device position, acknowledge, until
     /// nothing more is owed.
-    async fn pull_seqs(&self, conv: &str, after: i64) -> Result<(Vec<i64>, i64), String> {
-        let (mut out, mut head) = (vec![], 0);
+    /// Syncs a conversation: the events after `after`, the head, and where
+    /// a reset started if the server said the device starts over (it was
+    /// further behind than `sync.max_gap`; the events before are skipped by
+    /// design, docs/08).
+    async fn pull_seqs(
+        &self,
+        conv: &str,
+        after: i64,
+    ) -> Result<(Vec<i64>, i64, Option<i64>), String> {
+        let (mut out, mut head, mut reset) = (vec![], 0, None);
         loop {
             let r = match self.call(json!({"op": "sync", "limit": 5000})).await {
                 Ok(r) => r,
@@ -476,6 +492,9 @@ impl Conn {
             for c in r["convs"].as_array().unwrap() {
                 if c["conv_id"] == conv {
                     head = head.max(c["last_seq"].as_i64().unwrap_or(0));
+                    if let Some(f) = c["reset"]["from_seq"].as_i64() {
+                        reset = Some(f);
+                    }
                     for e in c["events"].as_array().unwrap() {
                         let seq = e["event"]["seq"].as_i64().unwrap();
                         if seq > after {
@@ -491,7 +510,7 @@ impl Conn {
                 self.call(json!({"op": "ack", "acks": acks})).await?;
             }
             if r["more"] != true {
-                return Ok((out, head));
+                return Ok((out, head, reset));
             }
         }
     }
@@ -767,6 +786,19 @@ async fn main() {
         }
         last = now;
     }
+    // A consumer that stopped reading works through what was queued for it
+    // before it sees the notice (or the close) at the end: wait for that.
+    if slow_n > 0 {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline
+            && receivers.iter().any(|r| {
+                let v = r.recv.view.lock().unwrap();
+                r.recv.paused.is_some() && !v.resync && !v.closed
+            })
+        {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
     let rss_end = rss_mb(a.server_pid);
 
     // ---- verify every receiver
@@ -783,6 +815,8 @@ async fn main() {
     let disorder = AtomicU64::new(0);
     let fast_gaps = AtomicU64::new(0);
     let slow_resynced = AtomicU64::new(0);
+    let fast_closed = AtomicU64::new(0);
+    let restarted = AtomicU64::new(0);
     let first_problem: Mutex<Option<String>> = Mutex::new(None);
     let note = |m: String| {
         let mut f = first_problem.lock().unwrap();
@@ -793,6 +827,7 @@ async fn main() {
     stream::iter(receivers.iter())
         .for_each_concurrent(256, |r| {
             let (conv, from, to) = (&convs[r.group], base[r.group] + 1, heads[r.group]);
+            let (fast_closed, restarted) = (&fast_closed, &restarted);
             let (silent, lost, healed, disorder, fast_gaps, slow_resynced, note) = (
                 &silent,
                 &lost,
@@ -812,6 +847,13 @@ async fn main() {
                     )
                 };
                 let slow = r.recv.paused.is_some();
+                if !slow && r.recv.view.lock().unwrap().closed {
+                    fast_closed.fetch_add(1, Ordering::Relaxed);
+                    note(format!(
+                        "user {}: closed by the server while reading",
+                        r.user
+                    ));
+                }
                 if ooo > 0 {
                     disorder.fetch_add(1, Ordering::Relaxed);
                     note(format!("user {}: {ooo} pushes out of order", r.user));
@@ -838,10 +880,18 @@ async fn main() {
                 // Told to resync (or reconnected): pulling must fill the gap.
                 let conn = r.conn.as_ref().unwrap();
                 match conn.pull_seqs(conv, missing[0] - 1).await {
-                    Ok((seqs, _)) => {
+                    Ok((seqs, _, reset)) => {
                         let mut v = r.recv.view.lock().unwrap();
                         for s in seqs {
                             v.mark(s);
+                        }
+                        // Told to start over: the skipped events were
+                        // announced, not lost.
+                        if let Some(f) = reset {
+                            restarted.fetch_add(1, Ordering::Relaxed);
+                            for s in from..f {
+                                v.mark(s);
+                            }
                         }
                         let still = v.missing(from, to);
                         if still.is_empty() {
@@ -926,8 +976,9 @@ async fn main() {
         disorder
     );
     if slow_n > 0 {
+        let restarted = restarted.load(Ordering::Relaxed);
         println!(
-            "slow consumers: {slow_n} stopped reading; {slow_resynced} were told to resync; {fast_gaps} other receivers had gaps"
+            "slow consumers: {slow_n} stopped reading; {slow_resynced} were told to resync; {restarted} were further behind than sync.max_gap and told to start over; {fast_gaps} other receivers had gaps"
         );
         report.insert("slow_consumers".into(), json!(slow_n));
         report.insert("slow_resynced".into(), json!(slow_resynced));
@@ -959,6 +1010,12 @@ async fn main() {
     }
     if disorder > 0 {
         failures.push(format!("{disorder} receivers got pushes out of order"));
+    }
+    let fast_closed = fast_closed.into_inner();
+    if fast_closed > 0 {
+        failures.push(format!(
+            "{fast_closed} receivers that kept reading were disconnected by the server"
+        ));
     }
     if fast_gaps > 0 {
         failures.push(format!(
@@ -1038,7 +1095,7 @@ async fn connect_all(
                 // (docs/08): catch up first, keeping what it receives.
                 let c = match c {
                     Ok(c) => match c.pull_seqs(&conv, 0).await {
-                        Ok((seqs, _)) => {
+                        Ok((seqs, _, _)) => {
                             let mut v = view.lock().unwrap();
                             for s in seqs {
                                 v.mark(s);

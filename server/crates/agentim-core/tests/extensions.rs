@@ -639,22 +639,33 @@ async fn signal_permissions_and_limits(db: TestDb) {
     a.ok(sig(&conv, "typing", Value::Null)).await;
     assert_eq!(b.drain().len(), 1);
     // Rate limit: 20 per second per user, then rate_limited; recovers.
+    // Counted, not timed: a slow machine refills a token every 50 ms.
+    // Two connections of the same user draw on one budget (M12): taking
+    // turns, they get about 20 through before the limit, not 40.
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let fresh = Conn::new(&hub, &alice);
-    for i in 0..20 {
-        let r = fresh.call(sig(&conv, "typing", Value::Null)).await;
-        assert_eq!(r["ok"], true, "{i}: {r}");
+    let t0 = std::time::Instant::now();
+    let mut ok = 0;
+    let mut limited = false;
+    for i in 0..60 {
+        let c = if i % 2 == 0 { &fresh } else { &a };
+        let r = c.call(sig(&conv, "typing", Value::Null)).await;
+        if r["ok"] == true {
+            ok += 1;
+        } else {
+            assert_eq!(code(&r), "rate_limited", "{r}");
+            limited = true;
+            break;
+        }
     }
-    assert_eq!(
-        code(&fresh.call(sig(&conv, "typing", Value::Null)).await),
-        "rate_limited"
+    let refill = (t0.elapsed().as_millis() / 50) as usize;
+    assert!(limited, "the limit applies");
+    assert!(
+        ok >= 20 && ok <= 20 + refill + 1,
+        "{ok} through in {:?}",
+        t0.elapsed()
     );
-    // Another connection of the same user shares it (M12); another user
-    // has their own.
-    assert_eq!(
-        code(&a.call(sig(&conv, "typing", Value::Null)).await),
-        "rate_limited"
-    );
+    // Another user has their own.
     b.ok(sig(&conv, "typing", Value::Null)).await;
     tokio::time::sleep(Duration::from_millis(1100)).await;
     fresh.ok(sig(&conv, "typing", Value::Null)).await;
