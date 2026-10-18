@@ -12,6 +12,8 @@ use crate::{offline_ms, sql};
 
 pub fn run(cfg: Config, cmd: ClusterCmd) -> BoxFuture<Result<(), String>> {
     Box::pin(async move {
+        // Runs before (instead of) opening the hub, which installs them.
+        sqlx::any::install_default_drivers();
         let out = match cmd {
             ClusterCmd::Status => status(&cfg).await?,
             ClusterCmd::Drain { node } => drain(&cfg, &node).await?,
