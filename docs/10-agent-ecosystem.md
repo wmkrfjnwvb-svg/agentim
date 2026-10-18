@@ -20,27 +20,24 @@ Agent 生态已经很拥挤：写 Agent 有十几个成熟的 SDK，记忆、工
 | 2 | 人工介入桥 | 各 SDK 暂停的方式不同（OpenAI 的中断 + 运行状态、Claude 的 `canUseTool`、LangGraph 的 `interrupt`、Vercel 的 `needsApproval`、Pydantic AI 的延迟工具、Temporal 的信号）；每个 SDK 一个小助手：把暂停的状态作为不透明数据挂在我们的"请人决定"上，决定后恢复；持久化执行引擎通过回调收到决定 | 中 |
 | 3 | Agent SDK（Python、TS 先做） | `@agentim.on_message(...)` 这样的入口；把我们的流式回复对接到各 SDK 的事件流（OpenAI、Vercel、AG-UI） | 中 |
 | 4 | 会话存储适配器 | 让 AgentIM 成为这些 SDK 的历史存储：OpenAI `Session`（4 个方法）、Claude `SessionStore`（有官方一致性测试）、LangGraph 检查点；先做这三个。SDK 的内部条目是模型专属、不透明的，作为隐藏的"Agent 状态"条目存（即 [09 §6](09-agent-communication.md) 的 L2），不和会话里可见的消息混在一起 | 每个中等 |
-| 5 | A2A 网关 | 每个 Agent 一张 Agent Card；A2A 任务对应我们的会话和任务（[03 §9.6](03-ai-native.md)） | 中高 |
-| 6 | 反过来：AgentIM 作为一个渠道 | 给 Vercel Chat SDK 写 AgentIM 适配器、给 Agno 写接口、做一个自托管 ChatKit 的桥。**OpenAI Agent Builder 2026-11-30 停用，用户要迁移到自托管 ChatKit，这是一个时间窗口** | 每个低 |
-| 7 | OpenTelemetry 导出 | 投递、审批、接管的追踪和 Agent 自己的追踪连起来（消息里带 `traceparent`）；不做追踪界面 | 低 |
-| 8 | AG-UI | 有争议（有观点认为会被基于 MCP 的界面取代），放在原生 SDK 之后 | 中 |
+| 5 | 反过来：AgentIM 作为一个渠道（以后） | 给 Vercel Chat SDK 写 AgentIM 适配器、给 Agno 写接口、做一个自托管 ChatKit 的桥。**OpenAI Agent Builder 2026-11-30 停用，用户要迁移到自托管 ChatKit，这是一个时间窗口** | 每个低 |
+| 6 | OpenTelemetry 导出（以后） | 投递、审批、接管的追踪和 Agent 自己的追踪连起来（消息里带 `traceparent`）；不做追踪界面 | 低 |
+| 7 | AG-UI（以后） | 有争议（有观点认为会被基于 MCP 的界面取代），放在原生 SDK 之后 | 中 |
 
 其他集成（排在后面）：企业身份（接受 Okta ID-JAG、Entra Agent ID 的令牌，D50）；可插拔的护栏分类器（D51）；第三方 OAuth 令牌交给 Auth0 Token Vault / Arcade 保管；记忆连接器（把会话事件推给 Mem0、Zep、Letta，**删除请求跟着传过去**）；发布到 AGNTCY / MCP 注册表；沙箱和浏览器的实时画面作为结构化消息、接管就是把浏览器交给人。
 
 ## 3. 自己做（属于通信和治理的核心）
 
 1. Agent 注册、负责人、凭据、急停（M6 已计划）。
-2. 统一的"请人决定"、绑定参数的审批、接管：MCP 的 `input_required`、A2A 的 `input-required`、LangGraph 的 `interrupt`、Temporal 的信号、AP2 的支付授权都汇到这里。
-3. 每条内容的来源和信任标记（人、Agent、外部 A2A、工具输出），对应 OWASP Agentic 风险和"防注入设计模式"。
+2. 统一的"请人决定"、审批、接管：MCP 的 `input_required`、LangGraph 的 `interrupt`、Temporal 的信号、AP2 的支付授权都汇到这里。
+3. 每条内容的来源和信任标记（人、Agent、工具输出），对应 OWASP Agentic 风险和"防注入设计模式"。
 4. 通信策略（谁能给谁发、什么级别的数据能出去、预算），在进程内执行，不在热路径上调用外部服务。
 5. 审计和 AI 标记（EU AI Act 第 50 条）。
-6. MCP 服务、A2A 网关（协议入口，所有版本都有）。
-7. **工具网关**（[03 §7](03-ai-native.md)）：Agent 的工具调用经过 IM 授权、审批（绑定参数）、凭据保管、审计；所有版本都有。
-8. **用量上报**：Agent 自报模型用量（不做模型网关，D54），按 Agent、负责人汇总，软上限提醒；另外统计业务单位（会话、解决的问题、批准的动作），方便客户按结果或按动作计费。
+6. **用量上报**：Agent 自报模型用量（不做模型网关，D54），按 Agent、负责人汇总，软上限提醒；另外统计业务单位（会话、解决的问题、批准的动作），方便客户按结果或按动作计费。
 
 ## 4. 不做（别人已经做好）
 
-Agent 循环、工具调用、交接、模型抽象；可视化 Agent 搭建器（OpenAI 都在停用）；长期语义记忆、RAG；沙箱、代码执行、浏览器；支付通道；通用工作流引擎；追踪界面和评估平台；第三方 API 的连接器库和注册表（Composio 一类；我们的工具网关只代理和治理客户自己接入的工具，见 [03 §7](03-ai-native.md)）；模型网关（D54：LiteLLM、Portkey 等已经成熟）；实时语音管线；各种 IM 连接器（Slack、Teams、WhatsApp 桥）。（D52）
+Agent 循环、工具调用、交接、模型抽象；可视化 Agent 搭建器（OpenAI 都在停用）；长期语义记忆、RAG；沙箱、代码执行、浏览器；支付通道；通用工作流引擎；追踪界面和评估平台；第三方 API 的连接器库和注册表（Composio 一类）；模型网关（D54：LiteLLM、Portkey 等已经成熟）；实时语音管线；各种 IM 连接器（Slack、Teams、WhatsApp 桥）。（D52）
 
 ## 5. Agent 怎么接进来（你的要求：给 Agent 一个 API 或 MCP，登录后就能同步历史、和其他 Agent 交流、派任务）
 
@@ -73,7 +70,7 @@ MCP 和 Agent API 提供的操作（同一份清单，CI 检查两边一致）�
 | 治理 | 请人决定（批准 / 回答 / 选择）并等待结果；交给人；上报用量 |
 | 状态 | 工作日志、检查点（带版本） |
 
-### 5.1 第一步（L2，AgentIM Lite，已实现）：凭据、创建、MCP
+### 5.1 第一步（L2，已实现）：凭据、创建、MCP
 
 | 方面 | 做法 |
 |---|---|
@@ -97,7 +94,7 @@ MCP 和 Agent API 提供的操作（同一份清单，CI 检查两边一致）�
 
 **随时销毁**：负责人或管理员一键销毁：吊销凭据、断开连接、取消进行中的流和任务、删除它的工作日志、检查点、摘要，销毁它的数据密钥；它在共享会话里发过的消息属于会话记录，按会话的保留期处理（可配置为一起删除）。销毁写审计，不可撤销。
 
-### 5.2 第二步（L7，AgentIM Lite，已实现）：Agent SDK（Python、TS）和端到端验证
+### 5.2 第二步（L7，已实现）：Agent SDK（Python、TS）和端到端验证
 
 | 方面 | 做法 |
 |---|---|
@@ -110,11 +107,9 @@ MCP 和 Agent API 提供的操作（同一份清单，CI 检查两边一致）�
 | 顺带修正 | 服务端运行时用 CLI 建的 Agent，在它第一次连接之前就能被拉进会话（以前要等它连上一次） |
 | 端到端验证 | `sdk/agent_e2e.sh`：起一个真实服务端，用 CLI 建两个 Agent（Python 一个、TS 一个），一个人通过 WebSocket 和它们对话：点名后流式回复完整到达；卡片发出、人点按钮、Agent 收到并回复；Agent 请人决定、人批准、Agent 拿到结果；检查点读写和版本冲突；读上下文；两个 Agent 用 `to` 互相点名一来一回；转人工后人交回、Agent 被唤醒；处理器抛错后同一条消息重新交给它（至少一次）；服务端重启后 Agent 自动重连并继续收到新消息。CI 在 Linux 和 Windows 上每次推送都跑 |
 
-## 6. 模型调用和服务端托管 Agent
+## 6. 模型调用
 
 **不做模型网关**（D54，2026-10-12）：LiteLLM、Portkey、Bifrost 等已经成熟，客户多半已有，单独做没有差异化。我们只做两件事：Agent 可以上报自己的模型用量（标为"自报"，在 Agent 的状态和负责人的统计里可见）；急停和销毁时吊销 Agent 的凭据，客户的模型网关可以按 Agent 身份配合拒绝。
-
-**预留接口：服务端托管 Agent（以后做，AgentIM）**：服务端可以直接托管一类 Agent：注册时只配置模型（管理员配置的厂商地址和密钥）、系统提示、工具（经过工具网关）和接收方式；被唤醒时（[09 §2](09-agent-communication.md)）服务端自己取上下文、调模型、把回复流式发回会话。现在先把唤醒事件和上下文接口设计成可复用的。
 
 ## 7. 欧盟合规相关（补充到 [04](04-security-compliance.md)）
 

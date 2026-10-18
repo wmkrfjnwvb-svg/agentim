@@ -40,7 +40,7 @@
 
 - `/healthz`：进程存活。
 - `/readyz`：每个数据库都可写（没有处于存储故障状态），写入队列没有超过容量的 90%。返回每个库的状态；不就绪时返回 503。
-- ⏳ 管理系统（§8）展示健康状态；随仓库提供 Prometheus 告警规则（提交耗时 p99 > 50ms、写入队列持续饱和、推送丢弃率过高、熔断突增、待审批草稿超过 SLA、存储错误）和 Grafana 面板 JSON。
+- ⏳ 开发者控制台（§8）展示健康状态；随仓库提供 Prometheus 告警规则（提交耗时 p99 > 50ms、写入队列持续饱和、推送丢弃率过高、熔断突增、待审批草稿超过 SLA、存储错误）和 Grafana 面板 JSON。
 
 ## 5. 测试
 
@@ -249,30 +249,18 @@ GitHub Actions 结果（标准 runner，release，SQLite，每个场景发送 12
 
 ## 6. SDK 与客户端（D8）
 
-### 6.1 方案：一个 Rust 核心，各语言绑定
+### 6.1 方案：先做纯 TypeScript 客户端 SDK（P2，D104 待确认）
 
-连接管理、断线重连、`client_msg_id` 重试去重、按 seq 的同步与补拉、resync 处理、本地存储，以及 E2EE（MLS）都比较难写对。七种语言各写一遍，行为一定会出现差异，密码学代码也无法逐一审计。业内成熟的做法是**一个 Rust 核心 + 自动生成的各语言绑定**：
+第一个客户端 SDK 用纯 TypeScript 编写，支持浏览器和 React Native，发布到 npm。它负责比较难写对的部分：
 
-| 参考 | 做法 |
-|---|---|
-| matrix-rust-sdk | Rust 核心，UniFFI 生成 Kotlin / Swift 绑定，Element X 的 iOS、Android 客户端都基于它 |
-| Wire core-crypto | OpenMLS + UniFFI（移动端）+ wasm（Web） |
-| libsignal | Rust 核心，提供 Java、Swift、TypeScript 绑定 |
-| Mozilla application-services | Rust 核心，UniFFI 生成 Firefox 移动端用的绑定 |
+- 连接与断线重连；
+- 按 seq 同步、补缺口；`client_msg_id` 重试去重；处理 `resync`；
+- 本地缓存（IndexedDB）；
+- 流式回复；审批和请人决定（ask-a-human）；在线状态和正在输入。
 
-| 目标 | 绑定方式 | 产物 |
-|---|---|---|
-| Rust | 直接使用 `agentim-sdk` crate | crates.io |
-| Android | UniFFI → Kotlin | AAR（arm64-v8a、armeabi-v7a、x86_64） |
-| iOS / macOS | UniFFI → Swift | XCFramework、Swift Package |
-| Python | UniFFI → Python（PyO3 备选） | wheel（Linux、Windows、macOS） |
-| TypeScript | 浏览器：wasm-bindgen；Node：napi-rs | npm 包 |
-| C / C++ | cbindgen 生成 C 头文件 + C++ 封装 | 静态库和动态库；附 **CMake 配置**，可以 `find_package(agentim)` 或用 `add_subdirectory` 从源码编译 |
-| Go | cgo 调用 C 接口 | Go module，附预编译库 |
+协议一致性测试复用服务端的场景测试，用 SDK 重新实现客户端一侧，和服务端用同一套场景。
 
-另外提供**纯 Go、纯 Python 的轻量 Agent 客户端**（不含 E2EE）：服务端 Agent 大多用 Go 或 Python 编写，交叉编译时 cgo 很麻烦；而协议本身是 WebSocket 上的 JSON，轻量客户端几百行就能写好。
-
-**构建脚本**：`sdk/build.sh` 和 `sdk/build.ps1`，一条命令编译指定目标（例如 `./build.sh android`、`./build.ps1 cpp -Release`）；CI 在 Linux、Windows、macOS 上构建全部产物，并对每种语言跑同一套协议一致性测试（复用服务端的场景测试，用 SDK 重新实现客户端一侧）。
+以后：一个 Rust 核心 + 各语言绑定（Kotlin、Swift、Python、C/C++、Go 等）。等 E2EE 或手机原生端需要时再做（D104），因为到那时密码学代码和本地存储才值得只写一份、各语言共用。
 
 ### 6.2 本地存储（方案待确认：D31–D34）
 
@@ -288,50 +276,31 @@ GitHub Actions 结果（标准 runner，release，SQLite，每个场景发送 12
 
 要求的级别打不开（磁盘满、权限、钥匙丢失）就报错，**不会悄悄退回内存**。
 
-**引擎**：Rust 核心里定义存储接口，三种实现：内存；原生平台用 SQLite（随 SDK 编译进去，不依赖系统版本）；浏览器用 SQLite wasm + OPFS（在 Worker 里运行，用 Web Locks 保证多个标签页只有一个写，IndexedDB 作为后备）（D33）。原生平台用 WAL、一个写连接加多个读连接、写事务一开始就拿写锁；iOS 通知扩展这类第二个进程用库里的租约锁协调（和 matrix-rust-sdk 一样）。每个（服务器，用户）一个目录，多账号互不影响。
+**引擎**（P2）：SDK 定义存储接口，两个实现：内存；浏览器用 IndexedDB（多个标签页用 Web Locks 保证只有一个写）。React Native 由开发者传入存储适配器（例如 MMKV），默认内存。每个（服务器，用户）一份独立的库，多账号互不影响；会话、同步位置、待发送队列和草稿与消息分开存放，消息部分坏了可以删除后从服务端重新同步，**待发送队列和草稿不受影响**（[08 §4.2 R7](08-sync-and-client.md)）。
 
-**目录结构：每个用户一个文件夹，下面分几个库**（你的意见，和微信的做法一样）。微信（公开的逆向分析，[二手]）在 `MicroMsg/<账号哈希>/` 下放加密的主库 `EnMicroMsg.db`、单独的全文检索库、单独的图片和语音目录，用的是腾讯开源的 SQLite 封装 WCDB（自带损坏修复和备份，[github.com/Tencent/wcdb](https://github.com/Tencent/wcdb)）。我们的布局：
-
-```
-<应用数据目录>/agentim/
-  <服务器哈希>/<用户 ID 哈希>/        每个账号一个文件夹，文件夹名不暴露用户 ID
-    main.db        会话、成员、用户资料、设置、同步位置、已读和免打扰、待发送队列、草稿
-    messages.db    消息和事件（按会话、seq），体积最大，可以单独清理和重建
-    search.db      全文检索索引（可以随时删除重建，不影响消息）
-    media/         文件和图片缓存（按大小、时间淘汰）
-    lock           进程间的租约锁
-  accounts.db      本机登录过的账号列表（只存账号哈希和显示名，不存消息）
-```
-
-分库的原因：
-- **互不影响**：检索索引坏了或者要升级，删掉 `search.db` 重建即可；消息库坏了，从服务端重新同步，**待发送队列和草稿在 `main.db` 里不受影响**（[08 §4.2 R7](08-sync-and-client.md)）。
-- **写锁分开**：大批量同步写消息时，不挡住改设置、发消息入队。
-- **清理方便**：用户"清空聊天记录"只动 `messages.db` 和 `media/`；退出登录并清除数据就删整个用户文件夹，再删掉系统安全存储里的钥匙（一个账号一把，加密销毁）。
-- **多账号**：切换账号就是换一个文件夹，各自独立加密，互相看不到。
-
-借鉴 WCDB 的两点：库损坏时先尝试修复（从未损坏的页恢复）再删除重建；定期对 `main.db` 做小备份（它最小也最重要）。浏览器上同样的布局放在 OPFS 里。
+以后（随 Rust 核心，D104）：原生平台用 SQLite（WAL、一个写连接多个读连接），每个账号一个文件夹，主库、消息库、检索库、文件缓存分开（参考微信和 WCDB 的做法：损坏先修复再重建，定期备份主库）。
 
 **Agent 部署的特殊情况**：一个 Agent 跑多个实例（水平扩展）时，每个实例各有一份本地缓存即可（只是缓存，可以随时重建）；也可以通过存储接口换成团队自己的数据库（例如 PostgreSQL），让多个实例共用。Agent 主机上的本地数据同样默认加密、受容量上限约束；Agent 被移出会话、被退役时清掉对应的本地数据。
 
 **和服务端同步、待发送队列、各种异常场景**：见 [08 同步协议与客户端可靠性](08-sync-and-client.md)（只同步、不随意读历史；同步位置由服务端按设备记录，存好后确认才前进）。
 
-**加密和钥匙**（D32）：每个账号首次使用时生成随机 256 位密钥，放在系统的安全存储里（iOS / macOS 钥匙串、Android Keystore、Windows DPAPI、Linux Secret Service；浏览器用不可导出的 WebCrypto 密钥存在 IndexedDB），也可以由应用自己提供。核心按值加密（AES-256-GCM，和服务端静态加密同一套代码；需要查找的列存带密钥的哈希），这样浏览器上也一样加密，不依赖 SQLCipher。钥匙找不到时库处于"锁定"状态，不会退回明文，也不会自动删除。
+**加密和钥匙**（D32）：浏览器上每个账号首次使用时生成不可导出的 WebCrypto 密钥（存在 IndexedDB），按值加密（AES-256-GCM；需要查找的字段存带密钥的哈希）；也可以由应用自己提供密钥。钥匙找不到时库处于"锁定"状态，不会退回明文，也不会自动删除。原生平台的系统安全存储（钥匙串、Keystore、DPAPI、Secret Service）随 Rust 核心再做。
 
-**升级**：编号的 SQL 迁移打包在 SDK 里，每一步一个事务。本地库是缓存，迁移失败、降级、损坏时删除重建、从服务端重新同步；只有待发送队列和草稿必须迁移，单独保存、单独记版本。
+**升级**：编号的迁移打包在 SDK 里。本地库是缓存，迁移失败、降级、损坏时删除重建、从服务端重新同步；只有待发送队列和草稿必须迁移，单独保存、单独记版本。
 
 **容量**：`max_size` 默认 256 MB，按会话最久未打开淘汰消息；待发送队列、草稿、游标永远不淘汰。文件缓存另有大小、过期时间、单个文件上限。启动或空闲时清理。
 
-**GDPR**：`logout()` 默认清除本地数据（库文件、WAL、文件缓存、安全存储里的钥匙；钥匙删了，残留的密文也解不开）；`PRAGMA secure_delete=ON`，避免 WhatsApp 那样删除的内容残留在 WAL 里；服务端删除账号、撤回、按 DSA 下架的内容通过带 seq 的事件让客户端清掉本地副本；提供本地数据统计和导出；默认不进入系统云备份。
+**GDPR**：`logout()` 默认清除本地数据（本地库、文件缓存和钥匙；钥匙删了，残留的密文也解不开）；服务端删除账号、撤回、按 DSA 下架的内容通过带 seq 的事件让客户端清掉本地副本；提供本地数据统计和导出；默认不进入系统云备份。
 
 ### 6.3 API
 
-调研见 [research/sdk-and-ai-2026.md §2](research/sdk-and-ai-2026.md)。所有调用都是异步的（TS 的 Promise、Kotlin 的 suspend、Swift 和 Python 的 async、Go 的 ctx、C++ 的 future）。各语言的接口由同一份接口定义生成，名字和行为一致。
+调研见 [research/sdk-and-ai-2026.md §2](research/sdk-and-ai-2026.md)。所有调用都返回 Promise。协议类型由服务端导出的 JSON Schema 生成（[12 §2](12-developer-experience.md)）；以后的其他语言沿用同样的名字和行为。
 
 | 对象 / 分组 | 方法 |
 |---|---|
 | 客户端 | `connect(服务器, 取令牌的回调, 设备信息, 存储级别)`、`disconnect()`、`logout({wipe})`、`set_app_state(前台 / 后台)`、连接状态 |
 | 账号与设备 | 修改密码、两步验证（设置、开启、关闭）、设备列表、下线某台设备、注册 / 注销推送令牌 |
-| 用户 | 查资料、改自己的资料、搜索（受用户目录可见性限制）、拉黑 / 解除、举报（DSA） |
+| 用户 | 查资料、改自己的资料、搜索（受用户目录可见性限制）、拉黑 / 解除、举报 |
 | 会话列表 | 分页查询（带未读数、最后一条）、按 ID 取；返回一个会实时更新的列表对象 |
 | 会话 | 建单聊 / 群聊、改名和自定义字段、解散、退出、正在看（focus）、已读到某个 seq |
 | 成员 | 列表、添加、移除、改角色、转让群主 |
@@ -343,11 +312,11 @@ GitHub Actions 结果（标准 runner，release，SQLite，每个场景发送 12
 
 **发送是乐观的**：`send` 立即返回一条 `pending` 状态的本地消息，界面马上显示；之后通过事件变成 `sent(seq)` 或 `failed`。
 
-**错误**：`{code, message, retryable, retry_after, request_id}`。`code` 和服务端完全一致（`forbidden`、`not_found`、`conflict`、`bad_request`、`blocked`、`rate_limited` 等），另加客户端自己的 `unauthenticated`、`network`、`timeout`、`cancelled`、`expired`、`unsupported_version`、`storage_locked`。各语言按习惯表示（Kotlin 密封类、Swift / Rust 枚举、TS 字符串联合、Go 哨兵错误）。
+**错误**：`{code, message, retryable, retry_after, request_id}`。`code` 和服务端完全一致（`forbidden`、`not_found`、`conflict`、`bad_request`、`blocked`、`rate_limited` 等），另加客户端自己的 `unauthenticated`、`network`、`timeout`、`cancelled`、`expired`、`unsupported_version`、`storage_locked`。TypeScript 里是字符串联合类型。
 
 ### 6.4 事件和 hook
 
-**事件**：一个带类型的事件集合，订阅时返回句柄，取消订阅或句柄被释放时停止（不用字符串 ID，避免泄漏和重复）。Kotlin 另给 `Flow`，Swift 给 `AsyncSequence`，React 给 hooks。
+**事件**：一个带类型的事件集合，订阅时返回取消函数（不用字符串 ID，避免泄漏和重复）；React 用 [12 §3](12-developer-experience.md) 的 hooks。
 
 | 类别 | 事件 |
 |---|---|
@@ -375,33 +344,26 @@ GitHub Actions 结果（标准 runner，release，SQLite，每个场景发送 12
 
 ### 6.5 Agent 扩展
 
-同一个核心，Agent 额外用到：
+服务端 Agent 用现有的 Agent SDK（Node、Python）；下面是它额外用到的、客户端 SDK 不需要的部分：
 
 - **流式回复**：`stream_start` 返回一个流对象，`append` 追加（按偏移批量发送，断线重连后能准确续上），`end`（完成、出错、取消）；收到"停止生成"请求时有事件通知。
 - **读上下文**：`context(会话, 最近 N 条或不超过 N 个字符 / token)` 只从本地存储取，不会去服务端读历史（[08 §2.7](08-sync-and-client.md)）；每条带发送者类型和信任标记，方便 Agent 防提示词注入。
 - **状态信号**：思考中、调用工具中、生成中、出错（参考 Stream 的 AI 状态和 Slack 的步骤展示），作为带类型的信号发出。
 - **草稿**：审批模式下回复自动变成草稿，Agent 收到批准、修改后批准、拒绝的结果。
-- **适配器**：把我们的流式事件映射成 AG-UI 事件，以及 Vercel AI SDK `useChat` 的传输层，现成的 Agent 前端可以直接接。
+- **适配器**（以后）：AG-UI 事件、Vercel AI SDK `useChat` 的传输层。
 - Agent 默认存储级别和人一样是 `full`（见 §6.2）。
 
 ### 6.6 测试工具包
 
-大多数厂商没有，我们提供 `agentim-test`：进程内的服务端（SQLite、可控的时钟）、故障注入（丢推送、打乱顺序、强制发送失败、令牌过期）、事件记录器和断言（例如"同一会话的事件严格按 seq"）。开发者用它测自己的应用，我们也用它跑各语言 SDK 的一致性测试。
+大多数厂商没有，我们提供 `agentim-test`：进程内的服务端（SQLite、可控的时钟）、故障注入（丢推送、打乱顺序、强制发送失败、令牌过期）、事件记录器和断言（例如"同一会话的事件严格按 seq"）。开发者用它测自己的应用，我们也用它跑 SDK 的一致性测试。
 
 ### 6.7 版本
 
-语义化版本；事件和枚举在各语言里都留"未知"分支，服务端加了新事件或新消息类型时老客户端不会崩溃（未知类型显示 `fallback`）；弃用至少保留一个小版本，大版本才删除，附迁移说明；连接时协商协议版本（[02 §2.5](02-architecture.md)）。
+语义化版本；事件和枚举都留"未知"分支，服务端加了新事件或新消息类型时老客户端不会崩溃（未知类型显示 `fallback`）；弃用至少保留一个小版本，大版本才删除，附迁移说明；连接时协商协议版本（[02 §2.5](02-architecture.md)）。
 
 ### 6.8 Windows 客户端
 
-| 项目 | 选择 | 理由 |
-|---|---|---|
-| 框架 | **Tauri 2** | 用系统自带的 WebView2（Windows 10/11 已预装）；安装包约 10MB，Electron 通常要 150MB 以上；后端直接调用 Rust SDK，不用绑定 |
-| 界面 | React，和 Web 客户端共用 | 一套界面同时用于 Web、Windows，之后是 macOS、Linux |
-| 本地数据 | SQLite（SDK 自带）；E2EE 私钥用 Windows DPAPI / 凭据管理器保护 | |
-| 系统集成 | 原生通知、托盘、开机启动、自动更新（签名安装包） | |
-
-Web 客户端继续由服务端直接提供，也可以安装为 PWA；手机端在 SDK 完成后再做。
+暂缓（2026-10-18 决定）。
 
 ## 7. 单机版运行与演示（已实现）
 
@@ -465,33 +427,6 @@ cargo run --release --bin agentim -- --demo        # AgentIM
 
 `--demo` 的演示账号登录不需要密码（正式部署用内置账号密码 + TOTP 或开放 API 签发的令牌）；审批草稿没有过期时间（随审批 v2）；接管锁不会超时自动交还；在线迁移还没有管理接口。撤回会清空数据库中的内容，但 SQLite 的 WAL 文件在下次检查点之前可能还留着旧页面，是否在撤回后主动做检查点待定。建大群时，创建者会收到每个成员的加入事件（2000 人群就是 2000 条），超过推送队列的部分会被丢弃并改发 resync，数据不丢，但更合理的做法是合并成一条事件（放在大群模式里做，P6）。
 
-## 8. 管理系统（D14）
+## 8. 开发者控制台
 
-### 8.1 结构
-
-```
-浏览器 ──► agentim-console（Go 单二进制，内嵌 React 前端）
-               │ 管理员登录、RBAC、审计
-               ▼ HTTP /admin/v1（OpenAPI）
-           agentim（Rust 服务端）──► 数据库
-```
-
-- **Rust 服务端**提供管理 API（`/admin/v1`，只用于运维和管理这套系统本身；给开发者操作 IM 数据的是另一套开放 API，见 [07](07-open-api.md)。管理 API 默认只监听内网地址，用单独的管理令牌或 mTLS 认证）。所有修改都经过服务端的业务逻辑和写线程，所以管理操作同样有序、有审计，不会绕过权限和不变量。**管理系统不直接读写数据库**。
-- **Go 管理端**（`agentim-console`）：用 `go:embed` 把 React 前端打包进二进制；负责管理员账号（密码 + TOTP，企业版接 SSO）、角色（超级管理员、单元管理员、审计员）、调用管理 API。接口用 OpenAPI 描述，Go 和 TypeScript 的客户端代码从 OpenAPI 生成，两边不会对不上。
-- **一键启动**：`agentim-console --with-server` 会顺带启动并守护本机的 `agentim` 进程，用户只需要运行一个命令；也提供 Docker Compose 和 systemd 单元。
-
-### 8.2 功能
-
-| 模块 | 内容 |
-|---|---|
-| 概览 | 在线连接数、消息量、写入延迟、存储健康、告警（读 `/metrics` 和 `/readyz`） |
-| 用户与设备 | 创建、禁用、重置密码；设备列表、强制下线；按单元筛选 |
-| 组织单元 | 单元、隔离等级、所在数据库、单元迁移（调用现有的迁移流程） |
-| 会话 | 只显示元数据（成员、消息数、所在库）；**看内容需要合规权限，并写审计** |
-| Agent（[03 §9.4](03-ai-native.md)） | 注册、凭据、权限、预算与成本、护栏配置、急停、任务和记事本的查看 |
-| 合规（D7） | 举报与审核队列、处置记录、导出、删除请求、保留策略 |
-| 审计 | 按人、按 Agent、按会话、按操作检索，可导出 |
-| 系统 | 加密状态与密钥轮换、数据库配置、版本与升级 |
-
-前端组件库待定（D17），建议 Ant Design。
-
+见 [12 §4](12-developer-experience.md)（P4）。控制台内嵌在 `agentim` 程序里（打包进二进制的单页应用，不是单独的程序），调用管理 API `/admin/v1`；所有修改都经过服务端的业务逻辑，并写审计，**控制台不直接读写数据库**。

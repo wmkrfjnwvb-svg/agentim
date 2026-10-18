@@ -14,15 +14,15 @@
 - **For developers**: an open API (`/v1`, OpenAPI 3.1 at `/v1/openapi.json`) for your backend: create users with your own ids, issue login tokens, manage conversations, send as a user or as the system, batch send, audited history. API keys with scopes, idempotency keys, rate limits, RFC 9457 errors. Server SDKs for [Node, Python and Go](sdk/README.md). Webhooks (signed, ordered, at-least-once) and a before-send hook; custom message kinds with a plain-text fallback; protocol version negotiation.
 - **Accounts and security**: encryption at rest on by default (AES-256-GCM, per-conversation keys, crypto-shredding on delete), hashed tokens with per-device logout, built-in passwords (Argon2id) with TOTP two-factor login, built-in TLS, Origin checks.
 - **Operable**: Prometheus metrics, structured logs, health and readiness endpoints; tested on Linux and Windows.
+- **Planned (not done yet)**: a TypeScript client SDK, React UI components, and a developer console built into the `agentim` program.
 
-Status: **single-node edition**, under active development towards an MVP. See the [plan](docs/06-plan.md).
+Status: **developer-focused MVP** under active development; next: the client SDK, UI components and the developer console. See the [plan](docs/06-plan.md).
 
 ## Quick start
 
 ```bash
 cd server
-cargo run --release --bin agentim-lite -- --demo   # AgentIM Lite; open http://127.0.0.1:8080 and log in as alice, bob or carol
-cargo run --release --bin agentim -- --demo        # AgentIM (Lite plus the platform modules)
+cargo run --release --bin agentim -- --demo   # open http://127.0.0.1:8080 and log in as alice, bob or carol
 ```
 
 Open API: `agentim api-key create --name backend --scopes users:write,tokens:issue,messages:write` prints a key; see [docs/07-open-api.md](docs/07-open-api.md).
