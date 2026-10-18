@@ -730,8 +730,19 @@ impl Writer {
                 if res.is_ok() || keep {
                     sp.commit().await.map_err(|e| e.to_string())?;
                     outs.extend(out);
+                } else if let Err(rb) = sp.rollback().await {
+                    // MySQL ended the whole transaction on a deadlock and
+                    // the savepoint went with it (1305): retryable, on a
+                    // new connection (this one's transaction state is
+                    // unknown to sqlx now).
+                    if res
+                        .as_ref()
+                        .is_err_and(|e| e.code == "storage" && storage::is_transient(&e.message))
+                    {
+                        return Err(TRANSIENT_RECONNECT.to_string());
+                    }
+                    return Err(rb.to_string());
                 } else {
-                    sp.rollback().await.map_err(|e| e.to_string())?;
                     // Data keys created by the rolled-back job do not exist.
                     self.crypto.rollback_to(mark);
                 }
@@ -927,7 +938,10 @@ impl Writer {
                     "batch committed"
                 );
             }
-            Err(e) if e == TRANSIENT => {
+            Err(e) if e == TRANSIENT || e == TRANSIENT_RECONNECT => {
+                if e == TRANSIENT_RECONNECT {
+                    self.broken = true;
+                }
                 // Rolled back whole; nothing is wrong with the database.
                 self.crypto.abort();
                 metrics::counter!(m::STORAGE_ERRORS, "kind" => "transient").increment(1);
@@ -998,6 +1012,8 @@ const FENCED: &str = "\u{0}fenced";
 const STUCK: &str = "batch stuck past the stop time";
 /// A batch rolled back by a deadlock or lock timeout (retryable).
 const TRANSIENT: &str = "\u{0}transient";
+/// The same, and the connection is replaced before the next batch.
+const TRANSIENT_RECONNECT: &str = "\u{0}transient-reconnect";
 
 /// Writes the batch's subscribed events to the webhook outbox, inside
 /// the batch transaction. Returns the last id written.

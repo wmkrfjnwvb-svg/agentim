@@ -114,6 +114,9 @@ async fn create_user(addr: &str, name: &str, agent: bool, owner: Option<&str>) -
     }
 }
 
+/// Retried commands (retryable errors), reported at the end.
+static RETRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>;
 
 struct Client {
@@ -201,13 +204,29 @@ impl Client {
         }
     }
 
+    /// Commands with a client_msg_id are retried on retryable errors,
+    /// as the SDKs do (the server deduplicates them).
     async fn ok(&self, v: Value) -> Value {
-        let r = self
-            .call(v.clone())
-            .await
-            .unwrap_or_else(|e| panic!("{v}: {e}"));
-        assert_eq!(r["ok"], true, "request {v} failed: {r}");
-        r
+        let mut tries = 0;
+        loop {
+            let r = self
+                .call(v.clone())
+                .await
+                .unwrap_or_else(|e| panic!("{v}: {e}"));
+            let code = r["error"]["code"].as_str().unwrap_or("");
+            if r["ok"] != true
+                && v.get("client_msg_id").is_some()
+                && matches!(code, "unavailable" | "overloaded")
+                && tries < 20
+            {
+                tries += 1;
+                RETRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(20 * tries)).await;
+                continue;
+            }
+            assert_eq!(r["ok"], true, "request {v} failed: {r}");
+            return r;
+        }
     }
 
     /// The client's copy of a conversation's log. Clients only sync
@@ -456,6 +475,10 @@ async fn main() {
         total_sends as f64 / elapsed.as_secs_f64()
     );
     println!(
+        "    retried: {} (retryable errors)",
+        RETRIES.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    println!(
         "    ack latency: p50 {:.2}ms  p99 {:.2}ms  max {:.2}ms",
         pct(&mut lat, 0.5),
         pct(&mut lat, 0.99),
@@ -615,6 +638,10 @@ async fn solo_mode(a: &Args, tag: &str) {
         elapsed.as_secs_f64()
     );
     println!("    throughput: {throughput:.0} acked msg/s");
+    println!(
+        "    retried: {} (retryable errors)",
+        RETRIES.load(std::sync::atomic::Ordering::Relaxed)
+    );
     let p99 = pct(&mut lat, 0.99);
     println!(
         "    ack latency: p50 {:.2}ms  p99 {:.2}ms  max {:.2}ms",

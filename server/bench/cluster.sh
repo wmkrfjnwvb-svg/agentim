@@ -49,7 +49,7 @@ fresh_db() {
 
 start_node() { # <i> <url>
   local i=$1 cfg="$OUT/cluster-$1.toml"
-  printf '[storage]\ncontrol = "main"\n[[storage.databases]]\nname = "main"\nurl = "%s"\nread_pool = 8\n[clients]\nsend_rate = 1000000.0\nsend_burst = 1000000.0\nmax_connections = 100000\n[cluster]\nenabled = true\nnode_id = "node-%s"\nlisten = "127.0.0.1:%s"\nshards = 64\nsecret = "bench-cluster-secret"\n' \
+  printf '[storage]\ncontrol = "main"\n[[storage.databases]]\nname = "main"\nurl = "%s"\nread_pool = 8\n[clients]\nsend_rate = 1000000.0\nsend_burst = 1000000.0\nmax_connections = 100000\n[cluster]\nenabled = true\nnode_id = "node-%s"\nlisten = "127.0.0.1:%s"\nshards = 64\nsecret = "bench-cluster-secret"\n[encryption]\nkey = "dGVzdC1tYXN0ZXIta2V5LWZvci1hZ2VudGltLXRlc3Q="\n' \
     "$2" "$i" $((17946 + i)) > "$cfg"
   "$BIN" --demo --config "$cfg" --addr "127.0.0.1:$((18080 + i))" < /dev/null > "$OUT/cluster-node-$i.log" 2>&1 &
   pids+=($!)
@@ -76,14 +76,15 @@ run() {
     gens+=($!)
   done
   wait "${gens[@]}" || true
-  local sum=0 p50=0 p99=0
+  local sum=0 p50=0 p99=0 retried=0
   for f in "${files[@]}"; do
+    retried=$((retried + $(val "$f" 'retried: ([0-9]+)')))
     grep -q 'throughput' "$f" || { echo "load generator failed: $f" >&2; cat "$f" >&2; exit 1; }
     sum=$((sum + $(val "$f" 'throughput: ([0-9]+)')))
     p50=$(awk -v a="$p50" -v b="$(val "$f" 'p50 ([0-9.]+)ms')" 'BEGIN{print (b>a)?b:a}')
     p99=$(awk -v a="$p99" -v b="$(val "$f" 'p99 ([0-9.]+)ms')" 'BEGIN{print (b>a)?b:a}')
   done
-  echo "$sum msg/s · $p50 · $p99 ms"
+  echo "$sum msg/s · $p50 · $p99 ms${retried:+ ($retried retried)}"
 }
 
 echo "## Cluster benchmark"
@@ -102,7 +103,7 @@ for b in $backends; do
   for n in 1 "$NODES"; do
     url=$(fresh_db "$b")
     for i in $(seq 1 "$n"); do start_node "$i" "$url"; done
-    sleep 2 # shards settle on their preferred nodes
+    sleep 10 # shards settle on their preferred nodes (joining nodes settle for 5 s)
     w=$(run write "$n" --solo --clients "$CLIENTS" --messages "$MESSAGES")
     g=$(run group "$n" --clients 50 --messages 60)
     echo "| $n | $w | $g |"
