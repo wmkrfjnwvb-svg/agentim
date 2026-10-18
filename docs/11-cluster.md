@@ -1,6 +1,6 @@
 # 11 集群
 
-> 状态：**C0、C1 已实现**（2026-10-16；D72–D84、D86 按 [06 §1.1](06-plan.md) 的建议执行）；C2–C4 未开始。实现和设计不同的地方在各节里写明（"实现："）。
+> 状态：**C0–C4 已实现**（2026-10-18；D72–D84、D86 按 [06 §1.1](06-plan.md) 的建议执行）；§8.5 的数据倒退恢复待定（D100）。实现和设计不同的地方在各节里写明（"实现："）。
 > 依据：[调研：集群](research/cluster.md)（Temporal、Patroni、client-go、Quartz、Airflow、db-scheduler、ShedLock、Redis Cluster、Mattermost、Synapse、Centrifuge、PostgreSQL / MySQL 切主、Jepsen 等的源码和社区问题单）。下文的"〔调研 2.x〕"指那份文档的对应小节。
 > 已确认的方向（2026-10-12）：所有版本免费；**除数据库外不依赖任何组件**；节点平等，没有主从；会话分片由数据库租约决定归属，**没有选举**；节点之间全互连；做成独立的 Rust crate；测试按 §12 做全。
 
@@ -233,6 +233,7 @@ PING / PONG
 | 优雅下线（升级、缩容） | 节点表改为 `leaving` → 不再接受新连接 → 对每个分片：停收、排空、提交、交给首选节点 → 让客户端重连到别的节点 → 继续对迟到的转发请求回 `not_owner` 一小段时间 → **最后**停心跳和退出〔调研 2.1、2.3〕。实现：收到 SIGTERM 或 Ctrl-C 时执行 `Node::leave`。节点表状态为 `leaving` 的节点仍可连接，但不再被选为任何分片的首选。交接时分片先标为"排空中"：不收新命令，已进入写线程的批次仍按原租约提交，写线程处理完已排队的命令后，租约一步交给下一个首选节点，并立即通知它。`/readyz` 返回 503，WebSocket 客户端收到关闭码 1012（`server_restart`）后重连到别的节点 |
 | 崩溃 | 别的节点在租约到期后接手（约 15–18 秒）；客户端重连到别的节点并同步 |
 | 退役 | 节点表留墓碑，防止被重新加入〔调研 2.4〕 |
+| 管理员下线（C4） | `agentim cluster drain --node <id>` 把节点表状态改为 `draining`（只对在服务的节点有效，否则报错、不改任何东西）；节点在下一次心跳发现后按优雅下线交出全部分片、`/readyz` 返回 503、让客户端重连，但进程不退出，由管理员停掉；再启动即重新加入。`agentim cluster status` 列出节点（状态、距上次心跳）和每个库各节点持有的分片数、无人持有的分片数。两个命令只读写集群表，不需要节点应答 |
 
 **滚动升级**：支持新旧两个相邻版本同时运行。协议靠能力协商兼容；数据库表结构变更按"先加后删"两步走（新版本加列且旧版本能忽略，再下一个版本才删旧列）。实现：
 - HELLO 带能力列表（`capabilities`），旧节点不带时按空处理。
@@ -390,7 +391,7 @@ server/crates/
 | **C1 基础集群（已实现）** | 节点表、租约（接手、续约、自停、校验）、节点间连接和帧、转发、事件通知、失效日志、启动检查、单进程假设清单里的全部改动。也已做：加节点后按首选节点交接（每轮每库最多 4 个）、下线时立即释放全部租约 | 多个节点同时服务；任意节点崩溃后约 15–18 秒自动接手，不丢不乱不重 |
 | **C2 平滑运维（已实现）** | 计划内交接、优雅下线、加节点时的分片再平衡、滚动升级兼容、客户端位置校验（`heads`） | 升级和扩缩容时用户无感 |
 | **C3 数据库主从（已实现，§8.5 的恢复见 06 §1.1）** | 从库模式识别、应用等待、水位线推进、切主检测和恢复、托管同步声明（也用于单机版，解决 E3） | 数据库主从切换不丢已确认的消息，不依赖用户的数据库配置 |
-| **C4 部署和观测** | Docker Compose、Helm Chart、集群指标和告警、管理命令（查看节点和分片、手动交接、下线节点）、多节点压测数据写进 README | 客户能自己部署和运维 |
+| **C4 部署和观测（已实现）** | Docker Compose、Helm Chart、集群指标和告警、管理命令（查看节点和分片、下线节点；单个分片的手动交接没做，下线节点加上按首选节点的自动再平衡已覆盖运维需要）、多节点压测数据写进 README | 客户能自己部署和运维 |
 
 每一步都按 §12 做全套测试，Linux 和 Windows 上全部通过才算完成。
 
@@ -523,9 +524,12 @@ server/crates/
 |---|---|---|---|
 | 单元、模块、正常功能、故障点异常、边界 | 每次推送 | Linux、Windows | Linux：服务容器的 PostgreSQL 16、MySQL 8.4；Windows：镜像预装的数据库（E4） |
 | toxiproxy 进程级故障测试 | 每次推送（少量轮次）、夜间（多轮） | Linux、Windows | 同上 |
-| 数据库主从切换 | 夜间 | Linux（服务容器只能在 Linux 上用） | docker 搭 PostgreSQL 主从（`pg_basebackup -R`）、MySQL 主从（GTID、半同步） |
+| 数据库主从切换 | 每次推送（`replicas` 任务，`tests/replicas.rs`） | Linux | `ci/replicas.sh`：PostgreSQL 主从用本机二进制（`pg_basebackup -R`），MySQL 8.4 GTID 主从用 docker。半同步的退回检查只在代码里，尚无测试 |
+| 镜像和部署 | 每次推送（`deploy` 任务） | Linux | `deploy/compose`：构建镜像，三个节点 + PostgreSQL + Caddy；全部节点在服务、分片全部有人持有；停掉一个节点后它的分片立即交出，其余照常服务 |
 | 浸泡、负载 | 夜间（现有的 `scale.yml`） | Linux | PostgreSQL、MySQL |
 
 ## 13. 指标
 
-每个节点：持有的分片数、续约延迟、距自停的余量、每分钟接手次数（频繁时告警）、校验失败次数（正常应接近 0，出现即说明有竞态）、每对节点的连接状态和队列长度、断连和超限次数、转发延迟和错误码分布、缺口导致的同步次数、失效日志的滞后、从库等待延迟和超时次数、"已提交未确认"的批数。每次代号变化写审计（分片、新旧负责人、新旧代号、原因、数据库时间）。
+实现（C4）：`agentim_cluster_shards_held{database}`、`agentim_cluster_nodes_live`、`agentim_cluster_ready`、`agentim_cluster_renew_failures_total`、`agentim_cluster_takeovers_total`、`agentim_cluster_handovers_total`、`agentim_cluster_fence_failures_total`、`agentim_cluster_forward_exhausted_total`、`agentim_db_unconfirmed_batches{database}`、`agentim_db_failovers_total{database}`；告警规则在 `deploy/alerts.yml`（Helm Chart 可直接装成 `PrometheusRule`）。续约延迟、距自停的余量、每对节点的队列长度还没有指标。部署：`deploy/Dockerfile`、`deploy/compose`（三节点试用）、`deploy/helm/agentim`（StatefulSet，Pod 名即节点编号，`AGENTIM_NODE_ID` / `AGENTIM_CLUSTER_ADVERTISE` 从环境变量取，就绪探针 `/readyz`，PodDisruptionBudget 一次最多一个）。
+
+设计：每个节点：持有的分片数、续约延迟、距自停的余量、每分钟接手次数（频繁时告警）、校验失败次数（正常应接近 0，出现即说明有竞态）、每对节点的连接状态和队列长度、断连和超限次数、转发延迟和错误码分布、缺口导致的同步次数、失效日志的滞后、从库等待延迟和超时次数、"已提交未确认"的批数。每次代号变化写审计（分片、新旧负责人、新旧代号、原因、数据库时间）。
