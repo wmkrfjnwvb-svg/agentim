@@ -411,6 +411,11 @@ pub enum ClientMsg {
         until: Option<i64>,
     },
     Unread,
+    /// The latest seq of each conversation (a client checks its position;
+    /// a tail push lost on the way shows up here, docs/11 §6.4).
+    Heads {
+        conv_ids: Vec<String>,
+    },
     SetPrefs {
         #[serde(default)]
         read_silences_others: Option<bool>,
@@ -739,6 +744,7 @@ impl ClientMsg {
             ClientMsg::Ack { .. } => "ack",
             ClientMsg::SetMute { .. } => "set_mute",
             ClientMsg::Unread => "unread",
+            ClientMsg::Heads { .. } => "heads",
             ClientMsg::SetPrefs { .. } => "set_prefs",
             ClientMsg::Observe { .. } => "observe",
             ClientMsg::Focus { .. } => "focus",

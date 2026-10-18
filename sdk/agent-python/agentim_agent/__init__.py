@@ -162,9 +162,12 @@ class Ctx:
 
 
 class Agent:
-    def __init__(self, url, key, name="agentim-agent-python", log=None):
+    def __init__(self, url, key, name="agentim-agent-python", log=None, position_check=30.0):
         self.url = url
         self.key = key
+        # How often the agent checks it has every message (seconds).
+        self.position_check = position_check
+        self._last_seq = {}
         self.client_name = name
         self.log = log or (lambda m: None)
         self.handlers = {"message": [], "event": [], "card": [], "handback": []}
@@ -212,7 +215,26 @@ class Agent:
                 await asyncio.sleep(wait)
                 wait = min(wait * 2, 3.0)
         self._keeper = asyncio.ensure_future(self._keep_alive())
+        self._checker = asyncio.ensure_future(self._check_positions())
         return self
+
+    async def _check_positions(self):
+        """Now and then asks where its conversations stand: a last push lost
+        on the way (no later message, no resync notice) is found and synced
+        (docs/11 §6.4)."""
+        while not self._stopped:
+            await asyncio.sleep(self.position_check)
+            conn = self.conn
+            if self._stopped or conn is None or conn.failed or not self._last_seq:
+                continue
+            try:
+                ids = list(self._last_seq)[:200]
+                r = await conn.call("heads", conv_ids=ids)
+                heads = r.get("heads") or {}
+                if any(heads.get(c, 0) > self._last_seq.get(c, 0) for c in ids) and self._queue is not None:
+                    self._queue.put_nowait(("sync", None))
+            except AgentIMError:
+                pass
 
     async def run(self):
         """Starts and runs until ``stop()``."""
@@ -226,6 +248,8 @@ class Agent:
             await self.conn.close()
         if self._worker:
             self._worker.cancel()
+        if getattr(self, "_checker", None):
+            self._checker.cancel()
 
     async def _connect(self):
         conn = Connection(self.url, self.key, self._push)
@@ -338,6 +362,7 @@ class Agent:
 
     async def _handle(self, item):
         ev = item["event"]
+        self._last_seq[ev["conv_id"]] = max(self._last_seq.get(ev["conv_id"], 0), ev["seq"])
         what = f"{ev['type']} {ev['conv_id']}#{ev['seq']}"
         for h in self.handlers["event"]:
             await self._run(h(ev, item), what)

@@ -60,8 +60,11 @@ const TAKE_PER_ROUND: usize = 10;
 /// Waiting for a forwarded command's answer; past it the result is
 /// unknown and the caller retries with the same idempotency key.
 pub const FORWARD_WAIT: Duration = Duration::from_secs(5);
-/// Answers of `not_owner` followed before giving up (docs/11 §5).
-const FORWARD_RETRIES: usize = 2;
+/// How long a request follows a shard that is moving before it answers
+/// `unavailable` (docs/11 §5).
+pub const FORWARD_FOLLOW: Duration = Duration::from_secs(4);
+/// Lease rounds failing in a row before the node stops taking clients.
+pub const FAILED_ROUNDS: u32 = 5;
 
 fn unavailable(why: &str) -> ApiError {
     ApiError::new(
@@ -75,6 +78,9 @@ struct Held {
     /// Local deadline: past it this node stops writing the shard, measured
     /// from before the renewal was sent (docs/11 §4.4).
     until: Instant,
+    /// Being handed over: no new commands, but batches already admitted
+    /// still commit under this lease.
+    draining: bool,
 }
 
 struct DbLeases {
@@ -98,6 +104,9 @@ struct LiveNode {
     boot_id: String,
     addr: String,
     since: Instant,
+    /// Handing its shards over before it stops: still reachable, but no
+    /// longer anybody's choice for a shard.
+    leaving: bool,
 }
 
 struct Inner {
@@ -120,7 +129,16 @@ struct Inner {
     nudge: Notify,
     started: Instant,
     stopped: AtomicBool,
+    /// Leaving the cluster (planned): not ready, shards being handed over.
+    leaving: AtomicBool,
+    /// Lease rounds in a row that could not renew, and whether the current
+    /// round failed.
+    fail_streak: AtomicU32,
+    round_failed: AtomicBool,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// The listener for other nodes; it outlives the other tasks when
+    /// leaving.
+    serving: Mutex<Option<tokio::task::JoinHandle<()>>>,
     listener: Mutex<Option<TcpListener>>,
     pub_addr: String,
     slot: AtomicU32,
@@ -252,6 +270,7 @@ pub async fn join(hub: &Hub) -> Result<Node, String> {
         proto_min: codec::PROTO_MIN,
         proto_max: codec::PROTO_MAX,
         version: env!("CARGO_PKG_VERSION").into(),
+        capabilities: codec::CAPABILITIES.iter().map(|c| c.to_string()).collect(),
     };
     let dbs = pools
         .into_iter()
@@ -285,7 +304,11 @@ pub async fn join(hub: &Hub) -> Result<Node, String> {
         nudge: Notify::new(),
         started: Instant::now(),
         stopped: AtomicBool::new(false),
+        leaving: AtomicBool::new(false),
+        fail_streak: AtomicU32::new(0),
+        round_failed: AtomicBool::new(false),
         tasks: Default::default(),
+        serving: Default::default(),
         listener: Mutex::new(Some(listener)),
         pub_addr,
         slot: AtomicU32::new(slot),
@@ -389,12 +412,13 @@ impl Node {
         let i = self.inner.clone();
         let listener = lock(&i.listener).take().ok_or("already started")?;
         let serve: Arc<dyn peer::Serve> = Arc::new(Handle(i.clone()));
-        let mut tasks = vec![tokio::spawn(peer::serve(
+        *lock(&i.serving) = Some(tokio::spawn(peer::serve(
             listener,
             i.hello.clone(),
             i.tls.server.clone(),
             serve,
-        ))];
+        )));
+        let mut tasks = vec![];
         i.membership_round().await;
         // Others see this node before it takes anything.
         for db in &i.dbs {
@@ -435,7 +459,7 @@ impl Node {
             .read()
             .unwrap()
             .iter()
-            .filter(|(_, h)| h.until > now)
+            .filter(|(_, h)| h.until > now && !h.draining)
             .map(|(s, _)| *s)
             .collect();
         v.sort();
@@ -451,37 +475,59 @@ impl Node {
     /// at once, and stops the heartbeat.
     pub async fn leave(&self) {
         let i = &self.inner;
-        if i.stopped.swap(true, Ordering::SeqCst) {
+        if i.leaving.swap(true, Ordering::SeqCst) {
             return;
         }
+        // Not ready any more: load balancers stop sending new clients.
         for t in lock(&i.tasks).drain(..) {
             t.abort();
         }
+        i.membership_round().await;
+        let c = &i.dbs[i.control];
+        let _ = sql::heartbeat(&c.pool, c.dialect, &i.node_id, &i.boot_id, "leaving").await;
+        // Every shard goes straight to its next preferred node, so nothing
+        // waits for a lease to run out (docs/11 §7).
+        let others: Vec<String> = i
+            .live_ids(false)
+            .into_iter()
+            .filter(|n| *n != i.node_id)
+            .collect();
         for db in &i.dbs {
             let held: Vec<(u32, i64)> = db
                 .held
-                .write()
+                .read()
                 .unwrap()
-                .drain()
-                .map(|(s, h)| (s, h.epoch))
+                .iter()
+                .map(|(s, h)| (*s, h.epoch))
                 .collect();
             for (s, e) in held {
-                let _ =
-                    sql::hand_over(&db.pool, db.dialect, &db.name, s, &i.owner, e, None, 0).await;
+                let next = assign::preferred(&others, &db.name, s).map(str::to_string);
+                if !i.hand_over(db, s, e, next.as_deref()).await && next.is_some() {
+                    // Not reachable: release it for anyone to take.
+                    let _ = sql::hand_over(&db.pool, db.dialect, &db.name, s, &i.owner, e, None, 0)
+                        .await;
+                }
             }
+            db.held.write().unwrap().clear();
         }
-        let c = &i.dbs[i.control];
+        i.stopped.store(true, Ordering::SeqCst);
         let _ = sql::heartbeat(&c.pool, c.dialect, &i.node_id, &i.boot_id, "left").await;
-        // The others take the shards now rather than at their next round.
+        // Clients reconnect to another node; requests still on their way
+        // here are answered (`not_owner`) for a moment, then the listener
+        // closes.
+        i.hub().go_away();
         let peers: Vec<Arc<peer::Peer>> = lock(&i.peers).drain().map(|(_, p)| p).collect();
         if let Ok(f) = codec::encode(codec::Kind::Check, b"") {
             for p in &peers {
                 p.send(f.clone());
             }
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
         for p in peers {
             p.stop();
+        }
+        if let Some(t) = lock(&i.serving).take() {
+            t.abort();
         }
     }
 
@@ -500,9 +546,58 @@ impl Node {
         lock(&self.inner.faults.cut_to).insert(other.into());
     }
 
+    /// Test fault: frames to `other` wait `by` each (in order).
+    pub fn delay_to(&self, other: &str, by: Duration) {
+        lock(&self.inner.faults.delay_to).insert(other.into(), by);
+    }
+
+    /// Test fault: frames to `other` are kept back until `release_to`.
+    pub fn hold_to(&self, other: &str) {
+        if let Some(p) = lock(&self.inner.peers).get(other) {
+            p.hold();
+        }
+    }
+
+    pub fn release_to(&self, other: &str) {
+        if let Some(p) = lock(&self.inner.peers).get(other) {
+            p.release();
+        }
+    }
+
+    /// For tests: what a peer would publish, as received from the wire.
+    #[doc(hidden)]
+    pub fn receive_publish(&self, body: &[u8]) {
+        peer::Serve::publish(&Handle(self.inner.clone()), body);
+    }
+
+    /// For tests: a forwarded command as received from the wire (an older
+    /// or newer node may send one this version does not know).
+    #[doc(hidden)]
+    pub async fn receive_forward(&self, db: usize, shard: u32, op: Value) -> codec::ForwardResp {
+        peer::Serve::forward(
+            &Handle(self.inner.clone()),
+            codec::ForwardReq {
+                id: 1,
+                db,
+                shard,
+                op,
+            },
+        )
+        .await
+    }
+
+    /// Whether this node takes clients (readiness), and why not.
+    pub fn ready(&self) -> Result<(), String> {
+        Cluster::ready(&Handle(self.inner.clone()))
+    }
+
     pub fn heal(&self) {
         lock(&self.inner.faults.cut_to).clear();
         lock(&self.inner.faults.cut_from).clear();
+        lock(&self.inner.faults.delay_to).clear();
+        for p in lock(&self.inner.peers).values() {
+            p.release();
+        }
     }
 
     /// Test fault: this node's clock jumps forward.
@@ -517,6 +612,9 @@ impl Node {
     pub fn crash(&self) {
         let i = &self.inner;
         i.stopped.store(true, Ordering::SeqCst);
+        if let Some(t) = lock(&i.serving).take() {
+            t.abort();
+        }
         for t in lock(&i.tasks).drain(..) {
             t.abort();
         }
@@ -623,6 +721,7 @@ impl Inner {
                     .get(&(r.node_id.clone(), r.boot_id.clone()))
                     .copied()
                     .unwrap_or_else(Instant::now),
+                leaving: r.state == "leaving",
                 node_id: r.node_id,
                 boot_id: r.boot_id,
                 addr: r.addr,
@@ -673,9 +772,31 @@ impl Inner {
                 // see the current members before deciding.
                 self.membership_round().await;
             }
+            self.round_failed.store(false, Ordering::SeqCst);
             for db in &self.dbs {
                 self.lease_round(db).await;
             }
+            self.count_round();
+        }
+    }
+
+    /// After `FAILED_ROUNDS` lease rounds in a row that could not renew, the
+    /// node reports not ready and sends its clients to other nodes rather
+    /// than only logging (docs/11 §4.6); it takes clients again once
+    /// renewals succeed.
+    fn count_round(&self) {
+        if self.round_failed.load(Ordering::SeqCst) {
+            let n = self.fail_streak.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == FAILED_ROUNDS {
+                tracing::error!(
+                    node = self.node_id,
+                    "lease renewals keep failing; sending clients to other nodes"
+                );
+                self.hub().go_away();
+            }
+        } else if self.fail_streak.swap(0, Ordering::SeqCst) >= FAILED_ROUNDS {
+            tracing::info!(node = self.node_id, "lease renewals work again");
+            self.hub().come_back();
         }
     }
 
@@ -685,6 +806,18 @@ impl Inner {
         let mut t = tokio::time::interval(Duration::from_secs(2));
         loop {
             t.tick().await;
+            // Test-only mutation: without the poll, a lost invalidation is
+            // never made up for (the cut-off revocation test fails).
+            if self
+                .hub()
+                .shared()
+                .failpoints
+                .hit("mutation.no_cache_poll")
+                .await
+                .is_err()
+            {
+                continue;
+            }
             if let Err(e) = self.hub().refresh_auth().await {
                 tracing::debug!(error = e.message, "cache refresh failed");
             }
@@ -698,6 +831,7 @@ impl Inner {
             .read()
             .unwrap()
             .iter()
+            .filter(|n| !n.leaving)
             .filter(|n| {
                 !settled || n.node_id == self.node_id || now.duration_since(n.since) >= settle
             })
@@ -760,10 +894,12 @@ impl Inner {
             tokio::time::timeout(t, sql::leases(&db.pool, db.dialect, &db.name)).await
         else {
             metrics::counter!("agentim_cluster_renew_failures_total").increment(1);
+            self.round_failed.store(true, Ordering::SeqCst);
             return;
         };
         if !renewed {
             metrics::counter!("agentim_cluster_renew_failures_total").increment(1);
+            self.round_failed.store(true, Ordering::SeqCst);
         }
         let until = t0 + Duration::from_millis(self.cfg.stop_ms);
         let mut lost = vec![];
@@ -902,6 +1038,7 @@ impl Inner {
                     Held {
                         epoch: *epoch,
                         until: *until,
+                        draining: false,
                     },
                 );
                 owners.insert(*s, Some(self.owner.clone()));
@@ -987,17 +1124,37 @@ impl Inner {
         let Some((s, epoch, node)) = pick else {
             return false;
         };
-        let Some(to) = self.owner_of(&node) else {
-            return false;
+        self.hand_over(db, s, epoch, Some(&node)).await
+    }
+
+    /// A planned hand-over (docs/11 §4.2): this node stops taking commands
+    /// for the shard, lets its writer finish what is queued (commands for
+    /// the shard come back `not_owner` and follow it), then gives the lease
+    /// to `to` in one step (or releases it) and tells that node at once.
+    async fn hand_over(&self, db: &DbLeases, s: u32, epoch: i64, to: Option<&str>) -> bool {
+        let target = match to {
+            Some(node) => {
+                let Some(owner) = self.owner_of(node) else {
+                    return false;
+                };
+                let Some(peer) = lock(&self.peers).get(node).cloned() else {
+                    return false;
+                };
+                if !peer.connected() {
+                    return false;
+                }
+                Some((owner, peer))
+            }
+            None => None,
         };
-        let Some(peer) = lock(&self.peers).get(&node).cloned() else {
-            return false;
-        };
-        if !peer.connected() {
-            return false;
+        // No new commands; what the writer already admitted commits under
+        // the lease (the check still accepts it), then the lease moves.
+        if let Some(h) = db.held.write().unwrap().get_mut(&s) {
+            h.draining = true;
         }
-        // Stop writing first; a batch already checked commits before the
-        // hand-over (it holds the lease row).
+        if let Some(w) = self.hub().shard(db.idx) {
+            let _ = self.bounded(w.call_local(Op::Barrier)).await;
+        }
         db.held.write().unwrap().remove(&s);
         let ok = matches!(
             tokio::time::timeout(
@@ -1009,27 +1166,26 @@ impl Inner {
                     s,
                     &self.owner,
                     epoch,
-                    Some(&to),
+                    target.as_ref().map(|(o, _)| o.as_str()),
                     self.cfg.lease_ms
                 ),
             )
             .await,
             Ok(Ok(true))
         );
-        db.owners.write().unwrap().insert(s, ok.then(|| to.clone()));
-        if let Some(shard) = self.hub().shard(db.idx) {
+        db.owners
+            .write()
+            .unwrap()
+            .insert(s, target.as_ref().filter(|_| ok).map(|(o, _)| o.clone()));
+        if let Some(w) = self.hub().shard(db.idx) {
             let _ = self
-                .bounded(shard.call_local(Op::Forget { shards: vec![s] }))
+                .bounded(w.call_local(Op::Forget { shards: vec![s] }))
                 .await;
         }
         if ok {
-            tracing::info!(
-                database = db.name,
-                shard = s,
-                to = node,
-                "handed a shard over"
-            );
-            if let Ok(f) = codec::encode(codec::Kind::Check, b"") {
+            metrics::counter!("agentim_cluster_handovers_total").increment(1);
+            tracing::info!(database = db.name, shard = s, to = ?to, "handed a shard over");
+            if let (Some((_, peer)), Ok(f)) = (&target, codec::encode(codec::Kind::Check, b"")) {
                 peer.send(f);
             }
         }
@@ -1042,8 +1198,20 @@ impl Inner {
         };
         let body =
             serde_json::to_value(&op).map_err(|e| ApiError::new("internal", e.to_string()))?;
+        // A shard moving between nodes (a hand-over, a node leaving or a
+        // takeover) is followed for a while, backing off; a request whose
+        // outcome is unknown is never sent twice (docs/11 §5).
+        let deadline = Instant::now() + FORWARD_FOLLOW;
+        let mut pause = Duration::from_millis(25);
         let mut refresh = false;
-        for attempt in 0..=FORWARD_RETRIES {
+        loop {
+            if refresh {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(pause).await;
+                pause = (pause * 2).min(Duration::from_millis(400));
+            }
             let mut owner = d.owners.read().unwrap().get(&shard).cloned().flatten();
             if (refresh || owner.is_none())
                 && let Ok(Ok(Some((r, now)))) = tokio::time::timeout(
@@ -1056,15 +1224,11 @@ impl Inner {
                 d.owners.write().unwrap().insert(shard, owner.clone());
             }
             refresh = true;
-            let Some(owner) = owner else {
-                // Nobody holds it (a takeover is under way).
-                tokio::time::sleep(Duration::from_millis(300 * (attempt as u64 + 1))).await;
-                continue;
-            };
+            // Nobody holds it: a takeover is under way.
+            let Some(owner) = owner else { continue };
             if owner == self.owner {
-                // Taken by this node and not yet in use.
+                // Handed to this node and not yet in use.
                 self.nudge.notify_one();
-                tokio::time::sleep(Duration::from_millis(100)).await;
                 if d.held
                     .read()
                     .unwrap()
@@ -1085,18 +1249,20 @@ impl Inner {
             let node = owner.split(':').next().unwrap_or_default();
             let peer = lock(&self.peers).get(node).cloned();
             let Some(peer) = peer.filter(|p| owner.ends_with(&format!(":{}", p.boot_id))) else {
-                tokio::time::sleep(Duration::from_millis(200)).await;
                 continue;
             };
-            let Some(r) = peer.request(db, shard, body.clone(), FORWARD_WAIT).await else {
-                return Err(unavailable(
-                    "the node holding the conversation did not answer",
-                ));
-            };
-            match r.err {
-                Some(e) if e.code == "not_owner" => continue,
-                Some(e) => return Err(ApiError::from_wire(&e.code, e.message)),
-                None => return Ok(r.ok.unwrap_or(Value::Null)),
+            match peer.request(db, shard, body.clone(), FORWARD_WAIT).await {
+                Err(peer::Unsent::NotSent) => continue,
+                Err(peer::Unsent::Unknown) => {
+                    return Err(unavailable(
+                        "the node holding the conversation did not answer",
+                    ));
+                }
+                Ok(r) => match r.err {
+                    Some(e) if e.code == "not_owner" => continue,
+                    Some(e) => return Err(ApiError::from_wire(&e.code, e.message)),
+                    None => return Ok(r.ok.unwrap_or(Value::Null)),
+                },
             }
         }
         metrics::counter!("agentim_cluster_forward_exhausted_total").increment(1);
@@ -1110,6 +1276,19 @@ impl Cluster for Handle {
     }
 
     fn held(&self, db: usize, shard: u32) -> Option<Lease> {
+        if self.0.stopped.load(Ordering::Relaxed) {
+            return None;
+        }
+        let d = self.0.dbs.get(db)?;
+        let g = d.held.read().unwrap();
+        let h = g.get(&shard).filter(|h| !h.draining)?;
+        (self.0.now() < h.until).then(|| Lease {
+            owner: self.0.owner.clone(),
+            epoch: h.epoch,
+        })
+    }
+
+    fn writing(&self, db: usize, shard: u32) -> Option<Lease> {
         if self.0.stopped.load(Ordering::Relaxed) {
             return None;
         }
@@ -1159,6 +1338,21 @@ impl Cluster for Handle {
         for p in peers {
             p.send(frame.clone());
         }
+    }
+
+    fn ready(&self) -> Result<(), String> {
+        let i = &self.0;
+        if i.leaving.load(Ordering::SeqCst) {
+            return Err("leaving the cluster".into());
+        }
+        if i.stopped.load(Ordering::SeqCst) {
+            return Err("stopped".into());
+        }
+        let n = i.fail_streak.load(Ordering::SeqCst);
+        if n >= FAILED_ROUNDS {
+            return Err(format!("{n} lease rounds in a row could not renew"));
+        }
+        Ok(())
     }
 
     fn reset(&self, db: usize) {
@@ -1242,21 +1436,33 @@ impl peer::Serve for Handle {
     }
 
     fn publish(&self, body: &[u8]) {
+        // Items this version does not know (a newer node during a rolling
+        // upgrade) are skipped one by one; the rest still apply.
         #[derive(serde::Deserialize)]
         struct P {
-            outs: Vec<Out>,
+            outs: Vec<serde_json::Value>,
         }
+        let Some(h) = self.0.hub.get() else { return };
         match serde_json::from_slice::<P>(body) {
             Ok(p) => {
-                if let Some(h) = self.0.hub.get() {
-                    h.deliver_published(p.outs);
+                let mut outs = Vec::with_capacity(p.outs.len());
+                let mut unknown = 0u64;
+                for o in p.outs {
+                    match serde_json::from_value::<Out>(o) {
+                        Ok(o) => outs.push(o),
+                        Err(_) => unknown += 1,
+                    }
                 }
+                if unknown > 0 {
+                    metrics::counter!("agentim_cluster_unknown_outputs_total").increment(unknown);
+                    // What they would have pushed is fetched by syncing.
+                    h.resync_all();
+                }
+                h.deliver_published(outs);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "undecodable publish; resyncing");
-                if let Some(h) = self.0.hub.get() {
-                    h.resync_all();
-                }
+                h.resync_all();
             }
         }
     }

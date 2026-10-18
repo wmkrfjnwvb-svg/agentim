@@ -106,7 +106,7 @@ class Ctx {
 
 export class Agent {
   /** @param {{url: string, key: string, name?: string, log?: (m: string) => void}} o */
-  constructor({ url, key, name = 'agentim-agent-node', log = () => {} }) {
+  constructor({ url, key, name = 'agentim-agent-node', log = () => {}, positionCheckMs = 30000 }) {
     this.url = url;
     this.key = key;
     this.clientName = name;
@@ -118,6 +118,7 @@ export class Agent {
     this.stopped = false;
     this.queue = Promise.resolve(); // pushes are handled one at a time, in order
     this.lastSeq = new Map();
+    this.positionCheckMs = positionCheckMs;
   }
 
   onMessage(fn) { this.handlers.message.push(fn); return this; }
@@ -142,7 +143,26 @@ export class Agent {
       }
     }
     this.#keepAlive();
+    this.#checkPositions();
     return this;
+  }
+
+  // Now and then the agent asks where its conversations stand: a last push
+  // lost on the way (no later message, no resync notice) is found and
+  // synced (docs/11 §6.4).
+  async #checkPositions() {
+    while (!this.stopped) {
+      await sleep(this.positionCheckMs);
+      const conn = this.conn;
+      if (this.stopped || !conn || conn.failed || this.lastSeq.size === 0) continue;
+      await this.#enqueue(async () => {
+        if (conn !== this.conn) return;
+        const ids = [...this.lastSeq.keys()].slice(0, 200);
+        const r = await conn.call('heads', { conv_ids: ids });
+        const behind = ids.some((c) => (r.heads?.[c] ?? 0) > (this.lastSeq.get(c) ?? 0));
+        if (behind) await this.#sync();
+      }).catch(() => {});
+    }
   }
 
   async stop() { this.stopped = true; this.conn?.close(); }

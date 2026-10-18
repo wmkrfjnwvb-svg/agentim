@@ -4,6 +4,9 @@
 
 use std::collections::HashMap;
 
+/// Conversations one `heads` call may ask about.
+pub const HEADS_MAX: usize = 200;
+
 /// Side entries read per query, and at most per conversation and sync.
 const SIDE_PAGE: i64 = 500;
 const SIDE_SCAN: i64 = 5000;
@@ -556,6 +559,42 @@ impl Hub {
 
     /// Unread counts (`unread`): per conversation and in total; muted
     /// conversations are counted but left out of `total_unmuted`.
+    /// The latest seq of each conversation `me` is a member of; others
+    /// (unknown, not a member, gone) are left out, so nothing leaks.
+    pub(super) async fn heads(&self, me: &User, conv_ids: &[String]) -> ApiResult<Value> {
+        if conv_ids.len() > HEADS_MAX {
+            return Err(err(
+                "bad_request",
+                format!("at most {HEADS_MAX} conversations"),
+            ));
+        }
+        let mut out = serde_json::Map::new();
+        for conv in conv_ids {
+            if out.contains_key(conv) {
+                continue;
+            }
+            self.dir_ensure(conv).await?;
+            let Ok(shard) = self.conv_shard(conv) else {
+                continue;
+            };
+            let (c, me_id) = (conv.clone(), me.id.clone());
+            let head = self
+                .read(shard, move |db| {
+                    Box::pin(async move {
+                        if db.member(&c, &me_id).await?.is_none() {
+                            return Ok(None);
+                        }
+                        Ok(db.conv(&c).await?.map(|r| r.last_seq))
+                    })
+                })
+                .await?;
+            if let Some(h) = head {
+                out.insert(conv.clone(), json!(h));
+            }
+        }
+        Ok(json!({"heads": out}))
+    }
+
     pub(super) async fn unread_summary(&self, me: &User) -> ApiResult<Value> {
         let me_id = me.id.clone();
         let convs: Vec<String> = self

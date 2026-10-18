@@ -50,6 +50,11 @@ pub trait Cluster: Send + Sync + 'static {
     fn shards(&self) -> u32;
     /// The lease this node holds on a shard of database `db`, if any.
     fn held(&self, db: usize, shard: u32) -> Option<Lease>;
+    /// The lease a batch already admitted may commit under: also while the
+    /// shard is being handed over (no new commands then).
+    fn writing(&self, db: usize, shard: u32) -> Option<Lease> {
+        self.held(db, shard)
+    }
     /// Runs a command on the node holding the shard.
     fn forward(&self, db: usize, shard: u32, op: Op) -> BoxFuture<ApiResult<Value>>;
     /// What a committed batch produced, for the other nodes' connections.
@@ -60,6 +65,10 @@ pub trait Cluster: Send + Sync + 'static {
     /// wrote is unknown, so every shard of the database is given up and
     /// taken again with a new epoch and reloaded state (docs/11 §4.5).
     fn reset(&self, db: usize);
+    /// Whether this node should take clients (Err: why not), for readiness.
+    fn ready(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 pub fn control_shard(shards: u32) -> u32 {

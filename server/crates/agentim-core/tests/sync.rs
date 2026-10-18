@@ -18,6 +18,7 @@ use common::*;
 use serde_json::{Value, json};
 
 backend_tests!(
+    heads_show_where_conversations_stand,
     a_device_receives_everything_once_in_batches,
     positions_persist_and_unacknowledged_events_come_again,
     acknowledgements_are_checked,
@@ -1385,4 +1386,56 @@ async fn removed_and_added_back_while_offline(db: TestDb) {
     // A new device starts from the new membership only.
     let fresh = sync_all(&Conn::device(&hub, &bob, &device(&hub, &bob).await)).await;
     assert!(fresh[&conv].iter().all(|s| *s >= back), "{fresh:?}");
+}
+
+/// The position check (docs/11 §6.4): the latest seq of each conversation
+/// the caller is in; others are left out; limits; no trace.
+async fn heads_show_where_conversations_stand(db: TestDb) {
+    let hub = hub_with(&db, |_| {}).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let eve = user(&hub, "eve", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let one = a.group(&[&bob]).await;
+    let two = a.group(&[&eve]).await;
+    a.send(&one, "x").await;
+    a.send(&one, "y").await;
+    let h1 = last_seq(&a, &one).await;
+    let h2 = last_seq(&a, &two).await;
+    let b = Conn::new(&hub, &bob);
+    let r = b
+        .ok(json!({"op": "heads", "conv_ids": [one, two, one, "c_nope"]}))
+        .await;
+    assert_eq!(
+        r["heads"],
+        json!({one.clone(): h1}),
+        "only where bob is a member"
+    );
+    let r = a.ok(json!({"op": "heads", "conv_ids": [one, two]})).await;
+    assert_eq!(r["heads"], json!({one.clone(): h1, two.clone(): h2}));
+    assert_eq!(
+        a.ok(json!({"op": "heads", "conv_ids": []})).await["heads"],
+        json!({})
+    );
+    // A member who left no longer sees the head.
+    b.ok(json!({"op": "leave", "conv_id": one})).await;
+    assert_eq!(
+        b.ok(json!({"op": "heads", "conv_ids": [one]})).await["heads"],
+        json!({})
+    );
+    let max: Vec<String> = (0..200).map(|i| format!("c_{i}")).collect();
+    assert_eq!(
+        a.ok(json!({"op": "heads", "conv_ids": max})).await["heads"],
+        json!({})
+    );
+    let over: Vec<String> = (0..201).map(|i| format!("c_{i}")).collect();
+    let r = a.call(json!({"op": "heads", "conv_ids": over})).await;
+    assert_eq!(r["error"]["code"], "bad_request");
+    let r = a.call(json!({"op": "heads"})).await;
+    assert_eq!(r["error"]["code"], "bad_request", "conv_ids is required");
+    assert_eq!(
+        last_seq(&a, &one).await,
+        h1 + 1,
+        "reads leave no trace (only the leave)"
+    );
 }

@@ -13,7 +13,7 @@
 | 方面 | 实现 | 位置 |
 |---|---|---|
 | 同步位置 | 表 `device_cursors (device_id, conv_id, user_id, acked_seq, acked_side_seq)`，表结构 v3；确认只前进（取较大值） | `db.rs` `ack_cursor` |
-| 协议 | `sync {limit?}`、`ack {acks: [{conv_id, seq, side_seq}]}`、`unread`、`set_mute {conv_id, mode, until?}`、`set_prefs {read_silences_others?}`、`observe {conv_id, agent_id, after_seq?, limit?}`；客户端的 `pull`、`pull_side` 返回 `bad_request` | `hub/sync.rs` |
+| 协议 | `sync {limit?}`、`ack {acks: [{conv_id, seq, side_seq}]}`、`heads {conv_ids}`（位置校验）、`unread`、`set_mute {conv_id, mode, until?}`、`set_prefs {read_silences_others?}`、`observe {conv_id, agent_id, after_seq?, limit?}`；客户端的 `pull`、`pull_side` 返回 `bad_request` | `hub/sync.rs` |
 | 一条通道 | 设备的连接从一开始就只按顺序收实时推送（seq 正好接上已下发的位置）：第一次 `sync` 之前、接不上的、以及某个会话正在被 `sync` 读取期间到达的推送都不发，改发 `resync`（立即发出，不等下一帧），由下一次 `sync` 补齐；所以同一事件不会既被推送又出现在同步结果里 | `registry.rs` `in_order`、`sync_begin` |
 | 起点规则 | 没有位置：设备存在之后加入的会话从可见起点开始，否则按新设备窗口；位置落后于保留期或超过 `max_gap`：重置，响应里带 `reset.from_seq`；比位置有效期还老的设备在某个会话没有位置、按窗口起步又跳过了事件时也报 `reset`（M6）；被移出又拉回、设备落在移出前：先补发移出前那段，再从新的可见起点继续，中间那段不发（D92，表 `past_members`） | `hub/sync.rs` |
 | 新成员历史 | 成员记录 `visible_from`；拉人时 `history` 可选带多少条（≤ `share_max`）；默认人带最近 `member_messages` 条（`member_days` 天内），Agent 不带 | `logic.rs` `add_member` |

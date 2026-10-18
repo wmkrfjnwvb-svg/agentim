@@ -25,6 +25,15 @@ const HANDSHAKE: Duration = Duration::from_secs(5);
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<ForwardResp>>>>;
 
+/// Why a request got no answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unsent {
+    /// Never left this node.
+    NotSent,
+    /// Sent; the outcome is unknown.
+    Unknown,
+}
+
 /// Network faults for tests (docs/11 §12.1): frames to the nodes in
 /// `cut_to` are dropped and no connection is made to them; frames from the
 /// nodes in `cut_from` are ignored (no answers, no pongs).
@@ -32,6 +41,9 @@ type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<ForwardResp>>>>;
 pub struct Faults {
     pub cut_to: Mutex<std::collections::HashSet<String>>,
     pub cut_from: Mutex<std::collections::HashSet<String>>,
+    /// Frames to these nodes wait this long before they are written (in
+    /// order).
+    pub delay_to: Mutex<HashMap<String, Duration>>,
 }
 
 impl Faults {
@@ -40,6 +52,9 @@ impl Faults {
     }
     pub fn is_cut_from(&self, node: &str) -> bool {
         lock(&self.cut_from).contains(node)
+    }
+    pub fn delay(&self, node: &str) -> Option<Duration> {
+        lock(&self.delay_to).get(node).copied()
     }
 }
 
@@ -54,6 +69,8 @@ pub struct Peer {
     kill: Notify,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     faults: Arc<Faults>,
+    /// Test fault: frames kept back (in order) until released.
+    held: Mutex<Option<Vec<Vec<u8>>>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -80,6 +97,7 @@ impl Peer {
             kill: Notify::new(),
             task: Mutex::new(None),
             faults,
+            held: Mutex::new(None),
         });
         let t = tokio::spawn(p.clone().dial_loop(me, tls));
         *lock(&p.task) = Some(t);
@@ -106,10 +124,35 @@ impl Peer {
 
     /// Queues a frame; false when not connected. A full queue closes the
     /// connection (the peer resyncs its clients when it is back).
+    /// Test fault: keep frames back from now on.
+    pub fn hold(&self) {
+        let mut h = lock(&self.held);
+        if h.is_none() {
+            *h = Some(vec![]);
+        }
+    }
+
+    /// Lets held frames go, in order, before any later one.
+    pub fn release(&self) {
+        let mut h = lock(&self.held);
+        for f in h.take().unwrap_or_default() {
+            self.send_now(f);
+        }
+    }
+
     pub fn send(&self, frame: Vec<u8>) -> bool {
         if self.faults.is_cut_to(&self.node_id) {
             return false;
         }
+        let mut h = lock(&self.held);
+        if let Some(buf) = h.as_mut() {
+            buf.push(frame);
+            return true;
+        }
+        self.send_now(frame)
+    }
+
+    fn send_now(&self, frame: Vec<u8>) -> bool {
         let mut g = lock(&self.tx);
         let Some(tx) = g.as_ref() else { return false };
         match tx.try_send(frame) {
@@ -131,27 +174,31 @@ impl Peer {
         }
     }
 
-    /// A request and its answer; None when not connected, the connection
-    /// dropped or no answer came in time (the result is then unknown).
+    /// A request and its answer. `NotSent` (not connected) may be tried
+    /// elsewhere; `Unknown` (connection lost or no answer in time) must not
+    /// be resent, its outcome is open.
     pub async fn request(
         &self,
         db: usize,
         shard: u32,
         op: serde_json::Value,
         wait: Duration,
-    ) -> Option<ForwardResp> {
+    ) -> Result<ForwardResp, Unsent> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         lock(&self.pending).insert(id, tx);
-        let f =
-            codec::encode_json(Kind::ForwardReq, &codec::ForwardReq { id, db, shard, op }).ok()?;
+        let f = codec::encode_json(Kind::ForwardReq, &codec::ForwardReq { id, db, shard, op })
+            .map_err(|_| Unsent::NotSent)?;
         if !self.send(f) {
             lock(&self.pending).remove(&id);
-            return None;
+            return Err(Unsent::NotSent);
         }
         let r = tokio::time::timeout(wait, rx).await;
         lock(&self.pending).remove(&id);
-        r.ok()?.ok()
+        match r {
+            Ok(Ok(r)) => Ok(r),
+            _ => Err(Unsent::Unknown),
+        }
     }
 
     async fn dial_loop(self: Arc<Peer>, me: Hello, tls: Arc<rustls::ClientConfig>) {
@@ -209,7 +256,12 @@ impl Peer {
             loop {
                 tokio::select! {
                     f = rx.recv() => match f {
-                        Some(f) => wr.write_all(&f).await.map_err(|e| e.to_string())?,
+                        Some(f) => {
+                            if let Some(d) = self.faults.delay(&self.node_id) {
+                                tokio::time::sleep(d).await;
+                            }
+                            wr.write_all(&f).await.map_err(|e| e.to_string())?
+                        }
                         None => return Ok::<(), String>(()),
                     },
                     _ = ping.tick() => {

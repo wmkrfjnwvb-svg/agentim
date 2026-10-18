@@ -78,6 +78,10 @@ struct Inner {
     /// Conversations whose control index a failed write left behind, with
     /// the departure seq of members known to have left.
     index_dirty: Mutex<HashMap<String, HashMap<String, i64>>>,
+    /// This node is going away (leaving a cluster): not ready, and every
+    /// connection is told to reconnect elsewhere.
+    going_away: std::sync::atomic::AtomicBool,
+    away: tokio::sync::Notify,
 }
 
 fn hash_slot_count(cfg: &Config) -> usize {
@@ -253,6 +257,8 @@ impl Hub {
                 auth_epoch: Default::default(),
                 mcp_pending: Mutex::default(),
                 index_dirty: Mutex::default(),
+                going_away: Default::default(),
+                away: tokio::sync::Notify::new(),
             }),
         };
         Ok(hub)
@@ -2332,6 +2338,7 @@ impl Hub {
             ClientMsg::Sync { limit } => self.sync(sess, limit).await,
             ClientMsg::Ack { acks } => self.ack(sess, acks).await,
             ClientMsg::Unread => self.unread_summary(me).await,
+            ClientMsg::Heads { conv_ids } => self.heads(me, &conv_ids).await,
             ClientMsg::SetPrefs {
                 read_silences_others,
             } => self.set_prefs(me, read_silences_others).await,
@@ -3177,8 +3184,49 @@ impl Hub {
     // ------------------------------------------------------------- operate
 
     /// Readiness: every database accepts writes and no queue is near full.
+    /// Tells every connection to reconnect to another node, and stops
+    /// reporting ready (a node leaving a cluster, docs/11 §7).
+    pub fn go_away(&self) {
+        self.inner
+            .going_away
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.inner.away.notify_waiters();
+    }
+
+    /// Ready again after `go_away` (the reason went away).
+    pub fn come_back(&self) {
+        self.inner
+            .going_away
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Completes when `go_away` is called.
+    pub async fn going_away(&self) {
+        loop {
+            let n = self.inner.away.notified();
+            if self
+                .inner
+                .going_away
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return;
+            }
+            n.await;
+        }
+    }
+
     pub fn health(&self) -> Value {
-        let mut ready = true;
+        let mut ready = !self
+            .inner
+            .going_away
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let cluster = match self.inner.sh.cluster.get().map(|c| c.ready()) {
+            Some(Err(why)) => {
+                ready = false;
+                Some(why)
+            }
+            _ => None,
+        };
         let dbs: Vec<Value> = self
             .inner
             .shards
@@ -3192,7 +3240,7 @@ impl Hub {
                 json!({"database": s.name, "failed": failed, "queue_depth": s.health.depth(), "saturated": saturated})
             })
             .collect();
-        json!({"ready": ready, "databases": dbs})
+        json!({"ready": ready, "databases": dbs, "cluster": cluster})
     }
 
     pub fn storage_failed(&self) -> Option<String> {

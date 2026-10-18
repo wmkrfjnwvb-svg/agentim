@@ -556,7 +556,7 @@ impl Writer {
                     touched.insert(crate::cluster::shard_of(s, c.shards()));
                 }
                 for s in &touched {
-                    let ok = match c.held(self.idx, *s) {
+                    let ok = match c.writing(self.idx, *s) {
                         None => false,
                         Some(l) => {
                             sqlx::query(self.dialect.q(

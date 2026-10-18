@@ -70,6 +70,7 @@ pub const OPS: &[&str] = &[
     "ack",
     "set_mute",
     "unread",
+    "heads",
     "set_prefs",
     "observe",
     "set_password",

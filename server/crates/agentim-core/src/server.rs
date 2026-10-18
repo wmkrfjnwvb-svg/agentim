@@ -426,6 +426,16 @@ async fn run_socket(
                 let _ = res_tx.send(Message::Ping(Vec::new().into())).await;
                 continue;
             }
+            // This node is leaving: reconnect to another one.
+            _ = hub.going_away() => {
+                let _ = res_tx
+                    .send(Message::Close(Some(CloseFrame {
+                        code: close_code::RESTART,
+                        reason: "server_restart".into(),
+                    })))
+                    .await;
+                break;
+            }
             // Logged out: tell the client why, then close.
             _ = session.kicked() => {
                 let _ = res_tx

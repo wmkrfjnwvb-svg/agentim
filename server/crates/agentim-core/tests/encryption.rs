@@ -187,11 +187,14 @@ async fn check(hub: &Hub, alice: &User, bob: &User, conv: &str) {
         .await
         .to_string();
     assert!(fb.contains(&format!("{MARK} reason")), "{fb}");
+    // D97: the audit keeps a hash of the approved draft, not its text.
     let audit = hub.audit_log(100).await.unwrap();
-    assert!(
-        format!("{audit:?}").contains(&format!("{MARK} draft")),
-        "audit snapshot readable"
-    );
+    let approved = audit
+        .iter()
+        .find(|r| r["action"] == "draft.approved")
+        .expect("audited");
+    assert!(approved["detail"]["draft_sha256"].is_string(), "audit readable");
+    assert!(!format!("{audit:?}").contains(&format!("{MARK} draft")));
 }
 
 async fn nothing_is_readable_at_rest(db: TestDb) {

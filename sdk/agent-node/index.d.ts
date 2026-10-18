@@ -71,7 +71,8 @@ export class Connection {
 }
 
 export class Agent {
-  constructor(o: { url: string; key: string; name?: string; log?: (m: string) => void });
+  /** `positionCheckMs`: how often the agent checks it has every message (default 30 s). */
+  constructor(o: { url: string; key: string; name?: string; log?: (m: string) => void; positionCheckMs?: number });
   /** The agent itself, after `start()`. */
   me: { id: string; name: string; kind: string; owner_id?: string } | null;
   /** Messages that ask this agent to act (named, replied to, or by its trigger). */

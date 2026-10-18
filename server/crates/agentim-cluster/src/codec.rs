@@ -23,6 +23,10 @@ pub const MAX_BODY: usize = 8 << 20;
 /// Protocol versions this program speaks.
 pub const PROTO_MIN: u32 = 1;
 pub const PROTO_MAX: u32 = 1;
+/// What this version can do beyond protocol 1; a node sends a peer only
+/// what the peer declared (docs/11 §6.3). Commands a peer does not know
+/// come back `unsupported_op`.
+pub const CAPABILITIES: &[&str] = &["forward", "publish", "check"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -61,6 +65,8 @@ pub struct Hello {
     pub proto_max: u32,
     #[serde(default)]
     pub version: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +173,7 @@ mod tests {
             proto_min: 1,
             proto_max: 1,
             version: "x".into(),
+            capabilities: vec!["forward".into()],
         };
         let f = encode_json(Kind::Hello, &hello).unwrap();
         let (k, body) = read(&mut &f[..]).await.unwrap().unwrap();
@@ -178,6 +185,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(h.version, "");
+        assert!(h.capabilities.is_empty(), "an older node declares none");
         // Every kind round-trips; unknown kinds are reported, not errors.
         for k in [1u8, 3, 4, 5, 6, 7, 8] {
             assert_eq!(Kind::from_u8(k).unwrap() as u8, k);
