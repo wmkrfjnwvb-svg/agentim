@@ -193,7 +193,10 @@ async fn check(hub: &Hub, alice: &User, bob: &User, conv: &str) {
         .iter()
         .find(|r| r["action"] == "draft.approved")
         .expect("audited");
-    assert!(approved["detail"]["draft_sha256"].is_string(), "audit readable");
+    assert!(
+        approved["detail"]["draft_sha256"].is_string(),
+        "audit readable"
+    );
     assert!(!format!("{audit:?}").contains(&format!("{MARK} draft")));
 }
 
