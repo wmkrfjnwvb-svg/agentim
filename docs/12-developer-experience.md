@@ -36,7 +36,9 @@ agentim                                    # 打开 http://127.0.0.1:8080
 
 **测试**：发布流程在每个 PR 上空跑一次（构建全部目标、不上传）；安装脚本在 Linux、macOS、Windows 的 CI 机器上真实安装并启动，检查 `/readyz` 和发第一条消息；第一次运行的密钥生成测试覆盖：没有密钥文件、已有密钥文件、密钥文件权限过宽（拒绝并说明）、目录不可写。
 
-## 2. P2 TypeScript 客户端 SDK
+## 2. 客户端 SDK
+
+### 2.1 TypeScript（P2，第 2 步）
 
 包名 `@agentim/client`，纯 TypeScript，无运行时依赖；同时支持浏览器、React Native 和 Node 18+（测试用）。它是给**人用的应用**的 SDK；现有的 Agent SDK（`sdk/agent-node`、`sdk/agent-python`）继续服务 Agent，两者共用协议，以后可以共用传输层。
 
@@ -61,6 +63,22 @@ agentim                                    # 打开 http://127.0.0.1:8080
 - 故障：测试里用一个 WebSocket 代理制造断线、延迟、丢帧，检查不丢、不重、不乱。
 - 浏览器：Playwright 在 Chromium、Firefox、WebKit 里跑 IndexedDB 缓存和重连。
 - 发布到 npm 时带来源证明（`npm publish --provenance`）。
+
+### 2.2 其他平台（第 4 步，D104 待确认）
+
+开发者要的是**每个平台都有、用起来一样、不出错**（游戏用 C# / Unity，手机 App 用 Swift、Kotlin、Flutter）。每种语言各写一遍同步、重试、缓存，既慢又难保证一致，所以除 Web 外共用一个 Rust 核心：
+
+| 层 | 内容 |
+|---|---|
+| Rust 核心 | 连接和重连、握手、按 seq 同步和补缺口、发送队列和 `client_msg_id` 重试、本地 SQLite 缓存（按值加密）、流式消息拼接、审批和请人决定；行为和 §2.1 完全一致 |
+| Swift、Kotlin、Python | 用 UniFFI 生成（Mozilla 在 Firefox 里用、matrix-rust-sdk 也用这一套） |
+| C#（Unity、.NET） | 核心导出 C 接口，C# 封装由工具生成（csbindgen 或 uniffi-bindgen-cs）；Unity 打包 iOS、Android、Windows、macOS、Linux 的原生库，发布到 NuGet 和 Unity 的包管理（OpenUPM）；Unity 的 WebGL 平台改用 §2.1 的 TypeScript SDK |
+| Flutter | flutter_rust_bridge |
+
+- **一致性**：TypeScript 和 Rust 核心跑同一套协议一致性场景（§2.1 的测试），任何一边行为不同 CI 就失败。
+- **稳定**：语义化版本；协议靠能力协商兼容，旧 SDK 连新服务端不会坏；每种语言都有"未知事件"分支。
+- **好用**：每种语言的接口按该语言的习惯（Swift 的 async、Kotlin 的协程和 Flow、C# 的 async/await 和事件、Unity 在主线程回调）；每个平台一个能直接运行的示例项目和 5 分钟快速开始。
+- **测试**：各语言的封装在对应平台的 CI 机器上真实跑（iOS 模拟器、Android 模拟器、Windows、macOS、Linux、Unity 批处理模式）。
 
 ## 3. P3 React 界面组件
 
