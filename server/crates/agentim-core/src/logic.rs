@@ -3796,7 +3796,13 @@ impl Ctx<'_, '_> {
                 "draft.approved",
                 Some(&d.conv_id),
                 Some(draft_id),
-                json!({"edited": d.content}),
+                // D97: whether a person changed it and a hash of the draft
+                // (oversight evidence), never the draft's text: it would
+                // outlive a recall or deletion of the message.
+                json!({
+                    "edited": edited,
+                    "draft_sha256": hex::encode(<sha2::Sha256 as sha2::Digest>::digest(d.content.as_bytes())),
+                }),
             )
             .await?;
         metrics::counter!(m::DRAFTS, "state" => "approved").increment(1);

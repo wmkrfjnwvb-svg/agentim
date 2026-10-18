@@ -588,6 +588,27 @@ async fn approved_drafts_carry_the_approval(db: TestDb) {
         assert_eq!(e["data"]["approval"]["by"], json!(w.alice.id));
         assert_eq!(e["data"]["approval"]["edited"], edited, "{text}");
     }
+    // D97: the audit records whether it was edited and a hash of the
+    // draft, never the draft's text.
+    let audit = w.hub.audit_log(50).await.unwrap();
+    let approved: Vec<&Value> = audit
+        .iter()
+        .filter(|r| r["action"] == "draft.approved")
+        .collect();
+    assert_eq!(approved.len(), 3);
+    let all = serde_json::to_string(&audit).unwrap();
+    for t in ["as written", "to be edited", "third"] {
+        assert!(!all.contains(t), "draft text in the audit: {t}");
+    }
+    let edits: Vec<bool> = approved
+        .iter()
+        .rev()
+        .map(|r| r["detail"]["edited"].as_bool().unwrap())
+        .collect();
+    assert_eq!(edits, [false, true, false]);
+    for r in &approved {
+        assert_eq!(r["detail"]["draft_sha256"].as_str().unwrap().len(), 64);
+    }
 }
 
 /// The owner and every assignee decide the same request at once, also
