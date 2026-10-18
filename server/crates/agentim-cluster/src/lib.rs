@@ -10,6 +10,7 @@
 //! Start-up: `Hub::open_deferred` → [`join`] → [`Node::start`] →
 //! `Hub::finish_open` (its writes go to the shards' holders).
 
+pub mod admin;
 pub mod assign;
 pub mod ca;
 pub mod codec;
@@ -328,6 +329,12 @@ pub async fn join(hub: &Hub) -> Result<Node, String> {
 
 /// For the server programs (`cli::run_with`): joins and starts; the node
 /// runs until the process ends.
+/// The cluster support the server binaries plug into the command line.
+pub const SUPPORT: agentim_core::cli::ClusterSupport = agentim_core::cli::ClusterSupport {
+    join: join_and_start,
+    admin: admin::run,
+};
+
 pub fn join_and_start(hub: Hub) -> agentim_core::cluster::BoxFuture<Result<(), String>> {
     Box::pin(async move {
         let node = join(&hub).await?;
@@ -668,11 +675,21 @@ impl Inner {
         t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             t.tick().await;
-            self.membership_round().await;
+            if self.membership_round().await {
+                // `agentim cluster drain` (docs/11 §7): leave like on
+                // SIGTERM, but keep the process for the operator to stop.
+                tracing::info!(node = self.node_id, "drained by an operator; leaving");
+                let n = Node {
+                    inner: self.clone(),
+                };
+                tokio::spawn(async move { n.leave().await });
+                return;
+            }
         }
     }
 
-    async fn membership_round(&self) {
+    /// True when an operator drained this node.
+    async fn membership_round(&self) -> bool {
         let c = &self.dbs[self.control];
         let state = if self.started.elapsed() < settle(&self.cfg) {
             "joining"
@@ -697,15 +714,18 @@ impl Inner {
                 for db in &self.dbs {
                     db.held.write().unwrap().clear();
                 }
-                return;
+                return false;
             }
-            _ => return,
+            _ => return false,
         }
         let Ok(Ok((rows, now))) =
             tokio::time::timeout(self.op_timeout(), sql::nodes(&c.pool, c.dialect)).await
         else {
-            return;
+            return false;
         };
+        let drained = rows.iter().any(|r| {
+            r.node_id == self.node_id && r.boot_id == self.boot_id && r.state == sql::DRAINING
+        });
         let old: HashMap<(String, String), Instant> = self
             .live
             .read()
@@ -721,7 +741,7 @@ impl Inner {
                     .get(&(r.node_id.clone(), r.boot_id.clone()))
                     .copied()
                     .unwrap_or_else(Instant::now),
-                leaving: r.state == "leaving",
+                leaving: r.state == "leaving" || r.state == sql::DRAINING,
                 node_id: r.node_id,
                 boot_id: r.boot_id,
                 addr: r.addr,
@@ -755,7 +775,18 @@ impl Inner {
                 }
             }
         }
+        // Cluster gauges for dashboards and alerts (deploy/alerts.yml).
+        metrics::gauge!("agentim_cluster_nodes_live").set(live.len() as f64);
+        for db in &self.dbs {
+            metrics::gauge!("agentim_cluster_shards_held", "database" => db.name.clone())
+                .set(db.held.read().unwrap().len() as f64);
+        }
+        let ready = !self.leaving.load(Ordering::SeqCst)
+            && !self.stopped.load(Ordering::SeqCst)
+            && self.fail_streak.load(Ordering::SeqCst) < FAILED_ROUNDS;
+        metrics::gauge!("agentim_cluster_ready").set(if ready { 1.0 } else { 0.0 });
         *self.live.write().unwrap() = live;
+        drained
     }
 
     async fn lease_loop(self: Arc<Self>) {

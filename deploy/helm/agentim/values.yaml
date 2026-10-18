@@ -1,0 +1,36 @@
+# Nodes (a StatefulSet: each pod's name is its stable cluster node id).
+replicas: 3
+
+image:
+  repository: agentim
+  tag: local
+  pullPolicy: IfNotPresent
+
+# The agentim.toml every node uses. Database URLs and the master key come
+# from existingSecret (keys: database-url, master-key).
+existingSecret: agentim
+config:
+  shards: 256
+  readPool: 8
+  # Replicas of the database (docs/11 §8): auto, managed_sync or none.
+  replicationMode: auto
+
+resources:
+  requests: {cpu: 500m, memory: 512Mi}
+  limits: {memory: 2Gi}
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# Pods leave gracefully on SIGTERM (shards handed over at once); give them
+# time to finish.
+terminationGracePeriodSeconds: 30
+
+podDisruptionBudget:
+  maxUnavailable: 1
+
+serviceMonitor:
+  enabled: false
+prometheusRule:
+  enabled: false

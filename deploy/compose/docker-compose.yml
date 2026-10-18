@@ -1,0 +1,55 @@
+# A three-node AgentIM cluster for trying things out (docs/11 C4):
+#   openssl rand -base64 32 > master.key
+#   docker compose up -d --build
+#   open http://localhost:8080
+# The load balancer (Caddy) sends each client to a ready node; stopping a
+# node (docker compose stop agentim-2) hands its shards over at once.
+x-agentim: &agentim
+  build:
+    context: ../..
+    dockerfile: deploy/Dockerfile
+  image: agentim:local
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+  volumes:
+    - ./agentim.toml:/etc/agentim/agentim.toml:ro
+  secrets: [master_key]
+  stop_grace_period: 30s
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: agentim
+      POSTGRES_PASSWORD: agentim
+      POSTGRES_DB: agentim
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "agentim"]
+      interval: 2s
+      retries: 30
+
+  agentim-1:
+    <<: *agentim
+    environment: {AGENTIM_NODE_ID: agentim-1, AGENTIM_CLUSTER_ADVERTISE: "agentim-1:7946"}
+  agentim-2:
+    <<: *agentim
+    environment: {AGENTIM_NODE_ID: agentim-2, AGENTIM_CLUSTER_ADVERTISE: "agentim-2:7946"}
+  agentim-3:
+    <<: *agentim
+    environment: {AGENTIM_NODE_ID: agentim-3, AGENTIM_CLUSTER_ADVERTISE: "agentim-3:7946"}
+
+  lb:
+    image: caddy:2
+    ports: ["8080:8080"]
+    volumes: [./Caddyfile:/etc/caddy/Caddyfile:ro]
+    depends_on: [agentim-1, agentim-2, agentim-3]
+
+secrets:
+  master_key:
+    file: ./master.key
+
+volumes:
+  pgdata:

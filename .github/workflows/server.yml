@@ -81,6 +81,24 @@ jobs:
           AGENTIM_TEST_EDITION: lite
         run: cargo test --test editions --test hub --test multidb --test scenarios --test concurrency --test membership --test coverage --test protocol --test schema --test extensions --test webhooks --test devices --test open_api --test transport --test accounts --test encryption --test edges --test sync --test agents --test mcp --test requests --test routing --test tasks --test history --test state --test lifecycle --test migrate --test ai --test audit --test team_agents
 
+  replicas:
+    name: database replicas and failover (PostgreSQL 16, MySQL 8.4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - run: docker pull mysql:8.4
+      - name: acknowledged writes survive a failover (docs/11 §8, §12.5)
+        env:
+          AGENTIM_TEST_REPLICAS: "1"
+        run: cargo test --test replicas -- --nocapture --test-threads 1 2>&1 | tee replicas.txt; test ${PIPESTATUS[0]} -eq 0
+      - name: both replica tests ran
+        run: test "$(grep -c '_replicas_keep_acknowledged_writes ... ok' replicas.txt)" -eq 2
+
   load:
     name: load (${{ matrix.os }}, ${{ matrix.name }})
     runs-on: ${{ matrix.os }}

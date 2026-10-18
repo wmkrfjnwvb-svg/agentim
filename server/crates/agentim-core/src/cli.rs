@@ -74,6 +74,26 @@ enum Cmd {
         #[command(subcommand)]
         action: AgentCmd,
     },
+    /// The cluster (docs/11 §7). Works while the nodes run; reads and
+    /// writes the cluster tables only.
+    Cluster {
+        #[command(subcommand)]
+        action: ClusterCmd,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ClusterCmd {
+    /// Nodes (state, last heartbeat, version) and who holds the shards of
+    /// each database.
+    Status,
+    /// Takes a node out of service: it hands every shard to the next
+    /// preferred node, reports not ready and sends its clients elsewhere.
+    /// Stop the process afterwards; starting it again brings it back.
+    Drain {
+        #[arg(long)]
+        node: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -216,11 +236,21 @@ fn init_logging(format: &str) {
 /// `agentim-cluster` crate provides it (docs/11).
 pub type ClusterJoin = fn(Hub) -> crate::cluster::BoxFuture<Result<(), String>>;
 
+/// `cluster` commands, run without opening the hub.
+pub type ClusterAdmin = fn(Config, ClusterCmd) -> crate::cluster::BoxFuture<Result<(), String>>;
+
+/// What the `agentim-cluster` crate provides.
+#[derive(Clone, Copy)]
+pub struct ClusterSupport {
+    pub join: ClusterJoin,
+    pub admin: ClusterAdmin,
+}
+
 pub async fn run(edition: Edition) {
     run_with(edition, None).await
 }
 
-pub async fn run_with(edition: Edition, cluster: Option<ClusterJoin>) {
+pub async fn run_with(edition: Edition, cluster: Option<ClusterSupport>) {
     let cmd = Args::command()
         .name(edition.binary())
         .about(format!("{} server", edition.product()));
@@ -233,6 +263,17 @@ pub async fn run_with(edition: Edition, cluster: Option<ClusterJoin>) {
         }),
         None => Config::single_sqlite(&args.db),
     };
+    if let Some(Cmd::Cluster { action }) = &args.cmd {
+        let Some(c) = cluster else {
+            eprintln!("this build has no cluster support");
+            std::process::exit(1)
+        };
+        if let Err(e) = (c.admin)(cfg, action.clone()).await {
+            eprintln!("cluster: {e}");
+            std::process::exit(1)
+        }
+        return;
+    }
     if let Some(Cmd::Encryption {
         action: EncCmd::GenerateKey,
     }) = &args.cmd
@@ -261,7 +302,7 @@ pub async fn run_with(edition: Edition, cluster: Option<ClusterJoin>) {
         }
     };
     if clustered {
-        let Some(join) = cluster else {
+        let Some(ClusterSupport { join, .. }) = cluster else {
             tracing::error!("this build has no cluster support");
             std::process::exit(1)
         };

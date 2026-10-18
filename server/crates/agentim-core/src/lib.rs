@@ -19,6 +19,7 @@ pub mod open_api;
 pub mod policy;
 pub mod protocol;
 pub mod registry;
+pub mod replication;
 pub mod server;
 pub mod shard;
 pub mod storage;

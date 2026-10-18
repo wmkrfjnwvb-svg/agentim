@@ -22,6 +22,7 @@ use crate::logic::{Ctx, Op, ShardState, Shared};
 use crate::metrics as m;
 use crate::model::*;
 use crate::registry::Out;
+use crate::replication::{self, Mode};
 use crate::storage::{self, Dialect};
 use crate::webhook::Wake;
 
@@ -38,6 +39,8 @@ pub struct Health {
     pub jobs: AtomicU64,
     pub batches: AtomicU64,
     pub max_batch: AtomicU64,
+    /// Committed batches the replicas have not confirmed yet.
+    pub unconfirmed: AtomicU64,
 }
 
 impl Health {
@@ -97,6 +100,8 @@ pub struct Shard {
     pub crypto: Arc<crate::crypto::Crypto>,
     /// For the cluster (routing to the node holding a shard).
     shared: Arc<Shared>,
+    /// How writes are kept safe from a primary failure (docs/11 §8.1).
+    pub mode: Mode,
 }
 
 impl Shard {
@@ -125,9 +130,45 @@ impl Shard {
                 ));
             }
         }
+        let mode = replication::detect(&mut conn, dialect, &cfg.replication)
+            .await
+            .map_err(|e| ApiError::new("replication", format!("database {}: {e}", cfg.name)))?;
+        // Conversations from before schema v6 count as replicated.
+        Db {
+            c: &mut conn,
+            d: dialect,
+            cx: &crate::crypto::Crypto::default(),
+            cap: false,
+            confirm_now: false,
+        }
+        .confirm_old()
+        .await?;
+        let (identity, writable) = replication::identity(&mut conn, dialect)
+            .await
+            .map_err(|e| ApiError::new("replication", format!("database {}: {e}", cfg.name)))?;
+        if !writable {
+            return Err(ApiError::new(
+                "replication",
+                format!(
+                    "database {}: connected to a replica or a read-only server, not the primary",
+                    cfg.name
+                ),
+            ));
+        }
         let crypto = Arc::new(open_crypto(&mut conn, dialect, &cfg.name, master_key).await?);
         storage::writer_timeouts(&mut conn, dialect, wcfg.cluster_stop_ms).await?;
         let read = storage::open_pool(&cfg.url, dialect, cfg.read_pool.unwrap_or(8)).await?;
+        let mut replicas = vec![];
+        if mode == Mode::AppWait && dialect == Dialect::Mysql {
+            for u in &cfg.replication.replica_urls {
+                replicas.push(storage::open_pool(u, dialect, 2).await?);
+            }
+        }
+        tracing::info!(
+            database = cfg.name,
+            mode = mode.as_str(),
+            "replication mode"
+        );
         // Webhook outbox: next id, and cursors for webhooks new to this
         // database start at the end (no replay of history).
         let max: Option<i64> = sqlx::query("SELECT MAX(id) FROM webhook_outbox")
@@ -167,6 +208,12 @@ impl Shard {
             outbox_patterns: webhooks.iter().flat_map(|w| w.events.clone()).collect(),
             wake: wake.clone(),
             crypto: crypto.clone(),
+            mode,
+            identity,
+            reset_state: false,
+            replicas,
+            rcfg: cfg.replication.clone(),
+            held: Held::default(),
         };
         tokio::spawn(w.run(rx));
         tracing::info!(
@@ -185,6 +232,7 @@ impl Shard {
                 tx,
                 crypto,
                 shared,
+                mode,
             },
             wake,
         ))
@@ -254,10 +302,17 @@ impl Shard {
         }
     }
 
+    /// Reads stop at what the replicas have (docs/11 §8.3).
+    pub fn app_wait(&self) -> bool {
+        self.mode == Mode::AppWait
+    }
+
     pub fn writer_stats(&self) -> Value {
         json!({
             "database": self.name,
             "dialect": self.dialect.as_str(),
+            "replication": self.mode.as_str(),
+            "unconfirmed": self.health.unconfirmed.load(Ordering::Relaxed),
             "jobs": self.health.jobs.load(Ordering::Relaxed),
             "batches": self.health.batches.load(Ordering::Relaxed),
             "max_batch": self.health.max_batch.load(Ordering::Relaxed),
@@ -284,9 +339,126 @@ struct Writer {
     outbox_patterns: Vec<String>,
     wake: Wake,
     crypto: Arc<crate::crypto::Crypto>,
+    mode: Mode,
+    /// Which primary the writer last wrote to (docs/11 §8.4).
+    identity: String,
+    /// Cached conversation state is dropped before the next batch (the
+    /// primary changed under it).
+    reset_state: bool,
+    /// MySQL replicas checked directly.
+    replicas: Vec<AnyPool>,
+    rcfg: crate::config::ReplicationConfig,
+    held: Held,
+}
+
+/// Committed but not yet confirmed by the replicas (docs/11 §8.2): not
+/// delivered, not readable; a later confirmation covers them too.
+#[derive(Default)]
+struct Held {
+    batches: u64,
+    outs: Vec<Out>,
+    upto: std::collections::BTreeMap<String, i64>,
+    wake: Option<i64>,
 }
 
 impl Writer {
+    /// Whether this batch (and everything held before it) is safe from a
+    /// primary failure; advances the read watermark when it is.
+    async fn confirm(&mut self) -> Result<(), String> {
+        match self.mode {
+            Mode::AppWait => {
+                // Test-only mutation (docs/11 §12.1): without the wait the
+                // replica test must fail.
+                let skip = self
+                    .shared
+                    .failpoints
+                    .hit("mutation.no_replica_wait")
+                    .await
+                    .is_err();
+                if !skip {
+                    let pos = replication::position(&mut self.conn, self.dialect).await?;
+                    if self
+                        .shared
+                        .failpoints
+                        .hit(crate::failpoint::REPLICA_WAIT)
+                        .await
+                        .is_err()
+                    {
+                        return Err("injected: the replicas did not confirm".into());
+                    }
+                    replication::wait(
+                        self.dialect,
+                        &mut self.conn,
+                        &self.identity,
+                        &self.replicas,
+                        self.rcfg.replicas_required,
+                        &pos,
+                        Duration::from_millis(self.rcfg.wait_ms),
+                    )
+                    .await?;
+                }
+                let upto = std::mem::take(&mut self.held.upto);
+                let r = Db {
+                    c: &mut self.conn,
+                    d: self.dialect,
+                    cx: &self.crypto,
+                    cap: false,
+                    confirm_now: false,
+                }
+                .set_confirmed(&upto)
+                .await;
+                if let Err(e) = r {
+                    self.held.upto = upto;
+                    return Err(e.message);
+                }
+                Ok(())
+            }
+            Mode::DatabaseSync if self.dialect == Dialect::Mysql => {
+                // Semi-sync falls back to asynchronous on its own.
+                if replication::mysql_semi_sync_on(&mut self.conn).await? {
+                    Ok(())
+                } else {
+                    Err("MySQL semi-sync fell back to asynchronous".into())
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Delivers what was held once a confirmation covers it.
+    fn release_held(&mut self) {
+        let h = std::mem::take(&mut self.held);
+        if h.batches > 0 {
+            self.health.unconfirmed.store(0, Ordering::Relaxed);
+            metrics::gauge!(m::DB_UNCONFIRMED, "database" => self.name.clone()).set(0.0);
+        }
+        if let Some(last) = h.wake {
+            self.wake.send_replace(last);
+        }
+        self.shared.apply_tokens(&h.outs);
+        if let Some(c) = self.shared.cluster.get() {
+            c.publish(self.idx, &h.outs);
+        }
+        self.shared.reg.deliver(h.outs);
+    }
+
+    /// An idle writer with held batches keeps asking the replicas.
+    async fn retry_held(&mut self) {
+        if self.held.batches == 0 || self.broken {
+            return;
+        }
+        match self.confirm().await {
+            Ok(()) => {
+                tracing::info!(
+                    database = self.name,
+                    "held writes confirmed by the replicas"
+                );
+                self.release_held();
+            }
+            Err(e) => tracing::debug!(database = self.name, reason = e, "replicas still behind"),
+        }
+    }
+
     async fn run(mut self, mut rx: mpsc::Receiver<Job>) {
         let mut st = ShardState::new(&self.shared);
         // Cluster: an idle connection is checked a few times per stop time,
@@ -297,12 +469,21 @@ impl Writer {
             .cluster_stop_ms
             .map(|ms| Duration::from_millis((ms / 4).max(50)));
         loop {
-            let first = match keepalive {
+            let wait = if self.held.batches > 0 {
+                Some(Duration::from_millis(200))
+            } else {
+                keepalive
+            };
+            let first = match wait {
                 None => rx.recv().await,
                 Some(k) => match tokio::time::timeout(k, rx.recv()).await {
                     Ok(j) => j,
                     Err(_) => {
-                        self.ping().await;
+                        if self.held.batches > 0 {
+                            self.retry_held().await;
+                        } else {
+                            self.ping().await;
+                        }
                         continue;
                     }
                 },
@@ -337,6 +518,10 @@ impl Writer {
                 }
                 continue;
             }
+            if self.reset_state {
+                st = ShardState::new(&self.shared);
+                self.reset_state = false;
+            }
             self.run_batch(&mut st, batch).await;
         }
     }
@@ -346,10 +531,28 @@ impl Writer {
         let r = async {
             let mut c = storage::open_writer(&self.url, self.dialect).await?;
             storage::writer_timeouts(&mut c, self.dialect, self.cfg.cluster_stop_ms).await?;
-            Ok::<_, ApiError>(c)
+            // Only the primary takes writes (docs/11 §8.4).
+            let (id, writable) = replication::identity(&mut c, self.dialect)
+                .await
+                .map_err(|e| ApiError::new("storage", e))?;
+            if !writable {
+                return Err(ApiError::new("storage", "not the primary (read-only)"));
+            }
+            Ok::<_, ApiError>((c, id))
         };
         match tokio::time::timeout(Duration::from_secs(5), r).await {
-            Ok(Ok(c)) => {
+            Ok(Ok((c, id))) => {
+                if id != self.identity {
+                    tracing::warn!(
+                        database = self.name,
+                        before = self.identity,
+                        now = id,
+                        "the database primary changed"
+                    );
+                    metrics::counter!(m::DB_FAILOVERS, "database" => self.name.clone())
+                        .increment(1);
+                    self.identity = id;
+                }
                 self.conn = c;
                 self.broken = false;
                 tracing::info!(database = self.name, "writer reconnected");
@@ -381,6 +584,27 @@ impl Writer {
         }
     }
 
+    /// The server stopped being the primary, or ended the connection: the
+    /// batch's outcome is unknown, cached state and held writes are
+    /// dropped, and the next batch first finds the primary (docs/11 §8.4).
+    fn primary_lost(&mut self, why: &str) {
+        if self.shared.cluster.get().is_some() {
+            self.connection_lost(why);
+        } else {
+            tracing::warn!(
+                database = self.name,
+                reason = why,
+                "the database is not the primary any more"
+            );
+            metrics::counter!(m::STORAGE_ERRORS, "kind" => "not_primary").increment(1);
+            self.broken = true;
+        }
+        self.reset_state = true;
+        self.held = Held::default();
+        self.health.unconfirmed.store(0, Ordering::Relaxed);
+        metrics::gauge!(m::DB_UNCONFIRMED, "database" => self.name.clone()).set(0.0);
+    }
+
     /// Cluster keepalive on an idle writer.
     async fn ping(&mut self) {
         if self.broken {
@@ -404,7 +628,7 @@ impl Writer {
         // Cluster: commands for shards this node does not hold go back to
         // be routed again (they may have just moved).
         let cluster = self.shared.cluster.get().cloned();
-        if self.broken && cluster.is_some() && !self.reconnect().await {
+        if self.broken && !self.reconnect().await {
             for j in batch {
                 let _ = j.reply.send(Err(ApiError::new(
                     "unavailable",
@@ -440,13 +664,19 @@ impl Writer {
             }
         }
         let n = batch.len();
+        // Barriers measure the writer's progress (lease renewal) and wrote
+        // nothing: answered at commit, not after the replicas.
+        let marks: Vec<bool> = batch.iter().map(|j| matches!(j.op, Op::Barrier)).collect();
         let started = Instant::now();
         let fp = batch
             .iter()
             .any(|j| matches!(j.op, Op::Client { .. }))
             .then(|| self.shared.clone());
-        let mut replies: Vec<(oneshot::Sender<ApiResult<Value>>, ApiResult<Value>)> =
-            Vec::with_capacity(n);
+        // The answers stay outside the transaction's future, so a batch that
+        // fails half-way (or is cut off as stuck) still answers every job.
+        let (ops, senders): (Vec<Op>, Vec<oneshot::Sender<ApiResult<Value>>>) =
+            batch.into_iter().map(|j| (j.op, j.reply)).unzip();
+        let mut results: Vec<ApiResult<Value>> = Vec::with_capacity(n);
         let mut outs: Vec<Out> = Vec::new();
         let mut touched = routed;
         let mut lost: Vec<u32> = vec![];
@@ -466,8 +696,7 @@ impl Writer {
                 Connection::begin(&mut self.conn).await
             }
             .map_err(|e| e.to_string())?;
-            let mut jobs = batch.into_iter();
-            while let Some(job) = jobs.next() {
+            for op in ops {
                 let mut sp = Connection::begin(&mut *tx)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -479,6 +708,8 @@ impl Writer {
                             c: &mut sp,
                             d: self.dialect,
                             cx: &self.crypto,
+                            cap: false,
+                            confirm_now: self.mode != Mode::AppWait,
                         },
                         st,
                         sh: &self.shared,
@@ -487,11 +718,11 @@ impl Writer {
                         commit_on_error: false,
                         touched: &mut touched,
                     };
-                    let injected = !job.op.is_tick() && take_one(&self.health.fail_next_jobs);
+                    let injected = !op.is_tick() && take_one(&self.health.fail_next_jobs);
                     let res = if injected {
                         Err(ApiError::new("storage", "injected statement failure"))
                     } else {
-                        ctx.run(job.op).await
+                        ctx.run(op).await
                     };
                     let keep = ctx.commit_on_error && !injected;
                     (res, keep)
@@ -508,18 +739,20 @@ impl Writer {
                     && e.code == "storage"
                 {
                     metrics::counter!(m::STORAGE_ERRORS, "kind" => "statement").increment(1);
+                    // A server that is no longer the primary fails every
+                    // statement: the whole batch goes (docs/11 §8.4).
+                    if replication::is_not_primary(&e.message) {
+                        let _ = tx.rollback().await;
+                        return Err(e.message.clone());
+                    }
                     // MySQL rolls back the whole transaction on a deadlock:
                     // nothing of the batch can be kept (E2).
                     if storage::is_transient(&e.message) {
-                        replies.push((job.reply, Err(e.clone())));
-                        for j in jobs.by_ref() {
-                            replies.push((j.reply, Err(e.clone())));
-                        }
                         let _ = tx.rollback().await;
                         return Err(TRANSIENT.to_string());
                     }
                 }
-                replies.push((job.reply, res));
+                results.push(res);
             }
             let queued = queue_outbox(
                 &mut self.outbox_next,
@@ -611,6 +844,16 @@ impl Writer {
                 .await
                 .unwrap_or_else(|_| Err(STUCK.to_string())),
         };
+        let mut results = results.into_iter();
+        let replies: Vec<(oneshot::Sender<ApiResult<Value>>, ApiResult<Value>)> = senders
+            .into_iter()
+            .map(|r| {
+                let res = results
+                    .next()
+                    .unwrap_or_else(|| Err(ApiError::new("unavailable", "not run")));
+                (r, res)
+            })
+            .collect();
 
         match result {
             Ok(queued) => {
@@ -622,15 +865,58 @@ impl Writer {
                 if let Some(sh) = &fp {
                     let _ = sh.failpoints.hit(crate::failpoint::AFTER_COMMIT).await;
                 }
+                // Safe from a primary failure only once the replicas have
+                // it (docs/11 §8.2): until then nothing is delivered, read
+                // or acknowledged, and the next confirmation covers it.
+                for o in &outs {
+                    if let Out::Event { ev, .. } = o {
+                        let e = self.held.upto.entry(ev.conv_id.clone()).or_default();
+                        *e = (*e).max(ev.seq);
+                    }
+                }
+                self.held.batches += 1;
+                self.held.outs.extend(outs);
+                let replies: Vec<_> = replies
+                    .into_iter()
+                    .zip(marks)
+                    .filter_map(|((r, res), mark)| {
+                        if mark {
+                            let _ = r.send(res);
+                            None
+                        } else {
+                            Some((r, res))
+                        }
+                    })
+                    .collect();
+                if queued.is_some() {
+                    self.held.wake = queued;
+                }
+                if let Err(e) = self.confirm().await {
+                    metrics::counter!(m::STORAGE_ERRORS, "kind" => "replica_wait").increment(1);
+                    self.health
+                        .unconfirmed
+                        .store(self.held.batches, Ordering::Relaxed);
+                    metrics::gauge!(m::DB_UNCONFIRMED, "database" => self.name.clone())
+                        .set(self.held.batches as f64);
+                    tracing::warn!(
+                        database = self.name,
+                        reason = e,
+                        "write committed but not confirmed by the replicas"
+                    );
+                    for (r, res) in replies {
+                        // Refused commands wrote nothing: their answer stands.
+                        let _ = r.send(match res {
+                            Ok(_) => Err(ApiError::new(
+                                "unavailable",
+                                "the database replicas have not confirmed the write yet; retry with the same client_msg_id",
+                            )),
+                            Err(e) => Err(e),
+                        });
+                    }
+                    return;
+                }
                 // Durable now: deliver, then acknowledge.
-                if let Some(last) = queued {
-                    self.wake.send_replace(last);
-                }
-                self.shared.apply_tokens(&outs);
-                if let Some(c) = &cluster {
-                    c.publish(self.idx, &outs);
-                }
-                self.shared.reg.deliver(outs);
+                self.release_held();
                 for (r, res) in replies {
                     let _ = r.send(res);
                 }
@@ -665,6 +951,19 @@ impl Writer {
                     let _ = r.send(Err(ApiError::new(
                         "unavailable",
                         "the conversation moved to another node; retry",
+                    )));
+                }
+            }
+            Err(e)
+                if replication::is_not_primary(&e)
+                    || (self.dialect != Dialect::Sqlite && storage::is_connection_lost(&e)) =>
+            {
+                self.crypto.abort();
+                self.primary_lost(&e);
+                for (r, _) in replies {
+                    let _ = r.send(Err(ApiError::new(
+                        "unavailable",
+                        "the database primary changed; retry with the same client_msg_id",
                     )));
                 }
             }
@@ -773,6 +1072,8 @@ async fn queue_outbox(
             c: &mut *tx,
             d: dialect,
             cx: crypto,
+            cap: false,
+            confirm_now: false,
         };
         for (i, ev) in rows.iter().enumerate() {
             let id = *next + i as i64;

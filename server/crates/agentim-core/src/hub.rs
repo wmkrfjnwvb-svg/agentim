@@ -914,6 +914,8 @@ impl Hub {
             c: &mut c,
             d: shard.dialect,
             cx: &shard.crypto,
+            cap: shard.app_wait(),
+            confirm_now: false,
         };
         f(&mut db).await
     }

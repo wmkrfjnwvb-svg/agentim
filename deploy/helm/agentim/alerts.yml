@@ -1,0 +1,51 @@
+# Prometheus alerting rules for AgentIM (docs/11 §13, C4).
+groups:
+  - name: agentim
+    rules:
+      - alert: AgentIMDatabaseWritesStopped
+        expr: agentim_storage_healthy == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.instance }}: database {{ $labels.database }} stopped accepting writes"
+      - alert: AgentIMReplicasBehind
+        expr: agentim_db_unconfirmed_batches > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.database }}: the replicas have not confirmed writes for a minute; clients get unavailable (docs/11 §8.2)"
+      - alert: AgentIMDatabaseFailover
+        expr: increase(agentim_db_failovers_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.database }}: the database primary changed"
+      - alert: AgentIMNodeNotReady
+        expr: agentim_cluster_ready == 0
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }} is not taking clients (leaving, drained, or cannot renew its leases)"
+      - alert: AgentIMShardsUnheld
+        expr: sum by (database) (agentim_cluster_shards_held) == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.database }}: no node holds any shard"
+      - alert: AgentIMLeaseRenewFailures
+        expr: rate(agentim_cluster_renew_failures_total[5m]) > 0.1
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: lease renewals keep failing (database reachable?)"
+      - alert: AgentIMNodesMissing
+        expr: max(agentim_cluster_nodes_live) < count(agentim_cluster_ready)
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "fewer live nodes than running ones: a node cannot reach the control database"
+      - alert: AgentIMWriteQueueFull
+        expr: rate(agentim_write_rejected_total{reason="overloaded"}[5m]) > 1
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: writers are overloaded"

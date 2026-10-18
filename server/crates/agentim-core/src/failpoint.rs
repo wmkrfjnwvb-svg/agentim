@@ -14,6 +14,8 @@ use std::time::Duration;
 pub const BEFORE_FENCE: &str = "batch.before_fence";
 pub const BEFORE_COMMIT: &str = "batch.before_commit";
 pub const AFTER_COMMIT: &str = "batch.after_commit";
+/// The replica wait after a commit fails (docs/11 §8.2).
+pub const REPLICA_WAIT: &str = "batch.replica_wait";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {

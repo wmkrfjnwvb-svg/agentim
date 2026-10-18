@@ -23,6 +23,14 @@ read_pool = 8
 # [[storage.databases]]
 # name = "unit-b"
 # url = "postgres://agentim:secret@db-eu.internal/agentim_b"
+# Replicas (docs/11 §8): detected at start-up. With asynchronous replicas
+# a write is acknowledged only once they have it (wait_ms, then
+# "unavailable"); reads stop at what they have.
+# [storage.databases.replication]
+# mode = "auto"              # or "managed_sync" (RDS Multi-AZ, Cloud SQL HA), "none"
+# wait_ms = 5000
+# replicas_required = 1      # default: every replica that replicates
+# replica_urls = ["mysql://agentim:secret@db-replica-1/agentim_b"]  # MySQL only
 
 # [[units]]
 # name = "subsidiary-b"

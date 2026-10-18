@@ -1,0 +1,6 @@
+apiVersion: v2
+name: agentim
+description: AgentIM server cluster (docs/11)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

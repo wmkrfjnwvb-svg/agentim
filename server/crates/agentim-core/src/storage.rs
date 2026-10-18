@@ -12,7 +12,7 @@ use crate::model::{ApiError, ApiResult};
 
 /// Version of the schema in `TABLES`. Bump it together with a new entry in
 /// `MIGRATIONS` (docs/02-architecture.md §5.3).
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -157,6 +157,24 @@ pub fn is_transient(message: &str) -> bool {
         "serialization failure",
         "try restarting transaction",
         "database is locked",
+    ]
+    .iter()
+    .any(|p| m.contains(p))
+}
+
+/// The connection to the database broke (the server went away): the
+/// outcome of what was in flight is unknown.
+pub fn is_connection_lost(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    [
+        "error communicating with database",
+        "connection reset",
+        "broken pipe",
+        "unexpected end of file",
+        "connection refused",
+        "connection closed",
+        "server has gone away",
+        "lost connection",
     ]
     .iter()
     .any(|p| m.contains(p))
@@ -417,6 +435,8 @@ pub const TABLES: &[Table] = &[
             c("created_at", Big),
             // v2: custom fields.
             n("fields", Text),
+            // v6: the last seq the replicas have (docs/11 §8.3).
+            n("confirmed_seq", Big),
         ],
         pk: &["id"],
         indexes: &[],
@@ -981,6 +1001,15 @@ pub const MIGRATIONS: &[Migration] = &[
         steps: &[Step::AddColumn {
             table: "device_cursors",
             column: "told_state",
+        }],
+    },
+    Migration {
+        version: 6,
+        compat: 1,
+        about: "replicated position of each conversation",
+        steps: &[Step::AddColumn {
+            table: "conversations",
+            column: "confirmed_seq",
         }],
     },
 ];

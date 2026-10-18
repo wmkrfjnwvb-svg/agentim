@@ -22,6 +22,7 @@ use support::*;
 cluster_tests!(
     nodes_joining_under_traffic_cost_no_request,
     a_node_leaving_under_traffic_costs_no_request,
+    an_operator_drains_a_node_under_traffic,
     failing_renewals_stop_a_node_taking_clients,
     held_and_delayed_notifications_arrive_in_order,
     outputs_of_a_newer_node_are_skipped_one_by_one,
@@ -29,6 +30,22 @@ cluster_tests!(
     heads_from_any_node_show_where_conversations_stand,
     mutation_without_the_cache_poll_a_cut_off_node_keeps_a_revoked_token,
 );
+
+/// At least 8 conversations, some of them held by node `k` (shards are
+/// spread by hash: keep creating until one lands there).
+async fn convs_on(
+    nodes: &[(agentim_core::hub::Hub, agentim_cluster::Node)],
+    a: &Conn,
+    bob: &User,
+    k: usize,
+) -> Vec<String> {
+    let mut convs: Vec<String> = vec![];
+    while convs.len() < 8 || !convs.iter().any(|c| holder(nodes, c) == Some(k)) {
+        convs.push(a.group(&[bob]).await);
+        assert!(convs.len() < 100, "no conversation lands on node {k}");
+    }
+    convs
+}
 
 /// Senders that send each message once (no retry): every answer must be
 /// a success, or the operation was noticed.
@@ -111,14 +128,7 @@ async fn a_node_leaving_under_traffic_costs_no_request(db: TestDb) {
     let alice = user(&nodes[0].0, "alice", UserKind::Human, None).await;
     let bob = user(&nodes[0].0, "bob", UserKind::Human, None).await;
     let a = Conn::new(&nodes[0].0, &alice);
-    let mut convs = vec![];
-    for _ in 0..8 {
-        convs.push(a.group(&[&bob]).await);
-    }
-    assert!(
-        convs.iter().any(|c| holder(&nodes, c) == Some(2)),
-        "the leaving node holds some"
-    );
+    let convs = convs_on(&nodes, &a, &bob, 2).await;
     let stop = Arc::new(AtomicBool::new(false));
     let h = Arc::new(History::default());
     let tasks = senders(
@@ -155,6 +165,70 @@ async fn a_node_leaving_under_traffic_costs_no_request(db: TestDb) {
         let bad = t.await.unwrap();
         assert!(bad.is_empty(), "requests noticed the node leaving: {bad:?}");
     }
+    single_holders(&[&nodes[0].1, &nodes[1].1]);
+    h.check(&a).await;
+}
+
+async fn an_operator_drains_a_node_under_traffic(db: TestDb) {
+    use agentim_cluster::admin;
+    let nodes = cluster(&db, 3).await;
+    let cfg = nodes[0].0.config().clone();
+    let alice = user(&nodes[0].0, "alice", UserKind::Human, None).await;
+    let bob = user(&nodes[0].0, "bob", UserKind::Human, None).await;
+    let a = Conn::new(&nodes[0].0, &alice);
+    let convs = convs_on(&nodes, &a, &bob, 2).await;
+    let st = admin::status(&cfg).await.unwrap();
+    assert_eq!(st["nodes"].as_array().unwrap().len(), 3, "{st}");
+    let total: u64 = st["databases"][0]["held"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|v| v.as_u64().unwrap())
+        .sum();
+    assert_eq!(total, (SHARDS + 2) as u64, "every shard is held: {st}");
+    let name = nodes[2].1.node_id().to_string();
+    assert!(st["databases"][0]["held"][&name].as_u64().unwrap_or(0) > 0);
+    // Unknown nodes are refused and change nothing.
+    assert!(admin::drain(&cfg, "no-such-node").await.is_err());
+    let stop = Arc::new(AtomicBool::new(false));
+    let h = Arc::new(History::default());
+    let tasks = senders(
+        &[nodes[0].0.clone(), nodes[1].0.clone()],
+        &alice,
+        &convs,
+        stop.clone(),
+        h.clone(),
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    admin::drain(&cfg, &name).await.unwrap();
+    wait_for(
+        "the drained node hands everything over",
+        Duration::from_secs(10),
+        || {
+            nodes[2].1.ready().is_err()
+                && nodes[0].1.held(0).len() + nodes[1].1.held(0).len() == (SHARDS + 2) as usize
+        },
+    )
+    .await;
+    assert!(nodes[2].1.held(0).is_empty());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    stop.store(true, Ordering::SeqCst);
+    for t in tasks {
+        let bad = t.await.unwrap();
+        assert!(bad.is_empty(), "requests noticed the drain: {bad:?}");
+    }
+    let st = admin::status(&cfg).await.unwrap();
+    let mine = st["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["node_id"] == name.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(mine["state"], "left", "{st}");
+    assert!(st["databases"][0]["held"][&name].is_null(), "{st}");
+    // Draining it again: it no longer serves.
+    assert!(admin::drain(&cfg, &name).await.is_err());
     single_holders(&[&nodes[0].1, &nodes[1].1]);
     h.check(&a).await;
 }

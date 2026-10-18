@@ -222,6 +222,10 @@ pub fn is_duplicate(m: &str) -> bool {
     m.contains("duplicate key") || m.contains("Duplicate entry") || m.contains("UNIQUE")
 }
 
+/// Set by `agentim cluster drain`; the node's heartbeat keeps it until
+/// the node leaves.
+pub const DRAINING: &str = "draining";
+
 /// The heartbeat; false when another process took over this node id.
 pub async fn heartbeat(
     pool: &AnyPool,
@@ -231,10 +235,11 @@ pub async fn heartbeat(
     state: &str,
 ) -> Result<bool, String> {
     let sql = format!(
-        "UPDATE cluster_nodes SET heartbeat_at = {}, state = ? WHERE node_id = ? AND boot_id = ?",
+        "UPDATE cluster_nodes SET heartbeat_at = {}, state = CASE WHEN state = 'draining' AND ? IN ('joining', 'active') THEN state ELSE ? END WHERE node_id = ? AND boot_id = ?",
         now(d)
     );
     Ok(sqlx::query(d.q(&sql))
+        .bind(state)
         .bind(state)
         .bind(node_id)
         .bind(boot_id)
@@ -489,4 +494,17 @@ pub async fn check_server(pool: &AnyPool, d: Dialect) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Marks a serving node as draining; false when no such node serves.
+pub async fn drain(pool: &AnyPool, d: Dialect, node_id: &str) -> Result<bool, String> {
+    Ok(sqlx::query(d.q(
+        "UPDATE cluster_nodes SET state = 'draining' WHERE node_id = ? AND state IN ('joining', 'active')",
+    ))
+    .bind(node_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .rows_affected()
+        == 1)
 }

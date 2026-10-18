@@ -63,6 +63,10 @@ pub const DRAFTS: &str = "agentim_drafts_total";
 pub const APPROVAL_LATENCY: &str = "agentim_approval_latency_seconds";
 pub const TAKEOVERS: &str = "agentim_takeovers_total";
 pub const STORAGE_ERRORS: &str = "agentim_storage_errors_total";
+/// The writer found a different database primary after reconnecting.
+pub const DB_FAILOVERS: &str = "agentim_db_failovers_total";
+/// Batches committed but not yet confirmed by the replicas (docs/11 §8.2).
+pub const DB_UNCONFIRMED: &str = "agentim_db_unconfirmed_batches";
 /// Cluster: batches refused because a shard lease was no longer held.
 pub const FENCE_FAILURES: &str = "agentim_cluster_fence_failures_total";
 pub const WEBHOOK_DELIVERIES: &str = "agentim_webhook_deliveries_total";

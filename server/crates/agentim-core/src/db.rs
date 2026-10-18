@@ -21,6 +21,12 @@ pub struct Db<'a> {
     pub d: Dialect,
     /// Encryption at rest of this database (docs/04 §2.6).
     pub cx: &'a crate::crypto::Crypto,
+    /// Reads stop at what the replicas have (application wait, docs/11
+    /// §8.3). The writer reads everything.
+    pub cap: bool,
+    /// The writer: each new event counts as replicated at once (every mode
+    /// but the application wait, which advances it after the replicas).
+    pub confirm_now: bool,
 }
 
 /// Decrypts a column of a fetched row (keys must be preloaded).
@@ -1349,7 +1355,7 @@ impl Db<'_> {
 
     pub async fn conv(&mut self, id: &str) -> ApiResult<Option<ConvRow>> {
         let r = sqlx::query(self.d.q(
-            "SELECT id, kind, title, unit_id, last_seq, fields FROM conversations WHERE id = ?",
+            "SELECT id, kind, title, unit_id, last_seq, confirmed_seq, fields FROM conversations WHERE id = ?",
         ))
         .bind(id)
         .fetch_optional(&mut *self.c)
@@ -1360,7 +1366,15 @@ impl Db<'_> {
                 kind: r.try_get("kind")?,
                 title: r.try_get("title")?,
                 unit_id: r.try_get("unit_id")?,
-                last_seq: r.try_get("last_seq")?,
+                last_seq: {
+                    let last: i64 = r.try_get("last_seq")?;
+                    if self.cap {
+                        let confirmed: Option<i64> = r.try_get("confirmed_seq")?;
+                        last.min(confirmed.unwrap_or(0))
+                    } else {
+                        last
+                    }
+                },
                 fields: json_col(&r, "fields")?,
             }),
             None => None,
@@ -1377,11 +1391,51 @@ impl Db<'_> {
             .map_err(Into::into)
     }
 
-    async fn next_seq(&mut self, conv_id: &str) -> ApiResult<i64> {
-        let n = sqlx::query(
-            self.d
-                .q("UPDATE conversations SET last_seq = last_seq + 1 WHERE id = ?"),
+    /// The read cap (docs/11 §8.3); binds the conversation id once more.
+    fn cap_sql(&self) -> &'static str {
+        if self.cap {
+            " AND seq <= (SELECT COALESCE(confirmed_seq, 0) FROM conversations WHERE id = ?)"
+        } else {
+            ""
+        }
+    }
+
+    /// The replicas have these conversations up to these seqs (application
+    /// wait, docs/11 §8.3). Never moves back.
+    pub async fn set_confirmed(
+        &mut self,
+        upto: &std::collections::BTreeMap<String, i64>,
+    ) -> ApiResult<()> {
+        for (id, seq) in upto {
+            sqlx::query(self.d.q(
+                "UPDATE conversations SET confirmed_seq = ? WHERE id = ? AND (confirmed_seq IS NULL OR confirmed_seq < ?)",
+            ))
+            .bind(*seq)
+            .bind(id)
+            .bind(*seq)
+            .execute(&mut *self.c)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Conversations from before schema v6 start replicated (start-up).
+    pub async fn confirm_old(&mut self) -> ApiResult<u64> {
+        Ok(sqlx::query(
+            "UPDATE conversations SET confirmed_seq = last_seq WHERE confirmed_seq IS NULL",
         )
+        .execute(&mut *self.c)
+        .await?
+        .rows_affected())
+    }
+
+    async fn next_seq(&mut self, conv_id: &str) -> ApiResult<i64> {
+        // The new value goes first: MySQL assigns left to right.
+        let n = sqlx::query(self.d.q(if self.confirm_now {
+            "UPDATE conversations SET confirmed_seq = last_seq + 1, last_seq = last_seq + 1 WHERE id = ?"
+        } else {
+            "UPDATE conversations SET last_seq = last_seq + 1 WHERE id = ?"
+        }))
         .bind(conv_id)
         .execute(&mut *self.c)
         .await?
@@ -1463,7 +1517,7 @@ impl Db<'_> {
         manager: Option<&User>,
     ) -> ApiResult<Vec<Event>> {
         sqlx::query(self.d.q(
-            "INSERT INTO conversations (id, tenant_id, unit_id, kind, title, last_seq, side_seq, created_at) VALUES (?, ?, ?, ?, ?, 0, 0, ?)",
+            "INSERT INTO conversations (id, tenant_id, unit_id, kind, title, last_seq, side_seq, created_at, confirmed_seq) VALUES (?, ?, ?, ?, ?, 0, 0, ?, 0)",
         ))
         .bind(id)
         .bind(TENANT_DEFAULT)
@@ -2316,14 +2370,16 @@ impl Db<'_> {
         after_seq: i64,
         limit: i64,
     ) -> ApiResult<Vec<Event>> {
-        let rows = sqlx::query(self.d.q(
-            "SELECT conv_id, seq, type, actor_id, payload, created_at FROM events WHERE conv_id = ? AND seq > ? ORDER BY seq LIMIT ?",
-        ))
+        let mut q = sqlx::query(self.d.q(&format!(
+            "SELECT conv_id, seq, type, actor_id, payload, created_at FROM events WHERE conv_id = ? AND seq > ?{} ORDER BY seq LIMIT ?",
+            self.cap_sql()
+        )))
         .bind(conv_id)
-        .bind(after_seq)
-        .bind(limit)
-        .fetch_all(&mut *self.c)
-        .await?;
+        .bind(after_seq);
+        if self.cap {
+            q = q.bind(conv_id);
+        }
+        let rows = q.bind(limit).fetch_all(&mut *self.c).await?;
         self.preload(&rows, &["payload"]).await?;
         rows.iter()
             .map(|x| row_event(x, self.cx))
@@ -4036,15 +4092,17 @@ impl Db<'_> {
         floor: i64,
         limit: i64,
     ) -> ApiResult<Vec<Event>> {
-        let rows = sqlx::query(self.d.q(
-            "SELECT conv_id, seq, type, actor_id, payload, created_at FROM events WHERE conv_id = ? AND seq < ? AND seq > ? ORDER BY seq DESC LIMIT ?",
-        ))
+        let mut q = sqlx::query(self.d.q(&format!(
+            "SELECT conv_id, seq, type, actor_id, payload, created_at FROM events WHERE conv_id = ? AND seq < ? AND seq > ?{} ORDER BY seq DESC LIMIT ?",
+            self.cap_sql()
+        )))
         .bind(conv_id)
         .bind(before)
-        .bind(floor)
-        .bind(limit)
-        .fetch_all(&mut *self.c)
-        .await?;
+        .bind(floor);
+        if self.cap {
+            q = q.bind(conv_id);
+        }
+        let rows = q.bind(limit).fetch_all(&mut *self.c).await?;
         self.preload(&rows, &["payload"]).await?;
         rows.iter()
             .map(|x| row_event(x, self.cx))

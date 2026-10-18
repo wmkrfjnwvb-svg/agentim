@@ -4,7 +4,7 @@
 async fn main() {
     agentim_core::cli::run_with(
         agentim_core::edition::Edition::Full,
-        Some(agentim_cluster::join_and_start),
+        Some(agentim_cluster::SUPPORT),
     )
     .await
 }

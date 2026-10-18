@@ -1,0 +1,18 @@
+# Three AgentIM nodes on one PostgreSQL (docker compose, deploy/compose).
+# The node's name comes from AGENTIM_NODE_ID, its address for the other
+# nodes from AGENTIM_CLUSTER_ADVERTISE.
+
+[storage]
+control = "main"
+
+[[storage.databases]]
+name = "main"
+url = "postgres://agentim:agentim@postgres/agentim"
+read_pool = 8
+
+[cluster]
+enabled = true
+listen = "0.0.0.0:7946"
+
+[encryption]
+key_file = "/run/secrets/master_key"

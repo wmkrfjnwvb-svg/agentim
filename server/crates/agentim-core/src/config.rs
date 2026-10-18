@@ -627,6 +627,47 @@ pub struct DatabaseConfig {
     /// Start even if the database is not configured for full durability.
     #[serde(default)]
     pub unsafe_durability: bool,
+    /// Replicas (docs/11 §8).
+    #[serde(default)]
+    pub replication: ReplicationConfig,
+}
+
+/// How a database's replicas are found and waited for (docs/11 §8.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplicationMode {
+    /// Detected at start-up: no replica, database-side sync, or the
+    /// application waits for asynchronous replicas.
+    #[default]
+    Auto,
+    /// A managed service replicates synchronously out of sight (D77).
+    ManagedSync,
+    /// No replica; a failover may lose acknowledged writes (declared).
+    None,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ReplicationConfig {
+    pub mode: ReplicationMode,
+    /// How long a batch waits for the replicas before answering
+    /// `unavailable` (the write stays and is confirmed later).
+    pub wait_ms: u64,
+    /// Replicas that must have a write (default: all that replicate; D74).
+    pub replicas_required: Option<u32>,
+    /// MySQL: each asynchronous replica, checked for the primary's GTIDs.
+    pub replica_urls: Vec<String>,
+}
+
+impl Default for ReplicationConfig {
+    fn default() -> Self {
+        Self {
+            mode: ReplicationMode::Auto,
+            wait_ms: 5000,
+            replicas_required: None,
+            replica_urls: vec![],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -692,6 +733,7 @@ impl Config {
                     url: sqlite_url(path),
                     read_pool: None,
                     unsafe_durability: false,
+                    replication: Default::default(),
                 }],
             },
             units: vec![],
@@ -713,7 +755,20 @@ impl Config {
 
     pub fn load(path: &Path) -> Result<Config, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let cfg: Config = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut cfg: Config =
+            toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        // One file for every node (Compose, a Kubernetes StatefulSet): the
+        // node's own name and address may come from the environment.
+        if let Ok(v) = std::env::var("AGENTIM_NODE_ID")
+            && !v.is_empty()
+        {
+            cfg.cluster.node_id = v;
+        }
+        if let Ok(v) = std::env::var("AGENTIM_CLUSTER_ADVERTISE")
+            && !v.is_empty()
+        {
+            cfg.cluster.advertise = Some(v);
+        }
         cfg.validate()?;
         Ok(cfg)
     }
@@ -934,6 +989,7 @@ mod tests {
                         url: sqlite_url(&format!("{n}.db")),
                         read_pool: None,
                         unsafe_durability: false,
+                        replication: Default::default(),
                     })
                     .collect(),
             },

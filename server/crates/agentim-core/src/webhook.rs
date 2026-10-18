@@ -242,6 +242,8 @@ async fn outbox_page(shard: &Shard, cursor: i64) -> ApiResult<Vec<(i64, String, 
         c: &mut c,
         d: shard.dialect,
         cx: &shard.crypto,
+        cap: false,
+        confirm_now: false,
     };
     db.preload(&rows, &["body"]).await?;
     rows.iter()

@@ -1,0 +1,7 @@
+:8080 {
+	reverse_proxy agentim-1:8080 agentim-2:8080 agentim-3:8080 {
+		lb_policy least_conn
+		health_uri /readyz
+		health_interval 2s
+	}
+}

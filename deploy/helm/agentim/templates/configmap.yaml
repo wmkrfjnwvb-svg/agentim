@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentim.name" . }}
+  labels: {{- include "agentim.labels" . | nindent 4 }}
+data:
+  agentim.toml: |
+    [storage]
+    control = "main"
+
+    [[storage.databases]]
+    name = "main"
+    url = "${DATABASE_URL}"
+    read_pool = {{ .Values.config.readPool }}
+
+    [storage.databases.replication]
+    mode = {{ .Values.config.replicationMode | quote }}
+
+    [cluster]
+    enabled = true
+    listen = "0.0.0.0:7946"
+    shards = {{ .Values.config.shards }}
+
+    [encryption]
+    key_file = "/run/agentim/master-key"
