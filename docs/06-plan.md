@@ -33,7 +33,7 @@
 | **发布流程（P1）** | 🔧 | `deploy/`：Dockerfile、Compose、Helm（CI 里构建和冒烟） | 预编译程序和签名、一条命令安装、GHCR 镜像、版本和更新日志、依赖扫描（[12 §1](12-developer-experience.md)） |
 | **客户端 SDK（P2）** | ⏳ | 设计：[12 §2](12-developer-experience.md) | TypeScript SDK（浏览器、React Native），npm 发布 |
 | **React 组件（P3）** | ⏳ | 设计：[12 §3](12-developer-experience.md) | 组件、主题；Web 演示端改用 P2 和 P3 |
-| **开发者控制台（P4）** | ⏳ | 设计：[12 §4](12-developer-experience.md) | 内置在 `agentim` 里（D103），走 `/admin/v1` |
+| **开发者控制台（P4）** | ⏳ | 设计：[12 §4](12-developer-experience.md) | 内置在 `agentim` 里（D103 已确认），走 `/admin/v1` |
 | **文档站和示例（P5）** | ⏳ | 设计：[12 §5](12-developer-experience.md) | 文档站、三个示例应用、Agent 框架模板 |
 | **托管云（P6）** | ⏳ | 待 D102 | 注册即用、免费额度、按合并后的消息计费 |
 | GDPR 和内容治理 | 🔧 | 拉黑、Agent 加入告知、AI 标记、日志不含内容、保留期 | 基础部分：导出、删除账号、举报、审核队列（A4） |
@@ -63,7 +63,6 @@
 |---|---|---|
 | D101 | 多库路由和组织单元 | 保留现有代码和测试，作为免费的高级配置，文档里标为"高级"；不加授权开关；信息屏障不做 |
 | D102 | 托管云 | 做；按合并后的消息计费，Agent 不按月活计费；免费额度大小和价格待定 |
-| D103 | 开发者控制台的技术方案 | 内置在 Rust 程序里（前端打包成单页应用嵌进 `agentim`），不用 Go；详见 [12 §4](12-developer-experience.md) |
 | D104 | 客户端 SDK | 先做纯 TypeScript（浏览器、React Native）；Rust 核心等需要端到端加密或手机原生端时再做 |
 | D105 | 合并 Lite 和 AgentIM | 代码、CI、配置和握手里的产品声明怎么收拢：设计见 [12 §7](12-developer-experience.md) |
 | D106 | 发布物的代码签名证书 | Sigstore 签名和 GitHub 构建来源证明免费，先做；macOS 公证（Apple 开发者账号，每年 99 美元）和 Windows Authenticode 证书（每年约 200–400 美元）需要你决定买不买。不买时 macOS 和 Windows 第一次运行会有系统警告，安装脚本和 Docker 不受影响（[12 §1](12-developer-experience.md)） |
@@ -126,6 +125,7 @@
 | 定位 | AgentIM 是什么 | 给开发者的、AI 原生的聊天基础设施：任何框架写的 Agent 都能作为成员接进来，持久、有序、多方、可治理（[01 §1](01-product.md)） |
 | 方向 | 2026-10-18 调整 | ① 只服务开发者（独立开发者、创业团队、给自己产品加聊天和 AI 助手的 SaaS 团队、集成商），不再以企业 IT 和合规团队为目标用户；② 不分社区版和企业版，不做授权文件；③ 没开始的 LLM Agent 中间件全部不做：工具网关、审批 v2、Claude Code / Codex 远程审批、A2A 网关和跨服务器联邦、服务端托管 Agent；已做完的 Agent 能力全部保留；④ 合并 Lite 和 AgentIM，只保留一个程序 `agentim`（D105）；⑤ 下一阶段做开发者体验闭环（[12](12-developer-experience.md)）；⑥ 集群保留，免费、不限规模 |
 | 收费 | 怎么赚钱 | 代码 Apache 2.0，全部功能免费；收入来自托管云（D102）和自托管用户的付费支持（[01 §7](01-product.md)） |
+| D103 | 开发者控制台 | **Rust，和服务端在同一个二进制里**（2026-10-18）：管理 API 和页面都由 `agentim` 提供，不单独做 Go 程序；前端构建后嵌进程序（[12 §4](12-developer-experience.md)） |
 | D69、D71 | 集群 | **免费**，不限规模；除数据库外不依赖任何组件，数据库租约决定分片归属，每批写入校验租约代号；已实现（[11](11-cluster.md)） |
 | D85 | 文件和音视频 | 文件和图片做精简版（A6）；音视频不在这一阶段 |
 | D54 | 模型网关 | **不做**：LiteLLM、Portkey 等已经成熟，没有差异化。Agent 可以上报用量（[10 §6](10-agent-ecosystem.md)） |
