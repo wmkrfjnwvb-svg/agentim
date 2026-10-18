@@ -1,6 +1,6 @@
 # 05 运维、测试与客户端
 
-> 版本 v0.3（2026-10-10）。§1–§5、§7 已实现（标 ⏳ 的条目除外）；§6 客户端是**待确认的方案**。
+> 一个程序 `agentim`（单机到集群，集群见 [11](11-cluster.md)）。§1–§5、§7 已实现（标 ⏳ 的除外）；§6 是客户端 SDK 必须做到的行为，计划见 [12 §2](12-developer-experience.md)；§8 见 [12 §4](12-developer-experience.md)。
 
 ## 1. 部署
 
@@ -31,9 +31,9 @@
 | 写入路径 | `agentim_commit_batch_size`、`agentim_commit_duration_seconds{database}`、`agentim_write_queue_depth{database}`、`agentim_write_rejected_total{reason}`、`agentim_messages_committed_total{sender_type}`、`agentim_events_committed_total{type}`、`agentim_dedup_hits_total` | |
 | 推送 | `agentim_push_total`、`agentim_push_dropped_total`、`agentim_resync_total`、`agentim_stream_deltas_total` | 每个连接的队列深度 |
 | 流式 | `agentim_streams_active`、`agentim_streams_finished_total{state,reason}` | 首个增量的延迟 |
-| AI 治理 | `agentim_guard_trips_total{reason}`、`agentim_guard_rejects_total{code}`、`agentim_policy_blocks_total{hook}`、`agentim_inbound_flags_total{flag}`、`agentim_drafts_total{state}`、`agentim_approval_latency_seconds`、`agentim_takeovers_total{action}` | 待审批数量（gauge）、工具调用（P3） |
+| AI 治理 | `agentim_guard_trips_total{reason}`、`agentim_guard_rejects_total{code}`、`agentim_policy_blocks_total{hook}`、`agentim_inbound_flags_total{flag}`、`agentim_drafts_total{state}`、`agentim_approval_latency_seconds`、`agentim_takeovers_total{action}` | 待审批数量（gauge）、工具调用 |
 | 扩展 | `agentim_webhook_deliveries_total{webhook,result}`、`agentim_webhook_dropped_total{webhook}`、`agentim_before_send_total{result}`、`agentim_login_failures_total` | 投递延迟、积压数量 |
-| 存储 | `agentim_storage_healthy{database}`、`agentim_storage_errors_total{kind}`、`agentim_conversation_migrations_total{result}` | 连接池、加密与 KMS（P2） |
+| 存储 | `agentim_storage_healthy{database}`、`agentim_storage_errors_total{kind}`、`agentim_conversation_migrations_total{result}` | 连接池、加密与 KMS |
 | 进程 | | CPU、内存、文件描述符 |
 
 ## 4. 健康检查、告警、面板
@@ -81,18 +81,17 @@ PostgreSQL 的测试库用 ICU `en-US` 排序规则建（大多数安装是按�
 | Agent 的检查点（`tests/state.rs`，7 项 × 3 种数据库；`tests/encryption.rs` 覆盖静态加密） | SQLite、PostgreSQL 16（ICU `en-US` 排序规则）、MySQL 8.4 | SQLite | 版本：新建、更新、过期版本和重复新建 `conflict` 且消息带当前版本、按版本读旧值、保留最近 20 个旧版本（更早的 `not_found`）、删除要当前版本、删除后旧版本也没了、再建从 1 开始、每个 Agent 的键互不相干；值：null、数字、负小数、Unicode、嵌套数组和对象原样读回，正好 1 MiB 可以、多 1 字节 `bad_request`；键：255 字节可以、Unicode 和空格可以、大小写不同是不同的键；键数上限（超出 `rate_limited`，更新已有的不受影响，删除后腾出名额）；列出：按字节顺序（大小写、标点、非 ASCII 混在一起，和 Rust 的字节比较一致）、前缀、用最后一个键翻页（带和不带前缀）、`limit` 1 / 500 可以、0 / 501 不行；拒绝不留痕迹：人用这四个操作、空键、256 字节、换行和 DEL、负版本、`archive/` 只读、版本 0 读和删、过长的前缀和起点、缺值，失败后值和版本不变；重启后当前值和旧版本都在；静态加密：库里是密文，两个版本都能读回；**竞争**：6 个运行环境读到同一个版本同时写回（20 轮），每轮恰好一个成功、其余 `conflict`、值是赢家的；上限 3 时 8 个并发新建（10 轮）恰好 3 个成功。变异检查：去掉版本比较、去掉键数上限、不清理旧版本、PostgreSQL 不用 `C` 排序规则，各自让对应测试失败 |
 | 急停、恢复、销毁（`tests/lifecycle.rs`，7 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 急停：连接立即断开，发消息、同步、读历史、检查点、流式、请人决定、列会话、放弃抢单都是 `conflict`，`hello` 可以，开放 API 代它发也被拒；它所在的每个会话（两个群和一个单聊）各一条 `agent.state`（`stopped`、`owner`，带原因），进行中的流式回复被取消，发言权收回，草稿停下期间不能批准；人和别的 Agent 照常；列表里标为停下；恢复后每个会话一条 `running`，抢单、草稿、检查点都还在，能放弃抢单、批准草稿、发言；审计各一条；拒绝不留痕迹（日志和审计都不变）：别人、Agent 自己、别人的 Agent `forbidden`，人和未知 ID `not_found`，原因为空和 501 字节、确认名字不对（大小写不同、为空）`bad_request`，没停下就恢复 `conflict`；500 字节可以，停两次 `conflict`；重启后仍停下，恢复后再重启不再停下；销毁：密钥失效，从两个会话里移出（原因 `destroyed`）且成员列表里没有，它的消息还在，待决请求被取消，抢单释放（别人能抢），摘要、检查点、草稿、数据密钥都删光，审计一条；之后销毁、停、恢复、发密钥都 `not_found`，列表里标为已销毁，名字不能复用，不占名额（上限 2 时还能再建），重启后仍是销毁状态；中途崩溃（只写了"已销毁"）后启动时移出所有会话，再启动一次不再变化；**竞争**：3 个 Agent 在两个会话里不停发消息时负责人停下其中一个（8 轮），每个会话里停下事件之后没有它的消息；4 个并发急停恰好一个成功、其余 `conflict`，3 个并发销毁加一个恢复恰好一个销毁成功，最后是已销毁且不在停下状态（8 轮）。变异检查：急停不按条件写入、销毁不按条件写入、启动时不清理、停下时仍能批准草稿，各自让对应测试失败；同时去掉入口和写入线程两处检查会让竞争测试失败（只去掉写入线程那一处时，入口检查挡住了几乎所有请求，剩下的窗口只有微秒级，测试抓不到，写入线程的检查按推理保留） |
 | AI 消息体验（`tests/ai.rs`，11 项 × 3 种数据库；`tests/encryption.rs` 覆盖交接说明和反馈理由；浏览器冒烟测试覆盖网页） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 转人工：默认交给负责人、进行中的流式回复被取消、会话里一条带说明的 `agent.state`、接手的人在自己的侧信道和待办里看到、Agent 发消息 `taken_over` 且 @ 它不唤醒、别人交回 `forbidden`、负责人交回后 Agent 被唤醒并收到说明、指定交给别人且由那个人交回、负责人的 `release` 也能结束、审计；拒绝不留痕迹：人调用、说明为空 / 4097 字节 / NUL、交给不存在的人 / 非成员 / Agent、负责人不在会话里又没指定、未知会话 `not_found`、没转过就交回 `conflict`、未知 Agent 和人的 ID `not_found`、外人交回 `forbidden`、过长的交回说明；4KB 说明可以，转两次 `conflict`；重启后仍在转人工状态、待办里的说明能解密；卡片：按钮和表单的回应都唤醒发卡片的 Agent 并带上选择或填写的值、可选字段可以不填、文字正好到上限、每人只能回应一次、重启后仍然有效、`once` 的卡片只接受第一个回应、编辑卡片仍要检查、撤回的不能回应；卡片的拒绝：空组件、未知组件类型、空文字、多余字段、`once` 不是布尔、按钮 0 个和 11 个、ID 格式错和重复（含跨组件）、标签为空、未知样式、未知字段类型、非下拉字段带选项、下拉选项重复、`max` 1001、表单缺提交按钮、标题 101 字节、21 个组件、超过 16KB、缺 payload、冒充 `agentim.` 类型；20 个组件和 10 个按钮可以；回应的拒绝：自己的卡片、普通消息、未知组件、未知按钮、按钮缺 `action` 或带 `values`、表单带 `action` 或缺必填、数字给字符串、下拉值不在选项里、文字超长、复选框不是布尔、多余字段、未知消息 `not_found`、外人 `forbidden`，日志不变且不占回应次数；进度：6 种都能发、挂在自己的消息上、带数据，成员在侧信道收到、主日志不变，拒绝（未知类型、空、4097 字节、挂别人的消息、数据超过 8KB、人、非成员）不发任何东西，4KB 文字加 8KB 数据可以，限额（测试里设为每秒 1 条，不依赖机器快慢）：紧接着的第二条 `rate_limited` 且不发出，一秒后又可以；来源：随消息下发、草稿批准后仍在，拒绝（空、21 个、缺标题、标题为空 / 201 字节、ftp、带空格、`javascript:`、超长 URL、摘录 501 字节、多余字段、不是对象）不留痕迹，20 个满长的可以；反馈：Agent 和负责人在侧信道收到、给反馈的人收不到、重复同样的反馈什么都不做、改成点踩带理由、撤销、再撤销什么都不做、不进主日志；拒绝：对人的消息、Agent 给自己、未知评分、没有评分只有理由、空理由、501 字节理由、外人 `forbidden`；负责人的汇总在重启后正确（赞踩数、每人最新的一条、`limit`），别人 `forbidden`、未知 `not_found`、`limit` 0 / 101 `bad_request`；**竞争**：Agent 边发消息边转人工（10 轮），转人工之后没有它的消息；负责人和接手的人同时交回（15 轮）恰好一个成功；6 个人同时回应 `once` 卡片（10 轮）恰好一个成功、日志里恰好一条。变异检查：被接管的 Agent 仍被唤醒、没转过也能交回、谁都能交回、能转两次、`once` 不生效、每人一次不生效、回应不检查、卡片不检查、进度不限速、重复反馈也发通知、反馈也发给给反馈的人、来源不检查，各自让对应测试在三种数据库上失败 |
-| 两个产品（`tests/editions.rs`，3 项；整套测试另用 `AGENTIM_TEST_EDITION=lite` 跑一遍） | ✅ | ✅ | AgentIM Lite 拒绝多个数据库的配置并说明原因，AgentIM 接受；握手报出程序名、产品名、版本；同一个数据库先用 Lite 写、换 AgentIM 读写、再换回 Lite，消息和 API Key 都在；崩溃测试和 SDK 冒烟测试在 `agentim`、`agentim-lite` 两个程序上都跑 |
 | 静态加密（`tests/encryption.rs`，7 项 × 3 种数据库 + 2 项 SQLite） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 消息、自定义 payload、仅某人可见、耳语、草稿、批准时改过的内容、编辑、消息信封、请人决定的问题 / context / 回答、审计快照、Webhook 待发队列：逐表逐列扫描，任何地方都找不到明文，读取（含重启后）都正常；换错主密钥、关闭加密打开加密过的库、非法主密钥、主密钥文件不存在都拒绝启动；密文挪到另一条消息或被改动一个字符时返回 `storage` 错误而不是密文；关闭模式下写的老库开启后照常读、新内容立即加密、`encrypt_existing` 把剩下的全部加密且可重复执行；轮换主密钥只重新包装 DEK、内容不变、旧主密钥不能再打开；解散会话时删除它的 DEK、其他会话不受影响；10 个会话各 5 个并发写入后每个会话只有一个 DEK；单个 SQLite 库自动生成主密钥文件（权限 0600）、丢失后拒绝启动而不是悄悄换一把；会话迁移到另一个库后 DEK 随行、内容可读。变异检查：AAD 不绑定消息 ID 会让「挪动密文」测试失败 |
 | 内置账号（`tests/accounts.rs`，10 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 密码登录签发设备；错误密码、不存在的用户、没有密码、Agent、系统用户返回同一个错误且不产生设备；停用的人不能登录；重启后密码仍有效，审计里没有明文；修改密码需要正确的当前密码、密码规则的边界、成功后其他设备下线而当前设备保留、旧密码失效、第一次设置不需要当前密码；失败计数被成功清零、达到次数后即使密码正确也锁定、其他账号不受影响、锁定在重启后仍有效；TOTP 的设置、未确认前不需要验证码、错误验证码、缺验证码、窗口外、已用过的验证码、关闭也需要新验证码；自助注册默认关闭、开启后的名字和密码规则、重复注册、被拒绝的注册不留下用户；12 个并发错误登录全部计数并锁定；同一个验证码 6 个并发登录只成功一次（10 轮）；通过客户端协议设置、开启、关闭两步验证；Agent 不能设置密码；同一次设置用两个有效验证码并发开启只成功一次（10 轮）。变异检查：去掉验证码只能用一次、开启时不消耗待确认的设置，都会让测试失败；大量并发登录时密码哈希有上限（每核一个，排队超过 4 倍直接 `rate_limited`），被拒的不计入失败次数（故意去掉上限能抓到） |
 | 传输安全（`tests/transport.rs`，9 项） | — | ✅ | WebSocket 和登录：没有 Origin、同源、允许列表里（不区分大小写）的放行，其他站点、相似域名、`null` 返回 403，被拒绝的登录不产生设备；`allowed_origins` 的格式检查；登录接口的状态码、跨站请求被拒、注册默认关闭、超长密码；开放注册时 HTTP 注册成功 201、跨站 403、超长 400、重名 409、被拒绝的注册不留下用户；证书与私钥不匹配、文件不存在、没有证书时启动报错；内置 TLS 下 HTTPS 正常、只连接不握手的客户端不会挡住其他人、开放 API 的地址规则照常、明文访问 TLS 端口失败、不受信任的证书被拒绝；每个用户的连接数上限、空闲连接（不回 pong）被关闭而回应 ping 的保持（M16、D95）、握手和登记之间被吊销的令牌在登记后被发现（M13，故意去掉检查能抓到） |
-| Agent SDK 端到端（`sdk/agent_e2e.sh`，Node 和 Python 各一遍，`agentim` 和 `agentim-lite` 两个程序） | ✅ | ✅ | 脚本自己起服务端、用 CLI 建两个 Agent、用开放 API 建一个人并签发令牌；人通过 WebSocket 建群：Agent 用密钥连上（第一次连接被每秒一次的查库限制挡住时自动重试）；点名后流式回复完整到达、标为 AI；进度到达人那里；卡片发出、人点按钮、Agent 收到并回复；Agent 请人批准、人批准、Agent 拿到结果；检查点新建、冲突的写被拒、读回、不存在的是空、存 null；读上下文；回复带来源；处理器第一次抛错后同一条消息重新交给它；处理器里的调用被服务端按业务规则拒绝时只运行一次、不重给（变异检查：拒绝也重给时会反复发同样的回复直到触发循环保护，测试失败）；两个 Agent 用 `to` 点名一来一回；转人工、人交回、Agent 被唤醒拿到说明；服务端重启后 Agent 自己重连并继续回答 |
+| Agent SDK 端到端（`sdk/agent_e2e.sh`，Node 和 Python 各一遍，`agentim` 程序） | ✅ | ✅ | 脚本自己起服务端、用 CLI 建两个 Agent、用开放 API 建一个人并签发令牌；人通过 WebSocket 建群：Agent 用密钥连上（第一次连接被每秒一次的查库限制挡住时自动重试）；点名后流式回复完整到达、标为 AI；进度到达人那里；卡片发出、人点按钮、Agent 收到并回复；Agent 请人批准、人批准、Agent 拿到结果；检查点新建、冲突的写被拒、读回、不存在的是空、存 null；读上下文；回复带来源；处理器第一次抛错后同一条消息重新交给它；处理器里的调用被服务端按业务规则拒绝时只运行一次、不重给（变异检查：拒绝也重给时会反复发同样的回复直到触发循环保护，测试失败）；两个 Agent 用 `to` 点名一来一回；转人工、人交回、Agent 被唤醒拿到说明；服务端重启后 Agent 自己重连并继续回答 |
 | 服务端 SDK（`sdk/smoke.sh`） | SQLite | — | Node、Python、Go 三个 SDK 对同一个真实服务端跑相同场景：建用户、批量建用户、签发令牌、以系统身份建群、发消息与去重、系统通知、编辑、给某人发消息、批量发送部分失败、历史、已读、`not_found` 和 `forbidden` 的错误类型、撤回、解散；服务端运行时用命令行新建的 Key 立即可用 |
 | 令牌与设备（`tests/devices.rs`，6 项 × 3 种数据库 + 1 项 WebSocket） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 数据库里任何表都没有明文令牌；每次登录一台设备，设备列表标出当前设备，新设备登录通知其他设备且不含密钥；下线别人的、不存在的设备返回 `not_found`；签发参数的边界；过期、吊销后不能认证，重复吊销为 0；重启后令牌和吊销都保持；已读同步到自己的其他设备、不回给自己、不给别人；WebSocket 上下线一台设备时它的所有连接立即以 `logged_out` 关闭，其他设备不受影响；老库的明文令牌升级后照常可用且明文被清除（`tests/schema.rs`）。变异检查：吊销后不断开连接会让测试失败 |
 | Webhook 与发送前拦截（`tests/webhooks.rs`，14 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 按日志顺序投递且签名正确、ID 唯一；事件类型过滤；失败重试后顺序不变；超过次数后放弃、写审计、不阻塞后面的；被拒绝的请求和提交失败的写入不发；重启后不丢不重；新 Webhook 不重放历史；全部投递后 outbox 清空，有一个没投递就保留；多库；4 个会话并发各发 25 条全部恰好一次；发送前拦截的放行、拒绝、替换（含 payload）、替换后不合法、格式错误不发给钩子、钩子后仍检查成员；超时、坏 JSON、未知 action、500、连不上分别按 `allow` 和 `reject` 处理。变异检查：游标不保存会让重启测试失败；Webhook 不可用期间撤回、解散的内容恢复后不再投递（只投递撤回 / 解散事件本身；每次投递前确认这一条还在发件箱，故意去掉能抓到），编辑与撤回、发言与解散落在同一批提交时也一样（30 轮竞争，故意去掉批内处理能抓到） |
 | 开源 IM 问题对照（`tests/audit.rs`，21 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | [调研](research/im-issues.md)里 H1–H6 和 M3 的复现：停用负责人后他的 Agent 被急停（重启后仍停）、停用的人不能被拉入；普通成员拉自己的 Agent 给的历史不超过自己能看的；人离开或被移出时他的个人助理一起离开（日志写明原因）；新成员的未读和 @ 数从能看到的位置算起；编辑 / 撤回入群前的消息对新成员不可见（实时推送、同步、读日志、`trigger=all` 的 Agent、历史）；撤回审批通过的消息同时清空草稿和侧信道里的副本；多库时控制库写失败不影响已提交的成员变更，后台、下次成员变更或重启时按会话库修复索引和离开记录，`list_convs` 只信会话库的成员表；同一个人移出和拉回并发 30 轮后索引和成员关系一致。每项都做过"故意改坏能否抓到"的验证；中危和规则项：重试先去重（被移出、熔断都不影响已提交的结果，M1）、发给某人的消息、草稿、流式草稿的重试不重复（M2）、搜索和导出用最新文字且不含撤回（M4）、像密文的文字照常读写且之后加密不变（M11）、其他进程的吊销和停用 1 秒内生效（M10）、人的发送限流按人算且不影响别人和 Agent、群人数上限（M12、D95）、保留期只删前缀并删掉衍生数据（M15）、编辑重算 @（新增的提醒、唤醒 Agent，去掉的不再计数，D87）、`base_version` 不一致 `conflict` 且不留痕迹（D88）、自己发言算已读并告诉其他设备（D93）、人的令牌按空闲和绝对期限过期而 Agent 密钥不过期（D94） |
-| 个人助理和团队 Agent（`tests/team_agents.rs`，10 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | [03 §9.3.1](03-ai-native.md)：团队 Agent 只能由管理员建（重启后仍是团队 Agent）；负责人离开或被移出时个人助理一起走、团队 Agent 留下（他对团队 Agent 的接管先结束）；负责人停用时个人助理急停、团队 Agent 照常工作（重启后一样）；负责人不是成员的会话里代看、关注、耳语、接管、释放、改策略、重置熔断全部 `forbidden` 且不留痕迹，会话列表里也看不到，会话之外的急停 / 恢复照常；会话管理者（群主、管理员）能配置团队 Agent、不能配置别人的个人助理，普通成员都不能；开着审批的 Agent 在负责人不在的会话里发言和开流式返回 `conflict` 且不留痕迹，之前的草稿负责人在外面不能审批或拒绝；负责人不在期间的侧信道（反馈）不发给他，回来后也看不到，不在时读侧信道 `forbidden`；转交：保留或吊销密钥、新负责人能管、旧负责人不能、各库成员行同步更新、重启后一致、写审计；转交的每种错误（个人助理、未知、不是 Agent、未知或停用的新负责人、跨单元、已经是他的、超过上限、已销毁）；4 个并发转交 × 40 轮后内存、负责人行和两个库的成员行一致，两个 Agent 抢最后一个名额只有一个成功（故意去掉转交锁第 0 轮就失败；每条规则都做了故意改坏的验证） |
+| 个人助理和团队 Agent（`tests/team_agents.rs`，10 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | [03 §1.2](03-agents.md)：团队 Agent 只能由管理员建（重启后仍是团队 Agent）；负责人离开或被移出时个人助理一起走、团队 Agent 留下（他对团队 Agent 的接管先结束）；负责人停用时个人助理急停、团队 Agent 照常工作（重启后一样）；负责人不是成员的会话里代看、关注、耳语、接管、释放、改策略、重置熔断全部 `forbidden` 且不留痕迹，会话列表里也看不到，会话之外的急停 / 恢复照常；会话管理者（群主、管理员）能配置团队 Agent、不能配置别人的个人助理，普通成员都不能；开着审批的 Agent 在负责人不在的会话里发言和开流式返回 `conflict` 且不留痕迹，之前的草稿负责人在外面不能审批或拒绝；负责人不在期间的侧信道（反馈）不发给他，回来后也看不到，不在时读侧信道 `forbidden`；转交：保留或吊销密钥、新负责人能管、旧负责人不能、各库成员行同步更新、重启后一致、写审计；转交的每种错误（个人助理、未知、不是 Agent、未知或停用的新负责人、跨单元、已经是他的、超过上限、已销毁）；4 个并发转交 × 40 轮后内存、负责人行和两个库的成员行一致，两个 Agent 抢最后一个名额只有一个成功（故意去掉转交锁第 0 轮就失败；每条规则都做了故意改坏的验证） |
 | 扩展（`tests/extensions.rs`，8 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 自定义类型的推送、拉取、去重、重启；类型名和 payload 的边界（64 字节、32 KiB、非对象、保留命名空间、缺降级文本）且拒绝不留痕迹；编辑替换或保留 payload；撤回后事件和数据库行里都不留 payload；仅某人可见和审批草稿带上类型和 payload；DLP 和注入检测看 payload；编辑与撤回竞争 20 轮；信号只到在线的其他成员且不落库；信号的类型、大小、成员、拉黑、限速。变异检查：撤回不清数据库里的 payload、注入检测不看 payload，都会让测试失败 |
-| 协议版本（`tests/protocol.rs`，7 项 × 3 种数据库 + 4 项 WebSocket） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 老客户端不带协商照常工作；协商选最新的共同版本，没有时 `unsupported_protocol`；最低版本的边界（相等、次版本 10 > 9、预发布、缺版本号、未配置的客户端）；名称、版本、功能数量的上限；重复和被拒绝的 `hello` 对连接状态的影响；`unknown_op` 与 `bad_request` 的区分且不留痕迹；忽略未知字段；连接参数 `v` 的各种取值；`client_too_old` 后以 1008 断开而其他拒绝不断开；指标标签不含原始输入。变异检查：去掉 `unknown_op` 判断、去掉断开都会让测试失败；`OPS` 少一项会让单元测试失败 |
+| 协议版本（`tests/protocol.rs`，7 项 × 3 种数据库 + 4 项 WebSocket） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 握手报出程序名 `agentim`、产品名、版本；老客户端不带协商照常工作；协商选最新的共同版本，没有时 `unsupported_protocol`；最低版本的边界（相等、次版本 10 > 9、预发布、缺版本号、未配置的客户端）；名称、版本、功能数量的上限；重复和被拒绝的 `hello` 对连接状态的影响；`unknown_op` 与 `bad_request` 的区分且不留痕迹；忽略未知字段；连接参数 `v` 的各种取值；`client_too_old` 后以 1008 断开而其他拒绝不断开；指标标签不含原始输入。变异检查：去掉 `unknown_op` 判断、去掉断开都会让测试失败；`OPS` 少一项会让单元测试失败 |
 | 配置校验（`src/config.rs` 单元测试，5 项） | ✅ | ✅ | 见 §5.5；Webhook、发送前拦截、账号、开放 API 限流每种非法设置；默认值；主密钥的来源顺序 |
 | 边界与失败路径（`tests/edges.rs`，6 项 × 3 种数据库） | SQLite、PostgreSQL 16、MySQL 8.4 | SQLite | 会话标题为空、256 字节、含 NUL 被拒（建会话和改名），255 字节可以；流式分块含 NUL 被拒且不影响流；拉黑只关闭单聊（拉黑的人建单聊被提示先解除，两个人的群照常可用）；未知单元、`_` 开头的名字、重名、系统用户和未知用户签发令牌；建会话时写入失败不留下会话且之后单聊仍唯一；审批模式的流式草稿中途触发 DLP：草稿被丢弃并只通知所有者，主日志不变，不能再批准或追加；发消息和开始流式的 `client_msg_id` 为空、129 字节、含 NUL 被拒且日志不变，128 字节可以 |
 | 多库（`tests/multidb.rs`，9 项） | ✅ | ✅ | 迁移时正在进行的流式消息结束为 `cancelled`（原因 `migrated`，已发出的内容保留，之后不能再追加）；迁移失败（写入目标库出错）后会话留在原库可读可写、目标库没有残留、可以重试；启动时删除中断迁移留下的旧副本和指向不存在会话的目录项；单元的内容和会话标题不会出现在共享库文件里（直接读文件字节确认）；跨库的成员、列表、侧信道；迁移后事件完全一致、seq 连续、旧库不残留内容；迁移期间并发写入不丢不重；崩溃后目录修复；单元放在另一种数据库上（SQLite 控制库 + PostgreSQL 单元库） |
@@ -101,7 +100,7 @@ PostgreSQL 的测试库用 ICU `en-US` 排序规则建（大多数安装是按�
 | 并发压测（`examples/loadtest.rs`） | ✅ + 性能门槛 | ✅ | 扇出场景（同群）与纯写入场景（`--solo`）。客户端只用 `sync` + `ack` 和推送拼出本地日志，校验 seq 连续、恰好一次、发送方有序、推送有序且不缺、所有客户端视图一致、流式内容完整 |
 | 浏览器（`ci/ui_smoke.mjs`，14 项断言） | ✅ | ✅ | 完整演示流程 + 截图 |
 | 规模测试（`examples/scale.rs`，每晚） | ✅ | ✅ | 见 §5.4 |
-| ⏳ | | | 依赖安全扫描（`cargo audit`、`cargo deny`）、加密开 / 关的对比基准（P2） |
+| ⏳ | | | 依赖安全扫描（`cargo audit`、`cargo deny`）、加密开 / 关的对比基准 |
 
 ### 5.2 业务场景测试
 
@@ -221,7 +220,7 @@ PostgreSQL 的测试库用 ICU `en-US` 排序规则建（大多数安装是按�
 
 ### 5.4 规模测试
 
-压测程序和服务端在同一台 runner 上（4 核），所以这里的数字用来发现退化，不代表容量上限。万级消息/秒和百万连接要在集群阶段用独立的压测机器验证。
+压测程序和服务端在同一台 runner 上（4 核），所以这里的数字用来发现退化，不代表容量上限。万级消息/秒和百万连接要用独立的压测机器验证（多节点压测见 [11 §12.8](11-cluster.md)）。
 
 | 场景 | Linux 规模 | Windows 规模 | 校验什么 |
 |---|---|---|---|
@@ -247,130 +246,43 @@ GitHub Actions 结果（标准 runner，release，SQLite，每个场景发送 12
 
 本地跑 PostgreSQL 和 MySQL 的测试：设置 `AGENTIM_TEST_PG=postgres://user@host` 和 `AGENTIM_TEST_MYSQL=mysql://user:pass@host`（URL 里不带库名），每个测试会自动新建一个库。
 
-## 6. SDK 与客户端（D8）
+## 6. 客户端 SDK
 
-### 6.1 方案：先做纯 TypeScript 客户端 SDK（P2，D104 待确认）
+计划、包、平台和发布见 [12 §2](12-developer-experience.md)（先做 TypeScript `@agentim/client`，其他平台共用一个 Rust 核心，D104）；同步协议和异常场景见 [08](08-sync-and-client.md)。本节只写**每个客户端 SDK（任何语言）都必须做到的行为**，SDK 的协议一致性测试逐条检查。
 
-第一个客户端 SDK 用纯 TypeScript 编写，支持浏览器和 React Native，发布到 npm。它负责比较难写对的部分：
+### 6.1 顺序和投递
 
-- 连接与断线重连；
-- 按 seq 同步、补缺口；`client_msg_id` 重试去重；处理 `resync`；
-- 本地缓存（IndexedDB）；
-- 流式回复；审批和请人决定（ask-a-human）；在线状态和正在输入。
+- 同一会话的事件按 seq 顺序交付，每个（会话，seq，版本）**恰好一次**；SDK 缓存乱序到达的推送、自动补缺口，收到 `resync` 时按原因码重置，每 30 秒用 `heads` 校验位置（补上最后一条丢失的推送）。不同会话之间不保证顺序。
+- 只靠 `sync` + `ack` 同步，存好后才确认（[08](08-sync-and-client.md)）。
 
-协议一致性测试复用服务端的场景测试，用 SDK 重新实现客户端一侧，和服务端用同一套场景。
+### 6.2 发送和本地数据
 
-以后：一个 Rust 核心 + 各语言绑定（Kotlin、Swift、Python、C/C++、Go 等）。等 E2EE 或手机原生端需要时再做（D104），因为到那时密码学代码和本地存储才值得只写一份、各语言共用。
+- **乐观发送**：`send` 立即返回一条 `pending` 的本地消息，之后变为 `sent(seq)` 或 `failed`。每条带 `client_msg_id`；`unavailable`、`overloaded`、断线时用**同一个** id 重试（服务端去重），最多 2 分钟后标为失败（D34）；重发、取消按 `client_msg_id`，幂等。
+- 本地缓存只是缓存：损坏或迁移失败时删除重建、从服务端重新同步；待发送队列和草稿单独保存、不被淘汰。要求的存储打不开时报错，不悄悄退回内存。`logout()` 默认清除本地数据（GDPR）。
 
-### 6.2 本地存储（方案待确认：D31–D34）
+### 6.3 错误
 
-调研见 [research/sdk-and-ai-2026.md §1](research/sdk-and-ai-2026.md)。给人用的客户端需要本地存储（会话列表秒开、离线看历史、断网先发）；**Agent 同样需要**：Agent 每次回复都要把会话历史作为上下文读一遍，读取频率远高于人，没有本地存储就会每轮都从服务端拉，既慢又会把服务端拉垮。
+`{code, message, retryable, retry_after, request_id}`。`code` 和服务端完全一致：`forbidden`、`not_found`、`conflict`、`bad_request`、`blocked`、`rate_limited`、`unavailable`、`overloaded`、`taken_over`、`unknown_op`、`unsupported_protocol`、`client_too_old`、`logged_out`、`storage`；另加客户端自己的 `unauthenticated`、`network`、`timeout`、`cancelled`、`expired`、`unsupported_version`、`storage_locked`。TypeScript 里是字符串联合类型。
 
-**存储分级**（参考 TDLib 的分级开关），连接时选择：
+### 6.4 兼容、事件和 hook
 
-| 级别 | 存什么 | 默认给谁 |
-|---|---|---|
-| `none` | 只在内存，不写磁盘（进程内仍缓存最近的消息，不重复拉取） | 无状态的一次性程序（例如 Serverless 函数），需要显式选择 |
-| `metadata` | 会话列表、成员、用户资料、已读位置、同步游标、草稿、待发送队列、设置 | 对存储敏感的应用 |
-| `full` | 再加消息（按会话和 seq）、已知连续区间和缺口、文件缓存索引 | **人用的客户端和 Agent 都默认用这一级**（D31） |
+- **未知分支**：事件和枚举都留"未知"分支，不认识的事件逐条跳过，未知消息类型显示 `fallback`，老客户端连新服务端不会崩溃；连接时协商协议版本（[02 §2.5](02-architecture.md)）。语义化版本，弃用至少保留一个小版本。
+- **事件**：带类型，订阅返回取消函数。类别：连接（状态、令牌将过期、本设备被下线、需要升级）、同步、会话和成员、消息（含发送状态、已读、信号）、流式（开始、带偏移的增量、结束原因）、介入（草稿、耳语、接管、熔断）。React 的 hooks 见 [12 §3](12-developer-experience.md)。
+- **hook**：取令牌（必须；首次连接、将过期、被拒时调用）、发送前（链式，可修改或拒绝）、显示转换（不改本地存储）、发送结果、限流通知、传输和日志。客户端 hook 能被绕过，**业务规则和合规检查只放在服务端**。
 
-要求的级别打不开（磁盘满、权限、钥匙丢失）就报错，**不会悄悄退回内存**。
+### 6.5 Agent SDK
 
-**引擎**（P2）：SDK 定义存储接口，两个实现：内存；浏览器用 IndexedDB（多个标签页用 Web Locks 保证只有一个写）。React Native 由开发者传入存储适配器（例如 MMKV），默认内存。每个（服务器，用户）一份独立的库，多账号互不影响；会话、同步位置、待发送队列和草稿与消息分开存放，消息部分坏了可以删除后从服务端重新同步，**待发送队列和草稿不受影响**（[08 §4.2 R7](08-sync-and-client.md)）。
-
-以后（随 Rust 核心，D104）：原生平台用 SQLite（WAL、一个写连接多个读连接），每个账号一个文件夹，主库、消息库、检索库、文件缓存分开（参考微信和 WCDB 的做法：损坏先修复再重建，定期备份主库）。
-
-**Agent 部署的特殊情况**：一个 Agent 跑多个实例（水平扩展）时，每个实例各有一份本地缓存即可（只是缓存，可以随时重建）；也可以通过存储接口换成团队自己的数据库（例如 PostgreSQL），让多个实例共用。Agent 主机上的本地数据同样默认加密、受容量上限约束；Agent 被移出会话、被退役时清掉对应的本地数据。
-
-**和服务端同步、待发送队列、各种异常场景**：见 [08 同步协议与客户端可靠性](08-sync-and-client.md)（只同步、不随意读历史；同步位置由服务端按设备记录，存好后确认才前进）。
-
-**加密和钥匙**（D32）：浏览器上每个账号首次使用时生成不可导出的 WebCrypto 密钥（存在 IndexedDB），按值加密（AES-256-GCM；需要查找的字段存带密钥的哈希）；也可以由应用自己提供密钥。钥匙找不到时库处于"锁定"状态，不会退回明文，也不会自动删除。原生平台的系统安全存储（钥匙串、Keystore、DPAPI、Secret Service）随 Rust 核心再做。
-
-**升级**：编号的迁移打包在 SDK 里。本地库是缓存，迁移失败、降级、损坏时删除重建、从服务端重新同步；只有待发送队列和草稿必须迁移，单独保存、单独记版本。
-
-**容量**：`max_size` 默认 256 MB，按会话最久未打开淘汰消息；待发送队列、草稿、游标永远不淘汰。文件缓存另有大小、过期时间、单个文件上限。启动或空闲时清理。
-
-**GDPR**：`logout()` 默认清除本地数据（本地库、文件缓存和钥匙；钥匙删了，残留的密文也解不开）；服务端删除账号、撤回、按 DSA 下架的内容通过带 seq 的事件让客户端清掉本地副本；提供本地数据统计和导出；默认不进入系统云备份。
-
-### 6.3 API
-
-调研见 [research/sdk-and-ai-2026.md §2](research/sdk-and-ai-2026.md)。所有调用都返回 Promise。协议类型由服务端导出的 JSON Schema 生成（[12 §2](12-developer-experience.md)）；以后的其他语言沿用同样的名字和行为。
-
-| 对象 / 分组 | 方法 |
-|---|---|
-| 客户端 | `connect(服务器, 取令牌的回调, 设备信息, 存储级别)`、`disconnect()`、`logout({wipe})`、`set_app_state(前台 / 后台)`、连接状态 |
-| 账号与设备 | 修改密码、两步验证（设置、开启、关闭）、设备列表、下线某台设备、注册 / 注销推送令牌 |
-| 用户 | 查资料、改自己的资料、搜索（受用户目录可见性限制）、拉黑 / 解除、举报 |
-| 会话列表 | 分页查询（带未读数、最后一条）、按 ID 取；返回一个会实时更新的列表对象 |
-| 会话 | 建单聊 / 群聊、改名和自定义字段、解散、退出、正在看（focus）、已读到某个 seq |
-| 成员 | 列表、添加、移除、改角色、转让群主 |
-| 消息 | `send`（文本、自定义类型 + `fallback`、回复、@、仅某人可见）、编辑、撤回、按 seq 取、历史分页（向前 / 向后）；返回一个会实时更新的消息列表对象，自动补缺口 |
-| 信号 | 正在输入、自定义信号（不进日志） |
-| 待发送 | 重发、取消（按 `client_msg_id`，幂等） |
-| Agent 管理（人用） | 对自己的 Agent：设置策略（审批、触发方式）、耳语、接管 / 释放、批准 / 拒绝 / 修改草稿、打断流式回复、重置护栏 |
-| 本地数据 | 统计、清理、导出 |
-
-**发送是乐观的**：`send` 立即返回一条 `pending` 状态的本地消息，界面马上显示；之后通过事件变成 `sent(seq)` 或 `failed`。
-
-**错误**：`{code, message, retryable, retry_after, request_id}`。`code` 和服务端完全一致（`forbidden`、`not_found`、`conflict`、`bad_request`、`blocked`、`rate_limited` 等），另加客户端自己的 `unauthenticated`、`network`、`timeout`、`cancelled`、`expired`、`unsupported_version`、`storage_locked`。TypeScript 里是字符串联合类型。
-
-### 6.4 事件和 hook
-
-**事件**：一个带类型的事件集合，订阅时返回取消函数（不用字符串 ID，避免泄漏和重复）；React 用 [12 §3](12-developer-experience.md) 的 hooks。
-
-| 类别 | 事件 |
-|---|---|
-| 连接 | 连接状态（连接中、已连接、重连中（第几次、多久后）、暂停、令牌被拒、已关闭）、令牌即将过期、本设备被下线、需要升级客户端 |
-| 同步 | 同步中 / 已是最新、某个会话出现大缺口（已跳到最新）、某个会话需要重新同步 |
-| 会话 | 新会话、改名和字段变化、解散、成员加入 / 移除 / 退出 / 角色变化 / 转让、拉黑变化、未读数变化 |
-| 消息 | 新消息、编辑、撤回、发送状态变化、已读回执、信号 |
-| 流式 | 开始、增量（带偏移，可准确续上）、结束（完成、取消、出错、被打断） |
-| 介入 | 草稿待审批、草稿已处理、耳语、接管状态变化、护栏熔断 |
-
-**顺序保证**：同一个会话的事件按 seq 顺序、每个（会话，seq，版本）只交付一次；SDK 内部缓存乱序到达的推送、自动补缺口。不同会话之间不保证顺序。
-
-**hook（开发者插入自己逻辑的固定位置）**：
-
-| hook | 用途 |
-|---|---|
-| 取令牌（必须） | 首次连接、令牌过期或被拒时调用，有超时；连接前和即将过期时都会用到 |
-| 发送前 | 链式、可以按名字插在某一步之前或之后：补全 @、填 `fallback`、内容检查；可以修改或拒绝（返回错误码，不会发出） |
-| 收到后的显示转换 | 只影响显示，不改本地存储（例如渲染自定义类型） |
-| 发送结果 | 观察成功和失败（统计、提示） |
-| 限流 | 收到 `rate_limited` 时通知 |
-| 传输和日志 | 代理设置、日志输出、指标 |
-
-和服务端的"发送前拦截"Webhook 的区别：客户端 hook 只是方便开发，能被绕过；**业务规则和合规检查必须放在服务端**。
-
-### 6.5 Agent 扩展
-
-服务端 Agent 用现有的 Agent SDK（Node、Python）；下面是它额外用到的、客户端 SDK 不需要的部分：
-
-- **流式回复**：`stream_start` 返回一个流对象，`append` 追加（按偏移批量发送，断线重连后能准确续上），`end`（完成、出错、取消）；收到"停止生成"请求时有事件通知。
-- **读上下文**：`context(会话, 最近 N 条或不超过 N 个字符 / token)` 只从本地存储取，不会去服务端读历史（[08 §2.7](08-sync-and-client.md)）；每条带发送者类型和信任标记，方便 Agent 防提示词注入。
-- **状态信号**：思考中、调用工具中、生成中、出错（参考 Stream 的 AI 状态和 Slack 的步骤展示），作为带类型的信号发出。
-- **草稿**：审批模式下回复自动变成草稿，Agent 收到批准、修改后批准、拒绝的结果。
-- **适配器**（以后）：AG-UI 事件、Vercel AI SDK `useChat` 的传输层。
-- Agent 默认存储级别和人一样是 `full`（见 §6.2）。
+Agent 用 `sdk/agent-node`、`sdk/agent-python`（和客户端 SDK 共用协议）。除 §6.1–§6.4 外还有：流式回复（按偏移续上）、读上下文（每条带发送者类型和信任标记）、进度和状态信号、卡片、来源、请人决定、检查点、转人工；处理器抛错时同一条消息重新交给它，被服务端按业务规则拒绝的不重给。测试见 §5 "Agent SDK 端到端"。
 
 ### 6.6 测试工具包
 
-大多数厂商没有，我们提供 `agentim-test`：进程内的服务端（SQLite、可控的时钟）、故障注入（丢推送、打乱顺序、强制发送失败、令牌过期）、事件记录器和断言（例如"同一会话的事件严格按 seq"）。开发者用它测自己的应用，我们也用它跑 SDK 的一致性测试。
+⏳ `agentim-test`：进程内服务端（SQLite、可控时钟）、故障注入（丢推送、乱序、发送失败、令牌过期）、事件记录和断言；SDK 一致性测试和开发者自己的应用测试都用它（[08](08-sync-and-client.md) 的随机故障测试）。
 
-### 6.7 版本
-
-语义化版本；事件和枚举都留"未知"分支，服务端加了新事件或新消息类型时老客户端不会崩溃（未知类型显示 `fallback`）；弃用至少保留一个小版本，大版本才删除，附迁移说明；连接时协商协议版本（[02 §2.5](02-architecture.md)）。
-
-### 6.8 Windows 客户端
-
-暂缓（2026-10-18 决定）。
-
-## 7. 单机版运行与演示（已实现）
+## 7. 运行与演示（已实现）
 
 ```bash
 cd server
-cargo run --release --bin agentim-lite -- --demo   # AgentIM Lite；打开 http://127.0.0.1:8080，选 alice / bob / carol 登录
-cargo run --release --bin agentim -- --demo        # AgentIM
+cargo run --release --bin agentim -- --demo   # 打开 http://127.0.0.1:8080，选 alice / bob / carol 登录
 ```
 
 | 演示会话 | 能看到什么 |
@@ -379,7 +291,7 @@ cargo run --release --bin agentim -- --demo        # AgentIM
 | 产品讨论群 | 群内 Agent 默认只在被 @ 时回应 |
 | 客服：退款工单 | alice 先耳语，再审批 RefundBot 的草稿；bob 只在批准后才看到回复 |
 | Agent 循环实验室 | 两个 Agent 互相回复，在第 7 跳被熔断 |
-| Bob · Aria | bob 和 alice 的助理单聊；alice 不在这个会话里，不能经 Aria 观察（docs/03 §9.3.1） |
+| Bob · Aria | bob 和 alice 的助理单聊；alice 不在这个会话里，不能经 Aria 观察（docs/03-agents.md §1.2） |
 
 | | |
 |---|---|
@@ -397,7 +309,7 @@ cargo run --release --bin agentim -- --demo        # AgentIM
 | `update_conv {conv_id, title?, fields?}` | 群主和管理员改群名、自定义字段（事件 `conv.updated`） |
 | `remove_member`、`leave`、`set_role`、`transfer_owner`、`dissolve` | 成员生命周期：群主和管理员管理成员；被移除或退出后看不到会话；解散后全员失去访问、内容删除，只保留审计记录 |
 | `block`、`unblock`、`list_blocks`、`find_user {name}` | 拉黑（双方都不能单聊、不能拉对方进群、不能发仅某人可见的消息）；按准确用户名找人 |
-| `send {conv_id, client_msg_id, text, kind?, payload?, reply_to?, causation_id?, on_behalf_of?, to_user?, to?, topics?, intent?, refs?}` | 发消息；`kind` 为自定义类型时 `text` 是降级文本；`to_user` 表示仅某人可见；`to` / `topics` / `intent` / `refs` 是给 Agent 路由用的信封（[09 §10](09-agent-communication.md)）；审批模式下返回 `draft_id` |
+| `send {conv_id, client_msg_id, text, kind?, payload?, reply_to?, causation_id?, on_behalf_of?, to_user?, to?, topics?, intent?, refs?}` | 发消息；`kind` 为自定义类型时 `text` 是降级文本；`to_user` 表示仅某人可见；`to` / `topics` / `intent` / `refs` 是给 Agent 路由用的信封（[03 §6](03-agents.md)）；审批模式下返回 `draft_id` |
 | `signal {conv_id, kind, data?}` | 正在输入等临时信号，只推给在线成员，不落库 |
 | `edit {msg_id, text, payload?}`、`recall` | 修订、撤回 |
 | `sync {limit?}`、`ack {acks}` | 同步：服务端按这台设备的位置分批下发，客户端存好后确认（[08](08-sync-and-client.md)）；`pull`、`pull_side` 对客户端停用 |
@@ -406,16 +318,16 @@ cargo run --release --bin agentim -- --demo        # AgentIM
 | `read`、`focus` | 已读游标；前台会话（接收流式增量） |
 | `stream_start / stream_append / stream_end / stream_cancel` | 流式 |
 | `whisper`、`approve`、`reject`、`takeover`、`release`、`set_agent_policy {conv_id, agent_id, approval?, trigger?, topics?}`、`reset_guard` | 所有者的介入操作；`trigger` 是 Agent 的接收方式（all、mention、addressed、topics、observe、coordinated） |
-| `history {conv_id, after_seq?, before_seq?, limit?}`、`context {conv_id, max_tokens?}`、`search {query, conv_id?, limit?}`、`put_summary {conv_id, from_seq, to_seq, text}` | Agent 的历史服务（[09 §11.1](09-agent-communication.md)）：只能读自己可见的部分，人返回 `bad_request` |
-| `state_get {key, version?}`、`state_put {key, value, version}`、`state_list {prefix?, after?, limit?}`、`state_delete {key, version}` | Agent 的检查点（[09 §11.2](09-agent-communication.md)）：写入时比较版本 |
-| `stop_agent {agent_id, reason?}`、`resume_agent {agent_id}`、`destroy_agent {agent_id, confirm}` | 负责人急停、恢复、销毁自己的 Agent（[09 §11.3](09-agent-communication.md)） |
-| `handoff {conv_id, to?, note}`、`handback {conv_id, agent_id, note?}`、`respond {msg_id, block_id, action? \| values?}`、`progress {conv_id, msg_id?, kind, text, data?}`、`feedback {msg_id, rating, reason?}`、`list_feedback {agent_id, limit?}`；`send` 的 `kind: agentim.card` 和 `sources` | AI 消息体验（[03 §9.6.1.1](03-ai-native.md)）：转人工、卡片、进度、来源、反馈 |
-| `update_task {conv_id, state?, assignee?, note?}`、`claim {msg_id}`、`release_claim {msg_id}`、`floor_grant {conv_id, agent_id, ttl_secs?}`、`floor_release {conv_id}` | 任务频道（`create_conv {kind: "task", assignee?}`）、抢单、发言权（[09 §10.2](09-agent-communication.md)） |
+| `history {conv_id, after_seq?, before_seq?, limit?}`、`context {conv_id, max_tokens?}`、`search {query, conv_id?, limit?}`、`put_summary {conv_id, from_seq, to_seq, text}` | Agent 的历史服务（[03 §7.1](03-agents.md)）：只能读自己可见的部分，人返回 `bad_request` |
+| `state_get {key, version?}`、`state_put {key, value, version}`、`state_list {prefix?, after?, limit?}`、`state_delete {key, version}` | Agent 的检查点（[03 §7.2](03-agents.md)）：写入时比较版本 |
+| `stop_agent {agent_id, reason?}`、`resume_agent {agent_id}`、`destroy_agent {agent_id, confirm}` | 负责人急停、恢复、销毁自己的 Agent（[03 §4.3](03-agents.md)） |
+| `handoff {conv_id, to?, note}`、`handback {conv_id, agent_id, note?}`、`respond {msg_id, block_id, action? \| values?}`、`progress {conv_id, msg_id?, kind, text, data?}`、`feedback {msg_id, rating, reason?}`、`list_feedback {agent_id, limit?}`；`send` 的 `kind: agentim.card` 和 `sources` | AI 消息体验（[03 §3](03-agents.md)）：转人工、卡片、进度、来源、反馈 |
+| `update_task {conv_id, state?, assignee?, note?}`、`claim {msg_id}`、`release_claim {msg_id}`、`floor_grant {conv_id, agent_id, ttl_secs?}`、`floor_release {conv_id}` | 任务频道（`create_conv {kind: "task", assignee?}`）、抢单、发言权（[03 §8](03-agents.md)） |
 | `list_drafts`、`stats` | 待审批草稿；运行状态和审计 |
 | `set_password {current?, new}`、`totp_setup`、`totp_enable {code}`、`totp_disable {code}` | 内置账号的密码和两步验证 |
 | `list_devices`、`logout_device {device_id}` | 自己的设备（每个令牌一台）；下线一台设备并立即断开它的连接 |
-| `create_agent {name}`、`list_agents`、`agent_key {agent_id, revoke_others?}`、`revoke_agent_key {agent_id, device_id}` | 自己的 Agent 和它们的密钥（[10 §5.1](10-agent-ecosystem.md)）；Agent 也可以通过 `POST /mcp` 接入 |
-| `request_human`、`decide`、`cancel_request`、`get_request {request_id, wait_secs?}`、`inbox` | 请人决定和待办（[03 §9.3.4](03-ai-native.md)）：Agent 请人批准、回答或选择，负责人或被指定的人决定，只有一个决定生效 |
+| `create_agent {name}`、`list_agents`、`agent_key {agent_id, revoke_others?}`、`revoke_agent_key {agent_id, device_id}` | 自己的 Agent 和它们的密钥（[03 §2.1](03-agents.md)）；Agent 也可以通过 `POST /mcp` 接入 |
+| `request_human`、`decide`、`cancel_request`、`get_request {request_id, wait_secs?}`、`inbox` | 请人决定和待办（[03 §4.2](03-agents.md)）：Agent 请人批准、回答或选择，负责人或被指定的人决定，只有一个决定生效 |
 
 服务端推送：`resync`（推送接不上，需要再 `sync`）、`mute`（自己在其他设备上设置的免打扰）、`read`（自己在其他设备上的已读）、`device.added`（新设备登录）、`event`（发给 Agent 时附带 `trust` 和 `flags`）、`side`、`delta`、`stream_cancelled`。外部 Agent 的接入示例见 `server/examples/agent.mjs`。
 
@@ -425,7 +337,7 @@ cargo run --release --bin agentim -- --demo        # AgentIM
 
 ### 7.3 已知限制
 
-`--demo` 的演示账号登录不需要密码（正式部署用内置账号密码 + TOTP 或开放 API 签发的令牌）；审批草稿没有过期时间（随审批 v2）；接管锁不会超时自动交还；在线迁移还没有管理接口。撤回会清空数据库中的内容，但 SQLite 的 WAL 文件在下次检查点之前可能还留着旧页面，是否在撤回后主动做检查点待定。建大群时，创建者会收到每个成员的加入事件（2000 人群就是 2000 条），超过推送队列的部分会被丢弃并改发 resync，数据不丢，但更合理的做法是合并成一条事件（放在大群模式里做，P6）。
+`--demo` 的演示账号登录不需要密码（正式部署用内置账号密码 + TOTP 或开放 API 签发的令牌）；审批草稿没有过期时间；接管锁不会超时自动交还；在线迁移还没有管理接口。撤回会清空数据库中的内容，但 SQLite 的 WAL 文件在下次检查点之前可能还留着旧页面，是否在撤回后主动做检查点待定。建大群时，创建者会收到每个成员的加入事件（2000 人群就是 2000 条），超过推送队列的部分会被丢弃并改发 resync，数据不丢，但更合理的做法是合并成一条事件（放在大群模式里做）。
 
 ## 8. 开发者控制台
 

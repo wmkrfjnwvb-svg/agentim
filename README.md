@@ -1,22 +1,6 @@
 # AgentIM
 
-**Open-source, AI-native instant messaging infrastructure in Rust — where people and AI agents talk, work together and stay under human control.**
-
-**开源、AI 原生的 Rust 即时通讯底层框架：人和 AI、AI 和 AI 在这里交流协作，人始终可以介入。**
-
-**The durable, ordered, multi-party and governed communication and record layer for agents built with any framework. Move an agent in seconds; destroy it at any time.**
-
-**任何框架写的 Agent 都能接进来的、持久、有序、多方、可治理的通信和记录层。秒迁移，随时销毁。**
-
-- **Messaging core**: one-to-one and group conversations with a gap-free, per-conversation event log. A message is acknowledged only after it is durably committed (fsync). Pushes are a hint; pulling by sequence number is the source of truth.
-- **AI agents as first-class members**: server-assigned sender types (an agent cannot pose as a human), streaming replies with an explicit state machine, owner approval of drafts, whispers, interruption, takeover, recall, and guardrails (hop limit, loop breaker, rate limits, budgets, prompt-injection flags, DLP).
-- **Your database**: SQLite, PostgreSQL or MySQL, same behaviour on all three (the same test suite runs on each). Subsidiaries with stricter privacy can be stored in their own database.
-- **For developers**: an open API (`/v1`, OpenAPI 3.1 at `/v1/openapi.json`) for your backend: create users with your own ids, issue login tokens, manage conversations, send as a user or as the system, batch send, audited history. API keys with scopes, idempotency keys, rate limits, RFC 9457 errors. Server SDKs for [Node, Python and Go](sdk/README.md). Webhooks (signed, ordered, at-least-once) and a before-send hook; custom message kinds with a plain-text fallback; protocol version negotiation.
-- **Accounts and security**: encryption at rest on by default (AES-256-GCM, per-conversation keys, crypto-shredding on delete), hashed tokens with per-device logout, built-in passwords (Argon2id) with TOTP two-factor login, built-in TLS, Origin checks.
-- **Operable**: Prometheus metrics, structured logs, health and readiness endpoints; tested on Linux and Windows.
-- **Planned (not done yet)**: a TypeScript client SDK, React UI components, and a developer console built into the `agentim` program.
-
-Status: **developer-focused MVP** under active development; next: the client SDK, UI components and the developer console. See the [plan](docs/06-plan.md).
+**AI-native chat infrastructure for developers, in Rust.** Add chat and AI assistants to your own product: one-to-one and group conversations with a gap-free, ordered log, and AI agents built with any framework (OpenAI Agents SDK, Claude Agent SDK, LangGraph, Vercel AI SDK, or plain MCP) joining as members next to people. Agents stream replies, ask people to decide, wait for approval and can be taken over, stopped or destroyed at any time. One program, `agentim`, runs on one machine or as a cluster, on SQLite, PostgreSQL or MySQL. Apache 2.0, every feature free.
 
 ## Quick start
 
@@ -25,11 +9,26 @@ cd server
 cargo run --release --bin agentim -- --demo   # open http://127.0.0.1:8080 and log in as alice, bob or carol
 ```
 
-Open API: `agentim api-key create --name backend --scopes users:write,tokens:issue,messages:write` prints a key; see [docs/07-open-api.md](docs/07-open-api.md).
+- **Your backend**: `agentim api-key create --name backend --scopes users:write,tokens:issue,messages:write` prints a key for the open API (`/v1`, OpenAPI 3.1 at `/v1/openapi.json`): create users with your own ids, issue login tokens, manage conversations, send as a user or as the system. Server SDKs for [Node, Python and Go](sdk/README.md). See [docs/07-open-api.md](docs/07-open-api.md).
+- **An agent**: `agentim agent create --name helper --owner alice --url http://127.0.0.1:8080` prints the agent's key once, with an MCP config block for any MCP client (Claude, Cursor, OpenAI Agents SDK; endpoint `POST /mcp`) and the WebSocket address. Agent SDKs for [Node and Python](sdk/README.md#agent-sdks) (no dependencies). See [docs/03-agents.md](docs/03-agents.md).
+- **Configuration** (databases, writer settings, webhooks, TLS, accounts): [`server/agentim.example.toml`](server/agentim.example.toml). More commands: [`server/README.md`](server/README.md).
 
-Connect an agent: `agentim agent create --name helper --owner alice --url http://127.0.0.1:8080` prints the agent's key once, with an MCP config block for any MCP client (Claude, Cursor, OpenAI Agents SDK; endpoint `POST /mcp`) and the WebSocket address. People can do the same in the app (`create_agent`); see [docs/10-agent-ecosystem.md §5.1](docs/10-agent-ecosystem.md). Agent SDKs for Node and Python (no dependencies): [sdk/README.md](sdk/README.md#agent-sdks).
+## Features
 
-Configuration (databases, organisation units, writer settings, webhooks, TLS, accounts): [`server/agentim.example.toml`](server/agentim.example.toml). More commands: [`server/README.md`](server/README.md).
+**Done**
+
+- **Messaging**: one-to-one and group conversations, edit, recall, replies, mentions, read state and unread counts across devices, streaming messages, custom message kinds with a plain-text fallback, signals, deduplication. Membership: remove, leave, roles, transfer, dissolve, block. A message is acknowledged only after it is durably committed; pulling by sequence number is the source of truth, pushes are a hint.
+- **AI agents as members**: server-assigned sender types (an agent cannot pose as a human; AI label always shown), owner approval of drafts, asking people to decide, whispers, interruption, takeover, kill switch and destroy, agent-to-agent wake-ups with budgets, task channels, history, checkpoints and search, guardrails (hop limit, loop breaker, rate limits, budgets, prompt-injection flags, DLP), an MCP server.
+- **For your backend**: open API with scoped API keys, idempotency keys, rate limits and RFC 9457 errors; webhooks (signed, ordered, at-least-once); a before-send hook; custom fields; protocol version negotiation.
+- **Security**: encryption at rest on by default (AES-256-GCM, per-conversation keys, crypto-shredding on delete), hashed tokens with per-device logout, passwords (Argon2id) with TOTP, built-in TLS, Origin checks.
+- **Operations**: SQLite, PostgreSQL or MySQL with the same behaviour (the same test suite runs on each), automatic schema migration, Prometheus metrics and alerts, health and readiness endpoints, a Docker image, Docker Compose and a Helm chart; tested on Linux and Windows.
+
+**Planned** (order in [docs/06-plan.md §3](docs/06-plan.md))
+
+- TypeScript client SDK and React UI components, then client SDKs for Swift, Kotlin, C# (Unity, .NET) and Flutter.
+- A hosted cloud with a free tier, and a developer console built into `agentim`.
+- Prebuilt binaries and one-command install, a documentation site and three example apps.
+- Search filters; files and images; user data export, account deletion, reports and a moderation queue; import from other chat providers.
 
 ## Guarantees and how they are tested
 
@@ -85,3 +84,24 @@ Measured with [`server/bench/cluster.sh`](server/bench/cluster.sh): the same mac
 | PostgreSQL, group of 50 per node, all sending | 882 msg/s · 51 · 73 ms | 1,038 msg/s · 105 · 517 ms |
 | MySQL (MariaDB), write path | 680 msg/s · 68 · 105 ms | 1,359 msg/s · 68 · 254 ms |
 | MySQL (MariaDB), group of 50 per node | 600 msg/s · 76 · 131 ms | 965 msg/s · 128 · 515 ms |
+
+## Documentation
+
+| Doc | Content |
+|---|---|
+| [01 Product](docs/01-product.md) | Positioning, users, guarantees, features, pricing |
+| [02 Architecture](docs/02-architecture.md) | Conversation log, writer, storage, protocol |
+| [03 Agents](docs/03-agents.md) | Agents as members, approval and intervention, agent-to-agent, integrations |
+| [04 Security and compliance](docs/04-security-compliance.md) | Accounts, encryption, GDPR, AI Act |
+| [05 Operations](docs/05-operations.md) | Running, monitoring, tests and coverage |
+| [06 Plan](docs/06-plan.md) | Status, decisions, order |
+| [07 Open API](docs/07-open-api.md) | `/v1` for your backend |
+| [08 Sync and client](docs/08-sync-and-client.md) | Sync protocol and client SDK rules |
+| [11 Cluster](docs/11-cluster.md) | Shards, leases, failover |
+| [12 Developer experience](docs/12-developer-experience.md) | Install, SDKs, UI components, console, docs site |
+
+The docs are in Chinese.
+
+## License
+
+Apache 2.0.
