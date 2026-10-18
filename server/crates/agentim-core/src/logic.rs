@@ -66,8 +66,9 @@ pub struct HubConfig {
     /// `stats` (global counts, online users, audit) for every user. Only
     /// for the demo; operators get it from the admin API.
     pub open_stats: bool,
-    /// AgentIM Lite or AgentIM (docs/01-product.md §6).
-    pub edition: crate::edition::Edition,
+    /// Takeovers silent this long are released (docs/03-agents.md §4.1);
+    /// zero = never.
+    pub takeover_idle: Duration,
     /// Sync-only clients and retention (docs/08-sync-and-client.md).
     pub sync: crate::config::SyncConfig,
 }
@@ -87,7 +88,7 @@ impl Default for HubConfig {
             gc_every: Duration::from_secs(600),
             expire_every: Duration::from_secs(10),
             open_stats: false,
-            edition: Default::default(),
+            takeover_idle: Duration::from_secs(30 * 60),
             sync: Default::default(),
         }
     }
@@ -138,7 +139,7 @@ pub struct Shared {
     pub tokens: std::sync::RwLock<HashMap<String, TokenInfo>>,
     /// Users that may not log in or act (open API deactivation).
     pub deactivated: std::sync::RwLock<HashSet<String>>,
-    /// Agents their owners stopped (docs/09 §11.3).
+    /// Agents their owners stopped (docs/03-agents.md §4.3–§4.4).
     pub stopped: std::sync::RwLock<HashSet<String>>,
     /// Agents their owners destroyed (tombstones).
     pub destroyed: std::sync::RwLock<HashSet<String>>,
@@ -444,8 +445,8 @@ pub enum Op {
         user_id: String,
         on: bool,
     },
-    /// An agent's checkpoint write, compared against `version` (docs/09
-    /// §11.2).
+    /// An agent's checkpoint write, compared against `version` (docs/03-agents.md
+    /// §7.2).
     StatePut {
         agent_id: String,
         key: String,
@@ -459,7 +460,7 @@ pub enum Op {
         version: i64,
     },
     /// The owner stops or resumes an agent (control database), then each
-    /// of its conversations records it (docs/09 §11.3).
+    /// of its conversations records it (docs/03-agents.md §4.3–§4.4).
     SetStopped {
         agent_id: String,
         on: bool,
@@ -492,6 +493,9 @@ pub enum Op {
     EncryptExisting {
         table: String,
         limit: i64,
+        /// The other way round: encrypted values back to plaintext (B4).
+        #[serde(default)]
+        decrypt: bool,
     },
     RewrapKeys {
         new_key: String,
@@ -1247,8 +1251,16 @@ impl Ctx<'_, '_> {
                 self.db.put_credentials(&user_id, &c).await?;
                 Ok(v)
             }
-            Op::EncryptExisting { table, limit } => {
-                let n = self.db.encrypt_existing(&table, limit).await?;
+            Op::EncryptExisting {
+                table,
+                limit,
+                decrypt,
+            } => {
+                let n = if decrypt {
+                    self.db.decrypt_existing(&table, limit).await?
+                } else {
+                    self.db.encrypt_existing(&table, limit).await?
+                };
                 Ok(json!({"changed": n}))
             }
             Op::RewrapKeys { new_key } => {
@@ -1986,7 +1998,7 @@ impl Ctx<'_, '_> {
     }
 
     /// The caller's agent, to act on it in a conversation: the owner has
-    /// these powers only where they are a member too (docs/03 §9.3.1).
+    /// these powers only where they are a member too (docs/03-agents.md §1.2).
     async fn owned_agent_in(
         &mut self,
         me: &User,
@@ -2502,7 +2514,7 @@ impl Ctx<'_, '_> {
         }
         // The person holds their agents' keys: their assistants leave with
         // them, or they could go on reading and speaking through them. Team
-        // agents stay (docs/03 §9.3.1); a takeover by the person ends first,
+        // agents stay (docs/03-agents.md §1.2); a takeover by the person ends first,
         // since they can no longer speak here.
         let theirs: Vec<User> = if u.kind == UserKind::Human {
             self.members(conv_id)
@@ -3635,6 +3647,7 @@ impl Ctx<'_, '_> {
         if self.st.last_expiry.elapsed() > self.sh.cfg.expire_every {
             self.st.last_expiry = now;
             self.expire_requests().await?;
+            self.expire_takeovers().await?;
         }
         if self.st.last_gc.elapsed() > self.sh.cfg.gc_every && self.upkeep() {
             self.st.last_gc = now;
@@ -3844,6 +3857,46 @@ impl Ctx<'_, '_> {
             .record((now_ms() - d.created_at).max(0) as f64 / 1000.0);
         self.out.push(Out::Side(side));
         Ok(json!({}))
+    }
+
+    /// Takeovers whose person has been silent too long go back to the agent.
+    async fn expire_takeovers(&mut self) -> ApiResult<()> {
+        let idle = self.sh.cfg.takeover_idle.as_millis() as i64;
+        if idle == 0 {
+            return Ok(());
+        }
+        let now = now_ms();
+        for (conv_id, agent_id, by, since) in self.db.takeovers().await? {
+            if self.sh.dir_get(&conv_id).is_none_or(|d| d.db != self.idx) || !self.owns(&conv_id) {
+                continue;
+            }
+            let spoke = self.db.last_said(&conv_id, &by).await?.unwrap_or(0);
+            if now - spoke.max(since) < idle {
+                continue;
+            }
+            let ev = self
+                .db
+                .set_takeover_with(
+                    &conv_id,
+                    &agent_id,
+                    None,
+                    None,
+                    json!({"reason": "idle_timeout"}),
+                )
+                .await?;
+            self.db
+                .audit(
+                    None,
+                    "release",
+                    Some(&conv_id),
+                    Some(&agent_id),
+                    json!({"reason": "idle_timeout", "by": by}),
+                )
+                .await?;
+            metrics::counter!(m::TAKEOVERS, "action" => "timeout").increment(1);
+            self.emit(ev).await?;
+        }
+        Ok(())
     }
 
     async fn takeover(

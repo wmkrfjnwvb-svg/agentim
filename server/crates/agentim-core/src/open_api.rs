@@ -1200,7 +1200,7 @@ struct SendReq {
     client_msg_id: Option<String>,
     reply_to: Option<String>,
     to_user: Option<String>,
-    /// Routing envelope and sources (docs/09 §10.1, docs/03 §9.6.1.1).
+    /// Routing envelope and sources (docs/03-agents.md §6.2–§6.3, docs/03-agents.md §3).
     to: Option<Vec<String>>,
     topics: Option<Vec<String>>,
     intent: Option<String>,

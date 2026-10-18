@@ -78,7 +78,9 @@ async fn old_clients_without_negotiation_keep_working(db: TestDb) {
     );
     assert_eq!(r["my_agents"][0]["id"], bot.id.as_str());
     assert_eq!(r["protocols"], json!([1]));
-    assert_eq!(r["server"]["name"], edition().binary());
+    assert_eq!(r["server"]["name"], "agentim");
+    assert_eq!(r["server"]["product"], "AgentIM");
+    assert!(r["server"].get("edition").is_none(), "one product");
     assert!(!r["server"]["version"].as_str().unwrap().is_empty());
     let features: Vec<&str> = r["features"]
         .as_array()

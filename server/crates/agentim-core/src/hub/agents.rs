@@ -1,4 +1,4 @@
-//! Agent registration and keys (docs/10-agent-ecosystem.md §5.1): a person
+//! Agent registration and keys (docs/03-agents.md §2.1–§2.3): a person
 //! creates agents they own, gets a key and ready-to-paste connection
 //! settings, rotates keys (moving an agent in seconds) and revokes them.
 
@@ -18,7 +18,7 @@ impl Hub {
     }
 
     /// `create_agent`; a team agent when `team` (administrators only:
-    /// callers are the CLI and, later, the admin API; docs/03 §9.3.1).
+    /// callers are the CLI and, later, the admin API; docs/03-agents.md §1.2).
     pub async fn create_agent_with(&self, me: &User, name: &str, team: bool) -> ApiResult<Value> {
         if me.kind != UserKind::Human {
             return Err(err("forbidden", "only people own agents"));

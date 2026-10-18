@@ -171,7 +171,7 @@ async fn run_agent(hub: Hub, user: User, behavior: Behavior) {
                         .unwrap()
                         .insert(v["msg_id"].as_str().unwrap_or("").into());
                 }
-                // A card answered (docs/03 §9.6.1.1): thank them, with sources.
+                // A card answered (docs/03-agents.md §3): thank them, with sources.
                 Some("event")
                     if v["event"]["type"] == "card.response"
                         && v["event"]["data"]["to"] == json!(client.me().id) =>

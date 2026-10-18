@@ -117,6 +117,9 @@ pub struct Pending {
 #[derive(Default)]
 pub struct Crypto {
     pub kek: Option<Kek>,
+    /// New content is encrypted (false: `mode = "off"` with a master key
+    /// kept to read what was encrypted before, B4).
+    pub encrypt_new: bool,
     deks: RwLock<HashMap<String, Arc<LessSafeKey>>>,
     /// (scope, period) → key id; scope is a conversation id or "" for the database.
     current: Mutex<HashMap<(String, i64), String>>,
@@ -126,13 +129,21 @@ pub struct Crypto {
 impl Crypto {
     pub fn new(kek: Option<Kek>) -> Crypto {
         Crypto {
+            encrypt_new: kek.is_some(),
             kek,
             ..Default::default()
         }
     }
 
+    /// Reads encrypted content, writes plaintext (encryption turned off).
+    pub fn read_only(mut self) -> Crypto {
+        self.encrypt_new = false;
+        self
+    }
+
+    /// New content is encrypted.
     pub fn enabled(&self) -> bool {
-        self.kek.is_some()
+        self.kek.is_some() && self.encrypt_new
     }
 
     pub fn has_key(&self, key_id: &str) -> bool {

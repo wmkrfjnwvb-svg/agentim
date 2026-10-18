@@ -1,4 +1,4 @@
-//! The agent history service (docs/09 §11.1): reading by seq, context in a
+//! The agent history service (docs/03-agents.md §7.1): reading by seq, context in a
 //! token budget, search and summaries, all limited to what the agent may
 //! see; refusals that leave no trace; audit; rate limits; restart,
 //! dissolution, migration and encryption; reads racing writes.
@@ -16,6 +16,7 @@ backend_tests!(
     context_starts_from_the_latest_summary,
     summaries_follow_the_rules,
     search_finds_only_what_the_agent_may_see,
+    search_filters_narrow_the_hits,
     reads_are_rate_limited_per_agent,
     summaries_survive_a_restart_and_go_with_dissolution,
     race_paging_while_messages_arrive,
@@ -376,6 +377,103 @@ async fn summary_count(db: &TestDb, agent: &str) -> i64 {
         .get::<i64, _>(0)
 }
 
+/// A3 / D67: every filter narrows, they combine, bad ones are refused
+/// before anything is read.
+async fn search_filters_narrow_the_hits(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let helper = user(&hub, "helper", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let h = Conn::new(&hub, &helper);
+    let conv = a.group(&[&bot, &helper]).await;
+    let first = a.send(&conv, "@bot report one").await["msg_id"].clone();
+    h.ok(
+        json!({"op": "send", "conv_id": conv, "client_msg_id": "two", "text": "report two",
+        "to": [bot.id], "intent": "status", "topics": ["billing"], "refs": [first]}),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let mid = agentim_core::model::now_ms();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    a.send(&conv, "@bot report three").await;
+    let g = Conn::new(&hub, &bot);
+    let found = |f: Value| {
+        let g = &g;
+        let conv = conv.clone();
+        async move {
+            let mut q = json!({"op": "search", "query": "report", "conv_id": conv});
+            for (k, v) in f.as_object().unwrap() {
+                q[k] = v.clone();
+            }
+            let r = g.ok(q).await;
+            let mut t: Vec<String> = r["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|h| h["excerpt"].as_str().unwrap().replace("@bot ", ""))
+                .collect();
+            t.sort();
+            t
+        }
+    };
+    let all = ["report one", "report three", "report two"];
+    assert_eq!(found(json!({})).await, all);
+    assert_eq!(found(json!({"sender_type": "agent"})).await, ["report two"]);
+    assert_eq!(
+        found(json!({"sender_type": "human"})).await,
+        ["report one", "report three"]
+    );
+    assert_eq!(
+        found(json!({"sender_id": alice.id})).await,
+        ["report one", "report three"]
+    );
+    assert_eq!(
+        found(json!({"sender_id": "u_nobody"})).await,
+        Vec::<String>::new()
+    );
+    assert_eq!(found(json!({"intent": "status"})).await, ["report two"]);
+    assert_eq!(found(json!({"topic": "billing"})).await, ["report two"]);
+    assert_eq!(found(json!({"topic": "other"})).await, Vec::<String>::new());
+    assert_eq!(found(json!({"has_refs": true})).await, ["report two"]);
+    assert_eq!(
+        found(json!({"has_refs": false})).await,
+        ["report one", "report three"]
+    );
+    assert_eq!(found(json!({"since": mid})).await, ["report three"]);
+    assert_eq!(
+        found(json!({"until": mid})).await,
+        ["report one", "report two"]
+    );
+    assert_eq!(
+        found(json!({"since": mid, "until": mid})).await,
+        Vec::<String>::new()
+    );
+    assert_eq!(found(json!({"kind": "text"})).await, all);
+    assert_eq!(found(json!({"kind": "card"})).await, Vec::<String>::new());
+    assert_eq!(
+        found(json!({"sender_type": "human", "until": mid})).await,
+        ["report one"]
+    );
+    let long = "x".repeat(65);
+    for bad in [
+        json!({"sender_type": "robot"}),
+        json!({"since": 2, "until": 1}),
+        json!({"topic": ""}),
+        json!({"topic": long}),
+        json!({"intent": long}),
+        json!({"kind": ""}),
+        json!({"sender_id": long}),
+    ] {
+        let mut q = json!({"op": "search", "query": "report"});
+        for (k, v) in bad.as_object().unwrap() {
+            q[k] = v.clone();
+        }
+        let r = g.call(q).await;
+        assert_eq!(r["error"]["code"], "bad_request", "{bad}: {r}");
+    }
+}
+
 async fn search_finds_only_what_the_agent_may_see(db: TestDb) {
     let hub = open(single(&db.url)).await;
     let alice = user(&hub, "alice", UserKind::Human, None).await;
@@ -623,8 +721,7 @@ async fn summaries_move_with_their_conversation() {
     let open_two = |unit_b: &'static str| {
         let (m, s) = (main.url.clone(), secret.url.clone());
         async move {
-            let mut h = hub_cfg();
-            h.edition = agentim_core::edition::Edition::Full;
+            let h = hub_cfg();
             Hub::open(two(&m, &s, unit_b), h).await.unwrap()
         }
     };

@@ -1,4 +1,4 @@
-//! Requests for a human decision, read side (docs/03-ai-native.md §9.3.4):
+//! Requests for a human decision, read side (docs/03-agents.md §4.2):
 //! one request (optionally waiting for its outcome) and the inbox of what
 //! waits for a person across conversations.
 

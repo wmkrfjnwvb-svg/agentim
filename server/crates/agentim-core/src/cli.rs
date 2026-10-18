@@ -5,8 +5,6 @@ use std::time::Duration;
 use axum::serve::ListenerExt;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
-use crate::edition::Edition;
-
 use crate::config::Config;
 use crate::hub::Hub;
 use crate::logic::HubConfig;
@@ -68,7 +66,7 @@ enum Cmd {
         #[command(subcommand)]
         action: KeyCmd,
     },
-    /// Agents (docs/10-agent-ecosystem.md §5.1). Works while the server
+    /// Agents (docs/03-agents.md §2.1–§2.3). Works while the server
     /// runs; revoke keys in the app or the open API so connections close.
     Agent {
         #[command(subcommand)]
@@ -111,7 +109,7 @@ enum AgentCmd {
         #[arg(long)]
         url: Option<String>,
         /// A team agent: it stays when its owner leaves a conversation or
-        /// is deactivated (docs/03 §9.3.1).
+        /// is deactivated (docs/03-agents.md §1.2).
         #[arg(long)]
         team: bool,
     },
@@ -140,7 +138,7 @@ enum AgentCmd {
         owner: String,
     },
     /// Writes an agent package (JSON) to move the agent to another server
-    /// (docs/09 §11.4): profile, checkpoints, summaries; never keys.
+    /// (docs/03-agents.md §7.3): profile, checkpoints, summaries; never keys.
     Export {
         #[arg(long)]
         name: String,
@@ -170,6 +168,10 @@ enum EncCmd {
     /// Encrypts content stored before encryption was on. Run while the
     /// server is stopped; safe to repeat.
     EncryptExisting,
+    /// Turns encrypted content back into plaintext after setting
+    /// `encryption.mode = "off"` (the master key must still be configured).
+    /// Run while the server is stopped; safe to repeat.
+    DecryptExisting,
     /// Re-wraps the data keys with a new master key, then prints what to
     /// change. Run while the server is stopped.
     RotateKey {
@@ -231,7 +233,7 @@ fn init_logging(format: &str) {
     }
 }
 
-/// Runs the server or a command, as `agentim` or `agentim-lite`.
+/// Runs the server or a command.
 /// Joins a cluster with an opened (deferred) hub and starts the node; the
 /// `agentim-cluster` crate provides it (docs/11).
 pub type ClusterJoin = fn(Hub) -> crate::cluster::BoxFuture<Result<(), String>>;
@@ -246,14 +248,12 @@ pub struct ClusterSupport {
     pub admin: ClusterAdmin,
 }
 
-pub async fn run(edition: Edition) {
-    run_with(edition, None).await
+pub async fn run() {
+    run_with(None).await
 }
 
-pub async fn run_with(edition: Edition, cluster: Option<ClusterSupport>) {
-    let cmd = Args::command()
-        .name(edition.binary())
-        .about(format!("{} server", edition.product()));
+pub async fn run_with(cluster: Option<ClusterSupport>) {
+    let cmd = Args::command().name("agentim").about("AgentIM server");
     let args = Args::from_arg_matches(&cmd.get_matches()).unwrap_or_else(|e| e.exit());
     init_logging(&args.log_format);
     let cfg = match &args.config {
@@ -282,9 +282,9 @@ pub async fn run_with(edition: Edition, cluster: Option<ClusterSupport>) {
         return;
     }
     let hub_cfg = HubConfig {
-        edition,
         stream_idle: Duration::from_secs(args.stream_idle_secs),
         open_stats: args.demo,
+        takeover_idle: Duration::from_secs(cfg.agents.takeover_idle_minutes * 60),
         sync: cfg.sync_config(),
         guards: crate::guard::GuardConfig {
             // The demo's agent ping-pong stops quickly enough to watch.
@@ -320,6 +320,7 @@ pub async fn run_with(edition: Edition, cluster: Option<ClusterSupport>) {
         let r = match action {
             EncCmd::GenerateKey => unreachable!("handled before opening"),
             EncCmd::EncryptExisting => hub.encrypt_existing().await,
+            EncCmd::DecryptExisting => hub.decrypt_existing().await,
             EncCmd::RotateKey { new_key_file } => {
                 let key = match std::fs::read_to_string(new_key_file) {
                     Ok(k) => k.trim().to_string(),

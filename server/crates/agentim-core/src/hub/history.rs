@@ -1,4 +1,4 @@
-//! The agent history service, read side (docs/09 §11.1): an agent reads
+//! The agent history service, read side (docs/03-agents.md §7.1): an agent reads
 //! what it may see of a conversation by seq, as a context that fits a token
 //! budget, or by searching. People sync instead (docs/08).
 
@@ -76,6 +76,57 @@ fn tokens(v: &Value) -> i64 {
 
 /// `text` around the first match of `needle` (lowercase), on char
 /// boundaries.
+/// Search filters are checked before anything is read.
+fn check_filter(f: &SearchFilter) -> ApiResult<()> {
+    if let Some(t) = &f.sender_type
+        && t != "human"
+        && t != "agent"
+    {
+        return Err(err("bad_request", "sender_type must be human or agent"));
+    }
+    if let (Some(a), Some(b)) = (f.since, f.until)
+        && a > b
+    {
+        return Err(err("bad_request", "since is after until"));
+    }
+    for (name, v) in [
+        ("sender_id", &f.sender_id),
+        ("kind", &f.kind),
+        ("intent", &f.intent),
+        ("topic", &f.topic),
+    ] {
+        if v.as_ref().is_some_and(|v| v.is_empty() || v.len() > 64) {
+            return Err(err("bad_request", format!("{name} must be 1..64 bytes")));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a message (its latest version) matches the filters.
+fn passes(f: &SearchFilter, msg: &Value) -> bool {
+    let env = &msg["envelope"];
+    let at = msg["created_at"].as_i64();
+    f.sender_id
+        .as_ref()
+        .is_none_or(|s| msg["sender_id"] == s.as_str())
+        && f.sender_type
+            .as_ref()
+            .is_none_or(|s| msg["sender_type"] == s.as_str())
+        && f.kind.as_ref().is_none_or(|s| msg["kind"] == s.as_str())
+        && f.since.is_none_or(|t| at.is_some_and(|c| c >= t))
+        && f.until.is_none_or(|t| at.is_some_and(|c| c <= t))
+        && f.intent
+            .as_ref()
+            .is_none_or(|s| env["intent"] == s.as_str())
+        && f.topic.as_ref().is_none_or(|s| {
+            env["topics"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|x| x == s.as_str()))
+        })
+        && f.has_refs
+            .is_none_or(|want| env["refs"].as_array().is_some_and(|a| !a.is_empty()) == want)
+}
+
 fn excerpt(text: &str, needle: &str) -> Option<String> {
     let lower = text.to_lowercase();
     let at = lower.find(needle)?;
@@ -311,8 +362,10 @@ impl Hub {
         query: &str,
         conv_id: Option<&str>,
         limit: Option<i64>,
+        filter: &SearchFilter,
     ) -> ApiResult<Value> {
         Self::agents_only(me)?;
+        check_filter(filter)?;
         let limit = limit.unwrap_or(SEARCH_DEFAULT);
         if !(1..=SEARCH_MAX).contains(&limit) {
             return Err(err("bad_request", "limit must be 1..50"));
@@ -360,6 +413,9 @@ impl Hub {
                 let Some(text) = ev["msg"]["content"].as_str() else {
                     continue;
                 };
+                if !passes(filter, &ev["msg"]) {
+                    continue;
+                }
                 if let Some(x) = excerpt(text, &needle) {
                     hits.push(json!({"conv_id": conv, "seq": ev["msg"]["created_seq"], "msg_id": ev["msg"]["msg_id"], "sender_id": ev["msg"]["sender_id"], "sender_name": ev["msg"]["sender_name"], "sender_type": ev["msg"]["sender_type"], "excerpt": x, "trust": v["trust"]}));
                     if hits.len() as i64 >= limit {

@@ -1,4 +1,4 @@
-//! Requests for a human decision (docs/03-ai-native.md §9.3.4): an agent
+//! Requests for a human decision (docs/03-agents.md §4.2): an agent
 //! asks to approve, answer or choose; its owner or the people it names
 //! decide; exactly one decision wins; the rest expire or are cancelled.
 

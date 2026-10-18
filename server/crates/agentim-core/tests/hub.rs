@@ -20,6 +20,7 @@ backend_tests!(
     agent_reply_depth_is_bounded,
     repeated_agent_content_trips_the_loop_breaker,
     takeover_blocks_the_agent_until_released,
+    a_silent_takeover_goes_back_to_the_agent,
     group_agents_in_mention_mode_only_hear_what_is_addressed_to_them,
     inbound_injection_is_flagged_low_trust_for_agents,
     dlp_blocks_agent_output_and_moderates_streams_mid_flight,
@@ -294,7 +295,7 @@ async fn humans_can_interrupt_and_the_agent_is_told(db: TestDb) {
 }
 
 /// Agents answering each other without a person: the chain's root budget
-/// stops them (docs/09 §5), once told; a person speaking starts a new chain.
+/// stops them (docs/03-agents.md §5), once told; a person speaking starts a new chain.
 async fn agent_ping_pong_is_stopped_by_the_root_budget(db: TestDb) {
     let open_hub = || async {
         let mut h = hub_cfg();
@@ -435,6 +436,89 @@ async fn repeated_agent_content_trips_the_loop_breaker(db: TestDb) {
         });
     }
     assert_eq!(codes, vec!["ok", "ok", "loop_detected"]);
+}
+
+/// B3 (docs/03-agents.md §4.1): a takeover or handoff whose person stays
+/// silent is released once; speaking keeps it; 0 turns it off.
+async fn a_silent_takeover_goes_back_to_the_agent(db: TestDb) {
+    let mut h = hub_cfg();
+    h.takeover_idle = Duration::from_millis(600);
+    h.expire_every = Duration::from_millis(20);
+    let hub = Hub::open(single(&db.url), h).await.unwrap();
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let ag = Conn::new(&hub, &bot);
+    let conv = a.group(&[&bot]).await;
+    let releases = |p: &Value| {
+        p["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| {
+                v["event"]["type"] == "agent.state"
+                    && v["event"]["data"]["reason"] == "idle_timeout"
+            })
+            .count()
+    };
+    let tick_for = |ms: u64| {
+        let hub = hub.clone();
+        async move {
+            let end = std::time::Instant::now() + Duration::from_millis(ms);
+            while std::time::Instant::now() < end {
+                hub.tick().await;
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }
+    };
+    a.ok(json!({"op": "takeover", "conv_id": conv, "agent_id": bot.id}))
+        .await;
+    // Speaking keeps the takeover.
+    for _ in 0..3 {
+        tick_for(300).await;
+        a.send(&conv, "still here").await;
+    }
+    assert_eq!(ag.send(&conv, "me?").await["error"]["code"], "taken_over");
+    tick_for(1200).await;
+    let p = a.pull(&conv, 0).await;
+    assert_eq!(releases(&p), 1, "released once: {p}");
+    assert_eq!(ag.send(&conv, "back").await["ok"], true);
+    tick_for(300).await;
+    assert_eq!(
+        releases(&a.pull(&conv, 0).await),
+        1,
+        "nothing more to release"
+    );
+    // A handoff nobody picks up goes back too.
+    ag.ok(json!({"op": "handoff", "conv_id": conv, "note": "needs a person"}))
+        .await;
+    assert_eq!(ag.send(&conv, "me?").await["error"]["code"], "taken_over");
+    tick_for(1200).await;
+    assert_eq!(releases(&a.pull(&conv, 0).await), 2);
+    assert_eq!(ag.send(&conv, "back again").await["ok"], true);
+    // A release by hand before the time leaves nothing to expire.
+    a.ok(json!({"op": "takeover", "conv_id": conv, "agent_id": bot.id}))
+        .await;
+    a.ok(json!({"op": "release", "conv_id": conv, "agent_id": bot.id}))
+        .await;
+    tick_for(1000).await;
+    assert_eq!(releases(&a.pull(&conv, 0).await), 2);
+    drop((a, ag));
+    hub.shutdown();
+    // 0 = never.
+    let mut h = hub_cfg();
+    h.takeover_idle = Duration::ZERO;
+    h.expire_every = Duration::from_millis(20);
+    let hub = Hub::open(single(&db.url), h).await.unwrap();
+    let a = Conn::new(&hub, &alice);
+    let ag = Conn::new(&hub, &bot);
+    a.ok(json!({"op": "takeover", "conv_id": conv, "agent_id": bot.id}))
+        .await;
+    for _ in 0..30 {
+        hub.tick().await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert_eq!(ag.send(&conv, "me?").await["error"]["code"], "taken_over");
 }
 
 async fn takeover_blocks_the_agent_until_released(db: TestDb) {

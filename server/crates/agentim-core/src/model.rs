@@ -66,13 +66,13 @@ pub struct User {
     /// Organisation unit; decides which database new conversations go to.
     pub unit_id: String,
     /// A team agent (belongs to a group or the organisation; its owner only
-    /// maintains it) rather than a person's assistant (docs/03 §9.3.1).
+    /// maintains it) rather than a person's assistant (docs/03-agents.md §1.2).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub team: bool,
 }
 
 /// How an agent member is triggered in a conversation, which also bounds what
-/// it can read (see docs/03-ai-native.md §3).
+/// it can read (see docs/03-agents.md §1.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Trigger {
@@ -81,14 +81,14 @@ pub enum Trigger {
     /// Receives only events that mention it, reply to it, or are its own.
     Mention,
     /// `mention` plus messages whose envelope names it in `to` (the default
-    /// for agents in groups, docs/09 §3.2).
+    /// for agents in groups, docs/03-agents.md §6.2).
     Addressed,
     /// `addressed` plus messages on a topic it subscribes to.
     Topics,
     /// Receives everything, is never woken (monitoring, audit, recording).
     Observe,
     /// Receives everything, woken only when given the floor; speaks only
-    /// while holding it (docs/09 §3.3).
+    /// while holding it (docs/03-agents.md §6.4).
     Coordinated,
 }
 
@@ -196,7 +196,7 @@ pub struct MsgView {
     pub mentions: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
-    /// Routing envelope: `to`, `topics`, `intent`, `refs` (docs/09 §10).
+    /// Routing envelope: `to`, `topics`, `intent`, `refs` (docs/03-agents.md §6).
     #[serde(default)]
     pub envelope: Option<Value>,
     /// The message that started the chain this one belongs to (root
@@ -249,6 +249,31 @@ pub struct SideEvent {
     pub actor_id: Option<String>,
     pub data: Value,
     pub created_at: i64,
+}
+
+/// Narrows `search` (D67, docs/03-agents.md §7.1); every field optional.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SearchFilter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_id: Option<String>,
+    /// `human` or `agent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_type: Option<String>,
+    /// Message kind, e.g. `text`, `card`, a custom type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Milliseconds since 1970, inclusive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// Only messages that cite others (`refs`), or only those that do not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_refs: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -340,7 +365,7 @@ pub enum ClientMsg {
         /// agent, its owner). Goes to the side channel, takes no conv_seq.
         #[serde(default)]
         to_user: Option<String>,
-        /// Routing envelope (docs/09 §10): members named, topics, intent,
+        /// Routing envelope (docs/03-agents.md §6): members named, topics, intent,
         /// references.
         #[serde(default)]
         to: Option<Vec<String>>,
@@ -350,7 +375,7 @@ pub enum ClientMsg {
         intent: Option<String>,
         #[serde(default)]
         refs: Option<Vec<String>>,
-        /// Sources an answer is based on (docs/03 §9.6.1.1).
+        /// Sources an answer is based on (docs/03-agents.md §3).
         #[serde(default)]
         sources: Option<Vec<Value>>,
     },
@@ -520,7 +545,7 @@ pub enum ClientMsg {
         device_id: String,
     },
     /// A new agent owned by the caller, with its first key
-    /// (docs/10-agent-ecosystem.md §5.1).
+    /// (docs/03-agents.md §2.1–§2.3).
     CreateAgent {
         name: String,
     },
@@ -539,7 +564,7 @@ pub enum ClientMsg {
         device_id: String,
     },
     /// An agent asks a person to approve, answer or choose
-    /// (docs/03-ai-native.md §9.3.4).
+    /// (docs/03-agents.md §4.2).
     RequestHuman {
         conv_id: String,
         kind: String,
@@ -577,7 +602,7 @@ pub enum ClientMsg {
     /// What waits for my decision across conversations: requests and my
     /// agents' drafts.
     Inbox,
-    /// Moves a task channel to a state (docs/09 §10.2).
+    /// Moves a task channel to a state (docs/03-agents.md §8).
     UpdateTask {
         conv_id: String,
         #[serde(default)]
@@ -604,7 +629,7 @@ pub enum ClientMsg {
     FloorRelease {
         conv_id: String,
     },
-    /// Agents read what they may see of a conversation (docs/09 §11.1).
+    /// Agents read what they may see of a conversation (docs/03-agents.md §7.1).
     History {
         conv_id: String,
         #[serde(default)]
@@ -625,6 +650,8 @@ pub enum ClientMsg {
         conv_id: Option<String>,
         #[serde(default)]
         limit: Option<i64>,
+        #[serde(default, flatten)]
+        filter: SearchFilter,
     },
     PutSummary {
         conv_id: String,
@@ -632,7 +659,7 @@ pub enum ClientMsg {
         to_seq: i64,
         text: String,
     },
-    /// Agent checkpoints (docs/09 §11.2).
+    /// Agent checkpoints (docs/03-agents.md §7.2).
     StateGet {
         key: String,
         #[serde(default)]
@@ -655,7 +682,7 @@ pub enum ClientMsg {
         key: String,
         version: i64,
     },
-    /// An owner's emergency stop, resume and destroy (docs/09 §11.3).
+    /// An owner's emergency stop, resume and destroy (docs/03-agents.md §4.3–§4.4).
     StopAgent {
         agent_id: String,
         #[serde(default)]
@@ -669,7 +696,7 @@ pub enum ClientMsg {
         confirm: String,
     },
     /// An agent hands the conversation to a person; that person or the
-    /// owner hands it back (docs/03 §9.6.1.1).
+    /// owner hands it back (docs/03-agents.md §3).
     Handoff {
         conv_id: String,
         #[serde(default)]

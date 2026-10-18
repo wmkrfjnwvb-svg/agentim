@@ -56,9 +56,6 @@ fn gap_free(events: &[Value]) {
 
 async fn open_with(cfg: Config, f: impl FnOnce(&mut HubConfig)) -> Hub {
     let mut h = hub_cfg();
-    if cfg.storage.databases.len() > 1 {
-        h.edition = agentim_core::edition::Edition::Full;
-    }
     f(&mut h);
     Hub::open(cfg, h).await.expect("open hub")
 }
@@ -413,7 +410,7 @@ async fn observing_through_an_agent_is_owner_only_and_audited(db: TestDb) {
     let conv = b.group(&[&bot, &carol]).await; // alice is not a member, her agent is
     b.send(&conv, "@bot hello").await;
     let observe = |who: &str| json!({"op": "pull", "conv_id": conv, "as_agent": who});
-    // An owner observes only where they are a member too (docs/03 §9.3.1),
+    // An owner observes only where they are a member too (docs/03-agents.md §1.2),
     // and does not see the conversation listed.
     assert_eq!(code(&a.call(observe(&bot.id)).await), "forbidden");
     let listed = a.ok(json!({"op": "list_convs"})).await;

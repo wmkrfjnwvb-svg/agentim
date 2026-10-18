@@ -1,4 +1,4 @@
-//! Moving agents (docs/09 §11.4): a new environment on the same server
+//! Moving agents (docs/03-agents.md §7.3): a new environment on the same server
 //! with a new key, and an agent package exported from one server and
 //! imported into another: what goes, what never goes, tampering, limits,
 //! and concurrent imports.

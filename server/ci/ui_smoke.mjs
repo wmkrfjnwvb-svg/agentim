@@ -121,7 +121,7 @@ await bob.locator('.msg.agent').last().locator('button:has-text("👍")').click(
 await bob.waitForTimeout(500);
 await shot(bob, '08c-card-answered');
 // alice owns Aria but is not in bob's chat with it: she does not see it
-// (docs/03 §9.3.1).
+// (docs/03-agents.md §1.2).
 check(await alice.locator('#convs .conv:has-text("Bob · Aria")').count() === 0, 'an owner does not see conversations they are not in');
 
 await alice.click('#tab-stats');

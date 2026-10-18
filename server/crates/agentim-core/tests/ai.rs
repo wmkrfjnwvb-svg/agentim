@@ -1,4 +1,4 @@
-//! The AI message experience (docs/03-ai-native.md §9.6.1.1): handing a
+//! The AI message experience (docs/03-agents.md §3): handing a
 //! conversation to a person and back, cards and their responses,
 //! progress, sources and feedback, with refusals that leave no trace,
 //! restart and races.

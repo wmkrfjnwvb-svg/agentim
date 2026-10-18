@@ -21,6 +21,7 @@ backend_tests!(
     the_master_key_is_checked,
     tampered_or_moved_content_is_refused,
     an_old_database_is_encrypted_in_place,
+    turning_encryption_off_keeps_old_content_readable,
     rotating_the_master_key,
     dissolving_shreds_the_keys,
     race_one_data_key_per_conversation,
@@ -120,11 +121,11 @@ async fn everything(hub: &Hub, alice: &User, bob: &User, bot: &User) -> String {
         .await;
     a.ok(json!({"op": "decide", "request_id": r["request_id"], "decision": "answer", "text": format!("{MARK} answer")}))
         .await;
-    // The agent's own summary (docs/09 §11.1).
+    // The agent's own summary (docs/03-agents.md §7.1).
     let last = *seqs(&a.pull(&conv, 0).await).last().unwrap();
     g.ok(json!({"op": "put_summary", "conv_id": conv, "from_seq": 1, "to_seq": last, "text": format!("{MARK} summary")}))
         .await;
-    // Feedback with a reason (docs/03 §9.6.1.1).
+    // Feedback with a reason (docs/03-agents.md §3).
     let rated = g.reply(&conv, "rated answer", &q).await["draft_id"].clone();
     let rated = a.ok(json!({"op": "approve", "draft_id": rated})).await;
     let log = a.pull(&conv, 0).await;
@@ -137,7 +138,7 @@ async fn everything(hub: &Hub, alice: &User, bob: &User, bot: &User) -> String {
         .clone();
     a.ok(json!({"op": "feedback", "msg_id": rated_id, "rating": "down", "reason": format!("{MARK} reason")}))
         .await;
-    // A checkpoint, with an older version (docs/09 §11.2).
+    // A checkpoint, with an older version (docs/03-agents.md §7.2).
     g.ok(json!({"op": "state_put", "key": "plan", "value": {"v": format!("{MARK} state 1")}, "version": 0}))
         .await;
     g.ok(json!({"op": "state_put", "key": "plan", "value": {"v": format!("{MARK} state 2")}, "version": 1}))
@@ -240,6 +241,7 @@ async fn the_master_key_is_checked(db: TestDb) {
     assert!(e.message.contains("different master key"), "{}", e.message);
     let mut off = single(&db.url);
     off.encryption.mode = EncryptionMode::Off;
+    off.encryption.key = None;
     let e = Hub::open(off, hub_cfg()).await.err().unwrap();
     assert!(
         e.message.contains("holds encrypted content"),
@@ -336,6 +338,74 @@ async fn tampered_or_moved_content_is_refused(db: TestDb) {
     assert_eq!(r["error"]["code"], "storage", "fail closed: {r}");
     // Nothing is returned as if it were content.
     assert!(!r.to_string().contains("enc:v1"));
+}
+
+/// B4: on → off (key kept) → on. Off reads what was encrypted and writes
+/// plaintext; decrypt-existing turns the rest back; on again encrypts new
+/// content and reads everything.
+async fn turning_encryption_off_keeps_old_content_readable(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let conv = everything(&hub, &alice, &bob, &bot).await;
+    drop(hub);
+    assert_eq!(find_everywhere(&db, MARK).await, Vec::<String>::new());
+    let mut off = single(&db.url);
+    off.encryption.mode = EncryptionMode::Off;
+    let hub = open(off.clone()).await;
+    check(&hub, &alice, &bob, &conv).await;
+    let a = Conn::new(&hub, &alice);
+    a.send(&conv, &format!("{MARK} after off")).await;
+    assert!(
+        find_everywhere(&db, &format!("{MARK} after off"))
+            .await
+            .iter()
+            .any(|h| h == "messages.content"),
+        "new content is plaintext"
+    );
+    assert_eq!(
+        hub.encrypt_existing().await.err().unwrap().code,
+        "conflict",
+        "nothing to encrypt with when off"
+    );
+    let v = hub.decrypt_existing().await.unwrap();
+    assert!(v["main"].as_u64().unwrap() > 5, "{v}");
+    assert!(
+        find_everywhere(&db, &format!("{MARK} plain"))
+            .await
+            .iter()
+            .any(|h| h == "messages.content")
+    );
+    assert_eq!(
+        hub.decrypt_existing().await.unwrap()["main"],
+        0,
+        "repeatable"
+    );
+    check(&hub, &alice, &bob, &conv).await;
+    drop(a);
+    drop(hub);
+    // Off without the key: refused while data keys exist, and says why.
+    let mut nokey = off.clone();
+    nokey.encryption.key = None;
+    let e = Hub::open(nokey, hub_cfg()).await.err().unwrap();
+    assert!(e.message.contains("decrypt-existing"), "{}", e.message);
+    // On again: everything reads, new content is encrypted.
+    let hub = open(single(&db.url)).await;
+    check(&hub, &alice, &bob, &conv).await;
+    let a = Conn::new(&hub, &alice);
+    a.send(&conv, &format!("{MARK} on again")).await;
+    assert!(
+        find_everywhere(&db, &format!("{MARK} on again"))
+            .await
+            .is_empty()
+    );
+    assert!(
+        a.pull(&conv, 0)
+            .await
+            .to_string()
+            .contains(&format!("{MARK} after off"))
+    );
 }
 
 async fn an_old_database_is_encrypted_in_place(db: TestDb) {

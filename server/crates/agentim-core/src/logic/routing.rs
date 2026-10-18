@@ -1,4 +1,4 @@
-//! Agent-to-agent routing (docs/09 §10): the message envelope, which agents
+//! Agent-to-agent routing (docs/03-agents.md §6): the message envelope, which agents
 //! a message wakes, and the root budget that replaces the hop limit.
 
 use serde_json::{Value, json};

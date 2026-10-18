@@ -894,7 +894,7 @@ async fn messages_as_users_and_the_system(db: TestDb) {
         (&v["duplicate"], &v["msg_id"]),
         (&json!(true), &json!(msg_id))
     );
-    // The routing envelope and sources (docs/09 §10.1, docs/03 §9.6.1.1).
+    // The routing envelope and sources (docs/03-agents.md §6.2–§6.3, docs/03-agents.md §3).
     let (s, v) = api
         .call(
             "POST",

@@ -1,4 +1,4 @@
-//! Requests for a human decision (docs/03-ai-native.md §9.3.4): every kind
+//! Requests for a human decision (docs/03-agents.md §4.2): every kind
 //! and decision, who may ask, decide, see and cancel, the inbox with drafts,
 //! expiry, removal, limits, refusals that leave no trace, restart, several
 //! databases and moving a conversation, the AI label on approved drafts, and

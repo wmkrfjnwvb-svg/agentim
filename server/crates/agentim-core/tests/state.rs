@@ -1,4 +1,4 @@
-//! Agent checkpoints (docs/09 §11.2): versioned values compared on write,
+//! Agent checkpoints (docs/03-agents.md §7.2): versioned values compared on write,
 //! older versions, keys in byte order, limits, refusals that leave no
 //! trace, restart, and runtimes racing on the same key.
 

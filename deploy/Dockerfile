@@ -3,15 +3,15 @@
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY server/ server/
-RUN cd server && cargo build --release -p agentim -p agentim-lite \
- && cp target/release/agentim target/release/agentim-lite /usr/local/bin/
+RUN cd server && cargo build --release -p agentim \
+ && cp target/release/agentim /usr/local/bin/
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home /var/lib/agentim agentim \
  && mkdir -p /var/lib/agentim /etc/agentim && chown agentim /var/lib/agentim
-COPY --from=build /usr/local/bin/agentim /usr/local/bin/agentim-lite /usr/local/bin/
+COPY --from=build /usr/local/bin/agentim /usr/local/bin/
 USER agentim
 WORKDIR /var/lib/agentim
 # 8080: clients (WebSocket, HTTP, /metrics, /readyz); 7946: cluster traffic (TLS).

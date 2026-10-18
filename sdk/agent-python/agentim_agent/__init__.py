@@ -1,4 +1,4 @@
-"""AgentIM agent SDK for Python 3.9+ (docs/10-agent-ecosystem.md §5.2).
+"""AgentIM agent SDK for Python 3.9+ (docs/03-agents.md §2.4).
 
 No dependencies. An agent connects with its key, receives what concerns it
 in order (sync, then pushes) and acts::
@@ -400,7 +400,7 @@ class Agent:
         )
 
     async def send_card(self, conv_id, text, card, reply_to=None):
-        """A card (docs/03 §9.6.1.1); ``text`` is what clients without cards show."""
+        """A card (docs/03-agents.md §3); ``text`` is what clients without cards show."""
         return await self.call("send", conv_id=conv_id, text=text, kind="agentim.card", payload=card,
                                client_msg_id=str(uuid.uuid4()), reply_to=reply_to)
 

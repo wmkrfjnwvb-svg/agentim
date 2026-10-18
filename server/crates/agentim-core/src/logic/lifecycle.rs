@@ -1,4 +1,4 @@
-//! Stopping and destroying agents (docs/09 §11.3). The flag is written in
+//! Stopping and destroying agents (docs/03-agents.md §4.3–§4.4). The flag is written in
 //! the control database first and checked in every writer before an agent
 //! acts, so nothing of a stopped agent commits after its `agent.state`
 //! event; each conversation then records the change.

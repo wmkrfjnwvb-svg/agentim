@@ -289,7 +289,7 @@ pub const TABLES: &[Table] = &[
             n("deactivated_at", Big),
             // v3: per-user settings (JSON), e.g. read on one device silences the others.
             n("prefs", Text),
-            // v3: an agent stopped or destroyed by its owner (docs/09 §11.3).
+            // v3: an agent stopped or destroyed by its owner (docs/03-agents.md §4.3–§4.4).
             n("stopped_at", Big),
             n("destroyed_at", Big),
             // v4: `team` for team agents; NULL is a person's assistant.
@@ -505,7 +505,7 @@ pub const TABLES: &[Table] = &[
             // v2: structured content of custom message kinds (JSON).
             n("payload", Text),
             // v3: routing envelope (to, topics, intent, refs; encrypted JSON)
-            // and the source of the chain it belongs to (docs/09 §10).
+            // and the source of the chain it belongs to (docs/03-agents.md §6).
             n("envelope", Text),
             n("root_id", Id),
         ],
@@ -605,7 +605,7 @@ pub const TABLES: &[Table] = &[
         indexes: &[("device_cursors_conv_user", &["conv_id", "user_id"], false)],
         conv_key: Some("conv_id"),
     },
-    // v3: task channels, claims and the floor (docs/09 §10.2).
+    // v3: task channels, claims and the floor (docs/03-agents.md §8).
     Table {
         name: "tasks",
         cols: &[
@@ -643,7 +643,7 @@ pub const TABLES: &[Table] = &[
         indexes: &[],
         conv_key: Some("conv_id"),
     },
-    // v3: agent checkpoints, one row per version (docs/09 §11.2).
+    // v3: agent checkpoints, one row per version (docs/03-agents.md §7.2).
     Table {
         name: "agent_state",
         cols: &[
@@ -657,7 +657,7 @@ pub const TABLES: &[Table] = &[
         indexes: &[],
         conv_key: None,
     },
-    // v3: who responded to which card (docs/03 §9.6.1.1).
+    // v3: who responded to which card (docs/03-agents.md §3).
     Table {
         name: "card_responses",
         cols: &[
@@ -670,7 +670,7 @@ pub const TABLES: &[Table] = &[
         indexes: &[("card_responses_conv", &["conv_id"], false)],
         conv_key: Some("conv_id"),
     },
-    // v3: people's feedback on agent messages (docs/03 §9.6.1.1).
+    // v3: people's feedback on agent messages (docs/03-agents.md §3).
     Table {
         name: "feedback",
         cols: &[
@@ -689,7 +689,7 @@ pub const TABLES: &[Table] = &[
         ],
         conv_key: Some("conv_id"),
     },
-    // v3: summaries agents write of conversations (docs/09 §11.1).
+    // v3: summaries agents write of conversations (docs/03-agents.md §7.1).
     Table {
         name: "summaries",
         cols: &[
@@ -705,7 +705,7 @@ pub const TABLES: &[Table] = &[
         indexes: &[("summaries_agent", &["conv_id", "agent_id", "to_seq"], false)],
         conv_key: Some("conv_id"),
     },
-    // v3: agent messages per source of a chain (root budget, docs/09 §10).
+    // v3: agent messages per source of a chain (root budget, docs/03-agents.md §6).
     Table {
         name: "root_budgets",
         cols: &[c("conv_id", Id), c("root_id", Id), c("messages", Big)],
@@ -713,7 +713,7 @@ pub const TABLES: &[Table] = &[
         indexes: &[],
         conv_key: Some("conv_id"),
     },
-    // v3: requests for a human decision (docs/03-ai-native.md §9.3.4).
+    // v3: requests for a human decision (docs/03-agents.md §4.2).
     Table {
         name: "requests",
         cols: &[
@@ -764,7 +764,7 @@ pub const TABLES: &[Table] = &[
             // v2: kind and payload of custom message kinds.
             n("kind", Id),
             n("payload", Text),
-            // v3: routing envelope (docs/09 §10).
+            // v3: routing envelope (docs/03-agents.md §6).
             n("envelope", Text),
         ],
         pk: &["draft_id"],
@@ -781,7 +781,7 @@ pub const TABLES: &[Table] = &[
             c("agent_id", Id),
             c("by_user", Id),
             c("since", Big),
-            // v3: the agent's handover note when it handed off (docs/03 §9.6.1.1).
+            // v3: the agent's handover note when it handed off (docs/03-agents.md §3).
             n("note", Text),
         ],
         pk: &["conv_id", "agent_id"],

@@ -49,13 +49,13 @@ pub struct Config {
     pub sync: SyncFile,
     #[serde(default)]
     pub retention: RetentionFile,
-    /// Agent registration (docs/10-agent-ecosystem.md §5.1).
+    /// Agent registration (docs/03-agents.md §2.1–§2.3).
     #[serde(default)]
     pub agents: AgentsConfig,
     /// Several nodes on the same databases (docs/11-cluster.md).
     #[serde(default)]
     pub cluster: ClusterConfig,
-    /// The MCP endpoint `/mcp` (docs/10-agent-ecosystem.md §5.1).
+    /// The MCP endpoint `/mcp` (docs/03-agents.md §2.1–§2.3).
     #[serde(default)]
     pub mcp: McpConfig,
 }
@@ -68,15 +68,18 @@ pub struct AgentsConfig {
     pub max_per_owner: usize,
     /// Conversations one agent may start per hour.
     pub conversations_per_hour: u32,
-    /// History and context reads per agent per minute (docs/09 §11.1).
+    /// History and context reads per agent per minute (docs/03-agents.md §7.1).
     pub history_per_minute: u32,
     /// Searches per agent per minute.
     pub search_per_minute: u32,
-    /// Checkpoint keys one agent may keep (docs/09 §11.2).
+    /// Checkpoint keys one agent may keep (docs/03-agents.md §7.2).
     pub state_keys: u32,
-    /// Progress reports per agent per conversation per second (docs/03
-    /// §9.6.1.1).
+    /// Progress reports per agent per conversation per second (docs/03-agents.md
+    /// §3).
     pub progress_per_second: u32,
+    /// A takeover (or handoff) the person has been silent in for this long
+    /// goes back to the agent (docs/03-agents.md §4.1); 0 = never.
+    pub takeover_idle_minutes: u64,
 }
 
 impl Default for AgentsConfig {
@@ -88,6 +91,7 @@ impl Default for AgentsConfig {
             search_per_minute: 30,
             state_keys: 10_000,
             progress_per_second: 10,
+            takeover_idle_minutes: 30,
         }
     }
 }
@@ -282,7 +286,7 @@ impl Config {
     pub fn master_key(&self) -> Result<Option<String>, String> {
         let e = &self.encryption;
         if e.mode == EncryptionMode::Off {
-            return Ok(None);
+            return self.configured_key();
         }
         if let Some(k) = &e.key {
             return Ok(Some(k.clone()));
@@ -316,6 +320,38 @@ impl Config {
             return Ok(Some(k));
         }
         Err("encryption is on (the default) but no master key is configured: set encryption.key_file or AGENTIM_MASTER_KEY, or encryption.mode = \"off\"".into())
+    }
+
+    /// With encryption off: a master key that is configured (or the one
+    /// generated next to a single SQLite database earlier) still opens
+    /// what was encrypted before (B4); none is generated.
+    fn configured_key(&self) -> Result<Option<String>, String> {
+        let e = &self.encryption;
+        if let Some(k) = &e.key {
+            return Ok(Some(k.clone()));
+        }
+        if let Some(f) = &e.key_file {
+            return std::fs::read_to_string(f)
+                .map(|s| Some(s.trim().to_string()))
+                .map_err(|err| format!("encryption.key_file {f}: {err}"));
+        }
+        if let Ok(k) = std::env::var("AGENTIM_MASTER_KEY")
+            && !k.trim().is_empty()
+        {
+            return Ok(Some(k.trim().to_string()));
+        }
+        if let [db] = self.storage.databases.as_slice()
+            && let Some(path) = sqlite_path(&db.url)
+            && let Ok(s) = std::fs::read_to_string(format!("{path}.key"))
+        {
+            return Ok(Some(s.trim().to_string()));
+        }
+        Ok(None)
+    }
+
+    /// New content is encrypted.
+    pub fn encrypts(&self) -> bool {
+        self.encryption.mode != EncryptionMode::Off
     }
 }
 

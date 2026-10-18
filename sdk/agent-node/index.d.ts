@@ -1,4 +1,4 @@
-// Types for the AgentIM agent SDK (docs/10-agent-ecosystem.md §5.2).
+// Types for the AgentIM agent SDK (docs/03-agents.md §2.4).
 
 export class AgentIMError extends Error {
   /** The protocol's error code: forbidden, not_found, conflict, bad_request, rate_limited, taken_over, ... */

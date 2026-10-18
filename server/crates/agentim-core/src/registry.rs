@@ -98,7 +98,7 @@ pub struct Recip {
     pub trust: Option<(String, Vec<String>)>,
     /// Whether the event should notify this member (not their own, not muted).
     pub notify: bool,
-    /// For agents: whether the event asks it to act (docs/09 §10).
+    /// For agents: whether the event asks it to act (docs/03-agents.md §6).
     pub wake: bool,
 }
 

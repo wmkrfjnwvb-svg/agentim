@@ -1,4 +1,4 @@
-//! The agent history service, write side (docs/09 §11.1): an agent keeps
+//! The agent history service, write side (docs/03-agents.md §7.1): an agent keeps
 //! its own summaries of what it has seen; `context` starts from them.
 
 use serde_json::{Value, json};

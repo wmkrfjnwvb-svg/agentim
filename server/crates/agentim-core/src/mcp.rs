@@ -1,4 +1,4 @@
-//! MCP endpoint `POST /mcp` (docs/10-agent-ecosystem.md §5.1): agents use
+//! MCP endpoint `POST /mcp` (docs/03-agents.md §2.1–§2.3): agents use
 //! AgentIM as tools from any MCP client. Stateless per the 2026-07-28
 //! revision (version, client info and capabilities in `_meta` on every
 //! request, mirrored headers checked against the body, `server/discover`),
@@ -252,7 +252,7 @@ pub async fn endpoint(State(st): State<AppState>, headers: HeaderMap, body: Byte
         }
         r
     };
-    let server_info = json!({"name": hub.edition().binary(), "version": env!("CARGO_PKG_VERSION")});
+    let server_info = json!({"name": "agentim", "version": env!("CARGO_PKG_VERSION")});
 
     match method {
         "initialize" => {
@@ -715,6 +715,14 @@ fn tools() -> Value {
                     "query": {"type": "string", "minLength": 2, "maxLength": 200},
                     "conv_id": id("Only this conversation (optional)."),
                     "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                    "sender_id": {"type": "string", "description": "Only messages from this user."},
+                    "sender_type": {"type": "string", "enum": ["human", "agent"]},
+                    "kind": {"type": "string", "description": "Only this message kind (text, card, a custom type)."},
+                    "since": {"type": "integer", "description": "From this time (ms since 1970)."},
+                    "until": {"type": "integer", "description": "Up to this time (ms since 1970)."},
+                    "intent": {"type": "string", "maxLength": 64},
+                    "topic": {"type": "string", "maxLength": 64},
+                    "has_refs": {"type": "boolean", "description": "Only messages citing others (true) or not (false)."},
                 },
                 "required": ["query"],
                 "additionalProperties": false,
@@ -918,7 +926,7 @@ async fn call_tool(
                 "agent": {"id": user.id, "name": user.name},
                 "owner": owner,
                 "limits": {"tool_calls_per_second": cfg.rate_per_second, "burst": cfg.burst},
-                "server": crate::protocol::server_info(hub.edition()),
+                "server": crate::protocol::server_info(),
                 "stopped": hub.is_stopped(&user.id),
             });
             let mut text = format!(
@@ -1302,8 +1310,37 @@ async fn call_tool(
             Ok((render_read(&v), v))
         }
         "search" => {
-            only(args, &["query", "conv_id", "limit"])?;
+            only(
+                args,
+                &[
+                    "query",
+                    "conv_id",
+                    "limit",
+                    "sender_id",
+                    "sender_type",
+                    "kind",
+                    "since",
+                    "until",
+                    "intent",
+                    "topic",
+                    "has_refs",
+                ],
+            )?;
             let mut m = json!({"op": "search", "query": need(args, "query")?});
+            for k in [
+                "sender_id",
+                "sender_type",
+                "kind",
+                "since",
+                "until",
+                "intent",
+                "topic",
+                "has_refs",
+            ] {
+                if let Some(v) = args.get(k) {
+                    m[k] = v.clone();
+                }
+            }
             if let Some(c) = arg_str(args, "conv_id", false)? {
                 m["conv_id"] = json!(c);
             }

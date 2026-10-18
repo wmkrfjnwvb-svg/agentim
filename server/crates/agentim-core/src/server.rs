@@ -385,7 +385,7 @@ async fn run_socket(
             }
         }
     });
-    let mut welcome = crate::protocol::server_info(hub.edition());
+    let mut welcome = crate::protocol::server_info();
     welcome["type"] = json!("welcome");
     welcome["protocol"] = json!(version);
     welcome["me"] = json!(user);

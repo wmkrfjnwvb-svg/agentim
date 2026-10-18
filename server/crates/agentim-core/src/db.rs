@@ -85,7 +85,7 @@ pub struct Draft {
     pub envelope: Option<Value>,
 }
 
-/// A request for a human decision (docs/03-ai-native.md §9.3.4).
+/// A request for a human decision (docs/03-agents.md §4.2).
 #[derive(Debug, Clone)]
 pub struct Request {
     pub request_id: String,
@@ -263,7 +263,7 @@ pub struct NewMsg<'a> {
     /// Who approved a draft and whether they edited it (D36): the message
     /// stays the agent's, the event records the approval.
     pub approval: Option<Value>,
-    /// Routing envelope (docs/09 §10).
+    /// Routing envelope (docs/03-agents.md §6).
     pub envelope: Option<Value>,
     /// Source of the chain; None: this message starts one.
     pub root_id: Option<String>,
@@ -525,6 +525,22 @@ impl Db<'_> {
     /// Encrypts up to `limit` plaintext values of one table (written before
     /// encryption was on). Returns how many rows changed.
     pub async fn encrypt_existing(&mut self, table: &str, limit: i64) -> ApiResult<u64> {
+        if !self.cx.enabled() {
+            return Err(ApiError::new("conflict", "encryption is off"));
+        }
+        self.recode(table, limit, false).await
+    }
+
+    /// Turns up to `limit` encrypted values of one table back into
+    /// plaintext (encryption turned off, B4). Needs the master key.
+    pub async fn decrypt_existing(&mut self, table: &str, limit: i64) -> ApiResult<u64> {
+        if self.cx.kek.is_none() {
+            return Err(ApiError::new("conflict", "no master key to decrypt with"));
+        }
+        self.recode(table, limit, true).await
+    }
+
+    async fn recode(&mut self, table: &str, limit: i64, decrypt: bool) -> ApiResult<u64> {
         // (key columns, scope column or "", encrypted columns)
         let (keys, scope, cols): (&[&str], &str, &[&str]) = match table {
             "messages" => (&["msg_id"], "conv_id", &["content", "payload", "envelope"]),
@@ -557,12 +573,15 @@ impl Db<'_> {
                 ));
             }
         };
-        if !self.cx.enabled() {
-            return Err(ApiError::new("conflict", "encryption is off"));
-        }
-        let plain = cols
+        let todo = cols
             .iter()
-            .map(|c| format!("({c} IS NOT NULL AND {c} <> '' AND {c} NOT LIKE 'enc:v1:%')"))
+            .map(|c| {
+                if decrypt {
+                    format!("({c} LIKE 'enc:v1:%')")
+                } else {
+                    format!("({c} IS NOT NULL AND {c} <> '' AND {c} NOT LIKE 'enc:v1:%')")
+                }
+            })
             .collect::<Vec<_>>()
             .join(" OR ");
         let mut select: Vec<&str> = keys.to_vec();
@@ -571,12 +590,15 @@ impl Db<'_> {
         }
         select.extend_from_slice(cols);
         let rows = sqlx::query(self.d.q(&format!(
-            "SELECT {} FROM {table} WHERE {plain} LIMIT ?",
+            "SELECT {} FROM {table} WHERE {todo} LIMIT ?",
             select.join(", ")
         )))
         .bind(limit)
         .fetch_all(&mut *self.c)
         .await?;
+        if decrypt {
+            self.preload(&rows, cols).await?;
+        }
         let mut n = 0;
         for r in rows {
             let key_vals: Vec<String> = keys
@@ -597,12 +619,21 @@ impl Db<'_> {
                 let Some(v) = r.try_get::<Option<String>, _>(*c)? else {
                     continue;
                 };
-                if v.is_empty() || v.starts_with(crate::crypto::PREFIX) {
+                let sealed = v.starts_with(crate::crypto::PREFIX);
+                if v.is_empty() || sealed != decrypt {
                     continue;
                 }
                 let aad = format!("{table}.{c}:{}", key_vals.join(":"));
-                let plain = v.strip_prefix(crate::crypto::RAW).unwrap_or(&v).to_string();
-                vals.push(self.seal(&sc, &aad, &plain).await?);
+                if decrypt {
+                    let plain = self
+                        .cx
+                        .open(&aad, &v)
+                        .map_err(|e| ApiError::new("storage", e))?;
+                    vals.push(crate::crypto::store_plain(&plain).into_owned());
+                } else {
+                    let plain = v.strip_prefix(crate::crypto::RAW).unwrap_or(&v).to_string();
+                    vals.push(self.seal(&sc, &aad, &plain).await?);
+                }
                 sets.push(format!("{c} = ?"));
             }
             let wh = keys
@@ -3501,6 +3532,30 @@ impl Db<'_> {
             .await
     }
 
+    /// Every takeover: (conv, agent, by, since).
+    pub async fn takeovers(&mut self) -> ApiResult<Vec<(String, String, String, i64)>> {
+        let rows = sqlx::query("SELECT conv_id, agent_id, by_user, since FROM takeovers")
+            .fetch_all(&mut *self.c)
+            .await?;
+        rows.iter()
+            .map(|r| Ok((r.try_get(0)?, r.try_get(1)?, r.try_get(2)?, r.try_get(3)?)))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    /// When a user last wrote an event in a conversation.
+    pub async fn last_said(&mut self, conv_id: &str, user_id: &str) -> ApiResult<Option<i64>> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT MAX(created_at) FROM events WHERE conv_id = ? AND actor_id = ?"),
+        )
+        .bind(conv_id)
+        .bind(user_id)
+        .fetch_one(&mut *self.c)
+        .await?;
+        Ok(r.try_get::<Option<i64>, _>(0)?)
+    }
+
     /// Handoffs waiting for a person: (conv, agent, since, note).
     pub async fn handoffs_to(
         &mut self,
@@ -3665,7 +3720,7 @@ impl Db<'_> {
         )
     }
 
-    // ------------------------------- agent checkpoints (docs/09 §11.2)
+    // ------------------------------- agent checkpoints (docs/03-agents.md §7.2)
     //
     // One row per version of a key; the current value is the highest
     // version. Values are encrypted with the agent's own data key (scope =
@@ -3835,7 +3890,7 @@ impl Db<'_> {
         Ok((out, more))
     }
 
-    // ------------------------------------- cards (docs/03 §9.6.1.1)
+    // ------------------------------------- cards (docs/03-agents.md §3)
 
     pub async fn card_responses(&mut self, msg_id: &str) -> ApiResult<i64> {
         Ok(sqlx::query(
@@ -3878,7 +3933,7 @@ impl Db<'_> {
         Ok(true)
     }
 
-    // ----------------------------------- feedback (docs/03 §9.6.1.1)
+    // ----------------------------------- feedback (docs/03-agents.md §3)
 
     /// A person's current feedback on a message: (rating, reason).
     pub async fn feedback(
@@ -3999,7 +4054,7 @@ impl Db<'_> {
         Ok((up, down, out))
     }
 
-    // --------------------- stopping and destroying agents (docs/09 §11.3)
+    // --------------------- stopping and destroying agents (docs/03-agents.md §4.3–§4.4)
 
     /// Stops or resumes an agent; false when it already was so.
     pub async fn set_stopped(&mut self, agent_id: &str, on: bool) -> ApiResult<bool> {
@@ -4082,7 +4137,7 @@ impl Db<'_> {
         Ok(())
     }
 
-    // ------------------------------------- agent history (docs/09 §11.1)
+    // ------------------------------------- agent history (docs/03-agents.md §7.1)
 
     /// Events below `before` and above `floor`, newest first.
     pub async fn pull_before(

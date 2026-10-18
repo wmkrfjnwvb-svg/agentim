@@ -124,7 +124,7 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 # [retention]
 # days = 180
 
-# Agents (docs/10-agent-ecosystem.md §5.1).
+# Agents (docs/03-agents.md §2.1–§2.3).
 # [agents]
 # max_per_owner = 20          # agents one person may own
 # conversations_per_hour = 60 # conversations one agent may start

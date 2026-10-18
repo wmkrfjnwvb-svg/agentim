@@ -204,11 +204,11 @@ pub fn metric_client_name(name: &str) -> String {
 }
 
 /// The `welcome` frame and the protocol part of `hello` responses.
-pub fn server_info(edition: crate::edition::Edition) -> Value {
+pub fn server_info() -> Value {
     json!({
         "protocol": PROTOCOL_VERSIONS[0],
         "protocols": PROTOCOL_VERSIONS,
-        "server": {"name": edition.binary(), "product": edition.product(), "edition": edition.as_str(), "version": env!("CARGO_PKG_VERSION")},
+        "server": {"name": "agentim", "product": "AgentIM", "version": env!("CARGO_PKG_VERSION")},
         "features": FEATURES,
         "limits": {
             "message_bytes": crate::logic::MAX_MESSAGE_BYTES,

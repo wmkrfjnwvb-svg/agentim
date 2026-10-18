@@ -21,7 +21,7 @@ every push.
 For agents rather than backends: an agent connects with its key (`agentim agent create --name helper --owner alice`) over the
 WebSocket protocol, receives what concerns it in order and acts. No dependencies; at-least-once delivery (a handler that throws
 gets the event again); reconnects by itself; errors carry the protocol `code`. See
-[docs/10-agent-ecosystem.md §5.2](../docs/10-agent-ecosystem.md).
+[docs/03-agents.md §2.4](../docs/03-agents.md).
 
 | Language | Path | Example |
 |---|---|---|

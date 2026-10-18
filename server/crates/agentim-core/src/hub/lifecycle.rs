@@ -1,5 +1,5 @@
-//! An owner's emergency stop, resume and destroy of an agent (docs/09
-//! §11.3). The control database records the decision first (from then on
+//! An owner's emergency stop, resume and destroy of an agent (docs/03-agents.md
+//! §4.3–§4.4). The control database records the decision first (from then on
 //! the agent can do nothing); each conversation the agent is in records it
 //! after. A destroy interrupted by a crash is finished at the next start.
 
@@ -115,8 +115,8 @@ impl Hub {
     }
 
     /// The person's live agents are stopped when the person is
-    /// deactivated: their keys are in that person's hands (docs/03
-    /// §9.3.1). Reactivating does not resume them; the owner does.
+    /// deactivated: their keys are in that person's hands (docs/03-agents.md
+    /// §1.2). Reactivating does not resume them; the owner does.
     pub(super) async fn stop_agents_of(&self, owner_id: &str) -> ApiResult<()> {
         let owner = owner_id.to_string();
         let ids = self
@@ -326,7 +326,7 @@ impl Hub {
 }
 
 impl Hub {
-    /// Feedback people gave an agent's messages (docs/03 §9.6.1.1): totals
+    /// Feedback people gave an agent's messages (docs/03-agents.md §3): totals
     /// and the latest entries, for its owner.
     pub(super) async fn list_feedback(
         &self,

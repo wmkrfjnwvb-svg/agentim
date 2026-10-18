@@ -112,6 +112,7 @@ impl Shard {
         shared: Arc<Shared>,
         webhooks: &[WebhookConfig],
         master_key: Option<&str>,
+        encrypt: bool,
     ) -> ApiResult<(Shard, Wake)> {
         let dialect = Dialect::from_url(&cfg.url).map_err(|e| ApiError::new("config", e))?;
         let mut conn = storage::open_writer(&cfg.url, dialect).await?;
@@ -155,7 +156,11 @@ impl Shard {
                 ),
             ));
         }
-        let crypto = Arc::new(open_crypto(&mut conn, dialect, &cfg.name, master_key).await?);
+        let mut crypto = open_crypto(&mut conn, dialect, &cfg.name, master_key).await?;
+        if !encrypt {
+            crypto = crypto.read_only();
+        }
+        let crypto = Arc::new(crypto);
         storage::writer_timeouts(&mut conn, dialect, wcfg.cluster_stop_ms).await?;
         let read = storage::open_pool(&cfg.url, dialect, cfg.read_pool.unwrap_or(8)).await?;
         let mut replicas = vec![];
@@ -1173,7 +1178,9 @@ async fn open_crypto(
         if keys > 0 {
             return Err(ApiError::new(
                 "config",
-                format!("database {name} holds encrypted content; configure its master key"),
+                format!(
+                    "database {name} holds encrypted content: configure its master key (encryption.key_file or AGENTIM_MASTER_KEY), also with encryption.mode = \"off\", to read it; `agentim encryption decrypt-existing` turns it back into plaintext"
+                ),
             ));
         }
         return Ok(crate::crypto::Crypto::new(None));

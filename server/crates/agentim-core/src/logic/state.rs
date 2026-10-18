@@ -1,4 +1,4 @@
-//! Agent checkpoints, write side (docs/09 §11.2): versions are compared in
+//! Agent checkpoints, write side (docs/03-agents.md §7.2): versions are compared in
 //! the control database's writer, so of two runtimes writing the same
 //! version exactly one wins.
 

@@ -1,21 +1,19 @@
-# AgentIM server (AgentIM Lite and AgentIM)
+# AgentIM server
 
-One workspace, one core, two binaries (docs/01-product.md §6):
+One program, `agentim`, from a single node to a cluster:
 
 | Crate | |
 |---|---|
 | `crates/agentim-core` | The core library: messaging, sync, agents, governance, storage; all tests and examples |
-| `crates/agentim-lite` | `agentim-lite`: AgentIM Lite, the communication and record layer |
-| `crates/agentim` | `agentim`: AgentIM, Lite plus the platform modules (each a crate of its own) |
+| `crates/agentim-cluster` | Several nodes on shared databases (docs/11-cluster.md) |
+| `crates/agentim` | The `agentim` program |
 
 ```bash
-cargo run --release --bin agentim-lite -- --demo     # http://127.0.0.1:8080, log in as alice / bob / carol
-cargo run --release --bin agentim -- --demo          # the same, as AgentIM
+cargo run --release --bin agentim -- --demo          # http://127.0.0.1:8080, log in as alice / bob / carol
 cargo run --release --bin agentim -- --config agentim.toml   # databases and units, see agentim.example.toml
 cargo run --release --bin agentim -- --config agentim.toml migrate-unit --unit subsidiary-b
 cargo run --release --bin agentim -- --config agentim.toml agent create --name helper --owner alice   # key + MCP settings, also while the server runs
-cargo test                                           # unit, acceptance, scenarios, concurrency, multi-database, WebSocket, kill -9 on both binaries
-AGENTIM_TEST_EDITION=lite cargo test                 # the same suite as AgentIM Lite
+cargo test                                           # unit, acceptance, scenarios, concurrency, multi-database, WebSocket, kill -9
 AGENTIM_TEST_PG=postgres://postgres@127.0.0.1 AGENTIM_TEST_MYSQL=mysql://user:pass@127.0.0.1 cargo test
 cargo run --release --example loadtest -- --addr 127.0.0.1:8080 --clients 50 --messages 100 --streams 10
 cargo run --release --example loadtest -- --addr 127.0.0.1:8080 --solo --clients 50 --messages 200

@@ -1,4 +1,4 @@
-//! MCP endpoint `/mcp` (docs/10-agent-ecosystem.md §5.1) on a real server:
+//! MCP endpoint `/mcp` (docs/03-agents.md §2.1–§2.3) on a real server:
 //! both protocol eras and their header rules, authentication (agent keys
 //! only), every tool with the business rules of the client protocol,
 //! updates delivered once per key also under concurrent calls, rate limits
@@ -170,7 +170,7 @@ async fn discovery_versions_and_headers(db: TestDb) {
     assert!(r["capabilities"]["tools"].is_object());
     assert_eq!(
         r["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
-        edition().binary()
+        "agentim"
     );
     assert!(r["instructions"].as_str().unwrap().contains("get_updates"));
     let (_, v) = m.rpc(&key, "ping", json!({})).await;
@@ -300,7 +300,7 @@ async fn discovery_versions_and_headers(db: TestDb) {
     assert_eq!(st, 200);
     assert_eq!(v["result"]["protocolVersion"], "2025-06-18");
     assert!(v["result"].get("resultType").is_none());
-    assert_eq!(v["result"]["serverInfo"]["name"], edition().binary());
+    assert_eq!(v["result"]["serverInfo"]["name"], "agentim");
     let (_, v) = m.post(&[("authorization", a)], &init("2024-01-01")).await;
     assert_eq!(v["result"]["protocolVersion"], "2025-11-25");
     let res = m
@@ -476,7 +476,7 @@ async fn tools_follow_the_business_rules(db: TestDb) {
     let w = m.ok(&key, "whoami", json!({})).await;
     assert_eq!(w["agent"]["id"], json!(helper.id));
     assert_eq!(w["owner"]["name"], "alice");
-    assert_eq!(w["server"]["server"]["edition"], edition().as_str());
+    assert_eq!(w["server"]["server"]["name"], "agentim");
     let r = m.tool(&key, "whoami", json!({})).await;
     assert!(
         r["content"][0]["text"]
@@ -1200,7 +1200,7 @@ async fn agents_address_each_other(db: TestDb) {
     }
 }
 
-/// Task channels, claims and the floor through the tools (docs/09 §10.2).
+/// Task channels, claims and the floor through the tools (docs/03-agents.md §8).
 async fn agents_work_on_tasks(db: TestDb) {
     let mut cfg = single(&db.url);
     cfg.mcp.burst = 1000.0;
@@ -1407,7 +1407,7 @@ async fn agents_work_on_tasks(db: TestDb) {
     }
 }
 
-/// History, context, search and summaries through the tools (docs/09 §11.1).
+/// History, context, search and summaries through the tools (docs/03-agents.md §7.1).
 async fn agents_read_their_history(db: TestDb) {
     let mut cfg = single(&db.url);
     cfg.mcp.burst = 1000.0;
@@ -1498,7 +1498,7 @@ async fn agents_read_their_history(db: TestDb) {
     assert_eq!(r["content"][0]["text"], "No match.");
 }
 
-/// Checkpoints through the tools (docs/09 §11.2).
+/// Checkpoints through the tools (docs/03-agents.md §7.2).
 async fn agents_keep_checkpoints(db: TestDb) {
     let mut cfg = single(&db.url);
     cfg.mcp.burst = 1000.0;
@@ -1601,7 +1601,7 @@ async fn agents_keep_checkpoints(db: TestDb) {
     }
 }
 
-/// An owner's stop and destroy reach the MCP endpoint (docs/09 §11.3).
+/// An owner's stop and destroy reach the MCP endpoint (docs/03-agents.md §4.3–§4.4).
 async fn stopped_and_destroyed_agents_are_refused(db: TestDb) {
     let mut cfg = single(&db.url);
     cfg.mcp.burst = 1000.0;
@@ -1652,8 +1652,8 @@ async fn stopped_and_destroyed_agents_are_refused(db: TestDb) {
     assert_eq!(st, 401);
 }
 
-/// Cards, progress, sources and handing off through the tools (docs/03
-/// §9.6.1.1).
+/// Cards, progress, sources and handing off through the tools (docs/03-agents.md
+/// §3).
 async fn agents_use_cards_progress_sources_and_handoff(db: TestDb) {
     let mut cfg = single(&db.url);
     cfg.mcp.burst = 1000.0;

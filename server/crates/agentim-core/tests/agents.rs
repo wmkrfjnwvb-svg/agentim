@@ -1,4 +1,4 @@
-//! Agent registration and keys (docs/10-agent-ecosystem.md §5.1): creation by
+//! Agent registration and keys (docs/03-agents.md §2.1–§2.3): creation by
 //! the owner, the per-owner cap, rotation (one write, exactly one key left),
 //! revocation, refusals that leave no trace, keys made by another process,
 //! restart, and the races between them.

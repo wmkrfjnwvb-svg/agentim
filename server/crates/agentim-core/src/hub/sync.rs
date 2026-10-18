@@ -698,7 +698,7 @@ fn decorate(
         v["flags"] = json!(flags);
     }
     if member.is_some_and(|m| m.kind == UserKind::Agent) {
-        // As recorded when the message was written (docs/09 §10).
+        // As recorded when the message was written (docs/03-agents.md §6).
         v["wake"] = json!(
             e.data["wake"]
                 .as_array()

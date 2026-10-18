@@ -1,10 +1,6 @@
-//! AgentIM: AgentIM Lite plus the platform modules (docs/01-product.md §6).
+//! AgentIM server: one program from a single node to a cluster.
 
 #[tokio::main]
 async fn main() {
-    agentim_core::cli::run_with(
-        agentim_core::edition::Edition::Full,
-        Some(agentim_cluster::SUPPORT),
-    )
-    .await
+    agentim_core::cli::run_with(Some(agentim_cluster::SUPPORT)).await
 }

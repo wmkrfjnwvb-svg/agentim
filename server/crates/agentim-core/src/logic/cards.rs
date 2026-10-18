@@ -1,4 +1,4 @@
-//! Cards (docs/03-ai-native.md §9.6.1.1): declarative JSON with a fixed
+//! Cards (docs/03-agents.md §3): declarative JSON with a fixed
 //! set of components, never scripts; members respond with a button or a
 //! filled form and the response goes back to the sender.
 

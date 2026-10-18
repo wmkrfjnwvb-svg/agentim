@@ -1,4 +1,4 @@
-//! A person's assistant and team agents (docs/03 §9.3.1): which agents
+//! A person's assistant and team agents (docs/03-agents.md §1.2): which agents
 //! leave or stop with their owner, the owner's powers only where they are
 //! a member, conversation managers configuring team agents, and transfers.
 

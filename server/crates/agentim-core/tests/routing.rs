@@ -1,4 +1,4 @@
-//! Agent-to-agent routing (docs/09 §10.1): receive modes decide what an
+//! Agent-to-agent routing (docs/03-agents.md §6.2–§6.3): receive modes decide what an
 //! agent receives and what wakes it, the envelope, the fan-out cap, streams
 //! waking only when complete, drafts keeping their envelope, the root
 //! budget under concurrency, restart and several databases.
@@ -517,7 +517,6 @@ async fn root_budgets_move_with_their_conversation() {
         async move {
             let mut h = hub_cfg();
             h.guards.root_messages = 2;
-            h.edition = agentim_core::edition::Edition::Full;
             Hub::open(two(&m, &s, unit_b), h).await.unwrap()
         }
     };

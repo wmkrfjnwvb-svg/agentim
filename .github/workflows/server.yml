@@ -34,13 +34,8 @@ jobs:
           workspaces: server
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      # unit, acceptance (SQLite), multi-database, WebSocket and kill -9 crash
-      # tests, crash tests on both binaries (agentim and agentim-lite)
+      # unit, acceptance (SQLite), multi-database, WebSocket and kill -9 crash tests
       - run: cargo test --no-fail-fast
-      # the same suite as AgentIM Lite: every Lite behaviour holds on both products
-      - run: cargo test --no-fail-fast
-        env:
-          AGENTIM_TEST_EDITION: lite
 
   databases:
     name: tests on PostgreSQL 16 and MySQL 8.4
@@ -69,17 +64,13 @@ jobs:
         with:
           workspaces: server
       - name: same acceptance suite against every backend, plus mixed-backend units
-        run: cargo test --test editions --test hub --test multidb --test scenarios --test concurrency --test membership --test coverage --test protocol --test schema --test extensions --test webhooks --test devices --test open_api --test transport --test accounts --test encryption --test edges --test sync --test agents --test mcp --test requests --test routing --test tasks --test history --test state --test lifecycle --test migrate --test ai --test audit --test team_agents -- --nocapture 2>&1 | tee result.txt; test ${PIPESTATUS[0]} -eq 0
+        run: cargo test --test hub --test multidb --test scenarios --test concurrency --test membership --test coverage --test protocol --test schema --test extensions --test webhooks --test devices --test open_api --test transport --test accounts --test encryption --test edges --test sync --test agents --test mcp --test requests --test routing --test tasks --test history --test state --test lifecycle --test migrate --test ai --test audit --test team_agents -- --nocapture 2>&1 | tee result.txt; test ${PIPESTATUS[0]} -eq 0
       - name: no test may be silently skipped here
         run: "! grep -q 'skipped:' result.txt"
       - name: cluster (several nodes on one database, docs/11 §12)
         run: cargo test -p agentim-cluster -- --nocapture 2>&1 | tee cluster.txt; test ${PIPESTATUS[0]} -eq 0
       - name: no cluster test may be silently skipped
         run: "! grep -q 'skipped:' cluster.txt"
-      - name: the same suite as AgentIM Lite
-        env:
-          AGENTIM_TEST_EDITION: lite
-        run: cargo test --test editions --test hub --test multidb --test scenarios --test concurrency --test membership --test coverage --test protocol --test schema --test extensions --test webhooks --test devices --test open_api --test transport --test accounts --test encryption --test edges --test sync --test agents --test mcp --test requests --test routing --test tasks --test history --test state --test lifecycle --test migrate --test ai --test audit --test team_agents
 
   replicas:
     name: database replicas and failover (PostgreSQL 16, MySQL 8.4)
@@ -244,7 +235,6 @@ jobs:
       - run: cargo build --bins
       - run: (cd ../sdk/go && gofmt -l . | (! grep .) && go vet ./...)
       - run: bash ../sdk/smoke.sh server/target/debug/agentim
-      - run: bash ../sdk/smoke.sh server/target/debug/agentim-lite
 
   agent-sdk:
     name: agent SDK end-to-end (${{ matrix.os }}, Node and Python)
@@ -268,4 +258,3 @@ jobs:
           python-version: "3.12"
       - run: cargo build --bins
       - run: PYTHON=python bash ../sdk/agent_e2e.sh server/target/debug/agentim
-      - run: PYTHON=python bash ../sdk/agent_e2e.sh server/target/debug/agentim-lite

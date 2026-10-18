@@ -112,18 +112,8 @@ pub async fn new_db(b: Backend) -> Option<TestDb> {
     }
 }
 
-/// `AGENTIM_TEST_EDITION=lite` runs the suite as AgentIM Lite, so every
-/// Lite behaviour is checked on both products.
-pub fn edition() -> agentim_core::edition::Edition {
-    match std::env::var("AGENTIM_TEST_EDITION").as_deref() {
-        Ok("lite") => agentim_core::edition::Edition::Lite,
-        _ => agentim_core::edition::Edition::Full,
-    }
-}
-
 pub fn hub_cfg() -> HubConfig {
     HubConfig {
-        edition: edition(),
         stream_idle: Duration::from_millis(200),
         checkpoint_every: Duration::from_millis(0),
         coalesce: Duration::from_millis(0),
@@ -232,13 +222,8 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
     }
 }
 
-/// Several databases (organisation units) are an AgentIM feature.
 pub async fn open(cfg: Config) -> Hub {
-    let mut h = hub_cfg();
-    if cfg.storage.databases.len() > 1 {
-        h.edition = agentim_core::edition::Edition::Full;
-    }
-    Hub::open(cfg, h).await.expect("open hub")
+    Hub::open(cfg, hub_cfg()).await.expect("open hub")
 }
 
 pub async fn user(hub: &Hub, name: &str, kind: UserKind, owner: Option<&User>) -> User {

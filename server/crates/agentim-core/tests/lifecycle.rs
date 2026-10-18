@@ -1,5 +1,5 @@
-//! An owner's emergency stop, resume and destroy of an agent (docs/09
-//! §11.3): every path the agent acts through is closed, every conversation
+//! An owner's emergency stop, resume and destroy of an agent (docs/03-agents.md
+//! §4.3–§4.4): every path the agent acts through is closed, every conversation
 //! records it, refusals leave no trace, restart and an interrupted destroy,
 //! and the races with an agent that keeps acting.
 

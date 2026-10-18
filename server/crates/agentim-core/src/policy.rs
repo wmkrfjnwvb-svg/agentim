@@ -40,7 +40,7 @@ pub trait PolicyHook: Send + Sync {
     }
 }
 
-/// Rule-based prompt-injection heuristics (community edition baseline).
+/// Rule-based prompt-injection heuristics (baseline).
 pub struct InjectionRules {
     re: Regex,
 }

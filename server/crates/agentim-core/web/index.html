@@ -355,7 +355,7 @@ function render() {
   renderPanel();
 }
 
-// Cards are declarative (docs/03 §9.6.1.1): only these components, no scripts.
+// Cards are declarative (docs/03-agents.md §3): only these components, no scripts.
 function cardHtml(m, own) {
   const p = m.payload, id = m.msg_id;
   const answered = (S.logs[S.cur.conv_id].sys || []).filter(e => e.type === 'card.response' && e.data.msg_id === id);

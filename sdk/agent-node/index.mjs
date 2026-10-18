@@ -1,4 +1,4 @@
-// AgentIM agent SDK for Node.js 22+ (docs/10-agent-ecosystem.md §5.2).
+// AgentIM agent SDK for Node.js 22+ (docs/03-agents.md §2.4).
 // No dependencies: Node's built-in WebSocket. An agent connects with its
 // key, receives what concerns it in order (sync, then pushes), and acts.
 //
@@ -288,7 +288,7 @@ export class Agent {
     });
   }
 
-  /** Sends a card (docs/03 §9.6.1.1); `text` is what clients without cards show. */
+  /** Sends a card (docs/03-agents.md §3); `text` is what clients without cards show. */
   sendCard(convId, text, card, opts = {}) {
     return this.conn.call('send', { conv_id: convId, text, kind: 'agentim.card', payload: card, client_msg_id: opts.clientMsgId ?? uid(), reply_to: opts.replyTo });
   }
@@ -312,7 +312,7 @@ export class Agent {
 
   /**
    * Asks a person to decide and waits for the outcome (approve, answer or
-   * choose; docs/03 §9.3.4). Resolves with {state, response, decided_by}.
+   * choose; docs/03-agents.md §4.2). Resolves with {state, response, decided_by}.
    */
   async askHuman(convId, { kind = 'approve', title, context, options, assignees, ttlSecs, timeoutMs = 3600_000 } = {}) {
     const r = await this.conn.call('request_human', { conv_id: convId, kind, title, context, options, assignees, ttl_secs: ttlSecs, client_req_id: uid() });

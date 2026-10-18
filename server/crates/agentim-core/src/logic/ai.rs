@@ -1,4 +1,4 @@
-//! The AI message experience (docs/03-ai-native.md §9.6.1.1): an agent
+//! The AI message experience (docs/03-agents.md §3): an agent
 //! hands a conversation to a person and gets it back.
 
 use serde_json::{Value, json};

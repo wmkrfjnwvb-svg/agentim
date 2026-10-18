@@ -72,19 +72,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentim-lite"
-version = "0.1.0"
-dependencies = [
- "agentim-cluster",
- "agentim-core",
- "futures-util",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-tungstenite 0.30.0",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

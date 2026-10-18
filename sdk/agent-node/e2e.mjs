@@ -1,5 +1,5 @@
 // End-to-end check of the agent SDK against a real server it starts itself
-// (docs/10-agent-ecosystem.md §5.2). A person (alice) talks to two agents
+// (docs/03-agents.md §2.4). A person (alice) talks to two agents
 // over WebSocket; the agents use the SDK.
 //
 //   AGENTIM_BIN=server/target/debug/agentim node sdk/agent-node/e2e.mjs

@@ -16,7 +16,7 @@ export interface Message {
   clientMsgId?: string;
   replyTo?: string;
   toUser?: string;
-  /** Routing envelope (docs/09 §10.1): members this asks to act, topics, intent, references. */
+  /** Routing envelope (docs/03-agents.md §6.2–§6.3): members this asks to act, topics, intent, references. */
   to?: string[];
   topics?: string[];
   intent?: "request" | "proposal" | "answer" | "status" | "done";

@@ -1,4 +1,4 @@
-//! Task channels, claims and the floor (docs/09 §10.2): task states and who
+//! Task channels, claims and the floor (docs/03-agents.md §8): task states and who
 //! may move them, an ended task silencing agents, claims with one winner,
 //! coordinated agents speaking only with the floor, refusals that leave no
 //! trace, restart, and the races between them.

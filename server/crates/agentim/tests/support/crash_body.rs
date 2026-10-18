@@ -1,4 +1,4 @@
-// Shared by the AgentIM and AgentIM Lite crash tests; each defines `BIN`.
+// The crash tests of the `agentim` program; the test defines `BIN`.
 //
 // Process crash recovery, portable across Linux and Windows: the server
 // binary is killed (SIGKILL / TerminateProcess) while clients are sending,

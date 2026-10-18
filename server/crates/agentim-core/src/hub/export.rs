@@ -1,4 +1,4 @@
-//! Moving an agent to another server (docs/09 §11.4): an owner exports an
+//! Moving an agent to another server (docs/03-agents.md §7.3): an owner exports an
 //! agent package (JSON) and imports it elsewhere as a new agent. Never
 //! exported: keys, credentials, grants. Conversation content is included
 //! only on request and only where the owner is a member too (D46).
@@ -163,7 +163,7 @@ impl Hub {
         let owner = self.user(&me.id).map(|u| u.name).unwrap_or_default();
         let mut pkg = json!({
             "format": FORMAT,
-            "source": {"server": crate::protocol::server_info(self.edition()), "exported_at": now_ms()},
+            "source": {"server": crate::protocol::server_info(), "exported_at": now_ms()},
             "agent": {"id": agent.id, "name": agent.name, "owner": owner},
             "state": state,
             "summaries": summaries,

@@ -1,4 +1,4 @@
-//! Task channels, claims and the floor (docs/09 §10.2): a task moves through
+//! Task channels, claims and the floor (docs/03-agents.md §8): a task moves through
 //! A2A-aligned states and stops waking agents when it ends; a request is
 //! taken by exactly one claimer; a coordinated agent speaks while it holds
 //! the floor.

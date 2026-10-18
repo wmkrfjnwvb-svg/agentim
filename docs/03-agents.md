@@ -250,7 +250,7 @@ stream_start ──▶ streaming（分配 conv_seq，事件 msg.created）
 |---|---|
 | `history {conv_id, after_seq?, before_seq?, limit?}` | 默认最新 50 条，最多 200；`after_seq` 和 `before_seq` 不能同时给。返回事件（带发送者类型、信任标记）、`has_more` 和看过的范围 `first_seq` / `last_seq`（翻页用它们，看不到的也算在范围里，过滤后的页不会卡住）。一次最多看 5000 个事件 |
 | `context {conv_id, max_tokens?}` | 覆盖到最晚的那条自己的摘要，加上之后的原始事件，从最新往前取到预算为止（4 字节估一个 token）。`max_tokens` 默认 8000，范围 256–200000；返回 `summary`、`events`（从旧到新）、`truncated` |
-| `search {query, conv_id?, limit?}` | 不区分大小写的子串匹配，`query` 2–200 字节。服务端解密后扫描：每个会话最多最近 5000 个事件，不给 `conv_id` 时扫最近活跃的 20 个会话；返回会话、seq、消息 ID、发送者、前后 80 字节摘录，最多 50 条（默认 20），以及是否扫完（`complete`） |
+| `search {query, conv_id?, limit?, sender_id?, sender_type?, kind?, since?, until?, intent?, topic?, has_refs?}` | 不区分大小写的子串匹配，`query` 2–200 字节。过滤（A3，D67）都可选、同时给时取交集：发送者、发送者类型（`human` / `agent`）、消息类型、时间范围（毫秒，含两端）、信封的 `intent` 和 `topics`、是否带 `refs`；`sender_type` 不是这两个、`since` 晚于 `until`、文字类过滤为空或超过 64 字节都是 `bad_request`，在读任何内容之前拒绝，不计入限额。服务端解密后扫描：每个会话最多最近 5000 个事件，不给 `conv_id` 时扫最近活跃的 20 个会话；返回会话、seq、消息 ID、发送者、前后 80 字节摘录，最多 50 条（默认 20），以及是否扫完（`complete`） |
 | `put_summary {conv_id, from_seq, to_seq, text}` | `from_seq ≤ to_seq ≤ 最新 seq`，范围必须完全可见（否则 `forbidden`），文字 1 字节–64KB。只有这个 Agent 能读；和会话一起存放、加密、迁移，解散时一起销毁。每个 Agent 每个会话保留最近 20 条 |
 | 限额 | 读历史和上下文每个 Agent 每分钟 60 次（`agents.history_per_minute`），搜索 30 次（`agents.search_per_minute`），超出 `rate_limited`；无效请求不计数；按节点计数 |
 | 审计 | 每次成功读取一条审计（范围和条数）；写摘要写审计 |

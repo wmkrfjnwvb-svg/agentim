@@ -1,4 +1,4 @@
-//! Agent checkpoints (docs/09 §11.2): versioned keys an agent keeps on the
+//! Agent checkpoints (docs/03-agents.md §7.2): versioned keys an agent keeps on the
 //! server so another runtime can carry on. Writes compare versions in the
 //! control database's writer; reads go to its readers.
 
@@ -12,7 +12,7 @@ pub const KEY_MAX: usize = 255;
 pub const VALUE_MAX: usize = 1024 * 1024;
 const LIST_MAX: i64 = 500;
 const LIST_DEFAULT: i64 = 100;
-/// Written only by an import (docs/09 §11.4).
+/// Written only by an import (docs/03-agents.md §7.3).
 pub const ARCHIVE: &str = "archive/";
 
 fn check_key(key: &str) -> ApiResult<()> {

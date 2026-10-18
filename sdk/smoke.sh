@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the Node, Python and Go SDK smoke tests against a fresh server.
-# Usage: sdk/smoke.sh [path/to/agentim or agentim-lite]   (default: server/target/debug/agentim)
+# Usage: sdk/smoke.sh [path/to/agentim]   (default: server/target/debug/agentim)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 BIN=${1:-server/target/debug/agentim}

@@ -1,4 +1,4 @@
-//! Agent guardrails (community edition): hop limit, loop/duplicate breaker,
+//! Agent guardrails: hop limit, loop/duplicate breaker,
 //! per-conversation rate limit and per-agent daily budget.
 
 use std::collections::HashMap;
@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 pub struct GuardConfig {
     /// Deepest reply chain of agent messages since a person spoke.
     pub max_hop: i64,
-    /// Agent messages per source of a chain (root budget, docs/09 §5).
+    /// Agent messages per source of a chain (root budget, docs/03-agents.md §5).
     pub root_messages: i64,
     /// Trip when the same normalized content appears this many times among
     /// the agent's recent messages in the conversation (including the new one).

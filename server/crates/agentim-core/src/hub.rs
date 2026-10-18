@@ -61,7 +61,7 @@ struct Inner {
     device_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Conversations agents started: (tokens, last refill) per agent.
     conv_buckets: Mutex<HashMap<String, (f64, Instant)>>,
-    /// History and search reads per agent (docs/09 §11.1).
+    /// History and search reads per agent (docs/03-agents.md §7.1).
     read_buckets: Mutex<HashMap<(String, &'static str), Bucket>>,
     /// Password hashing slots, and how many callers hold or wait for one.
     hash_slots: tokio::sync::Semaphore,
@@ -172,7 +172,6 @@ impl Hub {
     /// so those writes are routed to the nodes holding their shards.
     pub async fn open_deferred(cfg: Config, hub_cfg: HubConfig) -> ApiResult<Hub> {
         cfg.validate().map_err(|e| err("config", e))?;
-        hub_cfg.edition.check(&cfg).map_err(|e| err("config", e))?;
         m::init();
         sqlx::any::install_default_drivers();
         let db_names: Vec<String> = cfg
@@ -213,8 +212,16 @@ impl Hub {
             wcfg.cluster_stop_ms = Some(cfg.cluster.stop_ms);
         }
         for (i, d) in cfg.storage.databases.iter().enumerate() {
-            let (s, w) =
-                Shard::open(i, d, &wcfg, sh.clone(), &cfg.webhooks, master.as_deref()).await?;
+            let (s, w) = Shard::open(
+                i,
+                d,
+                &wcfg,
+                sh.clone(),
+                &cfg.webhooks,
+                master.as_deref(),
+                cfg.encrypts(),
+            )
+            .await?;
             shards.push(s);
             wakes.push(w);
         }
@@ -984,6 +991,16 @@ impl Hub {
     /// Encrypts content written before encryption was on, in batches, in
     /// every database. Safe to run again. Returns rows changed per database.
     pub async fn encrypt_existing(&self) -> ApiResult<Value> {
+        self.recode_existing(false).await
+    }
+
+    /// Turns encrypted content back into plaintext after encryption was
+    /// turned off (B4). Safe to run again.
+    pub async fn decrypt_existing(&self) -> ApiResult<Value> {
+        self.recode_existing(true).await
+    }
+
+    async fn recode_existing(&self, decrypt: bool) -> ApiResult<Value> {
         let mut out = json!({});
         for s in &self.inner.shards {
             let mut total = 0;
@@ -1005,6 +1022,7 @@ impl Hub {
                         .call(Op::EncryptExisting {
                             table: t.into(),
                             limit: 500,
+                            decrypt,
                         })
                         .await?;
                     let n = v["changed"].as_u64().unwrap_or(0);
@@ -1913,7 +1931,7 @@ impl Hub {
         self.create_user_with(name, kind, owner, unit, false).await
     }
 
-    /// `create_user`, for a team agent when `team` (docs/03 §9.3.1).
+    /// `create_user`, for a team agent when `team` (docs/03-agents.md §1.2).
     pub async fn create_user_with(
         &self,
         name: &str,
@@ -2183,7 +2201,7 @@ impl Hub {
                     info: Some(client),
                     features,
                 };
-                let mut res = protocol::server_info(self.inner.sh.cfg.edition);
+                let mut res = protocol::server_info();
                 res["protocol"] = json!(version);
                 res["me"] = json!(me);
                 res["users"] = json!(users);
@@ -2434,7 +2452,11 @@ impl Hub {
                 query,
                 conv_id,
                 limit,
-            } => self.search(me, &query, conv_id.as_deref(), limit).await,
+                filter,
+            } => {
+                self.search(me, &query, conv_id.as_deref(), limit, &filter)
+                    .await
+            }
             ClientMsg::StateGet { key, version } => self.state_get(me, &key, version).await,
             ClientMsg::StatePut {
                 key,
@@ -2762,7 +2784,7 @@ impl Hub {
             return Ok(system_member());
         }
         // Observing through an agent needs the owner to be a member too
-        // (docs/03 §9.3.1).
+        // (docs/03-agents.md §1.2).
         let owner = (who != me.id).then(|| me.id.clone());
         let (m, owner_in) = self
             .read(shard, move |db| {
@@ -2880,7 +2902,7 @@ impl Hub {
     async fn list_convs(&self, me: &User) -> ApiResult<Value> {
         let sh = &self.inner.sh;
         // Only conversations the person is in: their agents' other
-        // conversations are not theirs to see (docs/03 §9.3.1).
+        // conversations are not theirs to see (docs/03-agents.md §1.2).
         let ids = vec![me.id.clone()];
         let pairs = self
             .read(self.control(), move |db| {
@@ -3002,7 +3024,7 @@ impl Hub {
         members: &[String],
         assignee: Option<&str>,
     ) -> ApiResult<Value> {
-        // An agent's conversations belong to its person (docs/10 §5.1).
+        // An agent's conversations belong to its person (docs/03-agents.md §2.2).
         let agent_owner = match me.kind {
             UserKind::Human => None,
             UserKind::Agent => Some(
@@ -3309,10 +3331,6 @@ impl Hub {
         if let Some(s) = self.inner.shards.iter().find(|s| s.name == database) {
             s.health.fail_next_jobs.store(n, Ordering::SeqCst);
         }
-    }
-
-    pub fn edition(&self) -> crate::edition::Edition {
-        self.inner.sh.cfg.edition
     }
 
     pub fn stats_open(&self) -> bool {
