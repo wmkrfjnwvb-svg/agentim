@@ -1206,8 +1206,19 @@ mod tests {
         assert_eq!(c.master_key().unwrap().unwrap(), "other");
         c.encryption.key_file = Some(dir.path().join("none").to_string_lossy().into());
         assert!(c.master_key().is_err());
+        // Off (B4): a configured key is still read, so what was encrypted
+        // stays readable; the generated one too; none is ever generated.
         c.encryption.mode = EncryptionMode::Off;
-        assert_eq!(c.master_key().unwrap(), None);
+        assert!(c.master_key().is_err(), "the configured file is missing");
+        c.encryption.key_file = None;
+        assert_eq!(c.master_key().unwrap().unwrap(), k, "the generated key");
+        let fresh = dir.path().join("fresh.db");
+        let mut f2 = Config::single_sqlite(&fresh.to_string_lossy());
+        f2.encryption.mode = EncryptionMode::Off;
+        if std::env::var("AGENTIM_MASTER_KEY").is_err() {
+            assert_eq!(f2.master_key().unwrap(), None);
+            assert!(!std::path::Path::new(&format!("{}.key", fresh.to_string_lossy())).exists());
+        }
         // In memory: a fresh key each time. Several databases: must be configured.
         let mut m = Config::single_sqlite(":memory:");
         m.storage.databases[0].url = "sqlite::memory:".into();
