@@ -38,6 +38,8 @@ agentim                                    # 打开 http://127.0.0.1:8080
 
 ## 2. 客户端 SDK
 
+> 📝 2026-10-19：调研后的新方案（Rust 核心 + 各平台薄封装，浏览器也用核心）见 [research/client-sdk.md](research/client-sdk.md)，**待你批准**。批准后本节按新方案改写；在那之前 TypeScript SDK 停在步骤 A。
+
 ### 2.1 TypeScript（P2，第 2 步）
 
 包名 `@agentim/client`，纯 TypeScript，无运行时依赖，浏览器、React Native、Electron、Node 都能用。它是给**人用的应用**的 SDK（Agent 继续用 `sdk/agent-node`、`sdk/agent-python`）。目标：开发者只管画界面，**连接、同步、离线、重试、缓存、排序、去重全部交给 SDK**，而且在弱网、切后台、多标签页、重装、换账号时都不出错。

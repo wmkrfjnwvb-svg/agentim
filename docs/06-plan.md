@@ -66,6 +66,10 @@
 | D104 | 客户端 SDK 的覆盖（2026-10-18 你的要求：稳定好用、覆盖面广，包括 C# 做游戏和手机 App） | Web 用纯 TypeScript（浏览器里用 Rust 编译的 wasm 太重）；其余平台共用一个 Rust 核心（连接、同步、发送队列、本地 SQLite），再生成各语言的薄封装：Swift、Kotlin、C#（Unity 和 .NET，iOS、Android、Windows、macOS、Linux 都能用）、Flutter。两边跑同一套协议一致性测试。设计见 [12 §2.2](12-developer-experience.md) |
 | D107 | "和其他平台对接（比如 Stream）"具体指什么 | 我的理解：让在用 Stream、Sendbird、Twilio Conversations 的开发者容易搬过来：① 数据导入工具（用户、会话、消息）；② 常用接口的兼容层，让他们少改代码。也可能你指的是互通（我们的用户和 Stream 上的用户互发消息），这个难度和价值都不同。**请你确认是哪一种** |
 | D108 | 人能不能从服务端往回翻历史 | 现在人只能同步（新设备拿最近一段，[08 §2.4](08-sync-and-client.md)），往回翻只能翻本机缓存；缓存超过上限被淘汰的、换设备之前的，都看不到。Sendbird、Stream 都允许客户端按页向服务端取历史。建议：给人开 `history`（只能看自己可见范围内、保留期内的，限流，和同步共用权限检查），客户端缓存里没有时再向服务端取。**待你确认** |
+| D109 | 浏览器用不用 Rust 核心 | 用（wasm，TypeScript 提供 WebSocket、IndexedDB、WebCrypto）；探路时量出来压缩后超过 300 KB 就网页保留纯 TypeScript（[research/client-sdk.md](research/client-sdk.md)） |
+| D110 | 失败的消息挡不挡后面的 | 不挡：失败的显示重试按钮，后面照常发（matrix 会挡住） |
+| D111 | 客户端核心的跨语言接口 | 一个 C ABI + 消息（命令进、事件出，TDLib 和腾讯云 IM 的做法），各语言类型从协议描述生成；不用 UniFFI（0.x 常有破坏性升级，C# 生成器在 Unity IL2CPP 下不能直接用） |
+| D112 | 游戏主机（PlayStation、Switch、Xbox） | 先不做 |
 | D106 | 发布物的代码签名证书 | Sigstore 签名和 GitHub 构建来源证明免费，先做；macOS 公证（Apple 开发者账号，每年 99 美元）和 Windows Authenticode 证书（每年约 200–400 美元）需要你决定买不买。不买时 macOS 和 Windows 第一次运行会有系统警告，安装脚本和 Docker 不受影响（[12 §1](12-developer-experience.md)） |
 | D63 | CLI（缩小） | `agentim` 服务端命令 + `agentim admin …`，每条管理命令对应一个管理 API（`/admin/v1`），开发者控制台调同一套 API；客户端 CLI 暂不做 |
 
