@@ -11,7 +11,7 @@
 // (the server deduplicates), for at most `sendRetryMs`; a missed push is
 // found by the gap it leaves or by the periodic position check.
 
-import { MemoryStore, type ConvRecord, type Store } from './store.js';
+import { MemoryStore, keyOf, type ConvRecord, type Store } from './store.js';
 import {
   AgentIMError,
   RETRYABLE,
@@ -62,9 +62,11 @@ type Handler<T> = (v: T) => void;
 interface Conv extends ConvRecord {
   /** Pushes that arrived ahead of a gap, applied once it is filled. */
   ahead: Map<number, Event>;
+  /** Keys of messages changed (or gone) since the last write to the store. */
+  dirty: Set<string>;
+  gone: Set<string>;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const uid = () =>
   globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
@@ -84,6 +86,11 @@ export class AgentIMClient {
   private connected: Promise<void> = Promise.resolve();
   private markConnected: () => void = () => {};
   private typingAt = new Map<string, number>();
+  private focused: string | null = null;
+  /** Sends waiting for their event to be applied. */
+  private waiters = new Map<string, () => void>();
+  /** Timers of the client's own loops; `close()` ends them all. */
+  private timers = new Map<ReturnType<typeof setTimeout>, () => void>();
 
   constructor(opts: ClientOptions) {
     this.o = {
@@ -135,8 +142,31 @@ export class AgentIMClient {
     return this.connected;
   }
 
+  /** Waits, unless the client closes first (so no timer outlives it). */
+  private wait(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      if (this.stopped) return resolve();
+      const t = setTimeout(() => {
+        this.timers.delete(t);
+        resolve();
+      }, ms);
+      this.timers.set(t, resolve);
+    });
+  }
+
+  /** Drops the connection; the keep-alive loop opens a new one at once. */
+  private reconnect(why: string) {
+    this.o.log?.(`reconnecting: ${why}`);
+    this.ws?.close(4000);
+  }
+
   close() {
     this.stopped = true;
+    for (const [t, resolve] of this.timers) {
+      clearTimeout(t);
+      resolve();
+    }
+    this.timers.clear();
     this.ws?.close();
     this.setState('closed');
   }
@@ -161,14 +191,14 @@ export class AgentIMClient {
         this.setState('connected');
         const code = await closed;
         // 1012: the node is going away; reconnect at once.
-        if (code === 1012) wait = 0;
+        if (code === 1012 || code === 4000) wait = 0;
       } catch (e) {
         this.o.log?.(`connect failed: ${e}`);
       }
       if (this.stopped) return;
       attempt++;
       // Backoff with jitter so many clients do not reconnect together.
-      await sleep(wait + Math.random() * wait);
+      await this.wait(wait + Math.random() * wait);
       wait = Math.min(Math.max(wait, 250) * 2, 30_000);
     }
   }
@@ -213,6 +243,7 @@ export class AgentIMClient {
     });
     await this.call('hello', { client: { name: this.o.clientName, version: this.o.clientVersion } });
     await this.serial(() => this.sync());
+    if (this.focused) await this.call('focus', { conv_id: this.focused }).catch(() => {});
     void this.flushOutbox();
     return { closed };
   }
@@ -285,7 +316,7 @@ export class AgentIMClient {
     if (!c) {
       const rec = (await this.store.load(convId)) ?? { convId, lastSeq: 0, messages: [] };
       // Another call may have created it while the store answered.
-      c = this.convs.get(convId) ?? { ...rec, ahead: new Map() };
+      c = this.convs.get(convId) ?? { ...rec, ahead: new Map(), dirty: new Set(), gone: new Set() };
       this.convs.set(convId, c);
     }
     return c;
@@ -303,10 +334,13 @@ export class AgentIMClient {
           c.lastSeq = Math.max(0, s.reset.from_seq - 1);
           this.emit('reset', { convId: s.conv_id, fromSeq: s.reset.from_seq });
         }
-        for (const item of s.events ?? []) this.apply(c, item.event as Event);
+        // Pushes still queued behind this sync may come before these
+        // events: only what continues the log is applied, the rest waits.
+        for (const item of s.events ?? []) this.place(c, item.event as Event);
+        this.drain(c);
         for (const side of s.side_events ?? []) this.emit('side', side);
         await this.persist(c);
-        if (s.upto !== undefined) acks.push({ conv_id: s.conv_id, seq: s.upto, side_seq: s.side_upto ?? 0 });
+        if (s.upto !== undefined) acks.push({ conv_id: s.conv_id, seq: Math.min(s.upto, c.lastSeq), side_seq: s.side_upto ?? 0 });
       }
       if (acks.length) await this.call('ack', { acks });
       if (!r.more) return;
@@ -316,28 +350,50 @@ export class AgentIMClient {
   private async pushed(ev: Event) {
     const c = await this.conv(ev.conv_id);
     if (ev.seq <= c.lastSeq) return; // seen already
-    if (ev.seq > c.lastSeq + 1) {
-      // A gap: something was not pushed to us. Keep this one, sync the rest.
-      c.ahead.set(ev.seq, ev);
-      await this.sync();
-    } else {
-      this.apply(c, ev);
-    }
+    this.place(c, ev);
+    this.drain(c);
+    await this.persist(c);
+    await this.call('ack', { acks: [{ conv_id: c.convId, seq: c.lastSeq }] }).catch(() => {});
+    // A hole: what fills it may still be queued, so look again after it.
+    if (c.ahead.size > 0) void this.serial(() => this.holeCheck(c));
+  }
+
+  /** Applies an event that continues the log; keeps one that comes after a hole. */
+  private place(c: Conv, ev: Event) {
+    if (ev.seq <= c.lastSeq) return;
+    if (ev.seq === c.lastSeq + 1) this.apply(c, ev);
+    else c.ahead.set(ev.seq, ev);
+  }
+
+  private drain(c: Conv) {
     while (c.ahead.has(c.lastSeq + 1)) {
       const next = c.ahead.get(c.lastSeq + 1)!;
       c.ahead.delete(next.seq);
       this.apply(c, next);
     }
     for (const s of [...c.ahead.keys()]) if (s <= c.lastSeq) c.ahead.delete(s);
-    await this.persist(c);
-    await this.call('ack', { acks: [{ conv_id: c.convId, seq: c.lastSeq }] }).catch(() => {});
+  }
+
+  /**
+   * A hole nothing queued filled: sync; if the server still owes nothing
+   * (it never resends a push on the same connection), a new connection
+   * syncs from the acknowledged position.
+   */
+  private async holeCheck(c: Conv) {
+    if (c.ahead.size === 0) return;
+    await this.sync();
+    this.drain(c);
+    if (c.ahead.size > 0) this.reconnect('gap');
   }
 
   /** Applies one event in order; returns false when it was a duplicate. */
   private apply(c: Conv, ev: Event): boolean {
     if (ev.seq <= c.lastSeq) return false;
     c.lastSeq = ev.seq;
-    if (ev.msg) this.upsert(c, ev.msg);
+    if (ev.msg) {
+      this.upsert(c, ev.msg);
+      this.waiters.get(ev.msg.msg_id)?.();
+    }
     this.emit('event', ev);
     if (ev.msg) this.emit('messages', { convId: c.convId, messages: this.messages(c.convId) });
     return true;
@@ -355,7 +411,11 @@ export class AgentIMClient {
       status: 'sent',
       streamed: msg.state === 'streaming' ? (old?.streamed ?? '') : undefined,
     };
-    if (i >= 0) c.messages.splice(i, 1);
+    if (i >= 0) {
+      c.messages.splice(i, 1);
+      if (keyOf(old!) !== keyOf(next)) c.gone.add(keyOf(old!));
+    }
+    c.dirty.add(keyOf(next));
     // Sent messages by seq; unsent ones stay at the end.
     let at = c.messages.findIndex((m) => m.status !== 'sent' || m.created_seq > next.created_seq);
     if (at < 0) at = c.messages.length;
@@ -370,22 +430,28 @@ export class AgentIMClient {
     this.emit('messages', { convId: c.convId, messages: this.messages(c.convId) });
   }
 
+  /** Writes what changed: the position and the changed messages, together. */
   private async persist(c: Conv) {
-    const { ahead: _ahead, ...rec } = c;
-    await this.store.save(rec);
+    const put = c.messages.filter((m) => c.dirty.has(keyOf(m)));
+    const gone = [...c.gone].filter((k) => !put.some((m) => keyOf(m) === k));
+    c.dirty.clear();
+    c.gone.clear();
+    await this.store.write(c.convId, c.lastSeq, put, gone);
   }
 
   // Now and then compare positions with the server: a lost last push
   // (nothing after it, no resync notice) is found and synced.
   private async checkPositions() {
     while (!this.stopped) {
-      await sleep(this.o.positionCheckMs);
+      await this.wait(this.o.positionCheckMs);
       if (this.stopped || !this.ws || this.convs.size === 0) continue;
       const ids = [...this.convs.keys()].slice(0, 200);
       try {
         const r = await this.call('heads', { conv_ids: ids });
-        if (ids.some((id) => (r.heads?.[id] ?? 0) > (this.convs.get(id)?.lastSeq ?? 0))) {
+        const behind = () => ids.some((id) => (r.heads?.[id] ?? 0) > (this.convs.get(id)?.lastSeq ?? 0));
+        if (behind()) {
           await this.serial(() => this.sync());
+          if (behind()) this.reconnect('behind');
         }
       } catch {
         // Next round.
@@ -443,7 +509,10 @@ export class AgentIMClient {
       updated_at: now,
       status: 'sending',
     };
-    if (!c.messages.some((m) => m.client_msg_id === cm)) c.messages.push(local);
+    if (!c.messages.some((m) => m.client_msg_id === cm)) {
+      c.messages.push(local);
+      c.dirty.add(keyOf(local));
+    }
     this.emit('messages', { convId, messages: this.messages(convId) });
     await this.persist(c);
     return this.deliver(convId, local, now + this.o.sendRetryMs);
@@ -456,28 +525,59 @@ export class AgentIMClient {
     if (local.reply_to) args.reply_to = local.reply_to;
     let wait = 250;
     for (;;) {
+      // Closed: it stays `sending` and goes out after the next connect.
+      if (this.stopped) return this.find(convId, local.client_msg_id!) ?? { ...local };
       try {
-        if (!this.ws) await Promise.race([this.connected, sleep(wait)]);
-        await this.call('send', args);
-        // The event (by push or sync) turns the local copy into the real one.
-        await this.serial(async () => {
+        if (!this.ws) await Promise.race([this.connected, this.wait(wait)]);
+        const r = await this.call('send', args);
+        // The answer names the stored message: the local copy becomes it
+        // (or goes, when the event already arrived), then the event fills it in.
+        const applied = this.appliedOnce(r.msg_id);
+        const pendingEvent = await this.serial(async () => {
           const c = await this.conv(convId);
-          if (c.messages.some((m) => m.client_msg_id === local.client_msg_id && m.status !== 'sent')) await this.sync();
+          this.settle(c, local.client_msg_id!, r.msg_id, r.seq);
+          await this.persist(c);
+          return c.messages.some((m) => m.msg_id === r.msg_id && m.status !== 'sent');
         });
-        return this.find(convId, local.client_msg_id!) ?? { ...local, status: 'sent' };
+        // The event is on its way (pushed before the answer); a sync gets it
+        // if it was lost.
+        if (pendingEvent && !(await Promise.race([applied, this.wait(3000).then(() => false)]))) {
+          await this.serial(() => this.sync());
+        }
+        this.waiters.delete(r.msg_id);
+        return this.messages(convId).find((m) => m.msg_id === r.msg_id) ?? { ...local, status: 'sent' };
       } catch (e) {
         const err = e instanceof AgentIMError ? e : new AgentIMError('internal', String(e));
         if (!RETRYABLE.has(err.code) || Date.now() + wait > deadline) {
           return this.fail(convId, local.client_msg_id!, err);
         }
-        await sleep(wait);
+        await this.wait(wait);
         wait = Math.min(wait * 2, 5000);
       }
     }
   }
 
+  private appliedOnce(msgId: string): Promise<boolean> {
+    return new Promise((resolve) => this.waiters.set(msgId, () => resolve(true)));
+  }
+
   private find(convId: string, cm: string) {
     return this.messages(convId).find((m) => m.client_msg_id === cm);
+  }
+
+  /** Links the local copy of a sent message to the stored one. */
+  private settle(c: Conv, cm: string, msgId: string, seq: number) {
+    const i = c.messages.findIndex((m) => m.client_msg_id === cm && m.status !== 'sent' && m.msg_id.startsWith('local:'));
+    if (i < 0) return;
+    c.gone.add(keyOf(c.messages[i]));
+    if (c.messages.some((m) => m.msg_id === msgId)) {
+      c.messages.splice(i, 1);
+    } else {
+      c.messages[i].msg_id = msgId;
+      c.messages[i].created_seq = seq;
+      c.dirty.add(msgId);
+    }
+    this.emit('messages', { convId: c.convId, messages: this.messages(c.convId) });
   }
 
   private async fail(convId: string, cm: string, e: AgentIMError): Promise<ChatMessage> {
@@ -486,6 +586,7 @@ export class AgentIMClient {
     if (m) {
       m.status = 'failed';
       m.error = { code: e.code, message: e.detail };
+      c.dirty.add(keyOf(m));
       await this.persist(c);
       this.emit('messages', { convId, messages: this.messages(convId) });
     }
@@ -499,6 +600,8 @@ export class AgentIMClient {
     if (!m) throw new AgentIMError('not_found', 'no failed message with this client_msg_id');
     m.status = 'sending';
     delete m.error;
+    c.dirty.add(keyOf(m));
+    await this.persist(c);
     this.emit('messages', { convId, messages: this.messages(convId) });
     return this.deliver(convId, m, Date.now() + this.o.sendRetryMs);
   }
@@ -506,6 +609,7 @@ export class AgentIMClient {
   /** Drops a failed message from the local list. */
   async discard(convId: string, clientMsgId: string) {
     const c = await this.conv(convId);
+    for (const x of c.messages) if (x.client_msg_id === clientMsgId && x.status !== 'sent') c.gone.add(keyOf(x));
     c.messages = c.messages.filter((x) => !(x.client_msg_id === clientMsgId && x.status !== 'sent'));
     await this.persist(c);
     this.emit('messages', { convId, messages: this.messages(convId) });
@@ -530,6 +634,15 @@ export class AgentIMClient {
   async read(convId: string, seq?: number) {
     const c = await this.conv(convId);
     return this.call('read', { conv_id: convId, seq: seq ?? c.lastSeq });
+  }
+  /**
+   * The conversation on screen (null: none). Streamed AI replies arrive
+   * token by token only for it; others show when complete. Kept across
+   * reconnects.
+   */
+  async focus(convId: string | null) {
+    this.focused = convId;
+    if (this.ws) await this.call('focus', { conv_id: convId });
   }
   /** Says the user is typing (sent at most every 3 s per conversation). */
   typing(convId: string) {

@@ -17,7 +17,7 @@ export interface Msg {
   payload?: unknown;
   envelope?: Record<string, unknown> | null;
   version: number;
-  /** `committed`, `streaming`, `failed`, `cancelled`, `recalled`, ... */
+  /** `committed`; streamed: `streaming`, then `complete`, `failed` or `cancelled`; `recalled`, ... */
   state: string;
   state_reason?: string | null;
   reply_to?: string | null;

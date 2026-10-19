@@ -51,7 +51,7 @@ agentim                                    # 打开 http://127.0.0.1:8080
 | 握手 | 协议版本和能力协商；不认识的事件逐条跳过 |
 | 同步 | 每个会话按 seq 记位置；推送出现缺口时补拉；`resync` 时按服务端给的原因重置；每 30 秒用 `heads` 校验位置（和 Agent SDK 一致） |
 | 发送队列 | 每条消息带 `client_msg_id`；`unavailable`、`overloaded`、断线时用同一个 id 重试，最多 2 分钟后标为失败（D34）；状态：发送中、已发送、失败 |
-| 本地缓存 | 存储接口 + 两个实现：内存、IndexedDB（浏览器）；React Native 由开发者传入存储适配器（例如 MMKV），默认内存 |
+| 本地缓存 | 按业内做法：浏览器 IndexedDB（`IndexedDBStore`）；React Native、Electron、Node 用 SQLite（`SqliteStore`，接 expo-sqlite、op-sqlite、better-sqlite3 或 `node:sqlite`）；按消息写入，一批一个事务；测试用内存（`MemoryStore`） |
 | 流式消息 | 把增量拼成完整消息，暴露"正在生成"状态；完成、失败、被打断都能看到 |
 | AI 交互 | 审批（批准、修改、拒绝）、请人决定（回答、选择）、卡片回传、反馈、转人工 |
 | 在线和输入中 | 订阅和发送，按会话节流 |
@@ -137,7 +137,7 @@ agentim                                    # 打开 http://127.0.0.1:8080
 - 每个示例附三种 Agent 框架的模板：Claude Agent SDK、OpenAI Agents SDK、LangGraph，都通过现有的 Agent SDK 接入。
 - **测试**：CI 里每个示例用假模型启动，Playwright 跑完主要流程；另有一个脚本计时"安装 → 发出第一条消息"和"→ 第一个 Agent 回复"，超过验收标准就失败。
 
-## 6. P6 托管云（第 3 步）
+## 6. P6 托管云（先不做，2026-10-19）
 
 做托管云已确认、并提前到 [06 §3](06-plan.md) 第 3 步；价格待 D102。这里只写方向，详细设计在第 3 步开始前写。
 - 注册后自动创建一个应用（用现有的 `tenant_id` 隔离）、拿到密钥；控制台复用 P4，按应用划分，第 3 步先做其中的密钥和用量部分。

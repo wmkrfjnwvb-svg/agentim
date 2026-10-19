@@ -10,20 +10,22 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AgentIMClient, MemoryStore } from '../dist/index.js';
+import { DatabaseSync } from 'node:sqlite';
+import { AgentIMClient, MemoryStore, SqliteStore, nodeSqlite } from '../dist/index.js';
 
-const BIN = process.env.AGENTIM_BIN ?? new URL('../../../server/target/debug/agentim', import.meta.url).pathname;
+import { fileURLToPath } from 'node:url';
+const BIN = process.env.AGENTIM_BIN ?? fileURLToPath(new URL(`../../../server/target/debug/agentim${process.platform === 'win32' ? '.exe' : ''}`, import.meta.url));
 const PORT = 18600 + Math.floor(Math.random() * 300);
 const URL_ = `http://127.0.0.1:${PORT}`;
 let server;
 let dir;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function until(what, f, ms = 10000) {
+async function until(what, f, ms = 10000, info) {
   const end = Date.now() + ms;
   for (;;) {
     if (await f()) return;
-    if (Date.now() > end) assert.fail(`timed out: ${what}`);
+    if (Date.now() > end) assert.fail(`timed out: ${what}${info ? ` (${info()})` : ''}`);
     await sleep(25);
   }
 }
@@ -34,6 +36,7 @@ before(async () => {
   await until('server ready', async () => fetch(`${URL_}/readyz`).then((r) => r.ok).catch(() => false), 30000);
 });
 after(() => {
+  for (const c of clients) c.close();
   server?.kill();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -66,10 +69,12 @@ function faultyWS(ctl) {
   };
 }
 
+const clients = [];
 function client(u, extra = {}) {
   const ctl = { sockets: [], drop: null };
   const c = new AgentIMClient({ url: URL_, tokenProvider: async () => u.token, WebSocket: faultyWS(ctl), ...extra });
   c.ctl = ctl;
+  clients.push(c);
   return c;
 }
 
@@ -100,11 +105,13 @@ test('messages arrive in order, each once, and local copies become the real ones
   const b = client(ub);
   await a.connect();
   await b.connect();
+  // The race (sync answers overtaking queued pushes) needs a few rounds.
+  for (let round = 0; round < 8; round++) {
   const conv = await a.createGroup('g', [ub.id]);
   const want = Array.from({ length: 30 }, (_, i) => `m${i}`);
   const sent = await Promise.all(want.map((t) => a.send(conv, t)));
-  assert.ok(sent.every((m) => m.status === 'sent' && Number.isFinite(m.created_seq)));
-  await until('bob has all', () => texts(b, conv).length === 30);
+  assert.ok(sent.every((m) => m.status === 'sent' && Number.isFinite(m.created_seq)), JSON.stringify(sent.filter((m) => m.status !== 'sent').map((m) => [m.status, m.error])));
+  await until('bob has all', () => texts(b, conv).length === 30, 10000, () => `${texts(b, conv).length} ${b.state} ${JSON.stringify(texts(b, conv))}`);
   const got = b.messages(conv).filter((m) => m.kind === 'text');
   const seqs = got.map((m) => m.created_seq);
   assert.deepEqual(seqs, [...seqs].sort((x, y) => x - y), 'in seq order');
@@ -113,6 +120,7 @@ test('messages arrive in order, each once, and local copies become the real ones
   // The sender's list has no local leftovers.
   assert.equal(a.messages(conv).filter((m) => m.status !== 'sent').length, 0);
   assert.equal(texts(a, conv).length, 30);
+  }
   a.close();
   b.close();
 });
@@ -141,9 +149,10 @@ test('a send cut off mid-way is retried with the same id and stored once', async
   b.close();
 });
 
-test('offline, then back: what was missed is synced in order, nothing twice', async () => {
+for (const kind of ['memory', 'sqlite']) test(`offline, then back (${kind} cache): what was missed is synced in order, nothing twice`, async () => {
   const [ua, ub] = [await user('alice'), await user('bob')];
-  const store = new MemoryStore();
+  const path = join(dir, `cache-${ub.id}.db`);
+  const store = kind === 'memory' ? new MemoryStore() : new SqliteStore(nodeSqlite(new DatabaseSync(path)));
   const a = client(ua);
   let b = client(ub, { store });
   await a.connect();
@@ -153,8 +162,9 @@ test('offline, then back: what was missed is synced in order, nothing twice', as
   await until('bob has before', () => texts(b, conv).includes('before'));
   b.close();
   for (const t of ['o1', 'o2', 'o3', 'o4', 'o5']) await a.send(conv, t);
-  // Same cache (as after a reload): shown before connecting, then caught up.
-  b = client(ub, { store });
+  // Same cache (as after a reload, for SQLite a new connection to the
+  // file): shown before connecting, then caught up.
+  b = client(ub, { store: kind === 'memory' ? store : new SqliteStore(nodeSqlite(new DatabaseSync(path))) });
   assert.deepEqual(await b.load(conv).then((ms) => ms.filter((m) => m.kind === 'text').map((m) => m.content)), ['before']);
   await b.connect();
   await until('bob caught up', () => texts(b, conv).length === 6);
@@ -200,11 +210,15 @@ test('an agent streams a reply; the client shows it growing, then the whole text
     const m = messages.find((x) => x.msg_id === s.msg_id);
     if (m?.state === 'streaming') seen.push(m.streamed);
   });
+  // Token by token only for the conversation on screen; deltas are not
+  // stored (D81).
+  await a.focus(conv);
+  await until('streaming message', () => a.messages(conv).some((m) => m.msg_id === s.msg_id && m.state === 'streaming'));
   await g.call('stream_append', { msg_id: s.msg_id, idx: 0, text: 'Hel' });
   await g.call('stream_append', { msg_id: s.msg_id, idx: 1, text: 'lo' });
   await until('growing', () => seen.includes('Hello'));
   await g.call('stream_end', { msg_id: s.msg_id });
-  await until('done', () => a.messages(conv).some((m) => m.msg_id === s.msg_id && m.state === 'committed'));
+  await until('done', () => a.messages(conv).some((m) => m.msg_id === s.msg_id && m.state === 'complete'));
   const m = a.messages(conv).find((x) => x.msg_id === s.msg_id);
   assert.equal(m.content, 'Hello');
   assert.equal(m.sender_type, 'agent', 'labelled as AI');

@@ -35,7 +35,7 @@
 | **React 组件（P3）** | ⏳ | 设计：[12 §3](12-developer-experience.md) | 组件、主题；Web 演示端改用 P2 和 P3 |
 | **开发者控制台（P4）** | ⏳ | 设计：[12 §4](12-developer-experience.md) | 内置在 `agentim` 里（D103 已确认），走 `/admin/v1` |
 | **文档站和示例（P5）** | ⏳ | 设计：[12 §5](12-developer-experience.md) | 文档站、三个示例应用、Agent 框架模板 |
-| **托管云（P6）** | ⏳ | 待 D102 | 注册即用、免费额度、按合并后的消息计费 |
+| 托管云（P6） | ⏳ | 先不做（2026-10-19） | 注册即用、免费额度、按合并后的消息计费 |
 | GDPR 和内容治理 | 🔧 | 拉黑、Agent 加入告知、AI 标记、日志不含内容、保留期 | 基础部分：导出、删除账号、举报、审核队列（A4） |
 | CLI | 🔧 | `agentim` 一个程序里有服务和运维命令（agent、api-key、encryption、migrate、cluster） | 缩小后的 D63：`agentim admin` 走管理 API |
 | 文件和图片 | 📝 | 方案：[02 §2.7](02-architecture.md) | 精简版（A6） |
@@ -62,7 +62,7 @@
 | # | 事项 | 我的建议 |
 |---|---|---|
 | D101 | 多库路由和组织单元 | 保留现有代码和测试，作为免费的高级配置，文档里标为"高级"；不加授权开关；信息屏障不做 |
-| D102 | 托管云的价格 | 做，并提前到第 3 步（已确认，2026-10-18）。建议：免费每月 1 万条合并后的消息；Pro 每月约 49–99 美元含一定额度、超出按量；Agent 不按月活计费。具体数字和 5–10 个设计伙伴聊过再定 |
+| D102 | 托管云 | **先不做**（2026-10-19）。到时的建议：按合并后的消息计费，Agent 不按月活计费；免费额度和价格和设计伙伴聊过再定 |
 | D104 | 客户端 SDK 的覆盖（2026-10-18 你的要求：稳定好用、覆盖面广，包括 C# 做游戏和手机 App） | Web 用纯 TypeScript（浏览器里用 Rust 编译的 wasm 太重）；其余平台共用一个 Rust 核心（连接、同步、发送队列、本地 SQLite），再生成各语言的薄封装：Swift、Kotlin、C#（Unity 和 .NET，iOS、Android、Windows、macOS、Linux 都能用）、Flutter。两边跑同一套协议一致性测试。设计见 [12 §2.2](12-developer-experience.md) |
 | D107 | "和其他平台对接（比如 Stream）"具体指什么 | 我的理解：让在用 Stream、Sendbird、Twilio Conversations 的开发者容易搬过来：① 数据导入工具（用户、会话、消息）；② 常用接口的兼容层，让他们少改代码。也可能你指的是互通（我们的用户和 Stream 上的用户互发消息），这个难度和价值都不同。**请你确认是哪一种** |
 | D106 | 发布物的代码签名证书 | Sigstore 签名和 GitHub 构建来源证明免费，先做；macOS 公证（Apple 开发者账号，每年 99 美元）和 Windows Authenticode 证书（每年约 200–400 美元）需要你决定买不买。不买时 macOS 和 Windows 第一次运行会有系统警告，安装脚本和 Docker 不受影响（[12 §1](12-developer-experience.md)） |
@@ -139,17 +139,17 @@
 
 用户收件箱和大群模式；写入性能优化（目标每节点 1 万条/秒）；数据倒退的恢复（D100）；WASM 插件；OIDC；OpenTelemetry 导出；生态桥（ChatKit、Vercel Chat SDK、Agno、AG-UI）。
 
-## 3. MVP 顺序（2026-10-18 确认：托管云提前到第 3 步，SDK 覆盖要广）
+## 3. MVP 顺序（2026-10-18 确认 SDK 覆盖要广；2026-10-19：托管云先不做）
 
 | 顺序 | 内容 |
 |---|---|
 | 1 | ✅ D105 合并 Lite 和 AgentIM；B4（先开后关加密）；B3（接管超时自动交还）；A3 搜索过滤（2026-10-18 完成） |
 | 2 | P2 TypeScript 客户端 SDK + P3 React 组件 + 第一个示例（AI 客服窗口，Web 演示端改用 P2 和 P3） |
-| 3 | P6 托管云最小版：注册、自动建应用和密钥、免费额度、Stripe 计费、控制台的密钥和用量部分（P4 的第一部分） |
-| 4 | 多语言客户端 SDK：Rust 核心 + Swift（iOS）、Kotlin（Android）、C#（Unity 和 .NET）、Flutter（D104，设计见 [12 §2.2](12-developer-experience.md)） |
-| 5 | 官网、文档站、README、另外两个示例应用、P1 安装和发布 |
-| 6 | 和其他平台对接：从 Stream、Sendbird 等迁移过来的导入工具和兼容层（D107） |
-| 7 | 控制台补全（P4）和 `agentim admin`；A4 基础合规；A6 精简版文件和图片 |
+| 3 | 多语言客户端 SDK：Rust 核心 + Swift（iOS）、Kotlin（Android）、C#（Unity 和 .NET）、Flutter（D104，设计见 [12 §2.2](12-developer-experience.md)） |
+| 4 | 官网、文档站、README、另外两个示例应用、P1 安装和发布 |
+| 5 | 和其他平台对接：从 Stream、Sendbird 等迁移过来的导入工具和兼容层（D107） |
+| 6 | 控制台补全（P4）和 `agentim admin`；A4 基础合规；A6 精简版文件和图片 |
+| 以后 | P6 托管云（2026-10-19：先不做） |
 
 每一步结束时，全部测试在 Linux 和 Windows 上都要通过，不能退化。
 
