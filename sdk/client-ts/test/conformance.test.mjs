@@ -164,12 +164,52 @@ for (const kind of ['memory', 'sqlite']) test(`offline, then back (${kind} cache
   for (const t of ['o1', 'o2', 'o3', 'o4', 'o5']) await a.send(conv, t);
   // Same cache (as after a reload, for SQLite a new connection to the
   // file): shown before connecting, then caught up.
-  b = client(ub, { store: kind === 'memory' ? store : new SqliteStore(nodeSqlite(new DatabaseSync(path))) });
+  b = client(ub, { userId: ub.id, store: kind === 'memory' ? store : new SqliteStore(nodeSqlite(new DatabaseSync(path))) });
   assert.deepEqual(await b.load(conv).then((ms) => ms.filter((m) => m.kind === 'text').map((m) => m.content)), ['before']);
   await b.connect();
   await until('bob caught up', () => texts(b, conv).length === 6);
   assert.deepEqual(texts(b, conv), ['before', 'o1', 'o2', 'o3', 'o4', 'o5']);
   a.close();
+  b.close();
+});
+
+test('a reload shows the newest page from the cache; older pages come from it too; another user sees nothing', async () => {
+  const [ua, ub, uc] = [await user('alice'), await user('bob'), await user('carol')];
+  const path = join(dir, `pages-${ub.id}.db`);
+  const open = () => new SqliteStore(nodeSqlite(new DatabaseSync(path)));
+  const a = client(ua);
+  let b = client(ub, { store: open(), pageSize: 20 });
+  await a.connect();
+  await b.connect();
+  const conv = await a.createGroup('g', [ub.id]);
+  for (let i = 1; i <= 45; i++) await a.send(conv, `p${i}`);
+  await until('bob has all', () => texts(b, conv).length === 45);
+  b.close();
+  b = client(ub, { userId: ub.id, store: open(), pageSize: 20 });
+  const page = (await b.load(conv)).filter((m) => m.kind === 'text').map((m) => m.content);
+  assert.equal(page.length, 20);
+  assert.equal(page.at(-1), 'p45');
+  assert.equal(b.hasOlder(conv), true);
+  assert.equal(await b.loadOlder(conv), true);
+  assert.equal(await b.loadOlder(conv), false, 'the last page is short');
+  assert.equal(await b.loadOlder(conv), false, 'nothing more');
+  const all = texts(b, conv);
+  assert.deepEqual(all.slice(-45), Array.from({ length: 45 }, (_, i) => `p${i + 1}`));
+  b.close();
+  // Another account on the same device: the cache is wiped first.
+  let reset = false;
+  const c = client(uc, { store: open() });
+  c.on('storage', (e) => (reset = reset || !!e.reset));
+  await c.connect();
+  assert.equal(reset, true);
+  assert.deepEqual(texts(c, conv), []);
+  c.close();
+  a.close();
+});
+
+test('reading the cache before connecting needs the user id', async () => {
+  const b = client(await user('bob'));
+  await assert.rejects(b.load('c_x'), (e) => e.code === 'not_ready');
   b.close();
 });
 

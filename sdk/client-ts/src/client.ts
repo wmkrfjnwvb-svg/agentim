@@ -11,7 +11,7 @@
 // (the server deduplicates), for at most `sendRetryMs`; a missed push is
 // found by the gap it leaves or by the periodic position check.
 
-import { MemoryStore, keyOf, type ConvRecord, type Store } from './store.js';
+import { MemoryStore, type Store } from './store/index.js';
 import {
   AgentIMError,
   RETRYABLE,
@@ -30,8 +30,21 @@ export interface ClientOptions {
   url: string;
   /** Returns a user token from your backend (it calls the open API). Called again when the server refuses the current one. */
   tokenProvider: () => Promise<string>;
-  /** Defaults to an in-memory cache; `IndexedDBStore` in browsers. */
+  /**
+   * The local cache: `SqliteStore` on devices, `IndexedDBStore` in browsers
+   * (docs/12 §2.1); in memory by default. One per account.
+   */
   store?: Store;
+  /**
+   * The user this client is for (the id your backend issues tokens for).
+   * Known up front, the cache opens before the connection (messages show
+   * offline); otherwise it opens once the server says who it is.
+   */
+  userId?: string;
+  /** Cache size limit in bytes of message content (default 256 MB, at least 32 MB). */
+  maxCacheBytes?: number;
+  /** Messages per page from the cache (default 50). */
+  pageSize?: number;
   /** For runtimes without a global WebSocket. */
   WebSocket?: WebSocketCtor;
   clientName?: string;
@@ -55,11 +68,21 @@ export interface ClientEvents {
   signal: { convId: string; kind: string; from: string; data?: unknown };
   /** The device's position in a conversation was reset by the server: older messages may be missing. */
   reset: { convId: string; fromSeq: number };
+  /** The local cache was rebuilt (another account, an unknown or damaged store) or emptied conversations to stay under its limit. */
+  storage: { reset?: boolean; evicted?: string[] };
 }
 
 type Handler<T> = (v: T) => void;
 
-interface Conv extends ConvRecord {
+interface Conv {
+  convId: string;
+  /** Highest seq applied and acknowledged. */
+  lastSeq: number;
+  openedAt: number;
+  /** The loaded window: sent ones by seq, unsent ones last. */
+  messages: ChatMessage[];
+  /** Older messages may be in the cache (the first page was full). */
+  hasOlder: boolean;
   /** Pushes that arrived ahead of a gap, applied once it is filled. */
   ahead: Map<number, Event>;
   /** Keys of messages changed (or gone) since the last write to the store. */
@@ -73,7 +96,7 @@ const uid = () =>
 export class AgentIMClient {
   me: Me | null = null;
   state: ConnectionState = 'closed';
-  private o: Required<Omit<ClientOptions, 'store' | 'WebSocket' | 'log'>> & Pick<ClientOptions, 'log'>;
+  private o: Required<Omit<ClientOptions, 'store' | 'WebSocket' | 'log' | 'userId'>> & Pick<ClientOptions, 'log' | 'userId'>;
   private store: Store;
   private WS: WebSocketCtor;
   private ws: WebSocket | null = null;
@@ -85,6 +108,10 @@ export class AgentIMClient {
   private queue: Promise<unknown> = Promise.resolve();
   private connected: Promise<void> = Promise.resolve();
   private markConnected: () => void = () => {};
+  /** Opened for one account; until then nothing is read or written. */
+  private storeFor: string | null = null;
+  private storeOpening: Promise<void> | null = null;
+  private writes = 0;
   private typingAt = new Map<string, number>();
   private focused: string | null = null;
   /** Sends waiting for their event to be applied. */
@@ -98,8 +125,11 @@ export class AgentIMClient {
       clientVersion: '0.1.0',
       sendRetryMs: 120_000,
       positionCheckMs: 30_000,
+      maxCacheBytes: 256 * 1024 * 1024,
+      pageSize: 50,
       ...opts,
     };
+    this.o.maxCacheBytes = Math.max(this.o.maxCacheBytes, 32 * 1024 * 1024);
     this.store = opts.store ?? new MemoryStore();
     const ws = opts.WebSocket ?? (globalThis as any).WebSocket;
     if (!ws) throw new Error('no WebSocket: pass options.WebSocket');
@@ -234,6 +264,7 @@ export class AgentIMClient {
         if (f.type === 'welcome') {
           welcomed = true;
           this.me = f.me;
+          if (this.o.userId && f.me?.id && f.me.id !== this.o.userId) this.o.log?.(`options.userId ${this.o.userId} is not the token's user ${f.me.id}; using the token's`);
           this.ws = ws;
           resolve();
           return;
@@ -242,6 +273,8 @@ export class AgentIMClient {
       });
     });
     await this.call('hello', { client: { name: this.o.clientName, version: this.o.clientVersion } });
+    // The token's user decides whose cache this is.
+    await this.openStore(this.me?.id ?? this.o.userId ?? 'anonymous');
     await this.serial(() => this.sync());
     if (this.focused) await this.call('focus', { conv_id: this.focused }).catch(() => {});
     void this.flushOutbox();
@@ -309,18 +342,67 @@ export class AgentIMClient {
     }
   }
 
-  // ----------------------------------------------------------- syncing
+  // ------------------------------------------------------------- cache
+
+  /** Opens the cache for an account (wiping another account's data). */
+  private openStore(account: string): Promise<void> {
+    if (this.storeFor === account && this.storeOpening) return this.storeOpening;
+    this.storeFor = account;
+    this.storeOpening = (async () => {
+      const { reset } = await this.store.open(account);
+      if (reset) {
+        this.convs.clear();
+        this.emit('storage', { reset: true });
+      }
+    })();
+    return this.storeOpening;
+  }
+
+  private async ready() {
+    if (this.o.userId) await this.openStore(this.o.userId);
+    else if (this.storeOpening) await this.storeOpening;
+    else throw new AgentIMError('not_ready', 'pass options.userId to read the cache before connecting');
+  }
 
   private async conv(convId: string): Promise<Conv> {
     let c = this.convs.get(convId);
-    if (!c) {
-      const rec = (await this.store.load(convId)) ?? { convId, lastSeq: 0, messages: [] };
-      // Another call may have created it while the store answered.
-      c = this.convs.get(convId) ?? { ...rec, ahead: new Map(), dirty: new Set(), gone: new Set() };
-      this.convs.set(convId, c);
-    }
+    if (c) return c;
+    await this.ready();
+    const row = await this.store.loadConv(convId);
+    const page = row ? await this.store.messages(convId, { limit: this.o.pageSize }) : [];
+    // Another call may have made it while the store answered.
+    c = this.convs.get(convId) ?? {
+      convId,
+      lastSeq: row?.lastSeq ?? 0,
+      openedAt: row?.openedAt ?? 0,
+      messages: page,
+      hasOlder: page.filter((m) => m.status === 'sent').length >= this.o.pageSize,
+      ahead: new Map(),
+      dirty: new Set(),
+      gone: new Set(),
+    };
+    this.convs.set(convId, c);
     return c;
   }
+
+  /** Keeps the cache under its limit, now and then (never what is on screen or queued). */
+  private async trim() {
+    if (++this.writes % 100 !== 1) return;
+    try {
+      if ((await this.store.size()) <= this.o.maxCacheBytes) return;
+      const protect = new Set<string>(this.focused ? [this.focused] : []);
+      const evicted = await this.store.evict(Math.floor(this.o.maxCacheBytes * 0.9), protect);
+      for (const id of evicted) {
+        const c = this.convs.get(id);
+        if (c && id !== this.focused) this.convs.delete(id);
+      }
+      if (evicted.length) this.emit('storage', { evicted });
+    } catch (e) {
+      this.o.log?.(`cache trim failed: ${e}`);
+    }
+  }
+
+  // ----------------------------------------------------------- syncing
 
   /** Sync rounds until the server owes nothing; each batch is acknowledged after it is stored. */
   private async sync(): Promise<void> {
@@ -413,9 +495,9 @@ export class AgentIMClient {
     };
     if (i >= 0) {
       c.messages.splice(i, 1);
-      if (keyOf(old!) !== keyOf(next)) c.gone.add(keyOf(old!));
+      if (old!.msg_id !== next.msg_id) c.gone.add(old!.msg_id);
     }
-    c.dirty.add(keyOf(next));
+    c.dirty.add(next.msg_id);
     // Sent messages by seq; unsent ones stay at the end.
     let at = c.messages.findIndex((m) => m.status !== 'sent' || m.created_seq > next.created_seq);
     if (at < 0) at = c.messages.length;
@@ -432,11 +514,16 @@ export class AgentIMClient {
 
   /** Writes what changed: the position and the changed messages, together. */
   private async persist(c: Conv) {
-    const put = c.messages.filter((m) => c.dirty.has(keyOf(m)));
-    const gone = [...c.gone].filter((k) => !put.some((m) => keyOf(m) === k));
+    const put = c.messages.filter((m) => c.dirty.has(m.msg_id));
+    const gone = [...c.gone].filter((k) => !put.some((m) => m.msg_id === k));
     c.dirty.clear();
     c.gone.clear();
-    await this.store.write(c.convId, c.lastSeq, put, gone);
+    await this.store.write({
+      convs: [{ convId: c.convId, lastSeq: c.lastSeq, openedAt: c.openedAt }],
+      put,
+      remove: gone.map((key) => ({ convId: c.convId, key })),
+    });
+    void this.trim();
   }
 
   // Now and then compare positions with the server: a lost last push
@@ -461,10 +548,38 @@ export class AgentIMClient {
 
   // ------------------------------------------------------------ reading
 
-  /** The conversation's messages as known locally (loads the cache first). */
+  /**
+   * Opens a conversation: its newest page from the cache (also offline,
+   * with options.userId), then whatever sync brings. Marks it as used
+   * now (the cache keeps the conversations used most recently).
+   */
   async load(convId: string): Promise<ChatMessage[]> {
-    await this.conv(convId);
+    const c = await this.conv(convId);
+    c.openedAt = Date.now();
+    await this.persist(c);
     return this.messages(convId);
+  }
+
+  /**
+   * The page before the oldest loaded message, from the cache. Returns
+   * false when there is nothing older here (the server gives a device
+   * nothing from before it started, docs/08).
+   */
+  async loadOlder(convId: string): Promise<boolean> {
+    const c = await this.conv(convId);
+    const oldest = c.messages.find((m) => m.status === 'sent');
+    if (!c.hasOlder || !oldest) return false;
+    const page = await this.store.messages(convId, { beforeSeq: oldest.created_seq, limit: this.o.pageSize });
+    const known = new Set(c.messages.map((m) => m.msg_id));
+    c.messages.unshift(...page.filter((m) => !known.has(m.msg_id)));
+    c.hasOlder = page.length >= this.o.pageSize;
+    this.emit('messages', { convId, messages: this.messages(convId) });
+    return c.hasOlder;
+  }
+
+  /** Whether older messages may be loaded with `loadOlder`. */
+  hasOlder(convId: string): boolean {
+    return this.convs.get(convId)?.hasOlder ?? false;
   }
 
   messages(convId: string): ChatMessage[] {
@@ -511,7 +626,7 @@ export class AgentIMClient {
     };
     if (!c.messages.some((m) => m.client_msg_id === cm)) {
       c.messages.push(local);
-      c.dirty.add(keyOf(local));
+      c.dirty.add(local.msg_id);
     }
     this.emit('messages', { convId, messages: this.messages(convId) });
     await this.persist(c);
@@ -569,7 +684,7 @@ export class AgentIMClient {
   private settle(c: Conv, cm: string, msgId: string, seq: number) {
     const i = c.messages.findIndex((m) => m.client_msg_id === cm && m.status !== 'sent' && m.msg_id.startsWith('local:'));
     if (i < 0) return;
-    c.gone.add(keyOf(c.messages[i]));
+    c.gone.add(c.messages[i].msg_id);
     if (c.messages.some((m) => m.msg_id === msgId)) {
       c.messages.splice(i, 1);
     } else {
@@ -586,7 +701,7 @@ export class AgentIMClient {
     if (m) {
       m.status = 'failed';
       m.error = { code: e.code, message: e.detail };
-      c.dirty.add(keyOf(m));
+      c.dirty.add(m.msg_id);
       await this.persist(c);
       this.emit('messages', { convId, messages: this.messages(convId) });
     }
@@ -600,7 +715,7 @@ export class AgentIMClient {
     if (!m) throw new AgentIMError('not_found', 'no failed message with this client_msg_id');
     m.status = 'sending';
     delete m.error;
-    c.dirty.add(keyOf(m));
+    c.dirty.add(m.msg_id);
     await this.persist(c);
     this.emit('messages', { convId, messages: this.messages(convId) });
     return this.deliver(convId, m, Date.now() + this.o.sendRetryMs);
@@ -609,7 +724,7 @@ export class AgentIMClient {
   /** Drops a failed message from the local list. */
   async discard(convId: string, clientMsgId: string) {
     const c = await this.conv(convId);
-    for (const x of c.messages) if (x.client_msg_id === clientMsgId && x.status !== 'sent') c.gone.add(keyOf(x));
+    for (const x of c.messages) if (x.client_msg_id === clientMsgId && x.status !== 'sent') c.gone.add(x.msg_id);
     c.messages = c.messages.filter((x) => !(x.client_msg_id === clientMsgId && x.status !== 'sent'));
     await this.persist(c);
     this.emit('messages', { convId, messages: this.messages(convId) });
