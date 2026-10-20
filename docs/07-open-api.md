@@ -27,7 +27,7 @@
 
 | 权限范围 | 允许 | 状态 |
 |---|---|---|
-| `tokens:issue` | 给用户签发、吊销客户端登录令牌 | ✅ |
+| `tokens:issue` | 吊销用户的全部令牌（令牌由开发者用签名密钥自己签，[13 §4.2](13-roles-and-entry-points.md)） | ✅ |
 | `users:write` / `users:read` | 创建、导入、修改、停用用户；读取用户资料 | ✅ |
 | `conversations:write` / `conversations:read` | 建会话、改资料、管理成员和角色、解散；读取会话和成员 | ✅ |
 | `messages:write` | 以用户或系统身份发消息、编辑、撤回、标记已读 | ✅ |
@@ -53,8 +53,8 @@
 
 | 资源 | 接口 | 说明 | 状态 |
 |---|---|---|---|
-| 登录令牌 | `POST /v1/users/{id}/tokens` | **开发者后端给用户签发客户端令牌**（可设有效期、设备名、平台） | ✅ |
-| | `DELETE /v1/users/{id}/tokens` | 吊销这个用户的全部令牌，并立即断开 | ✅ |
+| 登录令牌 | `POST /v1/users/{id}/tokens` | 将删除：改为开发者用签名密钥自己签 JWT（[13 §4.2](13-roles-and-entry-points.md)） | ✅ 待删 |
+| | `DELETE /v1/users/{id}/tokens` | 吊销这个用户的全部令牌（签发时间早于此刻的都失效），并立即断开 | ✅ |
 | 用户 | `PUT /v1/users/{id}`、`GET`、`PATCH` | 创建或更新、读取、修改资料（昵称、头像、自定义字段） | ✅ |
 | | `POST /v1/users:batch` | 一次最多 100 个，逐个返回结果 | ✅ |
 | | `POST /v1/users/{id}:deactivate`、`:reactivate` | 停用后不能登录，已有的消息保留 | ✅ |
