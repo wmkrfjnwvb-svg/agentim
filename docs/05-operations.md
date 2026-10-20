@@ -258,7 +258,7 @@ GitHub Actions 结果（标准 runner，release，SQLite，每个场景发送 12
 
 ### 6.2 发送和本地数据
 
-- **乐观发送**：`send` 立即返回一条 `pending` 的本地消息，之后变为 `sent(seq)` 或 `failed`。每条带 `client_msg_id`；`unavailable`、`overloaded`、断线时用**同一个** id 重试（服务端去重），最多 2 分钟后标为失败（D34）；重发、取消按 `client_msg_id`，幂等。
+- **乐观发送**：`send` 立即返回一条 `pending` 的本地消息，之后变为 `sent(seq)` 或 `failed`。每条带 `client_msg_id`；`unavailable`、`overloaded`、断线时用**同一个** id 一直重试（服务端去重），频率按退避；只有业务拒绝才标为失败（D113）；重发、取消按 `client_msg_id`，幂等。
 - **本地存储按业内做法**：设备上用 SQLite（Stream 的 React Native SDK、matrix-rust-sdk、Telegram、WhatsApp、微信都是），浏览器用 IndexedDB（Sendbird、matrix-js-sdk）。TypeScript SDK：浏览器 `IndexedDBStore`；React Native、Electron、Node 用 `SqliteStore`，通过一个很小的驱动接口接 expo-sqlite、op-sqlite、better-sqlite3 或 `node:sqlite`；测试和一次性程序用 `MemoryStore`。按消息写入（一批一个事务），不整段重写会话。以后的 Rust 核心同样用 SQLite。
 - 本地缓存只是缓存：损坏或迁移失败时删除重建、从服务端重新同步；待发送队列和草稿单独保存、不被淘汰。要求的存储打不开时报错，不悄悄退回内存。`logout()` 默认清除本地数据（GDPR）。
 
