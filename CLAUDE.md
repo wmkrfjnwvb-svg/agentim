@@ -4,6 +4,7 @@ These rules come from the project owner and apply to every change.
 
 ## Before writing code
 - Design first: think the design through, research how the industry does it, show the design (in `docs/`), and write code only after it is approved.
+- When something is unclear or uncertain (a design choice, a protocol detail, how a product behaves), search how the industry does it (official docs of comparable products, mature open-source code and its issues) before deciding or answering; cite the sources and say what was not found instead of guessing.
 - Every change must keep the IM core guarantees: stable, no message loss, ordered, correct business rules, high concurrency, cluster-ready (docs/01-product.md §3).
 - Most users are overseas: compliance (GDPR, DSA, EU AI Act, App Store rules) is a requirement, not an add-on.
 

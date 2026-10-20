@@ -180,7 +180,7 @@ IM 没有账号体系，不存最终用户的密码。用户 ID 只来自开发�
 
 - **第一次见到的用户 ID 自动创建**（Stream 的客户端连接也会建用户）：有效令牌本身就是开发者的担保。已删除的 ID（[04 §4.2](04-security-compliance.md)）、已停用的用户、`system`、Agent 的 ID 都拒绝。资料由开发者用 `PUT`/`PATCH /v1/users/{id}` 补上。
 - **设备**：令牌里不带设备。客户端 SDK 第一次运行时生成一个设备 ID 存在本地，连接时随 `hello` 带上，同时带设备名和平台；服务端第一次见到时登记这台设备。按设备记同步位置（[08 §2](08-sync-and-client.md)）、设备上限、`list_devices` 都不变。
-- **下线一台设备**（`logout_device`、开放 API）：断开它、删掉它的同步位置，这个设备 ID 以后不能再连。令牌本身不是按设备签的，所以拿到令牌的人仍可以换一个设备 ID 连上，直到令牌过期。真正怀疑泄露时用"吊销这个用户的全部令牌"。
+- **下线一台设备**（`logout_device`、开放 API）：断开它、删掉它的同步位置，这个设备 ID 以后不能再连。令牌本身不是按设备签的，所以拿到令牌的人仍可以换一个设备 ID 连上，直到令牌过期。真正怀疑泄露时用"吊销这个用户的全部令牌"。业内同样如此：Stream 只能按用户吊销（`revoke_tokens_issued_before`）；Firebase 的 `revokeRefreshTokens` 也只按用户，文档里"设备丢失"的例子同样是整个用户退出；腾讯云 IM、声网 Chat 能把某台设备踢下线，但那是断开连接，不是让令牌失效。补救办法是令牌有效期短，靠 `tokenProvider` 自动续签。
 - **吊销用户的全部令牌**：`DELETE /v1/users/{id}/tokens` 保留，记下吊销时刻，`iat` 早于这个时刻的令牌一律失效，已连接的立即断开（Stream 的 `revoke_tokens_issued_before` 是同样做法）。
 - **Agent 不走这里**：Agent 继续用 Agent 密钥。开放 API 里给 Agent 签发和吊销密钥改为 `POST`/`DELETE /v1/agents/{id}/keys`（并入 §6 第 3 步）。
 
