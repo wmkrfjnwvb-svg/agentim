@@ -21,6 +21,7 @@ use crate::registry::{Out, Recip, Registry};
 
 mod ai;
 mod cards;
+mod compliance;
 mod history;
 mod lifecycle;
 mod requests;
@@ -651,6 +652,43 @@ pub enum Op {
         detail: Value,
     },
     Stats,
+    // account deletion and moderation (docs/04 §4.2)
+    EraseStart {
+        user_id: String,
+        by: Option<String>,
+    },
+    EraseInConv {
+        conv_id: String,
+        user: User,
+    },
+    EraseProgress {
+        user_id: String,
+    },
+    EraseFinish {
+        user_id: String,
+        name: String,
+    },
+    ReportPut {
+        reporter: String,
+        kind: String,
+        target: String,
+        conv_id: Option<String>,
+        category: String,
+        severity: i64,
+        body: Value,
+        due_at: i64,
+        per_hour: u32,
+    },
+    ReportResolve {
+        report_id: String,
+        decision: Value,
+        by: String,
+        suspend_until: Option<i64>,
+        ban: bool,
+    },
+    ModerationUpkeep {
+        keep_before: i64,
+    },
 }
 
 impl Op {
@@ -676,7 +714,8 @@ impl Op {
             | Op::Dissolve { conv_id, .. }
             | Op::AgentStopped { conv_id, .. }
             | Op::RemoveDestroyed { conv_id, .. }
-            | Op::ImportConv { conv_id, .. } => Route::Conv(conv_id.clone()),
+            | Op::ImportConv { conv_id, .. }
+            | Op::EraseInConv { conv_id, .. } => Route::Conv(conv_id.clone()),
             Op::StopConvStreams(c) | Op::DeleteConv(c) => Route::Conv(c.clone()),
             Op::TouchToken { .. }
             | Op::AckCursors { .. }
@@ -713,7 +752,13 @@ impl Op {
             | Op::ForgetConv(_)
             | Op::SetBlock { .. }
             | Op::DmPut { .. }
-            | Op::DmClaim { .. } => Route::Control,
+            | Op::DmClaim { .. }
+            | Op::EraseStart { .. }
+            | Op::EraseProgress { .. }
+            | Op::EraseFinish { .. }
+            | Op::ReportPut { .. }
+            | Op::ReportResolve { .. }
+            | Op::ModerationUpkeep { .. } => Route::Control,
         }
     }
 }
@@ -781,6 +826,13 @@ impl Op {
             Op::DeleteConv(_) => "delete_conv",
             Op::Audit { .. } => "audit",
             Op::Stats => "stats",
+            Op::EraseStart { .. } => "erase_start",
+            Op::EraseInConv { .. } => "erase_in_conv",
+            Op::EraseProgress { .. } => "erase_progress",
+            Op::EraseFinish { .. } => "erase_finish",
+            Op::ReportPut { .. } => "report_put",
+            Op::ReportResolve { .. } => "report_resolve",
+            Op::ModerationUpkeep { .. } => "moderation_upkeep",
         }
     }
 }
@@ -1187,6 +1239,48 @@ impl Ctx<'_, '_> {
                     .await
             }
             Op::Destroy { agent_id, by } => self.destroy(&agent_id, &by).await,
+            Op::EraseStart { user_id, by } => self.erase_start(&user_id, by.as_deref()).await,
+            Op::EraseInConv { conv_id, user } => self.erase_in_conv(&conv_id, &user).await,
+            Op::EraseProgress { user_id } => {
+                self.db.erasure_progress(&user_id).await?;
+                Ok(json!({}))
+            }
+            Op::EraseFinish { user_id, name } => self.erase_finish(&user_id, &name).await,
+            Op::ReportPut {
+                reporter,
+                kind,
+                target,
+                conv_id,
+                category,
+                severity,
+                body,
+                due_at,
+                per_hour,
+            } => {
+                self.report_put(
+                    &reporter,
+                    &kind,
+                    &target,
+                    conv_id.as_deref(),
+                    &category,
+                    severity,
+                    &body,
+                    due_at,
+                    per_hour,
+                )
+                .await
+            }
+            Op::ReportResolve {
+                report_id,
+                decision,
+                by,
+                suspend_until,
+                ban,
+            } => {
+                self.report_resolve(&report_id, &decision, &by, suspend_until, ban)
+                    .await
+            }
+            Op::ModerationUpkeep { keep_before } => self.moderation_upkeep(keep_before).await,
             Op::RemoveDestroyed { conv_id, agent, by } => {
                 self.agent_gone(&conv_id, &agent, &by).await
             }
@@ -2817,6 +2911,18 @@ impl Ctx<'_, '_> {
         // check: membership, guards or budgets may have changed since (M1).
         if let Some(prev) = self.duplicate(conv_id, &me.id, client_msg_id).await? {
             return Ok(prev);
+        }
+        // Deactivated or deleted: checked here too, in the writer, so a send
+        // that passed the session's check cannot commit after an erasure.
+        if self.sh.deactivated.read().unwrap().contains(&me.id)
+            && self
+                .sh
+                .failpoints
+                .hit(crate::hub::DELETED_CAN_SEND)
+                .await
+                .is_ok()
+        {
+            return Err(err("forbidden", "the account is deactivated"));
         }
         let member = self.require_member(conv_id, &me.id).await?;
         check_text(text)?;

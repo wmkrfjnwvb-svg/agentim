@@ -12,7 +12,7 @@ use crate::model::{ApiError, ApiResult};
 
 /// Version of the schema in `TABLES`. Bump it together with a new entry in
 /// `MIGRATIONS` (docs/02-architecture.md §5.3).
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -294,6 +294,9 @@ pub const TABLES: &[Table] = &[
             n("destroyed_at", Big),
             // v4: `team` for team agents; NULL is a person's assistant.
             n("agent_scope", Id),
+            // v7: account deleted (docs/04 §4.2); suspended by moderation until.
+            n("erased_at", Big),
+            n("suspended_until", Big),
         ],
         pk: &["id"],
         indexes: &[
@@ -802,6 +805,51 @@ pub const TABLES: &[Table] = &[
         indexes: &[],
         conv_key: None,
     },
+    // v7: account deletions in progress or done (docs/04 §4.2).
+    Table {
+        name: "erasures",
+        cols: &[
+            c("user_id", Id),
+            n("by_id", Id),
+            c("state", Id),
+            c("requested_at", Big),
+            n("finished_at", Big),
+            c("convs_done", Big),
+        ],
+        pk: &["user_id"],
+        indexes: &[("erasures_state", &["state"], false)],
+        conv_key: None,
+    },
+    // v7: reports and their decisions (docs/04 §4.2).
+    Table {
+        name: "reports",
+        cols: &[
+            c("id", Id),
+            c("reporter_id", Id),
+            c("target_kind", Id),
+            c("target_id", Id),
+            n("conv_id", Id),
+            c("category", Id),
+            c("severity", Big),
+            n("body", Text),
+            c("state", Id),
+            c("created_at", Big),
+            c("due_at", Big),
+            n("resolved_at", Big),
+            n("decision", Text),
+        ],
+        pk: &["id"],
+        indexes: &[
+            ("reports_queue", &["state", "severity", "due_at"], false),
+            (
+                "reports_target",
+                &["target_kind", "target_id", "state"],
+                false,
+            ),
+            ("reports_reporter", &["reporter_id", "created_at"], false),
+        ],
+        conv_key: None,
+    },
     Table {
         name: "audit",
         cols: &[
@@ -1011,6 +1059,21 @@ pub const MIGRATIONS: &[Migration] = &[
             table: "conversations",
             column: "confirmed_seq",
         }],
+    },
+    Migration {
+        version: 7,
+        compat: 1,
+        about: "account deletion, suspensions, reports",
+        steps: &[
+            Step::AddColumn {
+                table: "users",
+                column: "erased_at",
+            },
+            Step::AddColumn {
+                table: "users",
+                column: "suspended_until",
+            },
+        ],
     },
 ];
 

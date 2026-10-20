@@ -26,7 +26,7 @@ impl Hub {
 
     /// Runs a per-conversation op where the conversation lives, following
     /// it if it moves meanwhile.
-    async fn on_conv_op(&self, conv_id: &str, op: impl Fn() -> Op) -> ApiResult<Value> {
+    pub(super) async fn on_conv_op(&self, conv_id: &str, op: impl Fn() -> Op) -> ApiResult<Value> {
         let mut attempt = 0;
         loop {
             let shard = self.conv_shard(conv_id)?;
@@ -249,12 +249,30 @@ impl Hub {
                 "confirm with the agent's name: destroying cannot be undone",
             ));
         }
-        self.control()
+        self.destroy_agent_now(&agent, &me.id, false).await
+    }
+
+    /// Destroys an agent (no checks: the caller decided). `again`: one
+    /// destroyed before is not an error (a resumed erasure finishes it).
+    pub(super) async fn destroy_agent_now(
+        &self,
+        agent: &User,
+        by: &str,
+        again: bool,
+    ) -> ApiResult<Value> {
+        match self
+            .control()
             .call(Op::Destroy {
                 agent_id: agent.id.clone(),
-                by: me.id.clone(),
+                by: by.to_string(),
             })
-            .await?;
+            .await
+        {
+            Err(e) if again && e.code == "not_found" => {}
+            r => {
+                r?;
+            }
+        }
         {
             let sh = &self.inner.sh;
             sh.destroyed.write().unwrap().insert(agent.id.clone());
@@ -262,7 +280,7 @@ impl Hub {
             sh.stopped.write().unwrap().remove(&agent.id);
         }
         self.revoke_tokens(&agent.id, None).await?;
-        let n = self.remove_destroyed(&agent, &me.id).await?;
+        let n = self.remove_destroyed(agent, by).await?;
         Ok(json!({"agent_id": agent.id, "destroyed": true, "conversations": n}))
     }
 

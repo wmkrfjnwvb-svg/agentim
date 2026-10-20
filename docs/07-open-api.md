@@ -58,7 +58,8 @@
 | 用户 | `PUT /v1/users/{id}`、`GET`、`PATCH` | 创建或更新、读取、修改资料（昵称、头像、自定义字段） | ✅ |
 | | `POST /v1/users:batch` | 一次最多 100 个，逐个返回结果 | ✅ |
 | | `POST /v1/users/{id}:deactivate`、`:reactivate` | 停用后不能登录，已有的消息保留 | ✅ |
-| | `DELETE /v1/users/{id}` | GDPR 删除，异步任务 | 计划 |
+| | `DELETE /v1/users/{id}`、`GET …/erasure` | 删除账号（GDPR 第 17 条），后台完成，查进度；`compliance` 权限（[04 §4.2](04-security-compliance.md)） | ✅ |
+| | `GET /v1/users/{id}/export`、`GET /v1/me/export` | 导出本人的数据（NDJSON，可续传）；开发者用 `compliance` 权限，用户用自己的客户端令牌 | ✅ |
 | 会话 | `POST /v1/conversations` | 建群或单聊；可以指定开发者自己的会话 ID；单聊每对用户只有一个 | ✅ |
 | | `GET`、`PATCH`、`DELETE /v1/conversations/{id}` | 读取、修改资料、解散 | ✅ |
 | | `POST /v1/conversations/{id}/members`、`DELETE …/members/{user}`、`PATCH …/members/{user}` | 批量拉人（可带 `history`，[08 §2.4](08-sync-and-client.md)）、移除、改角色；转让群主 | ✅ |
@@ -73,7 +74,7 @@
 | 文件 | `POST /v1/files` | 以某个用户的身份上传（[02 §2.7](02-architecture.md)） | 计划 |
 | 全员通知 | `POST /v1/broadcasts` | 发给全部用户或某个单元，异步任务；可选"只发给在线用户"；单独的队列和限流，不挤占实时消息 | 计划 |
 | 导入 | `POST /v1/conversations/{id}/messages:import` | 迁移历史消息：保留原时间和发送者，不推送、不算未读 | 计划 |
-| 审核 | 拉黑、封禁、会话内禁言、举报队列 | 随合规功能 | 计划 |
+| 审核 | `GET /v1/reports`、`GET /v1/reports/{id}`、`POST /v1/reports/{id}:resolve` | 举报队列和处置（删除内容、停用几天、永久停用，处置记录按 DSA 第 17 条）；`moderation` 权限 | ✅ |
 | 异步任务 | `GET /v1/jobs/{id}` | 导出、删除、全员通知、导入的进度和结果；分批执行、可重试 | 计划 |
 
 ### 3.5 通用约定

@@ -176,6 +176,7 @@ pub fn single(url: &str) -> Config {
         retention: Default::default(),
         agents: Default::default(),
         mcp: Default::default(),
+        moderation: Default::default(),
         cluster: Default::default(),
     }
 }
@@ -218,6 +219,7 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
         retention: Default::default(),
         agents: Default::default(),
         mcp: Default::default(),
+        moderation: Default::default(),
         cluster: Default::default(),
     }
 }

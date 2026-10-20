@@ -12,6 +12,9 @@ use sqlx::any::AnyRow;
 use crate::model::*;
 use crate::storage::{Dialect, TABLES, Ty};
 
+mod compliance;
+pub use compliance::ERASE_BATCH;
+
 pub fn new_id() -> String {
     uuid::Uuid::now_v7().simple().to_string()
 }
@@ -566,6 +569,7 @@ impl Db<'_> {
             ),
             "audit" => (&["id"], "", &["detail"]),
             "webhook_outbox" => (&["id"], "", &["body"]),
+            "reports" => (&["id"], "", &["body"]),
             _ => {
                 return Err(ApiError::new(
                     "bad_request",

@@ -26,6 +26,8 @@ type Bucket = (f64, Instant);
 type Acks = Vec<(String, i64, i64)>;
 
 mod agents;
+mod compliance;
+pub use compliance::{CATEGORIES as REPORT_CATEGORIES, DELETED_CAN_SEND, ERASURE_STEP};
 mod export;
 mod history;
 mod lifecycle;
@@ -73,6 +75,8 @@ struct Inner {
     auth_epoch: std::sync::atomic::AtomicI64,
     /// Agent transfers run one at a time (owner row and member rows agree).
     transfer_lock: tokio::sync::Mutex<()>,
+    /// Accounts being erased by this process (docs/04 §4.2).
+    erasing: Mutex<std::collections::HashSet<String>>,
     /// Member changes of one conversation run one at a time, index included.
     member_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Conversations whose control index a failed write left behind, with
@@ -261,6 +265,7 @@ impl Hub {
                 hash_callers: Default::default(),
                 member_locks: Mutex::default(),
                 transfer_lock: tokio::sync::Mutex::new(()),
+                erasing: Mutex::new(Default::default()),
                 auth_epoch: Default::default(),
                 mcp_pending: Mutex::default(),
                 index_dirty: Mutex::default(),
@@ -277,6 +282,7 @@ impl Hub {
     pub async fn finish_open(&self) -> ApiResult<()> {
         self.load().await?;
         self.load_agent_flags().await?;
+        self.resume_erasures().await?;
         Ok(())
     }
 
@@ -952,6 +958,7 @@ impl Hub {
                     let _ = hub.reload_api_keys().await;
                     hub.repair_indexes().await;
                     let _ = hub.expire_tokens().await;
+                    let _ = hub.moderation_upkeep().await;
                 }
             }));
         let hub = self.clone();
@@ -1462,7 +1469,9 @@ impl Hub {
     /// Runs a client request as `user` without a connection: the same rules,
     /// deduplication, pushes and audit as a client (docs/07 §3.2).
     pub async fn act_as(&self, user: &User, msg: ClientMsg) -> ApiResult<Value> {
-        if self.inner.sh.deactivated.read().unwrap().contains(&user.id) {
+        if self.inner.sh.deactivated.read().unwrap().contains(&user.id)
+            && self.inner.sh.failpoints.hit(DELETED_CAN_SEND).await.is_ok()
+        {
             return Err(err("forbidden", "the user is deactivated"));
         }
         let sess = Session {
@@ -2475,6 +2484,30 @@ impl Hub {
             ClientMsg::ResumeAgent { agent_id } => self.resume_agent(me, &agent_id).await,
             ClientMsg::ListFeedback { agent_id, limit } => {
                 self.list_feedback(me, &agent_id, limit).await
+            }
+            ClientMsg::DeleteAccount { confirm } => {
+                if me.kind != UserKind::Human {
+                    return Err(err("forbidden", "only a person deletes their account"));
+                }
+                if confirm != me.name {
+                    return Err(err(
+                        "bad_request",
+                        "confirm with your user id: deleting cannot be undone",
+                    ));
+                }
+                self.delete_account(me, Some(&me.id)).await
+            }
+            ClientMsg::Report {
+                target_kind,
+                target_id,
+                category,
+                text,
+            } => {
+                if me.kind != UserKind::Human {
+                    return Err(err("forbidden", "only people file reports"));
+                }
+                self.report(me, &target_kind, &target_id, &category, text.as_deref())
+                    .await
             }
             ClientMsg::DestroyAgent { agent_id, confirm } => {
                 self.destroy_agent(me, &agent_id, &confirm).await

@@ -476,8 +476,21 @@ export class AgentIMClient {
       this.upsert(c, ev.msg);
       this.waiters.get(ev.msg.msg_id)?.();
     }
+    // A deleted account (docs/04 §4.2): what that person wrote is gone here too.
+    const erasedUser = ev.type === 'user.erased' ? (ev.data as { user_id?: string } | undefined)?.user_id : undefined;
+    if (erasedUser) {
+      for (const m of c.messages) {
+        if (m.sender_id === erasedUser && m.status === 'sent' && m.created_seq < ev.seq && (m.content || m.payload !== undefined)) {
+          m.content = '';
+          m.payload = undefined;
+          m.state = 'recalled';
+          m.state_reason = 'account_deleted';
+          c.dirty.add(m.msg_id);
+        }
+      }
+    }
     this.emit('event', ev);
-    if (ev.msg) this.emit('messages', { convId: c.convId, messages: this.messages(c.convId) });
+    if (ev.msg || erasedUser) this.emit('messages', { convId: c.convId, messages: this.messages(c.convId) });
     return true;
   }
 

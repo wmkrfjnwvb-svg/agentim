@@ -246,7 +246,7 @@ impl Hub {
     }
 
     /// One audit record for an account action by a person.
-    pub(super) async fn audit_user(&self, me: &User, action: &str, target: &str, detail: Value) {
+    pub async fn audit_user(&self, me: &User, action: &str, target: &str, detail: Value) {
         let _ = self
             .control()
             .call(Op::Audit {

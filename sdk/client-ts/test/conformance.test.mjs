@@ -48,7 +48,7 @@ async function user(name, agent = false, owner) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name: `${name}${++n}`, agent, owner }),
   }).then((r) => r.json());
-  return { id: r.user.id, token: r.token };
+  return { id: r.user.id, name: r.user.name, token: r.token };
 }
 
 /** A WebSocket the test can cut, or whose incoming frames it can drop. */
@@ -210,6 +210,25 @@ test('a reload shows the newest page from the cache; older pages come from it to
 test('reading the cache before connecting needs the user id', async () => {
   const b = client(await user('bob'));
   await assert.rejects(b.load('c_x'), (e) => e.code === 'not_ready');
+  b.close();
+});
+
+test('a deleted account: what that person wrote disappears from the other side too', async () => {
+  const [ua, ub] = [await user('alice'), await user('bob')];
+  const a = client(ua);
+  const b = client(ub);
+  await a.connect();
+  await b.connect();
+  const conv = await a.createGroup('g', [ub.id]);
+  await a.send(conv, 'from alice');
+  await b.send(conv, 'from bob');
+  await until('bob has both', () => texts(b, conv).length === 2);
+  a.close();
+  const ra = await raw(ua.token);
+  const r = await ra.call('delete_account', { confirm: ua.name });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  await until('erased on bob', () => b.messages(conv).some((m) => m.sender_id === ua.id && m.content === '' && m.state === 'recalled'));
+  assert.deepEqual(texts(b, conv).filter(Boolean), ['from bob']);
   b.close();
 });
 

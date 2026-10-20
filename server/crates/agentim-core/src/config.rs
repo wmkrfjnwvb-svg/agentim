@@ -58,6 +58,37 @@ pub struct Config {
     /// The MCP endpoint `/mcp` (docs/03-agents.md §2.1–§2.3).
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Reports and the moderation queue (docs/04-security-compliance.md §4.2).
+    #[serde(default)]
+    pub moderation: ModerationConfig,
+}
+
+/// `[moderation]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModerationConfig {
+    /// A report should be handled within this long (App Store: 24 hours).
+    pub due_hours: u64,
+    /// Resolved reports and their evidence are deleted after this long.
+    pub keep_days: u64,
+    /// Written into every decision as the way to appeal; empty: the app tells.
+    pub appeal_url: String,
+    /// Reports one user may file per hour.
+    pub report_per_hour: u32,
+    /// Data exports one user may run per hour.
+    pub export_per_hour: u32,
+}
+
+impl Default for ModerationConfig {
+    fn default() -> Self {
+        ModerationConfig {
+            due_hours: 24,
+            keep_days: 180,
+            appeal_url: String::new(),
+            report_per_hour: 20,
+            export_per_hour: 3,
+        }
+    }
 }
 
 /// `[agents]`.
@@ -785,6 +816,7 @@ impl Config {
             retention: Default::default(),
             agents: Default::default(),
             mcp: Default::default(),
+            moderation: Default::default(),
             cluster: Default::default(),
         }
     }
@@ -1048,6 +1080,7 @@ mod tests {
             retention: Default::default(),
             agents: Default::default(),
             mcp: Default::default(),
+            moderation: Default::default(),
             cluster: Default::default(),
         }
     }

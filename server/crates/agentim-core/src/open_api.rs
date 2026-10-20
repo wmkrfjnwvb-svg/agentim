@@ -33,6 +33,8 @@ pub const SCOPES: &[&str] = &[
     "conversations:read",
     "messages:write",
     "messages:read",
+    "compliance",
+    "moderation",
 ];
 
 pub const OPENAPI: &str = include_str!("../openapi.json");
@@ -527,8 +529,13 @@ pub fn routes(state: AppState) -> Router<AppState> {
             put(put_user)
                 .get(get_user)
                 .patch(patch_user)
-                .post(user_action),
+                .post(user_action)
+                .delete(delete_user),
         )
+        .route("/v1/users/{id}/erasure", get(get_erasure))
+        .route("/v1/users/{id}/export", get(export_user))
+        .route("/v1/reports", get(list_reports))
+        .route("/v1/reports/{id}", get(get_report).post(report_action))
         .route("/v1/users:batch", post(batch_users))
         .route("/v1/users/{id}/conversations", get(user_conversations))
         .route("/v1/users/{id}/messages", post(message_user))
@@ -555,6 +562,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
             axum::routing::patch(edit_message).post(message_action),
         )
         .layer(middleware::from_fn_with_state(state, guard))
+        .route("/v1/me/export", get(export_me))
         .route(
             "/v1/openapi.json",
             get(|| async { ([(header::CONTENT_TYPE, "application/json")], OPENAPI) }),
@@ -570,6 +578,13 @@ pub const ROUTES: &[&str] = &[
     "PATCH /v1/users/{id}",
     "POST /v1/users/{id}:deactivate",
     "POST /v1/users/{id}:reactivate",
+    "DELETE /v1/users/{id}",
+    "GET /v1/users/{id}/erasure",
+    "GET /v1/users/{id}/export",
+    "GET /v1/me/export",
+    "GET /v1/reports",
+    "GET /v1/reports/{id}",
+    "POST /v1/reports/{id}:resolve",
     "POST /v1/users:batch",
     "GET /v1/users/{id}/conversations",
     "POST /v1/users/{id}/messages",
@@ -694,6 +709,15 @@ async fn upsert_user(
     }
     check_profile(&req.display_name, &req.avatar)?;
     check_fields(&req.fields)?;
+    if let Some(u) = hub.user_by_name(id)
+        && hub.erasure_status(&u.id).await?.is_some()
+    {
+        return Err(Problem::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            "this user was deleted; ids are not reused",
+        ));
+    }
     let kind = match req.kind.as_deref() {
         None | Some("human") => UserKind::Human,
         Some("agent") => UserKind::Agent,
@@ -1659,4 +1683,194 @@ mod tests {
         }
         assert!(take(&slow, 1e-6, 3.0).is_err(), "burst used up");
     }
+}
+
+// ---- data protection and moderation (docs/04-security-compliance.md §4.2)
+
+/// `DELETE /v1/users/{id}`: account deletion, finished in the background.
+async fn delete_user(State(st): State<AppState>, Extension(k): K, Path(id): Path<String>) -> R {
+    need(&k, "compliance")?;
+    let u = user(&st.hub, &id)?;
+    let e = st.hub.delete_account(&u, None).await?;
+    st.hub
+        .audit_api(&k.key_id, SYSTEM_ID, "users.delete", Some(&id), json!({}))
+        .await;
+    Ok((StatusCode::ACCEPTED, Json(e)).into_response())
+}
+
+async fn get_erasure(State(st): State<AppState>, Extension(k): K, Path(id): Path<String>) -> R {
+    need(&k, "compliance")?;
+    let u = user(&st.hub, &id)?;
+    match st.hub.erasure_status(&u.id).await? {
+        Some(e) => ok(e),
+        None => Err(Problem::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "this user is not being deleted",
+        )),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct ExportQuery {
+    after: Option<String>,
+}
+
+/// NDJSON body from the export's lines; an error after the first byte
+/// becomes a last `{"type":"error"}` line (the status is already sent).
+fn ndjson(rx: tokio::sync::mpsc::Receiver<ApiResult<String>>) -> Response {
+    let stream = futures_util::stream::unfold((rx, false), |(mut rx, done)| async move {
+        if done {
+            return None;
+        }
+        match rx.recv().await {
+            Some(Ok(line)) => Some((Ok::<_, std::io::Error>(Bytes::from(line)), (rx, false))),
+            Some(Err(e)) => {
+                let line = format!(
+                    "{}\n",
+                    json!({"type": "error", "code": e.code, "message": e.message})
+                );
+                Some((Ok(Bytes::from(line)), (rx, true)))
+            }
+            None => None,
+        }
+    });
+    let mut r = Body::from_stream(stream).into_response();
+    r.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/x-ndjson"),
+    );
+    r
+}
+
+async fn export_user(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path(id): Path<String>,
+    Query(q): Query<ExportQuery>,
+) -> R {
+    need(&k, "compliance")?;
+    let u = user(&st.hub, &id)?;
+    let rx = st.hub.export_user(&u, q.after).await?;
+    st.hub
+        .audit_api(&k.key_id, SYSTEM_ID, "users.export", Some(&id), json!({}))
+        .await;
+    Ok(ndjson(rx))
+}
+
+/// `GET /v1/me/export` with the user's own client token.
+async fn export_me(
+    State(st): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<ExportQuery>,
+) -> R {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    let Some((u, _)) = st.hub.authenticate_or_load(token).await else {
+        return Err(Problem::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "a valid client token is required",
+        ));
+    };
+    if u.kind != UserKind::Human || st.hub.is_deactivated(&u.id) {
+        return Err(Problem::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only an active person exports their data",
+        ));
+    }
+    let rx = st.hub.export_user(&u, q.after).await?;
+    st.hub
+        .audit_user(&u, "account.exported", &u.id, json!({}))
+        .await;
+    Ok(ndjson(rx))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ReportsQuery {
+    state: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+async fn list_reports(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Query(q): Query<ReportsQuery>,
+) -> R {
+    need(&k, "moderation")?;
+    let open = match q.state.as_deref() {
+        None | Some("open") => true,
+        Some("resolved") => false,
+        Some(_) => return Err(bad("state must be open or resolved")),
+    };
+    let limit = q.limit.unwrap_or(50);
+    if !(1..=200).contains(&limit) {
+        return Err(bad("limit must be 1..200"));
+    }
+    let offset = q.offset.unwrap_or(0);
+    if offset < 0 {
+        return Err(bad("offset must be >= 0"));
+    }
+    let items = st.hub.reports(open, limit, offset).await?;
+    let more = items.len() as i64 == limit;
+    ok(json!({"reports": items, "has_more": more}))
+}
+
+async fn get_report(State(st): State<AppState>, Extension(k): K, Path(id): Path<String>) -> R {
+    need(&k, "moderation")?;
+    match st.hub.report_detail(&id).await? {
+        Some(r) => ok(r),
+        None => Err(Problem::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no such report",
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Resolve {
+    action: String,
+    reason: String,
+    ground: Option<String>,
+    #[serde(default)]
+    automated: bool,
+    days: Option<i64>,
+}
+
+async fn report_action(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path(seg): Path<String>,
+    b: Bytes,
+) -> R {
+    need(&k, "moderation")?;
+    let Some(id) = seg.strip_suffix(":resolve") else {
+        return Err(Problem::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown action",
+        ));
+    };
+    let req: Resolve = body(&b)?;
+    let v = st
+        .hub
+        .resolve_report(
+            id,
+            &req.action,
+            &req.reason,
+            req.ground.as_deref(),
+            req.automated,
+            req.days,
+            &format!("api_key:{}", k.key_id),
+        )
+        .await?;
+    ok(v)
 }
