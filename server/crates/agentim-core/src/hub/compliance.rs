@@ -34,7 +34,8 @@ impl Hub {
 
     /// Deletes a person's account: at once they can no longer sign in, be
     /// added or send; their content is then erased conversation by
-    /// conversation in the background. Repeatable.
+    /// conversation in the background. Repeatable. `by`: the API key that
+    /// asked (the developer's backend decides, docs/04 §4.2).
     pub async fn delete_account(&self, user: &User, by: Option<&str>) -> ApiResult<Value> {
         if user.kind != UserKind::Human {
             return Err(err(
@@ -229,8 +230,6 @@ impl Hub {
         user: &User,
         after: Option<String>,
     ) -> ApiResult<tokio::sync::mpsc::Receiver<ApiResult<String>>> {
-        let per_hour = self.inner.cfg.moderation.export_per_hour.max(1) as f64;
-        self.user_bucket(&user.id, "export", per_hour / 3600.0, per_hour)?;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let hub = self.clone();
         let user = user.clone();

@@ -1869,45 +1869,6 @@
         }
       }
     },
-    "/v1/me/export": {
-      "get": {
-        "summary": "Export your own data with your client token (Authorization: Bearer)",
-        "x-scope": "client token",
-        "parameters": [
-          {
-            "name": "after",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Continue after this conversation id (the cursor of a conversation line)"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "One JSON object per line",
-            "content": {
-              "application/x-ndjson": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Error",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/reports": {
       "get": {
         "summary": "The moderation queue: open reports, most severe and earliest due first; or resolved ones",

@@ -233,7 +233,7 @@ async fn state_refusals_leave_no_trace(db: TestDb) {
         json!({"op": "state_list"}),
         json!({"op": "state_delete", "key": "k", "version": 1}),
     ] {
-        assert_eq!(code(&a.call(req.clone()).await), "bad_request", "{req}");
+        assert_eq!(code(&a.call(req.clone()).await), "forbidden", "{req}");
     }
     let long = "k".repeat(256);
     for req in [

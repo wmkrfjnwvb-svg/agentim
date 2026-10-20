@@ -150,7 +150,7 @@ impl Hub {
     fn agents_only(me: &User) -> ApiResult<()> {
         if me.kind != UserKind::Agent {
             return Err(err(
-                "bad_request",
+                "forbidden",
                 "reading history is for agents; people sync (docs/08)",
             ));
         }

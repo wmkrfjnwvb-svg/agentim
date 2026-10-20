@@ -6,7 +6,7 @@
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +18,7 @@ const BIN = process.env.AGENTIM_BIN ?? fileURLToPath(new URL(`../../../server/ta
 const PORT = 18600 + Math.floor(Math.random() * 300);
 const URL_ = `http://127.0.0.1:${PORT}`;
 let server;
+let apiKey;
 let dir;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -32,6 +33,9 @@ async function until(what, f, ms = 10000, info) {
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'agentim-sdk-'));
+  // The developer's backend key (account deletion is open API only).
+  const out = execFileSync(BIN, ['--db', join(dir, 'a.db'), 'api-key', 'create', '--name', 'test', '--scopes', 'compliance']).toString();
+  apiKey = out.match(/ak_[A-Za-z0-9_-]+/)[0];
   server = spawn(BIN, ['--demo', '--db', join(dir, 'a.db'), '--addr', `127.0.0.1:${PORT}`], { stdio: 'ignore' });
   await until('server ready', async () => fetch(`${URL_}/readyz`).then((r) => r.ok).catch(() => false), 30000);
 });
@@ -224,9 +228,8 @@ test('a deleted account: what that person wrote disappears from the other side t
   await b.send(conv, 'from bob');
   await until('bob has both', () => texts(b, conv).length === 2);
   a.close();
-  const ra = await raw(ua.token);
-  const r = await ra.call('delete_account', { confirm: ua.name });
-  assert.equal(r.ok, true, JSON.stringify(r));
+  const r = await fetch(`${URL_}/v1/users/${ua.name}`, { method: 'DELETE', headers: { authorization: `Bearer ${apiKey}` } });
+  assert.equal(r.status, 202, await r.text());
   await until('erased on bob', () => b.messages(conv).some((m) => m.sender_id === ua.id && m.content === '' && m.state === 'recalled'));
   assert.deepEqual(texts(b, conv).filter(Boolean), ['from bob']);
   b.close();

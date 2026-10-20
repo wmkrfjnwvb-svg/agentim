@@ -48,7 +48,7 @@
 | `stream_*` `request_human` `cancel_request` `get_request` `history` `context` `search` `put_summary` `state_*` `progress` `handoff` `claim` `release_claim` `floor_*` `respond` `feedback` | Agent 或成员 | ✅ |
 | `list_devices` `logout_device` | 本人 | ✅ 管理自己的设备。Agent 也能调用（问题 9） |
 | `set_password` `totp_setup` `totp_enable` `totp_disable` | 本人 | ⚠️ 这是内置账号体系（问题 2） |
-| `delete_account` | 本人 | ⚠️ 已确认改为只走开放 API（问题 1） |
+| ~~`delete_account`~~ | — | ✅ 已删除，只走开放 API（问题 1） |
 | `stats` | 任何令牌，只在 `--demo` 时开放 | ⚠️ 返回整个部署的统计、在线名单和最近的审计，属于部署者（问题 5） |
 
 ### 2.2 HTTP 路由
@@ -56,7 +56,7 @@
 | 路由 | 用途 | 判断 |
 |---|---|---|
 | `/v1/...`（除下一行） | 开放 API，需要 API Key | ✅ |
-| `GET /v1/me/export` | 最终用户凭客户端令牌导出 | ⚠️ 已确认删除（问题 1） |
+| ~~`GET /v1/me/export`~~ | — | ✅ 已删除（问题 1） |
 | `POST /api/auth/login`、`POST /api/auth/register` | 内置账号的密码登录和自助注册（注册默认关闭） | ⚠️ 问题 2 |
 | `POST /api/login`、`POST /api/dev/users` | 演示用：免密码登录、随意建用户，只在 `--demo` 时可用 | ⚠️ 问题 6 |
 | `GET /api/stats` | 同 `stats` | ⚠️ 问题 5 |
@@ -85,7 +85,7 @@
 
 | # | 问题 | 建议 |
 |---|---|---|
-| 1 | 删除账号、导出数据有最终用户入口 | 已确认：只保留 `DELETE /v1/users/{id}`、`GET …/erasure`、`GET /v1/users/{id}/export`；删除 `delete_account` 和 `/v1/me/export`，以及每人每小时 3 次的导出限制（开发者按会话分页续传时会被它卡住）；删除记录里写上是哪个 API Key 发起的。代码已改好但**没有提交**，等你审完 |
+| 1 | 删除账号、导出数据有最终用户入口 | 已确认：只保留 `DELETE /v1/users/{id}`、`GET …/erasure`、`GET /v1/users/{id}/export`；删除 `delete_account` 和 `/v1/me/export`，以及每人每小时 3 次的导出限制（开发者按会话分页续传时会被它卡住）；删除记录里写上是哪个 API Key 发起的。✅ 已完成 |
 | 2 | **IM 里有一套最终用户的账号体系**：密码、TOTP、注册、改密码、`user set-password`。最终用户的账号应该在开发者的系统里，IM 只认开发者签发的令牌；现在两套并存，开发者的用户会多出一个"IM 密码" | 去掉最终用户的密码、TOTP、注册和对应的协议操作和路由。已有的代码（Argon2id、锁定、TOTP）挪给 A5 控制台的**管理员**登录用（[12 §4](12-developer-experience.md) 本来就要这些）。演示继续用 `--demo` 的免密码登录 |
 | 3 | **最终用户可以自建 Agent、在设备上拿到 Agent 密钥**，开发者既关不掉、也管不了数量以外的东西；团队 Agent、转交、导出导入又只能在服务器上做 | Agent 的发放和处置放到开放 API（新权限 `agents:write`）：建（个人、团队）、列表、签发和吊销密钥、转交、销毁、导出、导入。客户端的 `create_agent`、`agent_key`、`revoke_agent_key`、`destroy_agent` 改成开发者可开的选项，**默认关**。需要"用户自带 Agent"的产品打开它（见 §4 决定 B） |
 | 4 | 开发者、审核员不能急停或销毁某个 Agent | 开放 API 加急停、恢复、销毁。负责人在客户端的急停和恢复保留：这是人对 AI 的实时介入 |
@@ -93,7 +93,7 @@
 | 6 | 演示接口（免密码登录、随意建用户）编进了正式程序，`/api/dev/users` 也没有 Origin 校验 | 保留，只在 `--demo` 下可用，加上 Origin 校验；`--demo` 监听非本机地址时启动报错（除非显式加一个参数）；文档写清"仅限本机开发" |
 | 7 | **开发者没有开关决定最终用户在客户端能做什么**（建群、建单聊、拉人、查用户目录、编辑或撤回的时限、自建 Agent） | 加一组应用级的客户端权限，默认值保持现在的行为（自建 Agent 除外，见问题 3）。先放在配置文件 `[clients.allow]`，A5 以后在控制台和管理 API 里改。拒绝时返回 `forbidden`，不留痕迹 |
 | 8 | 开放 API 缺设备列表和单台下线、会话内禁言、某人的拉黑列表；服务端 SDK 没有 A4 接口 | 设备、禁言、SDK 补上；拉黑列表算个人数据，只在导出里出现，不单独开接口 |
-| 9 | 角色检查有漏洞：Agent 能调用 `totp_*`、`list_devices`、`logout_device`、`block`、`find_user`、`feedback`；"只给 Agent 用"的操作，拒绝人时有的返回 `bad_request`、有的返回 `forbidden` | 补上类型检查。凡是"你这种身份不能做"的统一返回 `forbidden`（CLAUDE.md 的错误码规则），每个都加测试，拒绝不留痕迹 |
+| 9 | 角色检查有漏洞：Agent 能调用 `totp_*`、`list_devices`、`logout_device`、`block`、`feedback`（`find_user` 是 Agent 通过 MCP 找人用的，保留，受问题 7 的开关管）；"只给 Agent 用"的操作，拒绝人时有的返回 `bad_request`、有的返回 `forbidden` | ✅ 补上类型检查。凡是"你这种身份不能做"的统一返回 `forbidden`（CLAUDE.md 的错误码规则），每个都加测试，拒绝不留痕迹 |
 | 10 | A5 控制台的设计把"应用管理"（API Key、用户、审核、Webhook、Agent）和"部署运维"（数据库、集群、加密、节点）放在同一个界面、同一套权限里。托管云上这是两拨人。应用级的设置（Webhook、发送前拦截、审核时限、Agent 上限）现在也写在部署的配置文件里 | 控制台和管理 API 分成两块：**应用**（开发者）和**部署**（部署者），各自的权限范围，托管云只给客户"应用"那块。应用设置先留在配置文件，A5 时搬到"应用"下，按 `tenant_id` 存 |
 
 ## 4. 决定（2026-10-20 已确认）
@@ -170,7 +170,7 @@
 
 ## 6. 顺序
 
-1. 问题 1（代码已就绪）和问题 9。
+1. ✅ 问题 1 和问题 9（`totp_*` 随问题 2 一起删除）。
 2. 问题 2、5、6：删掉最终用户账号体系和部署统计，演示改用新入口。
 3. 问题 3、4、8：开放 API 加 Agent 和设备接口，客户端选项；服务端 SDK 补齐。
 4. 问题 7 和 §4.1：客户端权限和按用户授权。

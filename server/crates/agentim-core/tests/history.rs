@@ -155,13 +155,13 @@ async fn history_refusals_leave_no_trace(db: TestDb) {
     let g = Conn::new(&hub, &bot);
     let o = Conn::new(&hub, &other);
     let cases: Vec<(&Conn, Value, &str)> = vec![
-        (&a, hist(&conv), "bad_request"),
-        (&a, json!({"op": "context", "conv_id": conv}), "bad_request"),
-        (&a, json!({"op": "search", "query": "hi"}), "bad_request"),
+        (&a, hist(&conv), "forbidden"),
+        (&a, json!({"op": "context", "conv_id": conv}), "forbidden"),
+        (&a, json!({"op": "search", "query": "hi"}), "forbidden"),
         (
             &a,
             json!({"op": "put_summary", "conv_id": conv, "from_seq": 1, "to_seq": 1, "text": "x"}),
-            "bad_request",
+            "forbidden",
         ),
         (
             &g,

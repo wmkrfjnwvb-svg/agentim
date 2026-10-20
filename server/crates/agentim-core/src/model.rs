@@ -733,12 +733,6 @@ pub enum ClientMsg {
         #[serde(default)]
         limit: Option<i64>,
     },
-    /// A member's response to a card: a button or a filled form.
-    /// Deletes one's own account (docs/04 §4.2); `confirm` is one's user id.
-    DeleteAccount {
-        #[serde(default)]
-        confirm: String,
-    },
     /// Reports a message, a user or a conversation (docs/04 §4.2).
     Report {
         target_kind: String,
@@ -747,6 +741,7 @@ pub enum ClientMsg {
         #[serde(default)]
         text: Option<String>,
     },
+    /// A member's response to a card: a button or a filled form.
     Respond {
         msg_id: String,
         block_id: String,
@@ -839,7 +834,6 @@ impl ClientMsg {
             ClientMsg::Progress { .. } => "progress",
             ClientMsg::Feedback { .. } => "feedback",
             ClientMsg::ListFeedback { .. } => "list_feedback",
-            ClientMsg::DeleteAccount { .. } => "delete_account",
             ClientMsg::Report { .. } => "report",
         }
     }

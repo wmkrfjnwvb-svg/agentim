@@ -175,7 +175,7 @@ async fn handoff_refusals_leave_no_trace(db: TestDb) {
     };
     let (h1, h2) = (head(&conv).await, head(&away).await);
     let cases: Vec<(&Conn, Value, &str)> = vec![
-        (&a, handoff(&conv, "x"), "bad_request"),
+        (&a, handoff(&conv, "x"), "forbidden"),
         (&g, handoff(&conv, ""), "bad_request"),
         (&g, handoff(&conv, &long), "bad_request"),
         (&g, handoff(&conv, "a\0b"), "bad_request"),
@@ -711,7 +711,7 @@ async fn progress_goes_on_the_side(db: TestDb) {
         (&g, p("step", &"x".repeat(4097)), "bad_request"),
         (&g, bad_msg, "bad_request"),
         (&g, big, "bad_request"),
-        (&a, p("step", "x"), "bad_request"),
+        (&a, p("step", "x"), "forbidden"),
         (&Conn::new(&hub, &peer), p("step", "x"), "forbidden"),
     ] {
         assert_eq!(code(&who.call(req.clone()).await), want, "{req}");
@@ -857,7 +857,7 @@ async fn feedback_reaches_the_agent_and_its_owner(db: TestDb) {
         on_human["msg_id"] = human.clone();
         for (who, req, want) in [
             (&b, on_human, "bad_request"),
-            (&g, fb(json!("up"), None), "bad_request"),
+            (&g, fb(json!("up"), None), "forbidden"),
             (&b, fb(json!("meh"), None), "bad_request"),
             (&b, fb(Value::Null, Some("why")), "bad_request"),
             (&b, fb(json!("up"), Some("")), "bad_request"),

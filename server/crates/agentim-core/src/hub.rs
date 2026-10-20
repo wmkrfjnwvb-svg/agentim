@@ -2183,6 +2183,21 @@ impl Hub {
                 "your owner stopped you; wait until you are resumed",
             ));
         }
+        // A person's own choices; an agent's keys and contacts are managed
+        // by its owner and the developer (docs/13 §3, problem 9).
+        if me.kind != UserKind::Human
+            && matches!(
+                msg,
+                ClientMsg::Block { .. }
+                    | ClientMsg::Unblock { .. }
+                    | ClientMsg::ListBlocks
+                    | ClientMsg::ListDevices
+                    | ClientMsg::LogoutDevice { .. }
+                    | ClientMsg::Feedback { .. }
+            )
+        {
+            return Err(err("forbidden", "this is for people"));
+        }
         // People's sends are limited per person, over all connections (D95).
         if me.kind == UserKind::Human && matches!(msg, ClientMsg::Send { .. }) {
             let c = &self.inner.cfg.clients;
@@ -2484,18 +2499,6 @@ impl Hub {
             ClientMsg::ResumeAgent { agent_id } => self.resume_agent(me, &agent_id).await,
             ClientMsg::ListFeedback { agent_id, limit } => {
                 self.list_feedback(me, &agent_id, limit).await
-            }
-            ClientMsg::DeleteAccount { confirm } => {
-                if me.kind != UserKind::Human {
-                    return Err(err("forbidden", "only a person deletes their account"));
-                }
-                if confirm != me.name {
-                    return Err(err(
-                        "bad_request",
-                        "confirm with your user id: deleting cannot be undone",
-                    ));
-                }
-                self.delete_account(me, Some(&me.id)).await
             }
             ClientMsg::Report {
                 target_kind,

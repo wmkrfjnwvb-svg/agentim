@@ -1,7 +1,8 @@
 //! Agent registration and keys (docs/03-agents.md §2.1–§2.3): creation by
 //! the owner, the per-owner cap, rotation (one write, exactly one key left),
 //! revocation, refusals that leave no trace, keys made by another process,
-//! restart, and the races between them.
+//! restart, and the races between them; what is only for people or only
+//! for agents (docs/13 §3, problem 9).
 
 mod common;
 
@@ -26,6 +27,7 @@ backend_tests!(
     agents_start_conversations_only_with_known_contacts,
     agent_conversations_are_rate_limited,
     race_agents_open_one_direct_conversation,
+    each_kind_is_refused_what_belongs_to_the_other,
 );
 
 fn code(v: &Value) -> &str {
@@ -673,4 +675,68 @@ async fn race_agents_open_one_direct_conversation(db: TestDb) {
         }
         assert_eq!(ids.len(), 1, "round {round}");
     }
+}
+
+/// People-only operations refuse agents, agent-only ones refuse people,
+/// both with `forbidden` and without a trace (docs/13 §3, problem 9).
+async fn each_kind_is_refused_what_belongs_to_the_other(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bob = user(&hub, "bob", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let g = Conn::new(&hub, &bot);
+    let conv = a.group(&[&bob, &bot]).await;
+    let mine = g.send(&conv, "from the bot").await["msg_id"].clone();
+    let before = hub.audit_log(10_000).await.unwrap().len();
+    let seq_before = a.ok(json!({"op": "heads", "conv_ids": [conv]})).await;
+    let device = hub.devices(&bot.id).await.unwrap().len();
+    for op in [
+        json!({"op": "block", "user_id": bob.id}),
+        json!({"op": "unblock", "user_id": bob.id}),
+        json!({"op": "list_blocks"}),
+        json!({"op": "list_devices"}),
+        json!({"op": "logout_device", "device_id": "d"}),
+        json!({"op": "feedback", "msg_id": mine, "rating": "down"}),
+    ] {
+        let r = g.call(op.clone()).await;
+        assert_eq!(code(&r), "forbidden", "agent {op}: {r}");
+    }
+    for op in [
+        json!({"op": "state_get", "key": "k"}),
+        json!({"op": "state_put", "key": "k", "value": {}, "version": 0}),
+        json!({"op": "state_list"}),
+        json!({"op": "state_delete", "key": "k", "version": 1}),
+        json!({"op": "history", "conv_id": conv}),
+        json!({"op": "context", "conv_id": conv}),
+        json!({"op": "search", "query": "bot"}),
+        json!({"op": "put_summary", "conv_id": conv, "from_seq": 1, "to_seq": 1, "text": "s"}),
+        json!({"op": "progress", "conv_id": conv, "kind": "thinking", "text": "working"}),
+        json!({"op": "handoff", "conv_id": conv, "note": "n"}),
+        json!({"op": "stream_start", "conv_id": conv, "client_msg_id": "s1"}),
+        json!({"op": "request_human", "conv_id": conv, "kind": "approve", "title": "t", "client_req_id": "r1"}),
+    ] {
+        let r = a.call(op.clone()).await;
+        assert_eq!(code(&r), "forbidden", "person {op}: {r}");
+    }
+    // No trace.
+    assert_eq!(hub.audit_log(10_000).await.unwrap().len(), before);
+    assert_eq!(
+        a.ok(json!({"op": "heads", "conv_ids": [conv]})).await,
+        seq_before
+    );
+    assert_eq!(hub.devices(&bot.id).await.unwrap().len(), device);
+    assert!(
+        !hub.shared()
+            .blocks
+            .read()
+            .unwrap()
+            .iter()
+            .any(|(u, _)| *u == bot.id)
+    );
+    // People keep theirs.
+    a.ok(json!({"op": "feedback", "msg_id": mine, "rating": "up"}))
+        .await;
+    a.ok(json!({"op": "list_devices"})).await;
+    a.ok(json!({"op": "block", "user_id": bob.id})).await;
 }

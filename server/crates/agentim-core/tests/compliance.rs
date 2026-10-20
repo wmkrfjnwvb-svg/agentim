@@ -195,10 +195,9 @@ async fn deleting_an_account_erases_what_the_person_wrote(db: TestDb) {
     b.send(&dm, "bob stays too").await;
     a.ok(json!({"op": "leave", "conv_id": left})).await;
 
-    let r = a
-        .ok(json!({"op": "delete_account", "confirm": "alice"}))
-        .await;
-    assert_eq!(r["state"], "running", "{r}");
+    // Only the developer's backend deletes an account (docs/04 §4.2).
+    let (s, r) = api.call("DELETE", "/v1/users/alice", None).await;
+    assert_eq!((s, r["state"].as_str()), (202, Some("running")), "{r}");
     // At once: no acting, no adding, no signing in.
     assert_eq!(code(&a.send(&group, "after").await), "forbidden");
     assert_eq!(
@@ -290,30 +289,23 @@ async fn deletion_refusals_and_repeats(db: TestDb) {
     let a = Conn::new(hub, &alice);
     let conv = a.group(&[&bob]).await;
     a.send(&conv, "kept").await;
-    // Wrong confirmation, an agent, the system: refused, nothing recorded.
-    assert_eq!(
-        code(
-            &a.call(json!({"op": "delete_account", "confirm": "bob"}))
-                .await
-        ),
-        "bad_request"
-    );
-    assert_eq!(
-        code(&a.call(json!({"op": "delete_account", "confirm": ""})).await),
-        "bad_request"
-    );
-    assert_eq!(
-        code(&a.call(json!({"op": "delete_account"})).await),
-        "bad_request"
-    );
-    assert_eq!(
-        code(
-            &Conn::new(hub, &bot)
-                .call(json!({"op": "delete_account", "confirm": "bot"}))
-                .await
-        ),
-        "forbidden"
-    );
+    // Not from a device: the client protocol has no such operation.
+    for c in [&a, &Conn::new(hub, &bot)] {
+        assert_eq!(
+            code(
+                &c.call(json!({"op": "delete_account", "confirm": "alice"}))
+                    .await
+            ),
+            "unknown_op"
+        );
+    }
+    // An agent's account is not deleted (it is destroyed); the system
+    // user is not a user of the open API.
+    let (s, v) = api.call("DELETE", "/v1/users/bot", None).await;
+    assert_eq!((s, v["code"].as_str()), (400, Some("bad_request")), "{v}");
+    let (s, _) = api.call("DELETE", "/v1/users/system", None).await;
+    assert_eq!(s, 404);
+    assert!(hub.erasure_status(&bot.id).await.unwrap().is_none());
     assert!(hub.erasure_status(&alice.id).await.unwrap().is_none());
     assert_eq!(audits(hub, "account.deleted").await, 0);
     assert_eq!(contents_of(hub, &conv, &alice.id).await, vec!["kept"]);
@@ -329,7 +321,7 @@ async fn deletion_refusals_and_repeats(db: TestDb) {
     assert_eq!(s, 404);
     let (s, _) = api.call("GET", "/v1/users/alice/erasure", None).await;
     assert_eq!(s, 404);
-    // Deleting twice (both ways) is one deletion.
+    // Deleting again is the same deletion.
     let (s, v) = api.call("DELETE", "/v1/users/alice", None).await;
     assert_eq!((s, v["state"].as_str()), (202, Some("running")));
     let (s, _) = api.call("DELETE", "/v1/users/alice", None).await;
@@ -374,8 +366,7 @@ async fn an_interrupted_deletion_finishes_after_a_restart(db: TestDb) {
         agentim_core::failpoint::Action::Pause,
         None,
     );
-    a.ok(json!({"op": "delete_account", "confirm": "alice"}))
-        .await;
+    hub.delete_account(&alice, Some("k")).await.unwrap();
     fp.wait_hits(agentim_core::hub::ERASURE_STEP, 1).await;
     // "Crash": the process goes away mid-way.
     hub.shutdown();
@@ -463,9 +454,7 @@ async fn race_sends_while_the_account_is_deleted(db: TestDb) {
 }
 
 async fn export_has_the_persons_own_data(db: TestDb) {
-    let mut cfg = single(&db.url);
-    cfg.moderation.export_per_hour = 3;
-    let api = Api::with(cfg).await;
+    let api = Api::start(&db).await;
     let hub = &api.hub;
     let alice = api.user("alice").await;
     let bob = api.user("bob").await;
@@ -479,8 +468,11 @@ async fn export_has_the_persons_own_data(db: TestDb) {
     b.send(&c1, "bobs words").await;
     a.send(&c2, "mine two").await;
     a.ok(json!({"op": "block", "user_id": bob.id})).await;
-    let token = api.token("alice").await;
-    let (s, body) = api.raw("GET", "/v1/me/export", Some(&token), None).await;
+    // Only the developer's backend exports (compliance scope); it hands
+    // the file to the person.
+    let (s, body) = api
+        .raw("GET", "/v1/users/alice/export", Some(&api.key), None)
+        .await;
     assert_eq!(s, 200, "{body}");
     let lines: Vec<Value> = body
         .lines()
@@ -525,29 +517,33 @@ async fn export_has_the_persons_own_data(db: TestDb) {
     let (s, rest) = api
         .raw(
             "GET",
-            &format!("/v1/me/export?after={first}"),
-            Some(&token),
+            &format!("/v1/users/alice/export?after={first}"),
+            Some(&api.key),
             None,
         )
         .await;
     assert_eq!(s, 200);
     assert!(!rest.contains("\"profile\""));
     assert_eq!(rest.matches("\"type\":\"conversation\"").count(), 1);
-    // Open API for the developer's backend (compliance scope).
-    let (s, dev) = api
-        .raw("GET", "/v1/users/alice/export", Some(&api.key), None)
-        .await;
-    assert_eq!(s, 200);
-    assert!(dev.contains("mine two"));
-    // Limits and refusals.
-    let (s, t) = api.raw("GET", "/v1/me/export", Some(&token), None).await;
-    assert_eq!(s, 429, "{t}");
-    let (s, _) = api.raw("GET", "/v1/me/export", None, None).await;
-    assert_eq!(s, 401);
+    // Exporting again (page by page) is not limited per person.
+    for _ in 0..5 {
+        let (s, _) = api
+            .raw("GET", "/v1/users/alice/export", Some(&api.key), None)
+            .await;
+        assert_eq!(s, 200);
+    }
+    // Refusals: no key, a wrong key, a client token, an unknown user.
+    let token = api.token("alice").await;
+    for t in [None, Some("nonsense"), Some(token.as_str())] {
+        let (s, _) = api.raw("GET", "/v1/users/alice/export", t, None).await;
+        assert_eq!(s, 401);
+    }
     let (s, _) = api
-        .raw("GET", "/v1/me/export", Some("nonsense"), None)
+        .raw("GET", "/v1/users/nobody/export", Some(&api.key), None)
         .await;
-    assert_eq!(s, 401);
+    assert_eq!(s, 404);
+    let (s, _) = api.raw("GET", "/v1/me/export", Some(&token), None).await;
+    assert_eq!(s, 401, "no export with a client token");
     let k = hub
         .create_api_key("k", &["users:read".to_string()], None, None)
         .await
@@ -557,8 +553,11 @@ async fn export_has_the_persons_own_data(db: TestDb) {
         .raw("GET", "/v1/users/alice/export", Some(&k), None)
         .await;
     assert_eq!(s, 403);
-    assert_eq!(audits(hub, "account.exported").await, 2);
-    assert_eq!(audits(hub, "api.users.export").await, 1);
+    assert_eq!(
+        audits(hub, "api.users.export").await,
+        7,
+        "each export, not the refused"
+    );
 }
 
 fn report(kind: &str, id: &str, cat: &str) -> Value {

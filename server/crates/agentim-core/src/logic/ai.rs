@@ -26,7 +26,7 @@ impl Ctx<'_, '_> {
         note: &str,
     ) -> ApiResult<Value> {
         if me.kind != UserKind::Agent {
-            return Err(err("bad_request", "only agents hand off"));
+            return Err(err("forbidden", "only agents hand off"));
         }
         self.require_member(conv_id, &me.id).await?;
         check_note(note)?;
@@ -176,7 +176,7 @@ impl Ctx<'_, '_> {
         data: Option<Value>,
     ) -> ApiResult<Value> {
         if me.kind != UserKind::Agent {
-            return Err(err("bad_request", "progress is for agents"));
+            return Err(err("forbidden", "progress is for agents"));
         }
         self.require_member(conv_id, &me.id).await?;
         if !PROGRESS_KINDS.contains(&kind) {

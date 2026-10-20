@@ -562,7 +562,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
             axum::routing::patch(edit_message).post(message_action),
         )
         .layer(middleware::from_fn_with_state(state, guard))
-        .route("/v1/me/export", get(export_me))
         .route(
             "/v1/openapi.json",
             get(|| async { ([(header::CONTENT_TYPE, "application/json")], OPENAPI) }),
@@ -581,7 +580,6 @@ pub const ROUTES: &[&str] = &[
     "DELETE /v1/users/{id}",
     "GET /v1/users/{id}/erasure",
     "GET /v1/users/{id}/export",
-    "GET /v1/me/export",
     "GET /v1/reports",
     "GET /v1/reports/{id}",
     "POST /v1/reports/{id}:resolve",
@@ -1691,7 +1689,7 @@ mod tests {
 async fn delete_user(State(st): State<AppState>, Extension(k): K, Path(id): Path<String>) -> R {
     need(&k, "compliance")?;
     let u = user(&st.hub, &id)?;
-    let e = st.hub.delete_account(&u, None).await?;
+    let e = st.hub.delete_account(&u, Some(&k.key_id)).await?;
     st.hub
         .audit_api(&k.key_id, SYSTEM_ID, "users.delete", Some(&id), json!({}))
         .await;
@@ -1754,38 +1752,6 @@ async fn export_user(
     let rx = st.hub.export_user(&u, q.after).await?;
     st.hub
         .audit_api(&k.key_id, SYSTEM_ID, "users.export", Some(&id), json!({}))
-        .await;
-    Ok(ndjson(rx))
-}
-
-/// `GET /v1/me/export` with the user's own client token.
-async fn export_me(
-    State(st): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Query(q): Query<ExportQuery>,
-) -> R {
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .unwrap_or_default();
-    let Some((u, _)) = st.hub.authenticate_or_load(token).await else {
-        return Err(Problem::new(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "a valid client token is required",
-        ));
-    };
-    if u.kind != UserKind::Human || st.hub.is_deactivated(&u.id) {
-        return Err(Problem::new(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "only an active person exports their data",
-        ));
-    }
-    let rx = st.hub.export_user(&u, q.after).await?;
-    st.hub
-        .audit_user(&u, "account.exported", &u.id, json!({}))
         .await;
     Ok(ndjson(rx))
 }

@@ -28,7 +28,7 @@ fn check_key(key: &str) -> ApiResult<()> {
 impl Hub {
     fn state_agent(me: &User) -> ApiResult<()> {
         if me.kind != UserKind::Agent {
-            return Err(err("bad_request", "checkpoints are for agents"));
+            return Err(err("forbidden", "checkpoints are for agents"));
         }
         Ok(())
     }

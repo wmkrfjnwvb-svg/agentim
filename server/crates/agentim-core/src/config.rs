@@ -75,8 +75,6 @@ pub struct ModerationConfig {
     pub appeal_url: String,
     /// Reports one user may file per hour.
     pub report_per_hour: u32,
-    /// Data exports one user may run per hour.
-    pub export_per_hour: u32,
 }
 
 impl Default for ModerationConfig {
@@ -86,7 +84,6 @@ impl Default for ModerationConfig {
             keep_days: 180,
             appeal_url: String::new(),
             report_per_hour: 20,
-            export_per_hour: 3,
         }
     }
 }

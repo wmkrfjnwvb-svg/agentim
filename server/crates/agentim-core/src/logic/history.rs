@@ -20,7 +20,7 @@ impl Ctx<'_, '_> {
         text: &str,
     ) -> ApiResult<Value> {
         if me.kind != UserKind::Agent {
-            return Err(err("bad_request", "summaries are for agents"));
+            return Err(err("forbidden", "summaries are for agents"));
         }
         self.own_conv(conv_id)?;
         let mine = self.require_member(conv_id, &me.id).await?;

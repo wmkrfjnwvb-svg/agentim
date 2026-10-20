@@ -32,8 +32,8 @@
 | `conversations:write` / `conversations:read` | 建会话、改资料、管理成员和角色、解散；读取会话和成员 | ✅ |
 | `messages:write` | 以用户或系统身份发消息、编辑、撤回、标记已读 | ✅ |
 | `messages:read` | 读取消息历史（**单独的权限**，因为能读到私聊内容；每次读取写审计） | ✅ |
-| `moderation` | 拉黑、封禁、禁言、处理举报 | 计划 |
-| `compliance` | 导出、删除用户数据（GDPR） | 计划 |
+| `moderation` | 处理举报（禁言计划中） | ✅ |
+| `compliance` | 导出、删除用户数据（GDPR） | ✅ |
 | `agents:write` | 注册 Agent、管理凭据和策略（[03 §1](03-agents.md)） | 计划 |
 
 ### 3.2 以谁的身份操作（D25）
@@ -59,7 +59,7 @@
 | | `POST /v1/users:batch` | 一次最多 100 个，逐个返回结果 | ✅ |
 | | `POST /v1/users/{id}:deactivate`、`:reactivate` | 停用后不能登录，已有的消息保留 | ✅ |
 | | `DELETE /v1/users/{id}`、`GET …/erasure` | 删除账号（GDPR 第 17 条），后台完成，查进度；`compliance` 权限（[04 §4.2](04-security-compliance.md)） | ✅ |
-| | `GET /v1/users/{id}/export`、`GET /v1/me/export` | 导出本人的数据（NDJSON，可续传）；开发者用 `compliance` 权限，用户用自己的客户端令牌 | ✅ |
+| | `GET /v1/users/{id}/export` | 导出这个用户本人的数据（NDJSON，可续传），开发者交给用户；`compliance` 权限。客户端没有导出和删除账号（[13](13-roles-and-entry-points.md)） | ✅ |
 | 会话 | `POST /v1/conversations` | 建群或单聊；可以指定开发者自己的会话 ID；单聊每对用户只有一个 | ✅ |
 | | `GET`、`PATCH`、`DELETE /v1/conversations/{id}` | 读取、修改资料、解散 | ✅ |
 | | `POST /v1/conversations/{id}/members`、`DELETE …/members/{user}`、`PATCH …/members/{user}` | 批量拉人（可带 `history`，[08 §2.4](08-sync-and-client.md)）、移除、改角色；转让群主 | ✅ |
@@ -99,7 +99,7 @@
 
 - Key 只存哈希；日志里不出现密钥和消息内容；每次调用写审计（Key、身份、操作、目标、结果）。
 - `messages:read` 和 `compliance` 是单独的权限，默认不给；读取历史写审计，可以追溯"谁看过谁的消息"。
-- GDPR 的导出和删除（计划）走 `compliance` 权限的异步任务，并和保留期联动。
+- GDPR 的导出和删除只走 `compliance` 权限的开放 API（[04 §4.2](04-security-compliance.md)）。
 
 ### 3.8 测试（按 [CLAUDE.md](../CLAUDE.md) 的测试规则）
 
@@ -116,7 +116,7 @@
 
 ## 4. 后续
 
-请求签名（HMAC）、文件上传、全员通知、历史导入、异步任务、审核与合规接口（导出、删除）、多应用及其管理界面。
+请求签名（HMAC）、文件上传、全员通知、历史导入、异步任务、Agent 和设备接口、客户端权限（[13 §4.1](13-roles-and-entry-points.md)）、多应用及其管理界面。
 
 ## 5. 实现细节
 

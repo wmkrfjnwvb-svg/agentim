@@ -102,7 +102,6 @@ pub const OPS: &[&str] = &[
     "stop_agent",
     "resume_agent",
     "destroy_agent",
-    "delete_account",
     "report",
     "handoff",
     "handback",
