@@ -561,7 +561,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
             "/v1/messages/{id}",
             axum::routing::patch(edit_message).post(message_action),
         )
-        .layer(middleware::from_fn_with_state(state, guard))
+        .route_layer(middleware::from_fn_with_state(state, guard))
         .route(
             "/v1/openapi.json",
             get(|| async { ([(header::CONTENT_TYPE, "application/json")], OPENAPI) }),

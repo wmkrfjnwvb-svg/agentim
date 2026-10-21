@@ -104,13 +104,13 @@ code { font-size: 12px; background: var(--bg); padding: 0 4px; border-radius: 4p
     <div id="hint"></div>
   </div>
   <div class="col">
-    <div class="head"><b>控制台</b><div class="tabs"><button id="tab-agents" class="on" onclick="tab('agents')">我的 Agent</button><button id="tab-stats" onclick="tab('stats')">监控 / 审计</button></div></div>
+    <div class="head"><b>控制台</b><div class="tabs"><button id="tab-agents" class="on" onclick="tab('agents')">我的 Agent</button></div></div>
     <div class="scroll" id="panel"></div>
   </div>
 </div>
 
 <script>
-const S = { token: null, me: null, ws: null, rid: 0, pending: new Map(), convs: [], cur: null, logs: {}, side: {}, lastSeq: {}, sideSeq: {}, drafts: [], users: {}, myAgents: [], tab: 'agents', stats: null };
+const S = { token: null, me: null, ws: null, rid: 0, pending: new Map(), convs: [], cur: null, logs: {}, side: {}, lastSeq: {}, sideSeq: {}, drafts: [], users: {}, myAgents: [], tab: 'agents' };
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const newLog = () => ({ msgs: new Map(), order: [], sys: [] });
@@ -396,9 +396,8 @@ async function editMsg(id) {
   if (t && t !== m.content) await call({ op: 'edit', msg_id: id, text: t });
 }
 
-function tab(t) { S.tab = t; $('tab-agents').classList.toggle('on', t === 'agents'); $('tab-stats').classList.toggle('on', t === 'stats'); if (t === 'stats') loadStats(); renderPanel(); }
+function tab(t) { S.tab = t; $('tab-agents').classList.toggle('on', t === 'agents'); renderPanel(); }
 
-async function loadStats() { S.stats = await call({ op: 'stats' }); renderPanel(); }
 
 // Re-rendering must not wipe what the user is typing in the panel.
 function keepInputs(fn) {
@@ -412,7 +411,6 @@ function keepInputs(fn) {
 function renderPanel() { keepInputs(renderPanelInner); }
 
 function renderPanelInner() {
-  if (S.tab === 'stats') return renderStats();
   const parts = [];
   const conv = S.cur, inConv = conv ? conv.members.filter(m => S.myAgents.some(a => a.id === m.user_id)) : [];
   if (!S.myAgents.length) parts.push('<div class="section muted">你没有 Agent。用 alice 登录，可以体验所有者的观察、耳语、审批、接管。</div>');
@@ -447,16 +445,6 @@ function renderPanelInner() {
     · 勾选左下角「显示 seq」，看耳语、草稿不占 seq
   </div>`);
   $('panel').innerHTML = parts.join('');
-}
-
-function renderStats() {
-  const s = S.stats; if (!s) { $('panel').innerHTML = '<div class="section">加载中…</div>'; return; }
-  const c = s.counts || {};
-  $('panel').innerHTML = `<div class="section"><div class="row"><button class="small" onclick="loadStats()">刷新</button></div>
-    <h3>运行状态</h3><div class="row"><span class="tag">在线：${esc(s.online.join(', '))}</span></div>
-    <div class="row"><span class="tag">会话 ${c.conversations}</span><span class="tag">事件 ${c.events}</span><span class="tag">消息 ${c.messages}</span><span class="tag ai">AI 消息 ${c.agent_messages}</span><span class="tag">侧信道 ${c.side_events}</span><span class="tag warn">待审批 ${c.pending_drafts}</span></div>
-    <h3>进行中的流</h3>${s.active_streams.length ? s.active_streams.map(x => `<div class="log">${esc(x.agent)} · ${x.bytes}B · ${x.age_ms}ms${x.draft ? ' · 审批草稿' : ''}</div>`).join('') : '<div class="muted">无</div>'}</div>
-    <div class="section"><h3>审计日志（最近 50 条）</h3>${s.audit.map(a => `<div class="log"><span class="muted">${new Date(a.ts).toLocaleTimeString()}</span> <b>${esc(a.actor || '')}</b> ${esc(a.action)} <span class="muted">${esc(JSON.stringify(a.detail))}</span></div>`).join('')}</div>`;
 }
 
 async function pol(agent, p) { await call({ op: 'set_agent_policy', conv_id: S.cur.conv_id, agent_id: agent, ...p }); }

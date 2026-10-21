@@ -124,11 +124,6 @@ await shot(bob, '08c-card-answered');
 // (docs/03-agents.md §1.2).
 check(await alice.locator('#convs .conv:has-text("Bob · Aria")').count() === 0, 'an owner does not see conversations they are not in');
 
-await alice.click('#tab-stats');
-await alice.waitForSelector('#panel .log');
-check((await alice.textContent('#panel')).includes('draft.approved'), 'approvals are written to the audit log');
-await shot(alice, '10-audit');
-
 check(errors.length === 0, `no page errors ${errors.length ? JSON.stringify(errors) : ''}`);
 await browser.close();
 if (failures) { console.error(`${failures} UI check(s) failed`); process.exit(1); }

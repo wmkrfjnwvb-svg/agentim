@@ -687,15 +687,16 @@ async fn revocations_by_another_process_take_effect(db: TestDb) {
         .unwrap();
     assert!(!server.refresh_auth().await.unwrap(), "nothing changed");
     let cli = open(single(&db.url)).await;
-    cli.reset_password(&alice, "a brand new password")
-        .await
-        .unwrap();
+    cli.revoke_tokens(&alice.id, None).await.unwrap();
     cli.revoke_tokens(&bob.id, None).await.unwrap();
     cli.set_deactivated(&carol.id, true).await.unwrap();
     // Still trusted until the server notices (at most a second later).
     assert!(server.authenticate_device(&t1).is_some());
     assert!(server.refresh_auth().await.unwrap());
-    assert!(server.authenticate_device(&t1).is_none(), "password reset");
+    assert!(
+        server.authenticate_device(&t1).is_none(),
+        "all of her tokens revoked"
+    );
     assert!(server.authenticate_device(&t2).is_none(), "logged out");
     assert!(server.is_deactivated(&carol.id), "deactivated");
     let _ = t3;

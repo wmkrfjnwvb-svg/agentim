@@ -32,9 +32,6 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/ws", get(ws))
         .route("/api/login", post(login))
-        .route("/api/auth/login", post(password_login))
-        .route("/api/auth/register", post(register))
-        .route("/api/stats", get(stats))
         .route("/api/dev/users", post(dev_create_user))
         .route(
             "/mcp",
@@ -91,87 +88,6 @@ fn origin_refused() -> Response {
         .into_response()
 }
 
-#[derive(Deserialize)]
-struct PasswordLogin {
-    name: String,
-    password: String,
-    #[serde(default)]
-    totp: Option<String>,
-    #[serde(default)]
-    device_name: Option<String>,
-    #[serde(default)]
-    platform: Option<String>,
-}
-
-fn auth_error(e: crate::model::ApiError) -> Response {
-    let status = match e.code {
-        "invalid_credentials" | "totp_required" => StatusCode::UNAUTHORIZED,
-        "rate_limited" => StatusCode::TOO_MANY_REQUESTS,
-        "forbidden" => StatusCode::FORBIDDEN,
-        "conflict" => StatusCode::CONFLICT,
-        "bad_request" => StatusCode::BAD_REQUEST,
-        _ => StatusCode::SERVICE_UNAVAILABLE,
-    };
-    (
-        status,
-        Json(json!({"error": {"code": e.code, "message": e.message}})),
-    )
-        .into_response()
-}
-
-/// Built-in accounts: name + password (+ TOTP code) → a device token.
-async fn password_login(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    Json(req): Json<PasswordLogin>,
-) -> Response {
-    if !origin_allowed(&st, &headers) {
-        return origin_refused();
-    }
-    if req.password.len() > 1024 || req.name.len() > 255 {
-        return auth_error(crate::model::ApiError::new("bad_request", "too long"));
-    }
-    match st
-        .hub
-        .login(
-            &req.name,
-            &req.password,
-            req.totp.as_deref(),
-            req.device_name.as_deref(),
-            req.platform.as_deref(),
-        )
-        .await
-    {
-        Ok((token, device, user)) => {
-            Json(json!({"token": token, "device": device.view(), "user": user})).into_response()
-        }
-        Err(e) => auth_error(e),
-    }
-}
-
-#[derive(Deserialize)]
-struct Register {
-    name: String,
-    password: String,
-}
-
-async fn register(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    Json(req): Json<Register>,
-) -> Response {
-    if !origin_allowed(&st, &headers) {
-        return origin_refused();
-    }
-    if req.password.len() > 1024 {
-        return auth_error(crate::model::ApiError::new("bad_request", "too long"));
-    }
-    match st.hub.register(&req.name, &req.password).await {
-        Ok(u) => (StatusCode::CREATED, Json(json!({"user": u}))).into_response(),
-        Err(e) => auth_error(e),
-    }
-}
-
 async fn index() -> Html<&'static str> {
     Html(include_str!("../web/index.html"))
 }
@@ -220,7 +136,14 @@ struct DevUserReq {
 }
 
 /// Demo/test only: creates a user and returns its token (used by the load test).
-async fn dev_create_user(State(st): State<AppState>, Json(req): Json<DevUserReq>) -> Response {
+async fn dev_create_user(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<DevUserReq>,
+) -> Response {
+    if !origin_allowed(&st, &headers) {
+        return origin_refused();
+    }
     if !st.demo_login {
         return (
             StatusCode::FORBIDDEN,
@@ -250,26 +173,6 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
         .ok()?
         .strip_prefix("Bearer ")
         .map(String::from)
-}
-
-async fn stats(State(st): State<AppState>, headers: HeaderMap) -> Response {
-    if bearer(&headers)
-        .and_then(|t| st.hub.authenticate(&t))
-        .is_none()
-    {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    if !st.hub.stats_open() {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    match st.hub.stats().await {
-        Ok(v) => Json(v).into_response(),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error": e.message})),
-        )
-            .into_response(),
-    }
 }
 
 async fn metrics(State(st): State<AppState>, headers: HeaderMap) -> Response {

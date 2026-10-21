@@ -32,7 +32,7 @@ backend_tests!(
     mentions_ignore_non_members_and_ephemerals_to_yourself,
     edit_boundaries,
     user_and_conversation_listing_edges,
-    stats_are_not_open_to_users,
+    account_and_stats_ops_are_gone,
     side_channel_paging_and_read_errors,
 );
 
@@ -751,21 +751,27 @@ async fn user_and_conversation_listing_edges(db: TestDb) {
     assert!(hub.authenticate("not-a-token").is_none());
 }
 
-async fn stats_are_not_open_to_users(db: TestDb) {
+/// End users have no IM password and see no deployment stats: those
+/// operations are gone from the client protocol (docs/13 problems 2, 5).
+async fn account_and_stats_ops_are_gone(db: TestDb) {
     let hub = open(single(&db.url)).await;
     let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
     let a = Conn::new(&hub, &alice);
-    assert_eq!(code(&a.call(json!({"op": "stats"})).await), "forbidden");
-    let demo = open_with(single(&new_db(Backend::Sqlite).await.unwrap().url), |h| {
-        h.open_stats = true
-    })
-    .await;
-    let u = user(&demo, "u", UserKind::Human, None).await;
-    assert_eq!(
-        Conn::new(&demo, &u).call(json!({"op": "stats"})).await["ok"],
-        true,
-        "open in the demo"
-    );
+    let g = Conn::new(&hub, &bot);
+    let before = hub.audit_log(1000).await.unwrap().len();
+    for who in [&a, &g] {
+        for req in [
+            json!({"op": "stats"}),
+            json!({"op": "set_password", "new": "a long new password"}),
+            json!({"op": "totp_setup"}),
+            json!({"op": "totp_enable", "code": "123456"}),
+            json!({"op": "totp_disable", "code": "123456"}),
+        ] {
+            assert_eq!(code(&who.call(req.clone()).await), "unknown_op", "{req}");
+        }
+    }
+    assert_eq!(hub.audit_log(1000).await.unwrap().len(), before, "no trace");
 }
 
 async fn side_channel_paging_and_read_errors(db: TestDb) {

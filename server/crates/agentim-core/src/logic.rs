@@ -64,9 +64,6 @@ pub struct HubConfig {
     pub gc_every: Duration,
     /// How often requests past their time are expired.
     pub expire_every: Duration,
-    /// `stats` (global counts, online users, audit) for every user. Only
-    /// for the demo; operators get it from the admin API.
-    pub open_stats: bool,
     /// Takeovers silent this long are released (docs/03-agents.md §4.1);
     /// zero = never.
     pub takeover_idle: Duration,
@@ -88,7 +85,6 @@ impl Default for HubConfig {
             dedup_ttl: Duration::from_secs(7 * 24 * 3600),
             gc_every: Duration::from_secs(600),
             expire_every: Duration::from_secs(10),
-            open_stats: false,
             takeover_idle: Duration::from_secs(30 * 60),
             sync: Default::default(),
         }

@@ -21,15 +21,7 @@ async fn start(demo: bool, metrics_token: Option<&str>) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::single_sqlite("unused");
     cfg.storage.databases[0].url = sqlite_url(&dir.path().join("db").to_string_lossy());
-    let hub = Hub::open(
-        cfg,
-        HubConfig {
-            open_stats: demo,
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
+    let hub = Hub::open(cfg, HubConfig::default()).await.unwrap();
     let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = tcp.local_addr().unwrap().to_string();
     let state = AppState {
@@ -81,17 +73,42 @@ async fn outside_the_demo_login_user_creation_and_stats_are_closed() {
     .await;
     assert_eq!(c, 403, "anyone creating users only in the demo");
     assert!(srv.hub.token_of("mallory").await.is_none());
-    let (c, _) = http(&srv.addr, "GET", "/api/stats", "", "").await;
-    assert_eq!(c, 401, "no token");
+    // Built-in accounts and deployment stats are gone (docs/13 problems 2, 5).
     let auth = format!("Authorization: Bearer {token}\r\n");
-    let (c, _) = http(&srv.addr, "GET", "/api/stats", &auth, "").await;
-    assert_eq!(c, 403, "a valid user is still not an operator");
+    for (m, p, b) in [
+        ("GET", "/api/stats", ""),
+        (
+            "POST",
+            "/api/auth/login",
+            r#"{"name":"alice","password":"x"}"#,
+        ),
+        (
+            "POST",
+            "/api/auth/register",
+            r#"{"name":"x","password":"y"}"#,
+        ),
+    ] {
+        let (c, _) = http(&srv.addr, m, p, &auth, b).await;
+        assert_eq!(c, 404, "{p}");
+    }
     let _ = alice;
 }
 
 #[tokio::test]
 async fn demo_endpoints_work_in_the_demo() {
     let srv = start(true, None).await;
+    // A page on another site cannot create users through a visitor's
+    // browser (docs/13 problem 6).
+    let (c, _) = http(
+        &srv.addr,
+        "POST",
+        "/api/dev/users",
+        "Origin: https://evil.example\r\n",
+        r#"{"name":"dana"}"#,
+    )
+    .await;
+    assert_eq!(c, 403);
+    assert!(srv.hub.user_by_name("dana").is_none());
     let (c, body) = http(
         &srv.addr,
         "POST",
@@ -120,15 +137,7 @@ async fn demo_endpoints_work_in_the_demo() {
     assert_eq!(c, 404);
     let (c, _) = http(&srv.addr, "POST", "/api/login", "", "not json").await;
     assert!((400..500).contains(&c), "malformed body: {c}");
-    let (c, _) = http(
-        &srv.addr,
-        "GET",
-        "/api/stats",
-        &format!("Authorization: Bearer {token}\r\n"),
-        "",
-    )
-    .await;
-    assert_eq!(c, 200);
+    let _ = token;
 }
 
 #[tokio::test]

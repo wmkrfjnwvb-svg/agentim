@@ -82,7 +82,6 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 
 # Built-in accounts (passwords + TOTP).
 # [auth]
-# open_registration = false   # anyone may sign up at /api/auth/register
 # max_failures = 10           # failed logins before the account locks
 # lock_minutes = 15
 # Password hashes at once (19 MiB and a core each; 0 = one per core).

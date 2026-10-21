@@ -430,8 +430,6 @@ fn write_private(path: &str, content: &str) -> std::io::Result<()> {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AuthConfig {
-    /// Anyone may create an account at /api/auth/register.
-    pub open_registration: bool,
     /// Failed logins before the account is locked, and for how long.
     pub max_failures: i64,
     pub lock_minutes: i64,
@@ -449,7 +447,6 @@ pub struct AuthConfig {
 impl Default for AuthConfig {
     fn default() -> Self {
         AuthConfig {
-            open_registration: false,
             max_failures: 10,
             lock_minutes: 15,
             max_concurrent_hashes: 0,

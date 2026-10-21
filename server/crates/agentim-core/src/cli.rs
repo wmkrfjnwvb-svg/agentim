@@ -24,9 +24,13 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:8080")]
     addr: SocketAddr,
     /// Seed demo users and conversations, run the scripted demo agents and
-    /// enable password-less login by name.
+    /// enable password-less login by name. For local development only.
     #[arg(long)]
     demo: bool,
+    /// Allow --demo on an address other than localhost (anyone who reaches
+    /// it can log in as anyone).
+    #[arg(long)]
+    demo_public: bool,
     /// Seconds without a chunk before a stream is marked failed(timeout).
     #[arg(long, default_value_t = 30)]
     stream_idle_secs: u64,
@@ -55,11 +59,6 @@ enum Cmd {
     Encryption {
         #[command(subcommand)]
         action: EncCmd,
-    },
-    /// Built-in accounts.
-    User {
-        #[command(subcommand)]
-        action: UserCmd,
     },
     /// Open API keys (docs/07-open-api.md §5).
     ApiKey {
@@ -184,16 +183,6 @@ enum EncCmd {
 }
 
 #[derive(Subcommand)]
-enum UserCmd {
-    /// Sets a person's password, read from standard input, and logs out
-    /// all of their devices. Creates the person when missing.
-    SetPassword {
-        #[arg(long)]
-        name: String,
-    },
-}
-
-#[derive(Subcommand)]
 enum KeyCmd {
     /// Creates a key and prints it once.
     Create {
@@ -256,6 +245,14 @@ pub async fn run_with(cluster: Option<ClusterSupport>) {
     let cmd = Args::command().name("agentim").about("AgentIM server");
     let args = Args::from_arg_matches(&cmd.get_matches()).unwrap_or_else(|e| e.exit());
     init_logging(&args.log_format);
+    if args.demo && args.cmd.is_none() && !args.addr.ip().is_loopback() && !args.demo_public {
+        eprintln!(
+            "--demo lets anyone log in as anyone; it listens on localhost only \
+             (add --demo-public to listen on {})",
+            args.addr
+        );
+        std::process::exit(2)
+    }
     let cfg = match &args.config {
         Some(p) => Config::load(p).unwrap_or_else(|e| {
             eprintln!("config: {e}");
@@ -283,7 +280,6 @@ pub async fn run_with(cluster: Option<ClusterSupport>) {
     }
     let hub_cfg = HubConfig {
         stream_idle: Duration::from_secs(args.stream_idle_secs),
-        open_stats: args.demo,
         takeover_idle: Duration::from_secs(cfg.agents.takeover_idle_minutes * 60),
         sync: cfg.sync_config(),
         guards: crate::guard::GuardConfig {
@@ -343,34 +339,6 @@ pub async fn run_with(cluster: Option<ClusterSupport>) {
             Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
             Err(e) => {
                 eprintln!("encryption: {} {}", e.code, e.message);
-                std::process::exit(1)
-            }
-        }
-        return;
-    }
-
-    if let Some(Cmd::User {
-        action: UserCmd::SetPassword { name },
-    }) = &args.cmd
-    {
-        let mut pw = String::new();
-        std::io::stdin().read_line(&mut pw).ok();
-        let pw = pw.trim_end_matches(['\r', '\n']);
-        let user = match hub.user_by_name(name) {
-            Some(u) => Ok(u),
-            None => hub
-                .create_user(name, crate::model::UserKind::Human, None, None)
-                .await
-                .map(|(u, _)| u),
-        };
-        let r = match user {
-            Ok(u) => hub.reset_password(&u, pw).await.map(|_| u),
-            Err(e) => Err(e),
-        };
-        match r {
-            Ok(u) => println!("password set for {} ({})", u.name, u.id),
-            Err(e) => {
-                eprintln!("user set-password: {} {}", e.code, e.message);
                 std::process::exit(1)
             }
         }
