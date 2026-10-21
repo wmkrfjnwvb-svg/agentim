@@ -13,7 +13,7 @@ for _ in $(seq 1 100); do
   curl -fs "http://127.0.0.1:$PORT/readyz" >/dev/null 2>&1 && break
   sleep 0.1
 done
-SCOPES=tokens:revoke,agents:write,users:write,users:read,conversations:write,conversations:read,messages:write,messages:read
+SCOPES=tokens:revoke,agents:write,agents:read,users:write,users:read,conversations:write,conversations:read,messages:write,messages:read,compliance,moderation
 KEY=$("$BIN" --db "$DIR/smoke.db" api-key create --name smoke --scopes "$SCOPES" 2>/dev/null | sed -n 's/.*"key": "\(ak_[^"]*\)".*/\1/p')
 test -n "$KEY"
 SK=$("$BIN" --db "$DIR/smoke.db" signing-key create --name smoke 2>/dev/null)

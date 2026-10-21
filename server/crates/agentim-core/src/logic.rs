@@ -506,6 +506,15 @@ pub enum Op {
         by: String,
         reason: Option<String>,
     },
+    /// Moderation silences a member of a conversation until `until` (ms),
+    /// or lifts it (None): they cannot send, edit or stream there.
+    Silence {
+        conv_id: String,
+        user_id: String,
+        until: Option<i64>,
+        by: String,
+        reason: Option<String>,
+    },
     /// The owner destroys an agent (control database), then it is taken
     /// out of each conversation.
     Destroy {
@@ -745,6 +754,7 @@ impl Op {
             | Op::RemoveMember { conv_id, .. }
             | Op::Dissolve { conv_id, .. }
             | Op::AgentStopped { conv_id, .. }
+            | Op::Silence { conv_id, .. }
             | Op::RemoveDestroyed { conv_id, .. }
             | Op::ImportConv { conv_id, .. }
             | Op::EraseInConv { conv_id, .. } => Route::Conv(conv_id.clone()),
@@ -828,6 +838,7 @@ impl Op {
             Op::StateDelete { .. } => "state_delete",
             Op::SetStopped { .. } => "set_stopped",
             Op::AgentStopped { .. } => "agent_stopped",
+            Op::Silence { .. } => "silence",
             Op::Destroy { .. } => "destroy",
             Op::RemoveDestroyed { .. } => "remove_destroyed",
             Op::Credentials { .. } => "credentials",
@@ -1332,6 +1343,16 @@ impl Ctx<'_, '_> {
                 reason,
             } => {
                 self.agent_stopped(&conv_id, &agent, on, &by, reason.as_deref())
+                    .await
+            }
+            Op::Silence {
+                conv_id,
+                user_id,
+                until,
+                by,
+                reason,
+            } => {
+                self.silence_member(&conv_id, &user_id, until, &by, reason.as_deref())
                     .await
             }
             Op::Destroy { agent_id, by } => self.destroy(&agent_id, &by).await,
@@ -2848,6 +2869,60 @@ impl Ctx<'_, '_> {
         Ok(json!({"seq": seq}))
     }
 
+    /// Silences a member (`until` in ms) or lifts it (None). Repeating the
+    /// same state writes nothing.
+    async fn silence_member(
+        &mut self,
+        conv_id: &str,
+        user_id: &str,
+        until: Option<i64>,
+        by: &str,
+        reason: Option<&str>,
+    ) -> ApiResult<Value> {
+        self.own_conv(conv_id)?;
+        if self.db.conv(conv_id).await?.is_none() {
+            return Err(err("not_found", "conversation"));
+        }
+        let target = self
+            .require_member(conv_id, user_id)
+            .await
+            .map_err(|_| err("not_found", "not a member of this conversation"))?;
+        let now = now_ms();
+        let was = target.silenced_until.filter(|u| *u > now);
+        if was.is_none() && until.is_none() {
+            return Ok(json!({"silenced_until": null, "changed": false}));
+        }
+        if was.is_some() && was == until {
+            return Ok(json!({"silenced_until": until, "changed": false}));
+        }
+        self.db.set_silenced(conv_id, user_id, until).await?;
+        let (kind, data) = match until {
+            Some(u) => (
+                "member.silenced",
+                json!({"user_id": user_id, "until": u, "reason": reason}),
+            ),
+            None => ("member.unsilenced", json!({"user_id": user_id})),
+        };
+        let ev = self
+            .db
+            .append_event(conv_id, kind, Some(by), None, data)
+            .await?;
+        self.db
+            .audit(
+                Some(by),
+                kind,
+                Some(conv_id),
+                Some(user_id),
+                json!({"until": until, "reason": reason}),
+            )
+            .await?;
+        self.st.members.remove(conv_id);
+        self.st.recips.remove(conv_id);
+        let seq = ev.seq;
+        self.emit(ev).await?;
+        Ok(json!({"silenced_until": until, "changed": true, "seq": seq}))
+    }
+
     async fn transfer_owner(
         &mut self,
         me: &User,
@@ -3021,6 +3096,7 @@ impl Ctx<'_, '_> {
             return Err(err("forbidden", "the account is deactivated"));
         }
         let member = self.require_member(conv_id, &me.id).await?;
+        not_silenced(&member)?;
         check_text(text)?;
         let kind = check_kind(kind, &payload)?;
         let envelope = self.envelope(conv_id, envelope).await?;
@@ -3236,6 +3312,9 @@ impl Ctx<'_, '_> {
         if !self.can_modify(me, &msg, false).await? {
             return Err(err("forbidden", "cannot edit this message"));
         }
+        if let Ok(m) = self.require_member(&msg.conv_id, &me.id).await {
+            not_silenced(&m)?;
+        }
         if msg.state == "streaming" || msg.state == "recalled" {
             return Err(err("conflict", format!("message is {}", msg.state)));
         }
@@ -3393,6 +3472,7 @@ impl Ctx<'_, '_> {
             return Ok(prev);
         }
         let member = self.require_member(conv_id, &me.id).await?;
+        not_silenced(&member)?;
         let active = self
             .st
             .streams
@@ -3953,6 +4033,15 @@ impl Ctx<'_, '_> {
                 "the agent is stopped; resume it before publishing its drafts",
             ));
         }
+        // Silenced by moderation: its drafts wait too.
+        if let Ok(m) = self.require_member(&d.conv_id, &agent.id).await
+            && m.silenced_until.is_some_and(|u| u > now_ms())
+        {
+            return Err(err(
+                "conflict",
+                "the agent is silenced in this conversation; its drafts wait",
+            ));
+        }
         // An ended task stays silent for agents, drafts included: reopen it
         // first.
         if let Some(st) = self.task_state(&d.conv_id).await?
@@ -4152,5 +4241,16 @@ impl Ctx<'_, '_> {
         let seq = ev.seq;
         self.emit(ev).await?;
         Ok(json!({"seq": seq}))
+    }
+}
+
+/// Refuses a member silenced by moderation in the conversation.
+fn not_silenced(m: &Member) -> ApiResult<()> {
+    match m.silenced_until {
+        Some(u) if u > now_ms() => Err(err(
+            "forbidden",
+            format!("silenced in this conversation until {u} (ms since 1970)"),
+        )),
+        _ => Ok(()),
     }
 }

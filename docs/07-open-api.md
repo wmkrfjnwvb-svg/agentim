@@ -28,14 +28,13 @@
 | 权限范围 | 允许 | 状态 |
 |---|---|---|
 | `tokens:revoke` | 让一个人在所有设备上退出（客户端令牌由开发者用签名密钥自己签，不经过开放 API，[13 §4.2](13-roles-and-entry-points.md)） | ✅ |
-| `agents:write` / `agents:read` | 签发、吊销 Agent 密钥（其余 Agent 接口见 [13 §4.1](13-roles-and-entry-points.md)） | ✅ 密钥 |
+| `agents:write` / `agents:read` | 发放和处置 Agent：密钥、急停和恢复、转交、销毁、导入；列出某人的 Agent、导出（导出带会话内容时还要 `messages:read`）（[13 §4.1](13-roles-and-entry-points.md)） | ✅ |
 | `users:write` / `users:read` | 创建、导入、修改、停用用户；读取用户资料 | ✅ |
 | `conversations:write` / `conversations:read` | 建会话、改资料、管理成员和角色、解散；读取会话和成员 | ✅ |
 | `messages:write` | 以用户或系统身份发消息、编辑、撤回、标记已读 | ✅ |
 | `messages:read` | 读取消息历史（**单独的权限**，因为能读到私聊内容；每次读取写审计） | ✅ |
-| `moderation` | 处理举报（禁言计划中） | ✅ |
+| `moderation` | 处理举报；会话内禁言 | ✅ |
 | `compliance` | 导出、删除用户数据（GDPR） | ✅ |
-| `agents:write` | 注册 Agent、管理凭据和策略（[03 §1](03-agents.md)） | 计划 |
 
 ### 3.2 以谁的身份操作（D25）
 
@@ -56,8 +55,14 @@
 |---|---|---|---|
 | 登录 | （无接口） | 客户端令牌由开发者后端用签名密钥离线签 JWT，服务端 SDK 的 `createUserToken` 就是这样做的（[13 §4.2](13-roles-and-entry-points.md)） | ✅ |
 | | `DELETE /v1/users/{id}/tokens` | 让这个人在所有设备上退出：设备删掉、立即断开，签发时间不晚于此刻的令牌都被拒绝；对 Agent 是吊销它的全部密钥 | ✅ |
-| Agent 密钥 | `POST /v1/agents/{id}/keys`、`DELETE …/keys`、`DELETE …/keys/{device}` | 签发一把新密钥（只显示一次，`revoke_others` 同时吊销其他的）、吊销全部、吊销一把 | ✅ |
-| 用户 | `PUT /v1/users/{id}`、`GET`、`PATCH` | 创建或更新、读取、修改资料（昵称、头像、自定义字段） | ✅ |
+| Agent | `POST /v1/agents/{id}/keys`、`DELETE …/keys`、`DELETE …/keys/{device}` | 签发一把新密钥（只显示一次，`revoke_others` 同时吊销其他的）、吊销全部、吊销一把 | ✅ |
+| | `GET /v1/users/{id}/agents` | 某人的 Agent：负责人、是否团队、是否停用和急停、密钥（不含密钥本身） | ✅ |
+| | `POST /v1/agents/{id}:stop`（`reason`）、`:resume` | 急停（立即断开，不能再说话，会话里留下记录）和恢复；重复时 409 | ✅ |
+| | `POST /v1/agents/{id}:transfer`（`owner`、`rotate_keys`） | 团队 Agent 换负责人（同一单元）；个人助理不能转交 | ✅ |
+| | `DELETE /v1/agents/{id}` | 销毁：退出所有会话、密钥失效、ID 不再使用（[03 §4.4](03-agents.md)） | ✅ |
+| | `GET /v1/agents/{id}/export?with_conversations=`、`POST /v1/agents:import`（`package`、`owner`、`name`） | 搬到另一个服务器（[03 §7.3](03-agents.md)）：导出不含密钥；导入建新 Agent 并给出第一把密钥 | ✅ |
+| 用户 | `PUT /v1/users/{id}`、`GET`、`PATCH` | 创建或更新、读取、修改资料（昵称、头像、自定义字段）。`kind: agent` 加 `owner` 建 Agent，`team: true` 是团队 Agent；新 Agent 的第一把密钥在返回里（只显示一次）。返回里的 `owner` 是开发者的用户 ID | ✅ |
+| | `GET /v1/users/{id}/devices`、`DELETE …/devices/{device}` | 某人的设备（Agent 是它的密钥）；下线一台：人在这台设备上已签发的令牌作废，Agent 的那把密钥被吊销（`users:read` / `tokens:revoke`） | ✅ |
 | | `POST /v1/users:batch` | 一次最多 100 个，逐个返回结果 | ✅ |
 | | `POST /v1/users/{id}:deactivate`、`:reactivate` | 停用后不能登录，已有的消息保留 | ✅ |
 | | `DELETE /v1/users/{id}`、`GET …/erasure` | 删除账号（GDPR 第 17 条），后台完成，查进度；`compliance` 权限（[04 §4.2](04-security-compliance.md)） | ✅ |
@@ -65,6 +70,7 @@
 | 会话 | `POST /v1/conversations` | 建群或单聊；可以指定开发者自己的会话 ID；单聊每对用户只有一个 | ✅ |
 | | `GET`、`PATCH`、`DELETE /v1/conversations/{id}` | 读取、修改资料、解散 | ✅ |
 | | `POST /v1/conversations/{id}/members`、`DELETE …/members/{user}`、`PATCH …/members/{user}` | 批量拉人（可带 `history`，[08 §2.4](08-sync-and-client.md)）、移除、改角色；转让群主 | ✅ |
+| | `POST /v1/conversations/{id}/members/{user}:silence`（`seconds` 1 秒到 1 年、`reason`）、`:unsilence` | 会话内禁言（`moderation`）：被禁言的成员不能发消息、编辑、开流，Agent 的草稿也不能被批准发出；可以看、可以撤回自己的消息；会话里写 `member.silenced {user_id, until, reason}` / `member.unsilenced`，到期自动解除；重复同样的状态不写任何东西。Sendbird 的 mute、腾讯云 IM 的禁言是同类功能。客户端里群主禁言以后再加 | ✅ |
 | | `GET /v1/users/{id}/conversations` | 某个用户的会话列表 | ✅ |
 | 消息 | `POST /v1/conversations/{id}/messages` | 在会话里发消息（以用户或系统身份）；可带路由信封 `to`、`topics`、`intent`、`refs` 和来源 `sources`（[03 §6.2](03-agents.md)、[03 §3](03-agents.md)） | ✅ |
 | | `POST /v1/users/{id}/messages` | **"给某人发消息"**：没有单聊就自动建一个 | ✅ |

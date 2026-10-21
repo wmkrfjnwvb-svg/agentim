@@ -39,6 +39,13 @@ k = im.issue_agent_key(bot)
 assert k["key"].startswith("atk_") and ws_status(k["key"]) == 101
 assert im.revoke_agent_key(bot, k["device_id"]) == {"revoked": 1}
 assert ws_status(k["key"]) == 401
+assert [x["id"] for x in im.list_agents(a)["agents"]] == [bot]
+assert im.stop_agent(bot, reason="smoke")["stopped"] is True
+assert im.resume_agent(bot)["stopped"] is False
+assert im.export_agent(bot)["sha256"]
+assert im.destroy_agent(bot)["destroyed"] is True
+assert isinstance(im.list_devices(a)["devices"], list)
+assert any(line["type"] == "profile" for line in im.export_user(a))
 
 conv = im.create_conversation("system", "group", "smoke", members=[b], owner=a)
 sent = im.send_message(conv["id"], a, "hello", client_msg_id="m1")
@@ -59,6 +66,17 @@ for who, code, status in [("nobody", "not_found", 404), (c, "forbidden", 403)]:
     except AgentIMError as e:
         assert (e.code, e.status) == (code, status), e
 
+# Moderation: a silenced member cannot send.
+im.silence_member(conv["id"], b, 60, reason="smoke")
+try:
+    im.send_message(conv["id"], b, "x")
+    raise SystemExit("expected forbidden")
+except AgentIMError as e:
+    assert e.code == "forbidden", e
+assert im.unsilence_member(conv["id"], b)["changed"] is True
+assert isinstance(im.reports()["reports"], list)
+im.delete_user(c)
+assert im.erasure(c)["state"] in ("running", "done")
 im.recall_message(sent["msg_id"], "system")
 im.dissolve_conversation(conv["id"], "system")
 try:

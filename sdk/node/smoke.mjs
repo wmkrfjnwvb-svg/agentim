@@ -33,6 +33,11 @@ await assert.rejects(im.revokeAgentKey(bot, k.device_id), (e) => e.code === "not
 const k2 = await im.issueAgentKey(bot, { revokeOthers: true });
 assert.ok(k2.revoked.length >= 1);
 assert.equal((await im.revokeAgentKeys(bot)).revoked, 1);
+assert.deepEqual((await im.listAgents(a)).agents.map((x) => x.id), [bot]);
+assert.equal((await im.stopAgent(bot, { reason: "smoke" })).stopped, true);
+assert.equal((await im.resumeAgent(bot)).stopped, false);
+assert.ok((await im.exportAgent(bot)).sha256);
+assert.equal((await im.destroyAgent(bot)).destroyed, true);
 
 const conv = await im.createConversation({ as: "system", owner: a, kind: "group", title: "smoke", members: [b] });
 const sent = await im.sendMessage(conv.id, { as: a, text: "hello", clientMsgId: "m1" });
@@ -54,6 +59,17 @@ const outsider = `${run}_c`;
 await im.upsertUser(outsider);
 await assert.rejects(im.sendMessage(conv.id, { as: outsider, text: "x" }), (e) => e.code === "forbidden");
 
+// Moderation: a silenced member cannot send.
+await im.silenceMember(conv.id, b, { seconds: 60, reason: "smoke" });
+await assert.rejects(im.sendMessage(conv.id, { as: b, text: "x" }), (e) => e.code === "forbidden");
+assert.equal((await im.unsilenceMember(conv.id, b)).changed, true);
+assert.equal((await im.reports()).reports.length >= 0, true);
+// Devices, export, deletion.
+assert.ok(Array.isArray((await im.listDevices(a)).devices));
+const lines = await im.exportUser(a);
+assert.ok(lines.some((l) => l.type === "profile"));
+await im.deleteUser(outsider);
+assert.ok(["running", "done"].includes((await im.erasure(outsider)).state));
 await im.recallMessage(sent.msg_id, "system");
 await im.dissolveConversation(conv.id, "system");
 await assert.rejects(im.getConversation(conv.id), (e) => e.code === "not_found");

@@ -203,6 +203,151 @@ func (c *Client) RevokeAgentKey(ctx context.Context, agentID, deviceID string) (
 	return out, c.Do(ctx, "DELETE", "/v1/agents/"+q(agentID)+"/keys/"+q(deviceID), nil, &out)
 }
 
+// ---- agents (docs/13 §4.1)
+
+func (c *Client) ListAgents(ctx context.Context, userID string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "GET", "/v1/users/"+q(userID)+"/agents", nil, &out)
+}
+
+func (c *Client) StopAgent(ctx context.Context, agentID, reason string) (M, error) {
+	var out M
+	var body any
+	if reason != "" {
+		body = M{"reason": reason}
+	}
+	return out, c.Do(ctx, "POST", "/v1/agents/"+q(agentID)+":stop", body, &out)
+}
+
+func (c *Client) ResumeAgent(ctx context.Context, agentID string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "POST", "/v1/agents/"+q(agentID)+":resume", nil, &out)
+}
+
+func (c *Client) TransferAgent(ctx context.Context, agentID, owner string, rotateKeys bool) (M, error) {
+	var out M
+	return out, c.Do(ctx, "POST", "/v1/agents/"+q(agentID)+":transfer", M{"owner": owner, "rotate_keys": rotateKeys}, &out)
+}
+
+func (c *Client) DestroyAgent(ctx context.Context, agentID string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "DELETE", "/v1/agents/"+q(agentID), nil, &out)
+}
+
+func (c *Client) ExportAgent(ctx context.Context, agentID string, withConversations bool) (M, error) {
+	var out M
+	return out, c.Do(ctx, "GET", "/v1/agents/"+q(agentID)+"/export?with_conversations="+strconv.FormatBool(withConversations), nil, &out)
+}
+
+func (c *Client) ImportAgent(ctx context.Context, pkg M, owner, name string) (M, error) {
+	var out M
+	body := M{"package": pkg, "owner": owner}
+	if name != "" {
+		body["name"] = name
+	}
+	return out, c.Do(ctx, "POST", "/v1/agents:import", body, &out)
+}
+
+// ---- devices
+
+func (c *Client) ListDevices(ctx context.Context, userID string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "GET", "/v1/users/"+q(userID)+"/devices", nil, &out)
+}
+
+func (c *Client) LogoutDevice(ctx context.Context, userID, deviceID string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "DELETE", "/v1/users/"+q(userID)+"/devices/"+q(deviceID), nil, &out)
+}
+
+// ---- compliance (docs/04 §4.2)
+
+// DeleteUser deletes a person's account; it returns the erasure's progress.
+func (c *Client) DeleteUser(ctx context.Context, userID string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "DELETE", "/v1/users/"+q(userID), nil, &out)
+}
+
+func (c *Client) Erasure(ctx context.Context, userID string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "GET", "/v1/users/"+q(userID)+"/erasure", nil, &out)
+}
+
+// ExportUser returns the person's own data, one object per line (NDJSON);
+// after continues from a line's cursor.
+func (c *Client) ExportUser(ctx context.Context, userID, after string) ([]M, error) {
+	path := "/v1/users/" + q(userID) + "/export"
+	if after != "" {
+		path += "?after=" + url.QueryEscape(after)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode >= 300 {
+		var p struct{ Code, Detail string }
+		_ = json.Unmarshal(data, &p)
+		return nil, &Error{Status: res.StatusCode, Code: p.Code, Detail: p.Detail}
+	}
+	var lines []M
+	for _, l := range strings.Split(string(data), "\n") {
+		if l == "" {
+			continue
+		}
+		var m M
+		if err := json.Unmarshal([]byte(l), &m); err != nil {
+			return nil, err
+		}
+		lines = append(lines, m)
+	}
+	return lines, nil
+}
+
+// ---- moderation
+
+func (c *Client) Reports(ctx context.Context, state string, limit, offset int) (M, error) {
+	var out M
+	return out, c.Do(ctx, "GET", fmt.Sprintf("/v1/reports?state=%s&limit=%d&offset=%d", url.QueryEscape(state), limit, offset), nil, &out)
+}
+
+func (c *Client) GetReport(ctx context.Context, id string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "GET", "/v1/reports/"+q(id), nil, &out)
+}
+
+// ResolveReport takes action (none, remove_content, suspend_user, ban_user),
+// reason and, for suspend_user, days.
+func (c *Client) ResolveReport(ctx context.Context, id string, decision M) (M, error) {
+	var out M
+	return out, c.Do(ctx, "POST", "/v1/reports/"+q(id)+":resolve", decision, &out)
+}
+
+// SilenceMember stops a member from sending, editing or streaming in the
+// conversation for seconds.
+func (c *Client) SilenceMember(ctx context.Context, convID, userID string, seconds int, reason string) (M, error) {
+	var out M
+	body := M{"seconds": seconds}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	return out, c.Do(ctx, "POST", "/v1/conversations/"+q(convID)+"/members/"+q(userID)+":silence", body, &out)
+}
+
+func (c *Client) UnsilenceMember(ctx context.Context, convID, userID string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "POST", "/v1/conversations/"+q(convID)+"/members/"+q(userID)+":unsilence", nil, &out)
+}
+
 // ---- users
 
 func (c *Client) UpsertUser(ctx context.Context, id string, attrs M) (M, error) {

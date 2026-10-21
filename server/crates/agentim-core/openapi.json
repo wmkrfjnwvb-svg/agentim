@@ -96,6 +96,10 @@
           },
           "created_at": {
             "type": "integer"
+          },
+          "team": {
+            "type": "boolean",
+            "description": "A team agent (docs/03-agents.md §1.2)"
           }
         }
       },
@@ -557,9 +561,506 @@
         }
       }
     },
+    "/v1/agents/{id}:stop": {
+      "post": {
+        "summary": "Stop an agent at once (kill switch): it is disconnected and cannot act until resumed",
+        "x-scope": "agents:write",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Developer user id of the agent"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "owner": {
+                      "type": "string"
+                    },
+                    "team": {
+                      "type": "boolean"
+                    },
+                    "unit": {
+                      "type": "string"
+                    },
+                    "deactivated": {
+                      "type": "boolean"
+                    },
+                    "stopped": {
+                      "type": "boolean"
+                    },
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Device"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}:resume": {
+      "post": {
+        "summary": "Resume a stopped agent",
+        "x-scope": "agents:write",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Developer user id of the agent"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "owner": {
+                      "type": "string"
+                    },
+                    "team": {
+                      "type": "boolean"
+                    },
+                    "unit": {
+                      "type": "string"
+                    },
+                    "deactivated": {
+                      "type": "boolean"
+                    },
+                    "stopped": {
+                      "type": "boolean"
+                    },
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Device"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}:transfer": {
+      "post": {
+        "summary": "Give a team agent a new owner (in its unit); rotate_keys revokes its keys",
+        "x-scope": "agents:write",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Developer user id of the agent"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "owner"
+                ],
+                "properties": {
+                  "owner": {
+                    "type": "string"
+                  },
+                  "rotate_keys": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "owner": {
+                      "type": "string"
+                    },
+                    "team": {
+                      "type": "boolean"
+                    },
+                    "unit": {
+                      "type": "string"
+                    },
+                    "deactivated": {
+                      "type": "boolean"
+                    },
+                    "stopped": {
+                      "type": "boolean"
+                    },
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Device"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}": {
+      "delete": {
+        "summary": "Destroy an agent: it leaves every conversation, its keys stop working, its id is not reused",
+        "x-scope": "agents:write",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Developer user id of the agent"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "destroyed": {
+                      "type": "boolean"
+                    },
+                    "conversations": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/export": {
+      "get": {
+        "summary": "An agent package to move it to another server: profile, checkpoints, summaries (never keys); with_conversations also its content (needs messages:read)",
+        "x-scope": "agents:read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Developer user id of the agent"
+          },
+          {
+            "name": "with_conversations",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents:import": {
+      "post": {
+        "summary": "Create an agent from a package; its first key is shown once",
+        "x-scope": "agents:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "package",
+                  "owner"
+                ],
+                "properties": {
+                  "package": {
+                    "type": "object"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agent": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "owner": {
+                          "type": "string"
+                        },
+                        "team": {
+                          "type": "boolean"
+                        },
+                        "unit": {
+                          "type": "string"
+                        },
+                        "deactivated": {
+                          "type": "boolean"
+                        },
+                        "stopped": {
+                          "type": "boolean"
+                        },
+                        "keys": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Device"
+                          }
+                        }
+                      }
+                    },
+                    "key": {
+                      "type": "string"
+                    },
+                    "device_id": {
+                      "type": "string"
+                    },
+                    "connect": {
+                      "type": "object"
+                    },
+                    "imported": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{id}/agents": {
+      "get": {
+        "summary": "A person's agents (never the keys' secrets)",
+        "x-scope": "agents:read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Developer user id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "owner": {
+                            "type": "string"
+                          },
+                          "team": {
+                            "type": "boolean"
+                          },
+                          "unit": {
+                            "type": "string"
+                          },
+                          "deactivated": {
+                            "type": "boolean"
+                          },
+                          "stopped": {
+                            "type": "boolean"
+                          },
+                          "keys": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/components/schemas/Device"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/users/{id}": {
       "put": {
-        "summary": "Create or update a user (idempotent)",
+        "summary": "Create or update a user (idempotent). A new agent gets its first key in the response (`key`, `connect`), shown once.",
         "x-scope": "users:write",
         "parameters": [
           {
@@ -909,6 +1410,106 @@
                       "items": {
                         "type": "object"
                       }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{id}/devices": {
+      "get": {
+        "summary": "A user's devices (an agent's: its keys)",
+        "x-scope": "users:read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Developer user id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "devices": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Device"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{id}/devices/{device}": {
+      "delete": {
+        "summary": "Log one device out at once: a person's tokens issued until now are refused on it; an agent's key is revoked",
+        "x-scope": "tokens:revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Developer user id"
+          },
+          {
+            "name": "device",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Device id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "revoked": {
+                      "type": "integer"
                     }
                   }
                 }
@@ -1435,6 +2036,154 @@
                       "member"
                     ]
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{id}/members/{user}:silence": {
+      "post": {
+        "summary": "Silence a member (moderation): they cannot send, edit or stream in the conversation for `seconds`; everyone sees member.silenced",
+        "x-scope": "moderation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conversation id"
+          },
+          {
+            "name": "user",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Developer user id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "seconds"
+                ],
+                "properties": {
+                  "seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 31536000
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user_id": {
+                      "type": "string"
+                    },
+                    "silenced_until": {
+                      "type": "integer"
+                    },
+                    "changed": {
+                      "type": "boolean"
+                    },
+                    "seq": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{id}/members/{user}:unsilence": {
+      "post": {
+        "summary": "Lift a member's silence (member.unsilenced)",
+        "x-scope": "moderation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conversation id"
+          },
+          {
+            "name": "user",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Developer user id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user_id": {
+                      "type": "string"
+                    },
+                    "silenced_until": {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    "changed": {
+                      "type": "boolean"
+                    },
+                    "seq": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }

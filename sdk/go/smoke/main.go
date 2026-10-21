@@ -74,6 +74,21 @@ func main() {
 		log.Fatal("agent key")
 	}
 	must(im.RevokeAgentKey(ctx, bot, k["device_id"].(string)))
+	if len(must(im.ListAgents(ctx, a))["agents"].([]any)) != 1 {
+		log.Fatal("list agents")
+	}
+	if must(im.StopAgent(ctx, bot, "smoke"))["stopped"] != true || must(im.ResumeAgent(ctx, bot))["stopped"] != false {
+		log.Fatal("stop and resume")
+	}
+	if must(im.ExportAgent(ctx, bot, false))["sha256"] == nil {
+		log.Fatal("export agent")
+	}
+	must(im.DestroyAgent(ctx, bot))
+	must(im.ListDevices(ctx, a))
+	lines := must(im.ExportUser(ctx, a, ""))
+	if len(lines) == 0 || lines[0]["type"] == nil {
+		log.Fatal("export user")
+	}
 	conv := must(im.CreateConversation(ctx, M{"as": "system", "owner": a, "kind": "group", "title": "smoke", "members": []string{b}}))
 	id := conv["id"].(string)
 	sent := must(im.SendMessage(ctx, id, M{"as": a, "text": "hello", "client_msg_id": "m1"}))
@@ -103,6 +118,15 @@ func main() {
 	expect(err, "not_found")
 	_, err = im.SendMessage(ctx, id, M{"as": c, "text": "x"})
 	expect(err, "forbidden")
+	must(im.SilenceMember(ctx, id, b, 60, "smoke"))
+	_, err = im.SendMessage(ctx, id, M{"as": b, "text": "x"})
+	expect(err, "forbidden")
+	if must(im.UnsilenceMember(ctx, id, b))["changed"] != true {
+		log.Fatal("unsilence")
+	}
+	must(im.Reports(ctx, "open", 50, 0))
+	must(im.DeleteUser(ctx, c))
+	must(im.Erasure(ctx, c))
 	must(im.RecallMessage(ctx, sent["msg_id"].(string), "system"))
 	must(im.DissolveConversation(ctx, id, "system"))
 	_, err = im.GetConversation(ctx, id)

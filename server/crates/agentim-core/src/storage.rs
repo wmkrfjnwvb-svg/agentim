@@ -488,6 +488,8 @@ pub const TABLES: &[Table] = &[
             n("mute_until", Big),
             // v3: subscribed topics of an agent in `topics` mode (JSON list).
             n("topics", Text),
+            // v8: silenced by moderation in this conversation until (docs/13 §3 problem 8).
+            n("silenced_until", Big),
         ],
         pk: &["conv_id", "user_id"],
         indexes: &[],
@@ -1102,8 +1104,11 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 8,
         compat: 1,
-        about: "client tokens signed by the developer: signing keys and token cutoffs",
-        steps: &[],
+        about: "client tokens signed by the developer: signing keys and token cutoffs; silencing members",
+        steps: &[Step::AddColumn {
+            table: "members",
+            column: "silenced_until",
+        }],
     },
 ];
 

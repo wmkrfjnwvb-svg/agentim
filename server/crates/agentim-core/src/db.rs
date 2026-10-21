@@ -309,7 +309,7 @@ pub const AUTH_EPOCH: &str = "auth_epoch";
 
 const MSG_COLS: &str = "msg_id, conv_id, created_seq, sender_id, sender_name, sender_type, on_behalf_of, kind, content,
     version, state, state_reason, hop, causation_id, reply_to, mentions, created_at, updated_at, payload, envelope, root_id";
-const MEMBER_COLS: &str = "user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq, visible_from, mute_mode, mute_until, topics";
+const MEMBER_COLS: &str = "user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq, visible_from, mute_mode, mute_until, topics, silenced_until";
 const DRAFT_COLS: &str = "draft_id, conv_id, agent_id, content, hop, causation_id, reply_to, state, created_at, kind, payload, envelope";
 
 fn row_user(r: &AnyRow) -> sqlx::Result<User> {
@@ -377,6 +377,7 @@ fn row_member(r: &AnyRow) -> sqlx::Result<Member> {
             .try_get::<Option<String>, _>("topics")?
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default(),
+        silenced_until: r.try_get("silenced_until")?,
     })
 }
 
@@ -1952,6 +1953,7 @@ impl Db<'_> {
             "kind": r.try_get::<String, _>("kind")?,
             "owner": r.try_get::<Option<String>, _>("owner_id")?,
             "unit": r.try_get::<String, _>("unit_id")?,
+            "team": r.try_get::<Option<String>, _>("agent_scope")?.as_deref() == Some("team"),
             "display_name": r.try_get::<Option<String>, _>("display_name")?,
             "avatar": r.try_get::<Option<String>, _>("avatar")?,
             "fields": json_col(&r, "fields")?,
@@ -2911,6 +2913,23 @@ impl Db<'_> {
         .fetch_optional(&mut *self.c)
         .await?;
         Ok(r.map(|r| r.try_get(0)).transpose()?)
+    }
+
+    pub async fn set_silenced(
+        &mut self,
+        conv_id: &str,
+        user_id: &str,
+        until: Option<i64>,
+    ) -> ApiResult<()> {
+        sqlx::query(self.d.q(
+            "UPDATE members SET silenced_until = ? WHERE conv_id = ? AND user_id = ?",
+        ))
+        .bind(until)
+        .bind(conv_id)
+        .bind(user_id)
+        .execute(&mut *self.c)
+        .await?;
+        Ok(())
     }
 
     pub async fn set_mute(

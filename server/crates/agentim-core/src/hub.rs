@@ -32,6 +32,7 @@ mod export;
 mod history;
 mod lifecycle;
 pub mod login;
+mod developer;
 mod requests;
 mod state;
 pub use agents::MAX_AGENT_KEYS;

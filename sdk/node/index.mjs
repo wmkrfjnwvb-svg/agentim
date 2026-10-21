@@ -93,6 +93,63 @@ export class AgentIM {
     return this.request("DELETE", `/v1/agents/${enc(agentId)}/keys/${enc(deviceId)}`);
   }
 
+  // ---- agents (docs/13 §4.1)
+  listAgents(userId) { return this.request("GET", `/v1/users/${enc(userId)}/agents`); }
+  stopAgent(agentId, { reason } = {}) {
+    return this.request("POST", `/v1/agents/${enc(agentId)}:stop`, reason === undefined ? undefined : { reason });
+  }
+  resumeAgent(agentId) { return this.request("POST", `/v1/agents/${enc(agentId)}:resume`); }
+  transferAgent(agentId, { owner, rotateKeys = false }) {
+    return this.request("POST", `/v1/agents/${enc(agentId)}:transfer`, { owner, rotate_keys: rotateKeys });
+  }
+  destroyAgent(agentId) { return this.request("DELETE", `/v1/agents/${enc(agentId)}`); }
+  exportAgent(agentId, { withConversations = false } = {}) {
+    return this.request("GET", `/v1/agents/${enc(agentId)}/export?with_conversations=${withConversations}`);
+  }
+  importAgent({ package: pkg, owner, name }) {
+    return this.request("POST", "/v1/agents:import", { package: pkg, owner, name });
+  }
+
+  // ---- devices
+  listDevices(userId) { return this.request("GET", `/v1/users/${enc(userId)}/devices`); }
+  logoutDevice(userId, deviceId) {
+    return this.request("DELETE", `/v1/users/${enc(userId)}/devices/${enc(deviceId)}`);
+  }
+
+  // ---- compliance (docs/04 §4.2)
+  /** Deletes a person's account; returns the erasure's progress (202). */
+  deleteUser(userId) { return this.request("DELETE", `/v1/users/${enc(userId)}`); }
+  erasure(userId) { return this.request("GET", `/v1/users/${enc(userId)}/erasure`); }
+  /** The person's own data, one object per line (NDJSON); `after` continues from a line's `cursor`. */
+  async exportUser(userId, { after } = {}) {
+    const q = after ? `?after=${enc(after)}` : "";
+    const res = await this.fetch(`${this.baseUrl}/v1/users/${enc(userId)}/export${q}`, {
+      headers: { authorization: `Bearer ${this.apiKey}` },
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      const p = text ? JSON.parse(text) : {};
+      throw new AgentIMError(res.status, p.code ?? "error", p.detail ?? text);
+    }
+    return text.split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  }
+
+  // ---- moderation
+  reports({ state = "open", limit = 50, offset = 0 } = {}) {
+    return this.request("GET", `/v1/reports?state=${enc(state)}&limit=${limit}&offset=${offset}`);
+  }
+  getReport(id) { return this.request("GET", `/v1/reports/${enc(id)}`); }
+  resolveReport(id, { action, reason, ground, automated, days }) {
+    return this.request("POST", `/v1/reports/${enc(id)}:resolve`, { action, reason, ground, automated, days });
+  }
+  /** Silences a member: they cannot send, edit or stream in the conversation for `seconds`. */
+  silenceMember(convId, userId, { seconds, reason }) {
+    return this.request("POST", `/v1/conversations/${enc(convId)}/members/${enc(userId)}:silence`, { seconds, reason });
+  }
+  unsilenceMember(convId, userId) {
+    return this.request("POST", `/v1/conversations/${enc(convId)}/members/${enc(userId)}:unsilence`);
+  }
+
   // ---- users
   upsertUser(id, attrs = {}) { return this.request("PUT", `/v1/users/${enc(id)}`, attrs); }
   getUser(id) { return this.request("GET", `/v1/users/${enc(id)}`); }

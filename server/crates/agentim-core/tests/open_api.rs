@@ -445,10 +445,10 @@ async fn users_lifecycle(db: TestDb) {
             Some(json!({"kind": "agent", "owner": "user_1"})),
         )
         .await;
-    assert_eq!(
-        (s, &v["owner"]),
-        (201, &json!(api.hub.user_by_name("user_1").unwrap().id))
-    );
+    // The owner by the developer's id; the agent's first key shown once.
+    assert_eq!((s, &v["owner"], &v["team"]), (201, &json!("user_1"), &json!(false)));
+    assert!(v["key"].as_str().unwrap().starts_with("atk_"));
+    assert!(v["connect"]["mcp_url"].is_string());
     for (path, b, want) in [
         ("/v1/users/bad%20id", json!({}), "bad_request"),
         ("/v1/users/_system", json!({}), "bad_request"),

@@ -214,11 +214,17 @@ impl Hub {
 
     pub async fn resume_agent(&self, me: &User, agent_id: &str) -> ApiResult<Value> {
         let agent = self.live_agent(me, agent_id)?;
+        self.resume_agent_by(agent, &me.id).await
+    }
+
+    /// Resumes an agent on behalf of `by` (its owner, or the developer's
+    /// backend).
+    pub(super) async fn resume_agent_by(&self, agent: User, by: &str) -> ApiResult<Value> {
         self.control()
             .call(Op::SetStopped {
                 agent_id: agent.id.clone(),
                 on: false,
-                by: me.id.clone(),
+                by: by.to_string(),
             })
             .await?;
         self.inner.sh.stopped.write().unwrap().remove(&agent.id);
@@ -228,7 +234,7 @@ impl Hub {
                 conv_id: c.clone(),
                 agent: agent.clone(),
                 on: false,
-                by: me.id.clone(),
+                by: by.to_string(),
                 reason: None,
             })
             .await?;

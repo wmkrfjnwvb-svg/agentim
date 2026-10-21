@@ -512,6 +512,15 @@ fn check_profile(display_name: &Option<String>, avatar: &Option<String>) -> Resu
     Ok(())
 }
 
+/// A user's profile as the developer sees it: their ids, not internal ones.
+async fn profile(hub: &Hub, internal: &str) -> Result<Value, Problem> {
+    let mut p = hub.user_profile(internal).await?.unwrap_or_default();
+    if let Some(o) = p["owner"].as_str().map(String::from) {
+        p["owner"] = json!(external(hub, &o));
+    }
+    Ok(p)
+}
+
 /// Internal ids in results are replaced by developer ids.
 fn external(hub: &Hub, internal: &str) -> String {
     hub.shared()
@@ -535,6 +544,18 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route(
             "/v1/agents/{id}/keys/{device}",
             axum::routing::delete(revoke_agent_key),
+        )
+        .route(
+            "/v1/agents/{id}",
+            post(agent_action).delete(destroy_agent),
+        )
+        .route("/v1/agents/{id}/export", get(export_agent))
+        .route("/v1/agents:import", post(import_agent))
+        .route("/v1/users/{id}/agents", get(list_agents))
+        .route("/v1/users/{id}/devices", get(list_devices))
+        .route(
+            "/v1/users/{id}/devices/{device}",
+            axum::routing::delete(logout_device),
         )
         .route(
             "/v1/users/{id}",
@@ -561,7 +582,9 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route("/v1/conversations/{id}/members", post(add_members))
         .route(
             "/v1/conversations/{id}/members/{user}",
-            axum::routing::delete(remove_member).patch(patch_member),
+            axum::routing::delete(remove_member)
+                .patch(patch_member)
+                .post(member_action),
         )
         .route(
             "/v1/conversations/{id}/messages",
@@ -586,6 +609,17 @@ pub const ROUTES: &[&str] = &[
     "POST /v1/agents/{id}/keys",
     "DELETE /v1/agents/{id}/keys",
     "DELETE /v1/agents/{id}/keys/{device}",
+    "POST /v1/agents/{id}:stop",
+    "POST /v1/agents/{id}:resume",
+    "POST /v1/agents/{id}:transfer",
+    "DELETE /v1/agents/{id}",
+    "GET /v1/agents/{id}/export",
+    "POST /v1/agents:import",
+    "GET /v1/users/{id}/agents",
+    "GET /v1/users/{id}/devices",
+    "DELETE /v1/users/{id}/devices/{device}",
+    "POST /v1/conversations/{id}/members/{user}:silence",
+    "POST /v1/conversations/{id}/members/{user}:unsilence",
     "PUT /v1/users/{id}",
     "GET /v1/users/{id}",
     "PATCH /v1/users/{id}",
@@ -741,6 +775,347 @@ async fn revoke_agent_key(
     ok(json!({"revoked": n}))
 }
 
+// ---- agents (docs/13 §4.1)
+
+/// An agent as the developer sees it: their ids, its keys (never secrets).
+async fn agent_view(hub: &Hub, a: &User) -> Result<Value, Problem> {
+    let keys: Vec<Value> = hub
+        .devices(&a.id)
+        .await?
+        .iter()
+        .map(|d| d.view())
+        .collect();
+    Ok(json!({
+        "id": a.name,
+        "owner": a.owner_id.as_deref().map(|o| external(hub, o)),
+        "team": a.team,
+        "unit": a.unit_id,
+        "deactivated": hub.is_deactivated(&a.id),
+        "stopped": hub.is_stopped(&a.id),
+        "keys": keys,
+    }))
+}
+
+async fn list_agents(State(st): State<AppState>, Extension(k): K, Path(id): Path<String>) -> R {
+    need(&k, "agents:read")?;
+    let owner = user(&st.hub, &id)?;
+    if owner.kind != UserKind::Human {
+        return Err(bad("agents belong to people"));
+    }
+    let mut agents = st.hub.shared().agents_of(&owner.id);
+    agents.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut out = vec![];
+    for a in agents {
+        if !st.hub.is_destroyed(&a.id) {
+            out.push(agent_view(&st.hub, &a).await?);
+        }
+    }
+    ok(json!({"agents": out}))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct AgentActionReq {
+    reason: Option<String>,
+    owner: Option<String>,
+    #[serde(default)]
+    rotate_keys: bool,
+}
+
+/// `POST /v1/agents/{id}:stop`, `:resume` and `:transfer`.
+async fn agent_action(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path(seg): Path<String>,
+    b: Bytes,
+) -> R {
+    need(&k, "agents:write")?;
+    let Some((id, action)) = seg.rsplit_once(':') else {
+        return Err(Problem::new(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "bad_request",
+            "POST /v1/agents/{id}:stop, :resume or :transfer",
+        ));
+    };
+    if !["stop", "resume", "transfer"].contains(&action) {
+        return Err(Problem::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown action",
+        ));
+    }
+    let req: AgentActionReq = if b.is_empty() {
+        AgentActionReq::default()
+    } else {
+        body(&b)?
+    };
+    let a = st.hub.live_agent_any(id)?;
+    let by = format!("api:{}", k.key_id);
+    let v = match action {
+        "stop" => {
+            if req.owner.is_some() || req.rotate_keys {
+                return Err(bad("stop takes a reason only"));
+            }
+            st.hub.stop_agent_as(&a, &by, req.reason.clone()).await?
+        }
+        "resume" => {
+            if req.reason.is_some() || req.owner.is_some() || req.rotate_keys {
+                return Err(bad("resume takes no body"));
+            }
+            st.hub.resume_agent_as(&a, &by).await?
+        }
+        _ => {
+            if req.reason.is_some() {
+                return Err(bad("transfer takes owner and rotate_keys"));
+            }
+            let Some(o) = req.owner.as_deref() else {
+                return Err(bad("owner is required"));
+            };
+            let owner = user(&st.hub, o)?;
+            st.hub
+                .transfer_agent(&a.id, &owner.id, req.rotate_keys)
+                .await?
+        }
+    };
+    st.hub
+        .audit_api(
+            &k.key_id,
+            SYSTEM_ID,
+            &format!("agents.{action}"),
+            Some(id),
+            json!({"reason": req.reason, "owner": req.owner, "rotate_keys": req.rotate_keys, "conversations": v["conversations"]}),
+        )
+        .await;
+    let a = st.hub.shared().user(&a.id).unwrap_or(a);
+    ok(agent_view(&st.hub, &a).await?)
+}
+
+/// Destroys an agent: it leaves every conversation, its keys stop working
+/// and its id is not reused (docs/03-agents.md §4.4).
+async fn destroy_agent(State(st): State<AppState>, Extension(k): K, Path(id): Path<String>) -> R {
+    need(&k, "agents:write")?;
+    let a = st.hub.live_agent_any(&id)?;
+    let v = st
+        .hub
+        .destroy_agent_as(&a, &format!("api:{}", k.key_id))
+        .await?;
+    st.hub
+        .audit_api(
+            &k.key_id,
+            SYSTEM_ID,
+            "agents.destroy",
+            Some(&id),
+            json!({"conversations": v["conversations"]}),
+        )
+        .await;
+    ok(json!({"id": id, "destroyed": true, "conversations": v["conversations"]}))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ExportAgentQuery {
+    #[serde(default)]
+    with_conversations: bool,
+}
+
+/// An agent package to move it to another server (docs/03-agents.md
+/// §7.3); with conversations it holds content, so `messages:read` too.
+async fn export_agent(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path(id): Path<String>,
+    Query(q): Query<ExportAgentQuery>,
+) -> R {
+    need(&k, "agents:read")?;
+    if q.with_conversations {
+        need(&k, "messages:read")?;
+    }
+    let a = st.hub.live_agent_any(&id)?;
+    let Some(owner) = a.owner_id.as_deref().and_then(|o| st.hub.shared().user(o)) else {
+        return Err(Problem::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            "the agent has no owner",
+        ));
+    };
+    let pkg = st
+        .hub
+        .export_agent(&owner, &a.id, q.with_conversations)
+        .await?;
+    st.hub
+        .audit_api(
+            &k.key_id,
+            SYSTEM_ID,
+            "agents.export",
+            Some(&id),
+            json!({"with_conversations": q.with_conversations}),
+        )
+        .await;
+    ok(pkg)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportAgentReq {
+    package: Value,
+    owner: String,
+    name: Option<String>,
+}
+
+/// Creates an agent from a package; its first key is shown once.
+async fn import_agent(State(st): State<AppState>, Extension(k): K, b: Bytes) -> R {
+    need(&k, "agents:write")?;
+    let req: ImportAgentReq = body(&b)?;
+    let owner = user(&st.hub, &req.owner)?;
+    if owner.kind != UserKind::Human || st.hub.is_deactivated(&owner.id) {
+        return Err(bad("the owner is a person who is not deactivated"));
+    }
+    let v = st
+        .hub
+        .import_agent(&owner, &req.package, req.name.as_deref())
+        .await?;
+    st.hub
+        .audit_api(
+            &k.key_id,
+            SYSTEM_ID,
+            "agents.import",
+            v["agent"]["name"].as_str(),
+            json!({"owner": req.owner}),
+        )
+        .await;
+    let mut out = v.clone();
+    if let Some(a) = v["agent"]["id"].as_str().and_then(|i| st.hub.shared().user(i)) {
+        out["agent"] = agent_view(&st.hub, &a).await?;
+    }
+    created(out)
+}
+
+// ---- devices
+
+async fn list_devices(State(st): State<AppState>, Extension(k): K, Path(id): Path<String>) -> R {
+    need(&k, "users:read")?;
+    let u = user(&st.hub, &id)?;
+    let devices: Vec<Value> = st
+        .hub
+        .devices(&u.id)
+        .await?
+        .iter()
+        .map(|d| d.view())
+        .collect();
+    ok(json!({"devices": devices}))
+}
+
+/// Logs one device out at once (a person: tokens issued until now are
+/// refused on it; an agent: that key is revoked).
+async fn logout_device(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path((id, device)): Path<(String, String)>,
+) -> R {
+    need(&k, "tokens:revoke")?;
+    let u = user(&st.hub, &id)?;
+    if !st
+        .hub
+        .devices(&u.id)
+        .await?
+        .iter()
+        .any(|d| d.device_id == device)
+    {
+        return Err(Problem::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no such device",
+        ));
+    }
+    let n = if u.kind == UserKind::Agent {
+        st.hub.revoke_tokens(&u.id, Some(&device)).await?
+    } else {
+        st.hub.log_out(&u.id, Some(&device)).await?
+    };
+    st.hub
+        .audit_api(
+            &k.key_id,
+            SYSTEM_ID,
+            "devices.logout",
+            Some(&id),
+            json!({"device_id": device}),
+        )
+        .await;
+    ok(json!({"revoked": n}))
+}
+
+// ---- silencing members (moderation)
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct SilenceReq {
+    seconds: Option<i64>,
+    reason: Option<String>,
+}
+
+/// `POST /v1/conversations/{id}/members/{user}:silence` (`seconds`,
+/// `reason`) and `:unsilence`: a silenced member cannot send, edit or
+/// stream in the conversation until then (docs/13 problem 8).
+async fn member_action(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path((id, seg)): Path<(String, String)>,
+    b: Bytes,
+) -> R {
+    need(&k, "moderation")?;
+    let (who, on) = match seg.rsplit_once(':') {
+        Some((u, "silence")) => (u, true),
+        Some((u, "unsilence")) => (u, false),
+        _ => {
+            return Err(Problem::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "unknown action",
+            ));
+        }
+    };
+    let req: SilenceReq = if b.is_empty() {
+        SilenceReq::default()
+    } else {
+        body(&b)?
+    };
+    let target = user(&st.hub, who)?;
+    let seconds = if on {
+        Some(req.seconds.ok_or_else(|| bad("seconds is required"))?)
+    } else {
+        if req.seconds.is_some() || req.reason.is_some() {
+            return Err(bad("unsilence takes no body"));
+        }
+        None
+    };
+    let v = st
+        .hub
+        .silence(
+            &id,
+            &target,
+            seconds,
+            &format!("api:{}", k.key_id),
+            req.reason.clone(),
+        )
+        .await?;
+    if v["changed"] == true {
+        st.hub
+            .audit_api(
+                &k.key_id,
+                SYSTEM_ID,
+                if on {
+                    "conversations.members.silence"
+                } else {
+                    "conversations.members.unsilence"
+                },
+                Some(&id),
+                json!({"user": who, "seconds": seconds}),
+            )
+            .await;
+    }
+    ok(v)
+}
+
 // ---- users
 
 #[derive(Deserialize, Default, Clone)]
@@ -751,6 +1126,9 @@ struct UserReq {
     kind: Option<String>,
     owner: Option<String>,
     unit: Option<String>,
+    /// A team agent (docs/03-agents.md §1.2): it stays when its owner
+    /// leaves or is deactivated, and can be transferred.
+    team: Option<bool>,
     display_name: Option<String>,
     avatar: Option<String>,
     fields: Option<Value>,
@@ -794,29 +1172,37 @@ async fn upsert_user(
     if kind == UserKind::Human && owner.is_some() {
         return Err(bad("only agents have an owner"));
     }
+    if kind == UserKind::Human && req.team == Some(true) {
+        return Err(bad("only agents are team agents"));
+    }
+    let mut first_key = None;
     let created = match hub.user_by_name(id) {
         Some(u) => {
             // Identity and placement are fixed once created.
             if u.kind != kind && req.kind.is_some()
                 || req.owner.is_some() && u.owner_id != owner.as_ref().map(|o| o.id.clone())
                 || req.unit.as_ref().is_some_and(|x| *x != u.unit_id)
+                || req.team.is_some_and(|t| t != u.team)
             {
                 return Err(Problem::new(
                     StatusCode::CONFLICT,
                     "conflict",
-                    "kind, owner and unit cannot change",
+                    "kind, owner, unit and team cannot change (transfer moves a team agent)",
                 ));
             }
             false
         }
         None => {
-            hub.create_user(
-                id,
-                kind,
-                owner.as_ref().map(|o| o.id.as_str()),
-                req.unit.as_deref(),
-            )
-            .await?;
+            first_key = hub
+                .create_user_with(
+                    id,
+                    kind,
+                    owner.as_ref().map(|o| o.id.as_str()),
+                    req.unit.as_deref(),
+                    req.team.unwrap_or(false),
+                )
+                .await?
+                .1;
             true
         }
     };
@@ -837,7 +1223,12 @@ async fn upsert_user(
         json!({}),
     )
     .await;
-    let p = hub.user_profile(&u.id).await?.unwrap_or_default();
+    let mut p = profile(hub, &u.id).await?;
+    // A new agent's first key, shown once.
+    if let Some(k) = first_key {
+        p["connect"] = hub.connect_settings(&k, None);
+        p["key"] = json!(k);
+    }
     Ok((p, created))
 }
 
@@ -863,7 +1254,7 @@ async fn put_user(
 async fn get_user(State(st): State<AppState>, Extension(k): K, Path(id): Path<String>) -> R {
     need(&k, "users:read")?;
     let u = user(&st.hub, &id)?;
-    ok(st.hub.user_profile(&u.id).await?.unwrap_or_default())
+    ok(profile(&st.hub, &u.id).await?)
 }
 
 #[derive(Deserialize)]
@@ -894,7 +1285,7 @@ async fn patch_user(
     st.hub
         .audit_api(&k.key_id, SYSTEM_ID, "users.update", Some(&id), json!({}))
         .await;
-    ok(st.hub.user_profile(&u.id).await?.unwrap_or_default())
+    ok(profile(&st.hub, &u.id).await?)
 }
 
 /// `POST /v1/users/{id}:deactivate` and `:reactivate`.
@@ -926,7 +1317,7 @@ async fn user_action(State(st): State<AppState>, Extension(k): K, Path(seg): Pat
             json!({}),
         )
         .await;
-    ok(st.hub.user_profile(&u.id).await?.unwrap_or_default())
+    ok(profile(&st.hub, &u.id).await?)
 }
 
 #[derive(Deserialize)]

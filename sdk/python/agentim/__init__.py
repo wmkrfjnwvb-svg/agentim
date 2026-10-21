@@ -113,6 +113,83 @@ class AgentIM:
     def revoke_agent_key(self, agent_id, device_id):
         return self.request("DELETE", f"/v1/agents/{_q(agent_id)}/keys/{_q(device_id)}")
 
+    # ---- agents (docs/13 §4.1)
+    def list_agents(self, user_id):
+        return self.request("GET", f"/v1/users/{_q(user_id)}/agents")
+
+    def stop_agent(self, agent_id, reason=None):
+        return self.request("POST", f"/v1/agents/{_q(agent_id)}:stop",
+                            {"reason": reason} if reason is not None else None)
+
+    def resume_agent(self, agent_id):
+        return self.request("POST", f"/v1/agents/{_q(agent_id)}:resume")
+
+    def transfer_agent(self, agent_id, owner, rotate_keys=False):
+        return self.request("POST", f"/v1/agents/{_q(agent_id)}:transfer",
+                            {"owner": owner, "rotate_keys": rotate_keys})
+
+    def destroy_agent(self, agent_id):
+        return self.request("DELETE", f"/v1/agents/{_q(agent_id)}")
+
+    def export_agent(self, agent_id, with_conversations=False):
+        flag = "true" if with_conversations else "false"
+        return self.request("GET", f"/v1/agents/{_q(agent_id)}/export?with_conversations={flag}")
+
+    def import_agent(self, package, owner, name=None):
+        return self.request("POST", "/v1/agents:import", {"package": package, "owner": owner, "name": name})
+
+    # ---- devices
+    def list_devices(self, user_id):
+        return self.request("GET", f"/v1/users/{_q(user_id)}/devices")
+
+    def logout_device(self, user_id, device_id):
+        return self.request("DELETE", f"/v1/users/{_q(user_id)}/devices/{_q(device_id)}")
+
+    # ---- compliance (docs/04 §4.2)
+    def delete_user(self, user_id):
+        """Deletes a person's account; returns the erasure's progress."""
+        return self.request("DELETE", f"/v1/users/{_q(user_id)}")
+
+    def erasure(self, user_id):
+        return self.request("GET", f"/v1/users/{_q(user_id)}/erasure")
+
+    def export_user(self, user_id, after=None):
+        """The person's own data, one object per line (NDJSON); ``after``
+        continues from a line's ``cursor``."""
+        q = f"?after={_q(after)}" if after else ""
+        req = urllib.request.Request(f"{self.base_url}/v1/users/{_q(user_id)}/export{q}",
+                                     headers={"authorization": f"Bearer {self.api_key}"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return [json.loads(line) for line in r.read().decode().splitlines() if line]
+        except urllib.error.HTTPError as e:
+            text = e.read().decode()
+            try:
+                p = json.loads(text)
+            except ValueError:
+                p = {}
+            raise AgentIMError(e.code, p.get("code", "error"), p.get("detail", text)) from None
+
+    # ---- moderation
+    def reports(self, state="open", limit=50, offset=0):
+        return self.request("GET", f"/v1/reports?state={_q(state)}&limit={limit}&offset={offset}")
+
+    def get_report(self, report_id):
+        return self.request("GET", f"/v1/reports/{_q(report_id)}")
+
+    def resolve_report(self, report_id, action, reason, ground=None, automated=None, days=None):
+        return self.request("POST", f"/v1/reports/{_q(report_id)}:resolve",
+                            {"action": action, "reason": reason, "ground": ground,
+                             "automated": automated, "days": days})
+
+    def silence_member(self, conv_id, user_id, seconds, reason=None):
+        """The member cannot send, edit or stream in the conversation for ``seconds``."""
+        return self.request("POST", f"/v1/conversations/{_q(conv_id)}/members/{_q(user_id)}:silence",
+                            {"seconds": seconds, "reason": reason})
+
+    def unsilence_member(self, conv_id, user_id):
+        return self.request("POST", f"/v1/conversations/{_q(conv_id)}/members/{_q(user_id)}:unsilence")
+
     # ---- users
     def upsert_user(self, id, **attrs):
         return self.request("PUT", f"/v1/users/{_q(id)}", attrs)

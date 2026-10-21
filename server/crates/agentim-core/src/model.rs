@@ -28,6 +28,7 @@ pub fn system_member() -> Member {
         mute_mode: "none".into(),
         mute_until: None,
         topics: vec![],
+        silenced_until: None,
     }
 }
 pub const UNIT_DEFAULT: &str = "default";
@@ -133,6 +134,9 @@ pub struct Member {
     pub mute_until: Option<i64>,
     /// Topics an agent in `topics` mode subscribes to.
     pub topics: Vec<String>,
+    /// Silenced by moderation in this conversation until this time (ms):
+    /// cannot send, edit, stream or signal.
+    pub silenced_until: Option<i64>,
 }
 
 impl Member {
