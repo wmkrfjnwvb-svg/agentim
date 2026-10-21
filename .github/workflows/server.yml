@@ -215,6 +215,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: build the console
+        run: cd console && npm ci && npm run build
       - run: cargo build --release --bins
       - name: install playwright
         run: |
@@ -229,6 +231,8 @@ jobs:
           for i in $(seq 150); do curl -sf -m 2 http://127.0.0.1:8099/readyz > /dev/null && break; sleep 0.2; done
           PLAYWRIGHT="$PWD/ci/node_modules/playwright" BASE=http://127.0.0.1:8099 OUT=screenshots node ci/ui_smoke.mjs
           ok=1
+      - name: run the console checks
+        run: PLAYWRIGHT="$PWD/ci/node_modules/playwright" BIN=target/release/agentim OUT=screenshots node ci/console_smoke.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -333,6 +333,7 @@ pub async fn join(hub: &Hub) -> Result<Node, String> {
 pub const SUPPORT: agentim_core::cli::ClusterSupport = agentim_core::cli::ClusterSupport {
     join: join_and_start,
     admin: admin::run,
+    query: admin::query,
 };
 
 pub fn join_and_start(hub: Hub) -> agentim_core::cluster::BoxFuture<Result<(), String>> {

@@ -1,13 +1,13 @@
 # 06 进度与计划
 
-> 本文随进度原地更新，不追加历史版本（最近更新：2026-10-18）。设计细节在 01–12，本文只回答三件事：**做到哪了、还差什么、什么需要你拍板**。
+> 本文随进度原地更新，不追加历史版本（最近更新：2026-10-21）。设计细节在 01–12，本文只回答三件事：**做到哪了、还差什么、什么需要你拍板**。
 > 状态：✅ 已完成（有测试，CI 通过）　🔧 部分完成　📝 设计已写、待你确认　⏳ 未开始
 
 ## 0. 一页看全局
 
 **方向**（2026-10-18 确认）：只服务开发者；一个产品、一个程序 `agentim`，全部功能免费；已做完的 Agent 能力全部保留，没开始的 Agent 中间件不做；下一阶段做开发者体验闭环：发现 → 5 分钟跑起来 → 30 分钟嵌进自己的应用 → 用开发者控制台管理 → 付费（托管云或支持服务，D102）。
 
-**当前位置**：消息核心、开发者接入、AI 部分（L1–L7）和集群（C0–C4）已经完成。§3 第 1 步（合并 Lite 和 AgentIM、B3、B4、搜索过滤）已完成；下一步是发布、TypeScript SDK、React 组件、开发者控制台、文档站和示例。每一项都先写设计、你确认后再写代码；开发者体验的设计见 [12](12-developer-experience.md)（待确认）。
+**当前位置**：消息核心、开发者接入、AI 部分（L1–L7）和集群（C0–C4）已经完成。§3 第 1–3 步（合并 Lite、A4 合规基础、入口按角色划分、A5 管理 API 和控制台）已完成；正在做第 4 步 A7 客户端 SDK。每一项都先写设计、你确认后再写代码；开发者体验的设计见 [12](12-developer-experience.md)。
 
 **测试**：全部通过。CI 每次推送跑：Linux 和 Windows 上 SQLite、PostgreSQL、MySQL 的全部测试，多节点集群测试，真实数据库主从和切主测试，Docker 镜像和三节点 Compose 冒烟，浏览器冒烟，压测，服务端和 Agent SDK 的端到端；规模测试夜间跑。
 
@@ -33,11 +33,11 @@
 | **发布流程（P1）** | 🔧 | `deploy/`：Dockerfile、Compose、Helm（CI 里构建和冒烟） | 预编译程序和签名、一条命令安装、GHCR 镜像、版本和更新日志、依赖扫描（[12 §1](12-developer-experience.md)） |
 | **客户端 SDK（P2）** | 📝 | 设计待批准：[12 §2](12-developer-experience.md) | Rust 核心 + 浏览器、Swift、Kotlin、C#/Unity、Flutter、React Native 封装 |
 | **React 组件（P3）** | ⏳ | 设计：[12 §3](12-developer-experience.md) | 组件、主题；Web 演示端改用 P2 和 P3 |
-| **开发者控制台（P4）** | ⏳ | 设计：[12 §4](12-developer-experience.md) | 内置在 `agentim` 里（D103 已确认），走 `/admin/v1` |
+| **开发者控制台（P4）** | ✅ | 管理 API `/admin/v1`（应用、部署两块，四种角色）、管理员账号（一次性初始化、密码 + TOTP、会话和 CSRF）、管理密钥、`agentim admin`、内置在 `agentim` 里的控制台 `/console`（[12 §4](12-developer-experience.md)） | Webhook、发送前拦截、审核时限搬进"应用设置"（现在只读） |
 | **文档站和示例（P5）** | ⏳ | 设计：[12 §5](12-developer-experience.md) | 文档站、三个示例应用、Agent 框架模板 |
 | 托管云（P6） | ⏳ | 先不做（2026-10-19） | 注册即用、免费额度、按合并后的消息计费 |
 | GDPR 和内容治理 | 🔧 | 拉黑、Agent 加入告知、AI 标记、日志不含内容、保留期 | 基础部分：导出、删除账号、举报、审核队列（A4） |
-| CLI | 🔧 | `agentim` 一个程序里有服务和运维命令（agent、api-key、encryption、migrate、cluster） | 缩小后的 D63：`agentim admin` 走管理 API |
+| CLI | ✅ | `agentim` 一个程序里有服务和本机运维命令（api-key、signing-key、admin-key、token、encryption、migrate、cluster）；`agentim admin …` 走管理 API（缩小后的 D63） | — |
 | 文件和图片 | 📝 | 方案：[02 §2.7](02-architecture.md) | 精简版（A6） |
 | 监控 | 🔧 | Prometheus 指标、集群告警规则、日志默认不含内容 | OpenTelemetry 导出、面板（以后） |
 | 性能 | 🔧 | 单机和多节点数据在 README | 写入优化 A–D（目标每节点 1 万条/秒） |
@@ -127,7 +127,7 @@
 | # | 内容 | 依赖 | 状态 |
 |---|---|---|---|
 | A4 | 合规的基础部分：用户导出自己的数据、删除账号、基础保留期、举报、基础审核队列 | — | ✅ 2026-10-20（[04 §4.2](04-security-compliance.md)） |
-| A5 | `agentim admin` 和管理 API（缩小后的 D63），和开发者控制台一起 | D63 | ⏳ [12 §4](12-developer-experience.md) |
+| A5 | `agentim admin` 和管理 API（缩小后的 D63），和开发者控制台一起 | D63 | ✅ 2026-10-21（[12 §4](12-developer-experience.md)） |
 | A6 | 文件和图片 | 你的设计 | ⏸ 先不做 |
 | A7 | 客户端 SDK（P2） | D104 | 🔧 设计已批准 [12 §2](12-developer-experience.md) |
 | A9 | 安装和发布（P1） | — | 🔧 [12 §1](12-developer-experience.md) |
@@ -149,8 +149,8 @@
 |---|---|
 | 1 | ✅ D105 合并 Lite 和 AgentIM；B4（先开后关加密）；B3（接管超时自动交还）；A3 搜索过滤（2026-10-18 完成） |
 | 2 | ✅ A4 合规基础：导出自己的数据、删除账号、基础保留期、举报、基础审核队列（2026-10-20） |
-| 2.5 | 入口按角色划分（D116、D117，[13 §6](13-roles-and-entry-points.md)） |
-| 3 | A5 管理 API `/admin/v1`、`agentim admin`、开发者控制台（没有它，开发者和部署者管理、运维不了 IM，和 A7 一样是必需的） |
+| 2.5 | ✅ 入口按角色划分（D116–D118，[13 §6](13-roles-and-entry-points.md)，2026-10-21） |
+| 3 | ✅ A5 管理 API `/admin/v1`、`agentim admin`、开发者控制台（2026-10-21） |
 | 4 | A7 客户端 SDK：服务端配合（历史、心跳、重连提示）、Rust 核心、浏览器、Swift、Kotlin、C#（Unity、.NET）、Flutter、React Native、React 组件（[12 §2.14](12-developer-experience.md) S0–S7） |
 | 5 | A9 安装和发布（P1） |
 | 6 | B 类已知问题（B2、B9） |

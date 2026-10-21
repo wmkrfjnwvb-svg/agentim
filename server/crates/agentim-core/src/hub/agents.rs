@@ -20,6 +20,22 @@ impl Hub {
     /// `create_agent`; a team agent when `team` (administrators only:
     /// callers are the CLI and, later, the admin API; docs/03-agents.md §1.2).
     pub async fn create_agent_with(&self, me: &User, name: &str, team: bool) -> ApiResult<Value> {
+        self.create_agent_impl(me, name, team, false).await
+    }
+
+    /// `create_agent` from the person's client: the app must allow it
+    /// (checked again by the writer, docs/13 §4.1).
+    pub(crate) async fn create_agent_in_client(&self, me: &User, name: &str) -> ApiResult<Value> {
+        self.create_agent_impl(me, name, false, true).await
+    }
+
+    async fn create_agent_impl(
+        &self,
+        me: &User,
+        name: &str,
+        team: bool,
+        checked: bool,
+    ) -> ApiResult<Value> {
         if me.kind != UserKind::Human {
             return Err(err("forbidden", "only people own agents"));
         }
@@ -30,7 +46,14 @@ impl Hub {
             ));
         }
         let (agent, key) = self
-            .create_user_with(name, UserKind::Agent, Some(&me.id), Some(&me.unit_id), team)
+            .create_user_full(
+                name,
+                UserKind::Agent,
+                Some(&me.id),
+                Some(&me.unit_id),
+                team,
+                checked,
+            )
             .await?;
         let key = key.unwrap_or_default();
         let device_id = self

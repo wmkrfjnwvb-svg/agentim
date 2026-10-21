@@ -659,6 +659,40 @@ pub struct ClientsConfig {
     /// A WebSocket that sends nothing (not even a pong) for this long is
     /// closed; the server pings at a third of it.
     pub idle_secs: u64,
+    /// What people may do from their client (docs/13 §4.1); the developer
+    /// overrides it per user with `PATCH /v1/users/{id}` `permissions`.
+    pub allow: AllowConfig,
+}
+
+/// The app's defaults of what people may do in their client.
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AllowConfig {
+    pub create_groups: bool,
+    pub create_direct: bool,
+    pub add_members: bool,
+    pub find_users: bool,
+    /// Create agents of their own and manage their keys (off: the
+    /// developer hands agents out through the open API).
+    pub create_agents: bool,
+    /// Their own messages can be edited / recalled this long after sending
+    /// (None: always).
+    pub edit_minutes: Option<i64>,
+    pub recall_minutes: Option<i64>,
+}
+
+impl Default for AllowConfig {
+    fn default() -> Self {
+        AllowConfig {
+            create_groups: true,
+            create_direct: true,
+            add_members: true,
+            find_users: true,
+            create_agents: false,
+            edit_minutes: None,
+            recall_minutes: None,
+        }
+    }
 }
 
 impl Default for ClientsConfig {
@@ -669,6 +703,7 @@ impl Default for ClientsConfig {
             send_burst: 30.0,
             max_connections: 10,
             max_group_members: 1000,
+            allow: AllowConfig::default(),
             idle_secs: 90,
         }
     }
@@ -933,6 +968,13 @@ impl Config {
         }
         if !(1..=365).contains(&self.auth.max_token_days) {
             return Err("auth.max_token_days must be 1..365".into());
+        }
+        let a = &self.clients.allow;
+        if [a.edit_minutes, a.recall_minutes]
+            .iter()
+            .any(|m| m.is_some_and(|m| !(0..=525_600).contains(&m)))
+        {
+            return Err("clients.allow.edit_minutes and recall_minutes must be 0..525600".into());
         }
         for o in &self.server.allowed_origins {
             if !crate::server::valid_origin(o) {

@@ -95,6 +95,15 @@ pub enum Out {
     KeyRevoked {
         kid: String,
     },
+    /// The app's defaults of client permissions changed (the console).
+    AllowDefaults {
+        allow: crate::config::AllowConfig,
+    },
+    /// A person's client permissions changed (docs/13 §4.1).
+    Perms {
+        user_id: String,
+        overrides: crate::model::Overrides,
+    },
 }
 
 /// A conversation member as seen by fan-out for one event.
@@ -591,7 +600,9 @@ impl Registry {
                 | Out::Block { .. }
                 | Out::Invalidate
                 | Out::Cutoff { .. }
-                | Out::KeyRevoked { .. } => {}
+                | Out::KeyRevoked { .. }
+                | Out::Perms { .. }
+                | Out::AllowDefaults { .. } => {}
                 Out::Tokens { kick, .. } => {
                     for (user_id, device_id) in kick {
                         for sid in g.by_user.get(&user_id).into_iter().flatten() {

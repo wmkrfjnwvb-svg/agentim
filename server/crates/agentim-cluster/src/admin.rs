@@ -12,14 +12,22 @@ use crate::{offline_ms, sql};
 
 pub fn run(cfg: Config, cmd: ClusterCmd) -> BoxFuture<Result<(), String>> {
     Box::pin(async move {
-        // Runs before (instead of) opening the hub, which installs them.
-        sqlx::any::install_default_drivers();
-        let out = match cmd {
-            ClusterCmd::Status => status(&cfg).await?,
-            ClusterCmd::Drain { node } => drain(&cfg, &node).await?,
-        };
+        let out = query(cfg, cmd).await?;
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
         Ok(())
+    })
+}
+
+/// The result of a `cluster` command (the CLI prints it; the admin API
+/// answers with it).
+pub fn query(cfg: Config, cmd: ClusterCmd) -> BoxFuture<Result<serde_json::Value, String>> {
+    Box::pin(async move {
+        // Runs before (instead of) opening the hub, which installs them.
+        sqlx::any::install_default_drivers();
+        match cmd {
+            ClusterCmd::Status => status(&cfg).await,
+            ClusterCmd::Drain { node } => drain(&cfg, &node).await,
+        }
     })
 }
 

@@ -5,3 +5,4 @@
 /screenshots
 /ci/node_modules
 /bench/out
+/console/dist

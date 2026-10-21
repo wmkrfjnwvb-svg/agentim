@@ -24,7 +24,7 @@ every push.
 
 ## Agent SDKs
 
-For agents rather than backends: an agent connects with its key (`agentim agent create --name helper --owner alice`) over the
+For agents rather than backends: an agent connects with its key (from the open API `PUT /v1/users/{id}` with `kind: agent`, the console or `agentim admin agent-create`) over the
 WebSocket protocol, receives what concerns it in order and acts. No dependencies; at-least-once delivery (a handler that throws
 gets the event again); reconnects by itself; errors carry the protocol `code`. See
 [docs/03-agents.md §2.4](../docs/03-agents.md).

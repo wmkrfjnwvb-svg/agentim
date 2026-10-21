@@ -2,7 +2,7 @@
 
 > 2026-10-20。起因：A4 把"删除账号""导出数据"同时放进了最终用户的客户端和开发者的开放 API。负责人指出这两类人的入口应该分清：**开发者**写客户端、做集成，API 怎么用由开发者决定；**最终用户**是开发者产品的用户，只通过开发者做的界面使用。本文排查了全部入口，列出混在一起的地方和改法。
 >
-> **状态**：§3 的 10 个问题和 §4 的 A–E **已确认**（2026-10-20，D116）；Agent 的授权按负责人的意见细化在 §4.1（D117）；登录方式按 §4.2 只用开发者签名的 JWT（D118）。
+> **状态**：§3 的 10 个问题和 §4 的 A–E **已确认**（2026-10-20，D116）并**全部完成**（2026-10-21）；Agent 的授权按负责人的意见细化在 §4.1（D117）；登录方式按 §4.2 只用开发者签名的 JWT（D118）。
 
 ## 1. 四种角色，四类入口
 
@@ -10,8 +10,8 @@
 |---|---|---|---|
 | **最终用户** | 开发者产品里的人 | 客户端协议 `/ws`。开发者的 App 通过客户端 SDK 调用，最终用户从不直接接触 | 客户端令牌：开发者后端用签名密钥自己签的 JWT（§4.2） |
 | **Agent** | 接进会话的 AI | 客户端协议 `/ws`、MCP `/mcp`、Agent SDK | Agent 密钥 |
-| **开发者** | 用 AgentIM 搭产品的团队 | 开放 API `/v1`（后端调用）、Webhook、发送前拦截；以后加上控制台里的"应用"部分 | API Key（带权限范围） |
-| **部署者** | 运行这套服务的人。自托管时往往就是开发者本人；托管云上是我们 | 命令行 `agentim …`、配置文件、`/metrics`；以后的管理 API `/admin/v1` 和控制台里的"部署"部分 | 服务器权限、管理员账号 |
+| **开发者** | 用 AgentIM 搭产品的团队 | 开放 API `/v1`（后端调用）、Webhook、发送前拦截；控制台 `/console` 和管理 API `/admin/v1/app` 的"应用"部分 | API Key（带权限范围）；控制台的管理员账号或管理密钥 |
+| **部署者** | 运行这套服务的人。自托管时往往就是开发者本人；托管云上是我们 | 命令行 `agentim …`、配置文件、`/metrics`；管理 API `/admin/v1/deploy` 和控制台里的"部署"部分 | 服务器权限、管理员账号或管理密钥 |
 
 **划分原则**
 
@@ -49,7 +49,7 @@
 | `list_devices` `logout_device` | 本人 | ✅ 管理自己的设备。Agent 也能调用（问题 9） |
 | ~~`set_password` `totp_setup` `totp_enable` `totp_disable`~~ | — | ✅ 已删除（问题 2） |
 | ~~`delete_account`~~ | — | ✅ 已删除，只走开放 API（问题 1） |
-| ~~`stats`~~ | — | ✅ 已删除，改到 A5 管理 API 的概览（问题 5） |
+| ~~`stats`~~ | — | ✅ 已删除，改到管理 API 的概览（问题 5） |
 
 ### 2.2 HTTP 路由
 
@@ -70,7 +70,7 @@
 下面这些开发者用开放 API 做不到：
 
 - ~~`user set-password`~~：✅ 已删除（问题 2）；
-- `agent create --team`、`agent transfer`、`agent export`、`agent import`：只能在服务器上执行。自托管时开发者就是部署者，还能用；到了托管云，开发者做不了（问题 3）。
+- ~~`agent create/transfer/key/list/export/import`~~：✅ 已删除。开发者用开放 API、管理 API 或控制台；命令行是 `agentim admin agent-create …`，它调管理 API（问题 3、10）。
 
 ### 2.4 开放 API 缺的开发者功能（✅ 已补上）
 
@@ -85,14 +85,14 @@
 |---|---|---|
 | 1 | 删除账号、导出数据有最终用户入口 | 已确认：只保留 `DELETE /v1/users/{id}`、`GET …/erasure`、`GET /v1/users/{id}/export`；删除 `delete_account` 和 `/v1/me/export`，以及每人每小时 3 次的导出限制（开发者按会话分页续传时会被它卡住）；删除记录里写上是哪个 API Key 发起的。✅ 已完成 |
 | 2 | **IM 里有一套最终用户的账号体系**：密码、TOTP、注册、改密码、`user set-password`。最终用户的账号应该在开发者的系统里，IM 只认开发者签发的令牌；现在两套并存，开发者的用户会多出一个"IM 密码" | ✅ 去掉最终用户的密码、TOTP、注册和对应的协议操作和路由。已有的代码（Argon2id、锁定、TOTP）挪给 A5 控制台的**管理员**登录用（[12 §4](12-developer-experience.md) 本来就要这些）。演示继续用 `--demo` 的免密码登录 |
-| 3 | **最终用户可以自建 Agent、在设备上拿到 Agent 密钥**，开发者既关不掉、也管不了数量以外的东西；团队 Agent、转交、导出导入又只能在服务器上做 | 开放 API 部分 ✅；客户端选项随问题 7 一起做。Agent 的发放和处置放到开放 API（新权限 `agents:write`）：建（个人、团队）、列表、签发和吊销密钥、转交、销毁、导出、导入。客户端的 `create_agent`、`agent_key`、`revoke_agent_key`、`destroy_agent` 改成开发者可开的选项，**默认关**。需要"用户自带 Agent"的产品打开它（见 §4 决定 B） |
+| 3 | **最终用户可以自建 Agent、在设备上拿到 Agent 密钥**，开发者既关不掉、也管不了数量以外的东西；团队 Agent、转交、导出导入又只能在服务器上做 | ✅ Agent 的发放和处置放到开放 API（新权限 `agents:write`）：建（个人、团队）、列表、签发和吊销密钥、转交、销毁、导出、导入。客户端的 `create_agent`、`agent_key`、`revoke_agent_key`、`destroy_agent` 改成开发者可开的选项，**默认关**。需要"用户自带 Agent"的产品打开它（见 §4 决定 B） |
 | 4 | 开发者、审核员不能急停或销毁某个 Agent | ✅ 开放 API 加急停、恢复、销毁。负责人在客户端的急停和恢复保留：这是人对 AI 的实时介入 |
-| 5 | 整个部署的统计和审计（`stats`、`/api/stats`）挂在最终用户协议上 | ✅ 从客户端协议和 `/api` 删掉，挪到 A5 管理 API 的"概览"。演示页的统计面板改为调管理 API |
+| 5 | 整个部署的统计和审计（`stats`、`/api/stats`）挂在最终用户协议上 | ✅ 从客户端协议和 `/api` 删掉，挪到管理 API 的"概览"（`GET /admin/v1/app/overview`）。演示页的统计面板删掉 |
 | 6 | 演示接口（免密码登录、随意建用户）编进了正式程序，`/api/dev/users` 也没有 Origin 校验 | ✅ 保留，只在 `--demo` 下可用，加上 Origin 校验；`--demo` 监听非本机地址时启动报错（除非显式加一个参数）；文档写清"仅限本机开发" |
-| 7 | **开发者没有开关决定最终用户在客户端能做什么**（建群、建单聊、拉人、查用户目录、编辑或撤回的时限、自建 Agent） | 加一组应用级的客户端权限，默认值保持现在的行为（自建 Agent 除外，见问题 3）。先放在配置文件 `[clients.allow]`，A5 以后在控制台和管理 API 里改。拒绝时返回 `forbidden`，不留痕迹 |
+| 7 | **开发者没有开关决定最终用户在客户端能做什么**（建群、建单聊、拉人、查用户目录、编辑或撤回的时限、自建 Agent） | ✅ 加一组应用级的客户端权限，默认值保持现在的行为（自建 Agent 除外，见问题 3）。默认值在配置文件 `[clients.allow]` 和控制台的"应用设置"里改。拒绝时返回 `forbidden`，不留痕迹 |
 | 8 | 开放 API 缺设备列表和单台下线、会话内禁言、某人的拉黑列表；服务端 SDK 没有 A4 接口 | ✅ 设备、禁言、SDK 补上；拉黑列表算个人数据，只在导出里出现，不单独开接口 |
 | 9 | 角色检查有漏洞：Agent 能调用 `totp_*`、`list_devices`、`logout_device`、`block`、`feedback`（`find_user` 是 Agent 通过 MCP 找人用的，保留，受问题 7 的开关管）；"只给 Agent 用"的操作，拒绝人时有的返回 `bad_request`、有的返回 `forbidden` | ✅ 补上类型检查。凡是"你这种身份不能做"的统一返回 `forbidden`（CLAUDE.md 的错误码规则），每个都加测试，拒绝不留痕迹 |
-| 10 | A5 控制台的设计把"应用管理"（API Key、用户、审核、Webhook、Agent）和"部署运维"（数据库、集群、加密、节点）放在同一个界面、同一套权限里。托管云上这是两拨人。应用级的设置（Webhook、发送前拦截、审核时限、Agent 上限）现在也写在部署的配置文件里 | 控制台和管理 API 分成两块：**应用**（开发者）和**部署**（部署者），各自的权限范围，托管云只给客户"应用"那块。应用设置先留在配置文件，A5 时搬到"应用"下，按 `tenant_id` 存 |
+| 10 | A5 控制台的设计把"应用管理"（API Key、用户、审核、Webhook、Agent）和"部署运维"（数据库、集群、加密、节点）放在同一个界面、同一套权限里。托管云上这是两拨人。应用级的设置（Webhook、发送前拦截、审核时限、Agent 上限）现在也写在部署的配置文件里 | ✅ 控制台和管理 API 分成两块：**应用**（`/admin/v1/app`，`owner`、`developer`，`moderator` 只有审核和会话）和**部署**（`/admin/v1/deploy`，`owner`、`operator`），托管云只给客户"应用"那块（[12 §4](12-developer-experience.md)）。客户端权限的默认值已搬到"应用设置"，按 `tenant_id` 存在控制库；Webhook、发送前拦截、审核时限、Agent 上限这一版仍在配置文件，控制台只读显示 |
 
 ## 4. 决定（2026-10-20 已确认）
 
@@ -104,26 +104,30 @@
 | D | 问题 7 的客户端权限：先做成配置文件里全局一组，还是直接按角色和会话类型配置（Stream 的做法）？ | 全局一组默认值，加上按用户的授权（§4.1）；按会话类型细分以后再加 |
 | E | 以上属于协议 v1 里删除操作，不符合"主版本内只做新增"（[02 §2.5](02-architecture.md)）。因为还没有正式发布（A9 未做），建议现在直接删、不升级版本号 | 发布前直接删 |
 
-### 4.1 客户端权限和 Agent 授权（D117）
+### 4.1 客户端权限和 Agent 授权（D117，✅ 已实现）
 
 **两层**：部署的默认值，加上开发者对单个用户的授权。用户身上的设置优先。
 
 | 层 | 在哪设 | 内容 |
 |---|---|---|
-| 默认值 | 配置文件 `[clients.allow]`；A5 以后在控制台和管理 API 的"应用设置"里改 | `create_groups`、`create_direct`、`add_members`、`find_users` 默认 `true`（保持现在的行为）；`create_agents` 默认 **`false`**；`edit_minutes`、`recall_minutes` 默认不限 |
-| 单个用户 | 开放 API `PATCH /v1/users/{id}` 的 `permissions`（`users:write` 权限），例如 `{"permissions": {"create_agents": true}}`；`null` 表示跟随默认值。A5 的管理 API 和控制台可以做同样的事 | 同一组键 |
+| 默认值 | 配置文件 `[clients.allow]` 是第一次启动的初始值；在控制台或管理 API 的"应用设置"（`PUT /admin/v1/app/settings/clients`）里改过以后，以控制库里存的为准，所有节点立即生效 | `create_groups`、`create_direct`、`add_members`、`find_users` 默认 `true`（保持现在的行为）；`create_agents` 默认 **`false`**；`edit_minutes`、`recall_minutes` 默认不限 |
+| 单个用户 | 开放 API `PATCH /v1/users/{id}` 的 `permissions`（`users:write` 权限），例如 `{"permissions": {"create_agents": true}}`；`null` 表示跟随默认值。管理 API（`PATCH /admin/v1/app/users/{id}`）和控制台的"人员"页做同样的事 | 同一组键 |
 
 - **开发者的 App 怎么知道**：`hello` 返回的 `me` 带上算好的 `permissions`。改了以后，这个用户在线的设备收到 `user.updated`，App 据此显示或隐藏按钮。
-- **被拒绝时**：返回 `forbidden`（"the app does not allow this"），不写任何东西。
+- **被拒绝时**：返回 `forbidden`（"the app does not allow this: …"），不写任何东西。开放 API 以这个用户身份（`"as": "<id>"`）调用时同样遵守；以 `"as": "system"` 调用（包括替用户建会话）不受限制。Agent 受它负责人的权限约束（比如 `find_users` 关了，负责人的 Agent 也不能查人）。
+- **时限**：`edit_minutes`、`recall_minutes` 只限制一个人编辑或撤回**自己**的消息；群主、管理员撤回别人的消息不受限制。
+- **自建 Agent 的检查在控制库的写线程里再做一次**：收回授权一旦返回，之后不会再建出这个人的 Agent（和建 Agent 在同一个写线程里排队）。
 - **`create_agents` 为 `true` 时**，用户在客户端上能对**自己的** Agent 做这些：
-  - `create_agent`、`list_agents`；
+  - `create_agent`；
   - `agent_key`、`revoke_agent_key`；
   - `destroy_agent`。
+
+  `list_agents` 始终可用：负责人要看到自己的 Agent 才能急停、审批（实现时从上面的清单里拿出来了）。
 - **授权收回后**：
   - 已有的 Agent 照常运行，仍归这个用户；
   - 用户不能再新建、换密钥、销毁，这些交给开发者用开放 API 处理；
   - 急停、恢复、审批、接管、耳语、代看等**人对 AI 的介入始终保留**，因为这是负责人的安全责任，和能不能自建无关。
-- **开发者自己发放 Agent**：开放 API 新权限 `agents:write`，A5 的管理 API 同样提供：
+- **开发者自己发放 Agent**：开放 API 新权限 `agents:write`，管理 API 和控制台同样提供：
   - 创建个人或团队 Agent。现有的 `PUT /v1/users/{id}`（`kind: agent`）保留，加上 `team`；
   - 列出某人的 Agent：`GET /v1/users/{id}/agents`；
   - 签发和吊销密钥：现有的 `/tokens`；
@@ -132,7 +136,7 @@
   - 转交：`POST /v1/agents/{id}:transfer`；
   - 导出、导入：`GET /v1/agents/{id}/export`、`POST /v1/agents:import`。
 
-  这些都走和客户端相同的业务逻辑，错误码一致，写审计。命令行的 `agent …` 改成调这套接口（A5 的 `agentim admin`）。
+  这些都走和客户端相同的业务逻辑，错误码一致，写审计。命令行的 `agent …` 已删除，改用 `agentim admin agent-create|agent-key|agent-stop|agent-resume|agent-transfer|agent-destroy`（调管理 API）。
 - **业内**：
   - Sendbird 的机器人只能用平台 API 创建（`POST /v3/bots`）；
   - Stream 的权限由开发者在服务端按角色授予，客户端不能改自己的角色。
@@ -170,7 +174,7 @@ IM 没有账号体系，不存最终用户的密码。用户 ID 只来自开发�
 
 **签名密钥**：
 
-- 部署者用命令行 `agentim signing-key create|list|revoke` 管理，A5 以后在管理 API 和控制台的"应用设置"里管理。密钥只在创建时显示一次。
+- 部署者用本机命令 `agentim signing-key create|list|revoke`（还没有管理员时也能用），开发者在控制台的"密钥"页或管理 API（`/admin/v1/app/signing-keys`）管理。密钥只在创建时显示一次。
 - 可以同时有多把，用于轮换：先建新的，开发者切换，再吊销旧的。吊销后用它签的令牌立即失效，已连接的断开。
 - 验签需要原始密钥，不能只存哈希：用已有的静态加密（[04](04-security-compliance.md)）加密存放。集群里每个节点在本地验签，密钥变化走已有的缓存失效通知。
 
@@ -205,7 +209,7 @@ IM 没有账号体系，不存最终用户的密码。用户 ID 只来自开发�
 1. ✅ 问题 1 和问题 9（`totp_*` 随问题 2 一起删除）。
 2. ✅ 问题 2、5、6：删掉最终用户账号体系和部署统计，演示改用新入口。
 3. ✅ §4.2 的签名令牌（替换 `POST /v1/users/{id}/tokens`）；✅ 问题 3、4、8：开放 API 加 Agent、设备和禁言接口，服务端 SDK 补齐（客户端选项在第 4 步）。
-4. 问题 7 和 §4.1：客户端权限和按用户授权。
-5. 问题 10：并入 A5。
+4. ✅ 问题 7 和 §4.1：客户端权限和按用户授权。
+5. ✅ 问题 10：随 A5 完成（[12 §4](12-developer-experience.md)）。
 
 每一步都按 CLAUDE.md 的要求：覆盖每个相关逻辑节点、边界、错误码、并发、三种数据库，同步更新 04、05、07、03 的文档。

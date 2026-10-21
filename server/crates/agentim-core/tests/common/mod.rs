@@ -137,6 +137,12 @@ pub fn test_clients() -> agentim_core::config::ClientsConfig {
     agentim_core::config::ClientsConfig {
         send_rate: 1e6,
         send_burst: 1e6,
+        // Most tests manage agents from the client; tests/permissions.rs
+        // checks the built-in default (off).
+        allow: agentim_core::config::AllowConfig {
+            create_agents: true,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

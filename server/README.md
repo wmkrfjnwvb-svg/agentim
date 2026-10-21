@@ -12,7 +12,9 @@ One program, `agentim`, from a single node to a cluster:
 cargo run --release --bin agentim -- --demo          # http://127.0.0.1:8080, log in as alice / bob / carol
 cargo run --release --bin agentim -- --config agentim.toml   # databases and units, see agentim.example.toml
 cargo run --release --bin agentim -- --config agentim.toml migrate-unit --unit subsidiary-b
-cargo run --release --bin agentim -- --config agentim.toml agent create --name helper --owner alice   # key + MCP settings, also while the server runs
+cargo run --release --bin agentim -- --config agentim.toml admin-key create --name ops --role owner   # a key for `agentim admin`, also while the server runs
+cargo run --release --bin agentim -- admin --key adk… agent-create helper --owner alice   # agent key + MCP settings, through the admin API
+(cd console && npm ci && npm run build)              # the console at /console is embedded by the next cargo build
 cargo test                                           # unit, acceptance, scenarios, concurrency, multi-database, WebSocket, kill -9
 AGENTIM_TEST_PG=postgres://postgres@127.0.0.1 AGENTIM_TEST_MYSQL=mysql://user:pass@127.0.0.1 cargo test
 cargo run --release --example loadtest -- --addr 127.0.0.1:8080 --clients 50 --messages 100 --streams 10

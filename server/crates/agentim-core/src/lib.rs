@@ -1,9 +1,12 @@
 #![recursion_limit = "512"]
 
+pub mod admin_api;
+pub mod admin_cli;
 pub mod auth;
 pub mod cli;
 pub mod cluster;
 pub mod config;
+pub mod console;
 pub mod crypto;
 pub mod db;
 pub mod demo;

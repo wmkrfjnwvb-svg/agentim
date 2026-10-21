@@ -29,6 +29,8 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(crate::open_api::routes(state.clone()))
+        .merge(crate::admin_api::routes(state.clone()))
+        .merge(crate::console::routes())
         .route("/", get(index))
         .route("/ws", get(ws))
         .route("/api/login", post(login))

@@ -297,6 +297,9 @@ pub const TABLES: &[Table] = &[
             // v7: account deleted (docs/04 §4.2); suspended by moderation until.
             n("erased_at", Big),
             n("suspended_until", Big),
+            // v8: what this person may do in their client, over the app's
+            // defaults (docs/13 §4.1), JSON.
+            n("permissions", Text),
         ],
         pk: &["id"],
         indexes: &[
@@ -386,6 +389,63 @@ pub const TABLES: &[Table] = &[
             n("revoked_at", Big),
         ],
         pk: &["kid"],
+        indexes: &[],
+        conv_key: None,
+    },
+    // v8: console and admin API accounts (docs/12 §4); their passwords and
+    // TOTP are in `credentials` under the admin id.
+    Table {
+        name: "admins",
+        cols: &[
+            c("id", Id),
+            c("name", Name),
+            c("role", Id),
+            c("created_at", Big),
+            n("disabled_at", Big),
+        ],
+        pk: &["id"],
+        indexes: &[("admins_name", &["name"], true)],
+        conv_key: None,
+    },
+    // v8: console sessions (cookie), only the SHA-256 is stored.
+    Table {
+        name: "admin_sessions",
+        cols: &[
+            c("hash", Key),
+            c("admin_id", Id),
+            c("csrf", Id),
+            c("created_at", Big),
+            c("last_seen", Big),
+        ],
+        pk: &["hash"],
+        indexes: &[("admin_sessions_admin", &["admin_id"], false)],
+        conv_key: None,
+    },
+    // v8: keys for `agentim admin`, with a role; only the SHA-256 is stored.
+    Table {
+        name: "admin_keys",
+        cols: &[
+            c("key_id", Id),
+            c("hash", Key),
+            c("name", Name),
+            c("role", Id),
+            c("created_at", Big),
+            n("revoked_at", Big),
+        ],
+        pk: &["key_id"],
+        indexes: &[("admin_keys_hash", &["hash"], true)],
+        conv_key: None,
+    },
+    // v8: app settings changed in the console (docs/12 §4), JSON per key.
+    Table {
+        name: "app_settings",
+        cols: &[
+            c("tenant_id", Id),
+            c("k", Id),
+            c("v", Text),
+            c("updated_at", Big),
+        ],
+        pk: &["tenant_id", "k"],
         indexes: &[],
         conv_key: None,
     },
@@ -1104,11 +1164,17 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 8,
         compat: 1,
-        about: "client tokens signed by the developer: signing keys and token cutoffs; silencing members",
-        steps: &[Step::AddColumn {
-            table: "members",
-            column: "silenced_until",
-        }],
+        about: "client tokens signed by the developer: signing keys and token cutoffs; silencing members; per-user client permissions; console admins, sessions, admin keys and app settings",
+        steps: &[
+            Step::AddColumn {
+                table: "members",
+                column: "silenced_until",
+            },
+            Step::AddColumn {
+                table: "users",
+                column: "permissions",
+            },
+        ],
     },
 ];
 

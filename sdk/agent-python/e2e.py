@@ -125,16 +125,23 @@ class Person:
 
 async def main():
     start_server()
-    key = cli("api-key", "create", "--name", "e2e", "--scopes", "users:write")["key"]
+    key = cli("api-key", "create", "--name", "e2e", "--scopes", "users:write,agents:write")["key"]
     im = AgentIM(URL, key)
     im.upsert_user("alice")
     # The developer's backend signs alice's token itself (docs/13 §4.2).
     sk = cli("signing-key", "create", "--name", "e2e")
     token = create_user_token(sk["kid"], sk["secret"], "alice")
-    one = cli("agent", "create", "--name", "pybot", "--owner", "alice")
-    two = cli("agent", "create", "--name", "pybot2", "--owner", "alice")
     alice = Person(token)
     await alice.connect()
+
+    # The backend gives alice two agents; her app finds their ids.
+    async def agent(name):
+        r = im.upsert_user(name, kind="agent", owner="alice")
+        u = (await alice.conn.call("find_user", name=name))["user"]
+        return {"key": r["key"], "agent": {"id": u["id"]}}
+
+    one = await agent("pybot")
+    two = await agent("pybot2")
     conv = (await alice.conn.call("create_conv", kind="group", title="e2e",
                                   members=[one["agent"]["id"], two["agent"]["id"]]))["conv_id"]
 

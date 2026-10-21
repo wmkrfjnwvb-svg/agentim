@@ -33,6 +33,75 @@ pub fn system_member() -> Member {
 }
 pub const UNIT_DEFAULT: &str = "default";
 
+/// What one person may do in their client, over the app's defaults
+/// (`[clients.allow]`, docs/13 §4.1); None follows the default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Overrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_groups: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_direct: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub add_members: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub find_users: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_agents: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_minutes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recall_minutes: Option<i64>,
+}
+
+impl Overrides {
+    pub fn is_empty(&self) -> bool {
+        *self == Overrides::default()
+    }
+
+    /// The person's permissions: these overrides over the defaults.
+    pub fn over(&self, d: &crate::config::AllowConfig) -> crate::config::AllowConfig {
+        crate::config::AllowConfig {
+            create_groups: self.create_groups.unwrap_or(d.create_groups),
+            create_direct: self.create_direct.unwrap_or(d.create_direct),
+            add_members: self.add_members.unwrap_or(d.add_members),
+            find_users: self.find_users.unwrap_or(d.find_users),
+            create_agents: self.create_agents.unwrap_or(d.create_agents),
+            edit_minutes: self.edit_minutes.or(d.edit_minutes),
+            recall_minutes: self.recall_minutes.or(d.recall_minutes),
+        }
+    }
+
+    /// Applies a change: each key set to a value overrides, set to null
+    /// follows the default again; `null` for the whole object clears all.
+    pub fn apply(&self, change: &serde_json::Value) -> Result<Overrides, String> {
+        if change.is_null() {
+            return Ok(Overrides::default());
+        }
+        let obj = change
+            .as_object()
+            .ok_or("permissions is an object or null")?;
+        let mut cur = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        for (k, v) in obj {
+            if v.is_null() {
+                cur.as_object_mut().unwrap().remove(k);
+            } else {
+                cur[k] = v.clone();
+            }
+        }
+        let o: Overrides = serde_json::from_value(cur).map_err(|e| {
+            format!("permissions: {e} (keys: create_groups, create_direct, add_members, find_users, create_agents as booleans; edit_minutes, recall_minutes as 0..525600)")
+        })?;
+        if [o.edit_minutes, o.recall_minutes]
+            .iter()
+            .any(|m| m.is_some_and(|m| !(0..=525_600).contains(&m)))
+        {
+            return Err("edit_minutes and recall_minutes are 0..525600".into());
+        }
+        Ok(o)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UserKind {

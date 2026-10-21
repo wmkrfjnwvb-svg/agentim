@@ -1,8 +1,17 @@
 # AgentIM server image (docs/11 C4). Build from the repository root:
 #   docker build -f deploy/Dockerfile -t agentim .
+FROM node:22-bookworm-slim AS console
+WORKDIR /src/server/console
+COPY server/console/package.json server/console/package-lock.json ./
+RUN npm ci
+COPY server/console/ ./
+RUN npm run build
+
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY server/ server/
+# The console is embedded in the binary (docs/12 §4).
+COPY --from=console /src/server/console/dist server/console/dist
 RUN cd server && cargo build --release -p agentim \
  && cp target/release/agentim /usr/local/bin/
 

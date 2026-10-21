@@ -302,30 +302,32 @@ agentim                                    # 打开 http://127.0.0.1:8080
 - **Web 演示端**改用 P2 + P3 重写，作为组件的活样例。
 - **测试**：Vitest + Testing Library 测每个组件的状态（空、加载、失败、流式中、被打断）；Playwright 对真实服务端跑端到端；截图对比防止样式退化。
 
-## 4. P4 开发者控制台
+## 4. P4 开发者控制台和管理 API（A5，✅ 2026-10-21）
 
-**内置在 `agentim` 程序里**（D103，2026-10-18 已确认：用 Rust，和服务端同一个二进制）：React 单页应用，构建后嵌进 Rust 程序，在 `/console` 提供。不单独做 Go 程序，单机到集群都是同一个程序、同一个端口（也可以配置成单独的管理地址，只在内网开放）。`cargo build` 时如果没有构建好的前端，就嵌一个"请从发布版安装或先构建前端"的占位页，Rust 的构建不依赖 Node；发布版和 Docker 镜像总是带完整的控制台。
+**内置在 `agentim` 程序里**（D103）：React 单页应用（TypeScript + Vite，不依赖 CSS 框架，源码在 `server/console`），构建后由 `build.rs` 嵌进 Rust 程序，在 `/console` 提供；单机到集群都是同一个程序、同一个端口。`cargo build` 时如果没有构建好的前端（`server/console/dist`），就嵌一个"请从发布版安装或先构建前端"的占位页，Rust 的构建不依赖 Node；CI 的浏览器测试和 Docker 镜像先构建前端。页面带 CSP（只允许同源脚本和样式）、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`（初始化链接里有令牌）。
 
-**分两次做**（[06 §3](06-plan.md)）：第 3 步和托管云一起先做登录、API 密钥和用量；第 7 步补全其余模块和 `agentim admin`。
+**两块，各自的权限**（[13](13-roles-and-entry-points.md) 问题 10，D116）：
 
-**管理 API `/admin/v1`**：控制台和 `agentim admin …` 命令（缩小后的 D63）都只调这一套 API。每个修改都走服务端的业务逻辑（和客户端、开放 API 同一套规则和错误码），写审计；拒绝的请求不留痕迹（CLAUDE.md）。
+| 块 | 给谁 | 内容 | 角色 |
+|---|---|---|---|
+| **应用** `/admin/v1/app/…` | 开发者 | 概览（人数、Agent 数、会话数、在线、待处理举报、密钥数）、开放 API 密钥、签名密钥、用户（搜索、资料、设备和下线、停用、客户端权限）、会话（元数据；看内容要填原因并写审计）、Agent（建、急停和恢复、换密钥、转交、销毁）、审核队列、Webhook（只读）、审计日志、应用设置（客户端权限的默认值） | `owner`、`developer`；`moderator` 只有概览、用户和会话的查看、审核队列 |
+| **部署** `/admin/v1/deploy/…` | 部署者 | 运行状态（各数据库的类型、从库模式、静态加密、写线程、连接数、版本）、集群节点（状态、下线一个节点，单机时返回 `bad_request`）、管理员账号和管理密钥（只有 `owner`） | `owner`、`operator` |
 
-**登录**：管理员账号密码 + TOTP。第一次运行时日志里打印一次性初始化链接（只在本机地址可用，用一次失效）。会话 Cookie 设 `HttpOnly`、`SameSite=Strict`，修改请求带 CSRF 令牌；登录限流和锁定沿用现有账号逻辑。`agentim admin` 用单独的管理密钥（带权限范围，只存哈希）。
+托管云上客户只拿到"应用"那块。控制台按角色只显示能用的页面。
 
-**模块**
+**管理员账号**：存在控制库 `admins` 表（名字、角色、停用时间），密码和 TOTP 沿用原来内置账号的代码（Argon2id、连续失败锁定 `auth.max_failures`/`lock_minutes`、每个验证码只能用一次、并发哈希有上限），**只给管理员用**。
 
-| 模块 | 内容 |
-|---|---|
-| 概览 | 连接数、消息量、确认延迟、各数据库和集群节点的健康状态 |
-| API 密钥 | 开放 API 密钥的创建、权限范围、IP 限制、过期、吊销（现有的 `api-key` 命令改为走这里） |
-| 用户和设备 | 搜索、查看、停用、下线设备、重置密码 |
-| 会话 | 元数据（成员、消息数、最后活动）；消息查看器：**查看内容要填原因并写审计**（GDPR 的目的限制），默认只看元数据 |
-| Agent | 列表、负责人、凭据、急停、用量 |
-| Webhook | 配置、投递日志、失败重发 |
-| 审核队列 | 用户的举报：查看被举报的消息、处理（删除、停用发送者、驳回），处理结果写审计 |
-| 设置 | 静态加密状态、数据库和从库模式、集群节点、版本 |
+- **初始化**：还没有管理员时，启动时打印一次性链接 `…/console/setup?token=…`（随机令牌只在内存里存哈希，只能从本机地址用，用一次就失效；重启后换新的）。用它建第一个 `owner`。在容器里运行时浏览器不在本机：用 `docker exec` 在容器里调 `POST /admin/v1/setup`，或者用本机命令 `agentim admin-key create --role owner` 拿到管理密钥再 `agentim admin admin-create`（Grafana 用默认密码、GitLab 把初始密码写进文件，我们不留默认密码）。
+- **登录**：`POST /admin/v1/login {name, password, totp?}`，成功后设会话 Cookie（`HttpOnly`、`SameSite=Strict`，HTTPS 或 `behind_proxy` 时加 `Secure`；会话存在 `admin_sessions`，只存哈希，12 小时不用失效、最长 7 天，后台每 10 秒清理），同时返回 CSRF 令牌；所有修改请求都要带 `X-CSRF-Token`。带 Cookie 的请求只接受同源（`Origin` 等于本服务器），客户端 App 的 `allowed_origins` 不算，免得 App 网站上的脚本能操作控制台。名字或密码错统一返回 `invalid_credentials`，缺验证码返回 `totp_required`，锁定返回 `rate_limited`。`POST /admin/v1/logout`。自己的密码（要当前密码，改完所有会话退出）、TOTP 开关在 `…/me`。
+- **最后一个 owner**：不能被降级或停用（`conflict`），在控制库写线程里检查，两个 owner 同时互相停用也只成功一个。停用一个管理员立即结束他的会话；`owner` 重设别人的密码也结束那人的会话。
+- **命令行用的管理密钥**：`adk…` 开头，带角色，只存哈希（`admin_keys`），在控制台的"管理员"页或本机命令 `agentim admin-key create --role owner` 创建。`agentim admin --url … --key …`（或环境变量 `AGENTIM_ADMIN_URL`、`AGENTIM_ADMIN_KEY`）调同一套管理 API：`overview`、`users`、`user`、`permissions`、`deactivate`、`reactivate`、`agents`、`agent-create`、`agent-key`、`agent-stop`、`agent-resume`、`agent-transfer`、`agent-destroy`、`conversations`、`reports`、`resolve`、`audit`、`api-keys`、`api-key-create`、`api-key-revoke`、`signing-keys`、`signing-key-create`、`signing-key-revoke`、`status`、`cluster`、`drain`、`admins`、`admin-create`（密码从标准输入读）。管理密钥没有密码和 TOTP，`…/me/password` 和 `…/me/totp:*` 对它返回 `bad_request`。
+- 原来直接改库的 `agentim agent create/transfer/key/list/export/import` 已删除；`api-key`、`signing-key`、`admin-key`、`token sign` 这些本机命令保留，给第一次部署时还没有管理员的情况。
 
-**测试**：管理 API 按 CLAUDE.md 的要求逐个接口测权限、边界、错误码、审计、拒绝不留痕，三种数据库；集群下从任一节点调用结果一致；Playwright 跑控制台的主要流程（初始化、登录、建密钥、查看会话并留下审计、处理举报）。
+**规则**：管理 API 的每个修改都走和客户端、开放 API 同一套业务逻辑和错误码，写审计（`admin.<动作>`，操作者是 `admin:<名字>` 或 `admin:key:<密钥名>`）；拒绝的请求不留痕迹。查看会话内容（`GET /admin/v1/app/conversations/{id}/messages?reason=…`）必须带 `reason`（1–500 字节），每次都写审计（GDPR 的目的限制）；会话列表和详情只有元数据。列表按 id 分页（`after`、`before`，各数据库按字节序比较），搜索里的 `%`、`_` 按普通字符处理。集群里从任一节点调用结果一致：会话、密钥、设置都在控制库，改了设置会通知其他进程重新读。
+
+**应用设置**：客户端权限的默认值存在控制库（`app_settings`，按 `tenant_id`），控制台里修改立即生效、所有节点一致、重启后保持；配置文件里的 `[clients.allow]` 只是没改过时的初始值。其他应用级设置（Webhook、发送前拦截、审核时限、Agent 上限）这一版仍在配置文件里，控制台只读显示。改了默认值不主动推送给在线的人（人数可能很多），App 在下次 `hello` 时拿到；单个人的权限变化照旧推 `user.updated`。
+
+**测试**（[05 §5](05-operations.md)）：`tests/admin_api.rs` 在三种数据库上逐个接口测角色、CSRF 和同源、会话过期和清理、初始化令牌只能用一次且只能从本机用、登录锁定和 TOTP、边界、错误码、审计、拒绝不留痕、重启、第二个进程读到同样结果，以及并发（同一个初始化链接只建出一个 owner、两个 owner 互相停用只成功一个、同名管理员只建一个；两处都做过变异检查）；`agentim/tests/cli.rs` 跑真实进程的 `agentim admin`；`ci/console_smoke.mjs` 用 Playwright 跑控制台的主要流程（初始化、建密钥、看会话内容并留下审计、处理举报、改客户端权限、看部署状态、`moderator` 只看到自己的页面）。
 
 ## 5. P5 文档站和示例应用
 

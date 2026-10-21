@@ -12,8 +12,14 @@ use sqlx::any::AnyRow;
 use crate::model::*;
 use crate::storage::{Dialect, TABLES, Ty};
 
+pub mod admin;
 mod compliance;
 pub use compliance::ERASE_BATCH;
+
+/// Escapes a user's text for `LIKE … ESCAPE '!'`.
+fn like_escape(s: &str) -> String {
+    s.replace('!', "!!").replace('%', "!%").replace('_', "!_")
+}
 
 pub fn new_id() -> String {
     uuid::Uuid::now_v7().simple().to_string()
@@ -742,6 +748,44 @@ impl Db<'_> {
         .execute(&mut *self.c)
         .await
         .map_err(|e| ApiError::new("conflict", e.to_string()))?;
+        Ok(())
+    }
+
+    /// Every person's permission overrides (docs/13 §4.1).
+    pub async fn permissions_all(&mut self) -> ApiResult<Vec<(String, Overrides)>> {
+        let rows = sqlx::query("SELECT id, permissions FROM users WHERE permissions IS NOT NULL")
+            .fetch_all(&mut *self.c)
+            .await?;
+        let mut out = vec![];
+        for r in rows {
+            let id: String = r.try_get(0)?;
+            let p: String = r.try_get(1)?;
+            if let Ok(o) = serde_json::from_str(&p) {
+                out.push((id, o));
+            }
+        }
+        Ok(out)
+    }
+
+    pub async fn permissions(&mut self, id: &str) -> ApiResult<Overrides> {
+        let r = sqlx::query(self.d.q("SELECT permissions FROM users WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(&mut *self.c)
+            .await?;
+        Ok(
+            r.and_then(|r| r.try_get::<Option<String>, _>(0).ok().flatten())
+                .and_then(|p| serde_json::from_str(&p).ok())
+                .unwrap_or_default(),
+        )
+    }
+
+    pub async fn set_permissions(&mut self, id: &str, o: &Overrides) -> ApiResult<()> {
+        let v = (!o.is_empty()).then(|| json!(o).to_string());
+        sqlx::query(self.d.q("UPDATE users SET permissions = ? WHERE id = ?"))
+            .bind(v)
+            .bind(id)
+            .execute(&mut *self.c)
+            .await?;
         Ok(())
     }
 
@@ -3833,6 +3877,78 @@ impl Db<'_> {
             .map_err(Into::into)
     }
 
+    /// Audit records newest first: `action` starting with `prefix`, older
+    /// than the record `before` (an id), at most `limit`.
+    pub async fn audit_page(
+        &mut self,
+        prefix: Option<&str>,
+        before: Option<&str>,
+        limit: i64,
+    ) -> ApiResult<Vec<Value>> {
+        let id = self.bytewise("id");
+        let rows = sqlx::query(self.d.q(&format!(
+            "SELECT id, ts, actor_id, action, conv_id, target, detail FROM audit
+             WHERE action LIKE ? ESCAPE '!' AND {id} < ? ORDER BY {id} DESC LIMIT ?"
+        )))
+        .bind(format!("{}%", like_escape(prefix.unwrap_or(""))))
+        .bind(before.unwrap_or("~"))
+        .bind(limit)
+        .fetch_all(&mut *self.c)
+        .await?;
+        self.preload(&rows, &["detail"]).await?;
+        rows.iter()
+            .map(|r| {
+                let id: String = r.try_get("id")?;
+                Ok(json!({
+                    "id": id,
+                    "ts": r.try_get::<i64, _>("ts")?,
+                    "actor_id": r.try_get::<Option<String>, _>("actor_id")?,
+                    "action": r.try_get::<String, _>("action")?,
+                    "conv_id": r.try_get::<Option<String>, _>("conv_id")?,
+                    "target": r.try_get::<Option<String>, _>("target")?,
+                    "detail": serde_json::from_str::<Value>(&dec(self.cx, r, "detail", &format!("audit.detail:{id}"))?).unwrap_or(Value::Null),
+                }))
+            })
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    /// Conversations of this database by id after `after`, titles
+    /// containing `q` (case-sensitive), with their member counts.
+    pub async fn conversations_page(
+        &mut self,
+        q: Option<&str>,
+        after: Option<&str>,
+        limit: i64,
+    ) -> ApiResult<Vec<Value>> {
+        let id = self.bytewise("c.id");
+        let rows = sqlx::query(self.d.q(&format!(
+            "SELECT c.id, c.kind, c.title, c.last_seq, c.created_at,
+                    (SELECT COUNT(*) FROM members m WHERE m.conv_id = c.id) AS n
+             FROM conversations c WHERE {id} > ? AND (c.title LIKE ? ESCAPE '!' OR c.id = ?)
+             ORDER BY {id} LIMIT ?"
+        )))
+        .bind(after.unwrap_or(""))
+        .bind(format!("%{}%", like_escape(q.unwrap_or(""))))
+        .bind(q.unwrap_or(""))
+        .bind(limit)
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok(json!({
+                    "id": r.try_get::<String, _>("id")?,
+                    "kind": r.try_get::<String, _>("kind")?,
+                    "title": r.try_get::<String, _>("title")?,
+                    "last_seq": r.try_get::<i64, _>("last_seq")?,
+                    "created_at": r.try_get::<i64, _>("created_at")?,
+                    "members": r.try_get::<i64, _>("n")?,
+                }))
+            })
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
     pub async fn counts(&mut self) -> ApiResult<Value> {
         let mut out = serde_json::Map::new();
         for (k, sql) in [
@@ -3848,6 +3964,7 @@ impl Db<'_> {
                 "pending_drafts",
                 "SELECT COUNT(*) FROM drafts WHERE state = 'pending'",
             ),
+            ("webhook_outbox", "SELECT COUNT(*) FROM webhook_outbox"),
         ] {
             let v: i64 = sqlx::query(sql).fetch_one(&mut *self.c).await?.try_get(0)?;
             out.insert(k.into(), json!(v));
@@ -3872,6 +3989,17 @@ impl Db<'_> {
     // One row per version of a key; the current value is the highest
     // version. Values are encrypted with the agent's own data key (scope =
     // the agent id), destroyed with the agent.
+
+    /// A text column compared and ordered byte-wise on every database
+    /// (PostgreSQL's linguistic collations do not; MySQL tables are
+    /// `utf8mb4_bin`, SQLite compares bytes).
+    fn bytewise(&self, col: &str) -> String {
+        if self.d == Dialect::Postgres {
+            format!("{col} COLLATE \"C\"")
+        } else {
+            col.to_string()
+        }
+    }
 
     /// Keys compare byte-wise on every database (PostgreSQL's default
     /// collation does not).

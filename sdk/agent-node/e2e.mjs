@@ -79,16 +79,21 @@ class Person {
 
 try {
   await startServer();
-  const key = cli('api-key', 'create', '--name', 'e2e', '--scopes', 'users:write').key;
+  const key = cli('api-key', 'create', '--name', 'e2e', '--scopes', 'users:write,agents:write').key;
   const im = new AgentIM({ baseUrl: URL, apiKey: key });
   await im.upsertUser('alice');
   // The developer's backend signs alice's token itself (docs/13 §4.2).
   const token = createUserToken(cli('signing-key', 'create', '--name', 'e2e'), 'alice');
-  const one = cli('agent', 'create', '--name', 'nbot', '--owner', 'alice');
-  const two = cli('agent', 'create', '--name', 'nbot2', '--owner', 'alice');
-
   const alice = new Person(token);
   await alice.connect();
+  // The backend gives alice two agents; her app finds their ids.
+  const agent = async (id) => {
+    const r = await im.upsertUser(id, { kind: 'agent', owner: 'alice' });
+    const u = (await alice.conn.call('find_user', { name: id })).user;
+    return { key: r.key, agent: { id: u.id } };
+  };
+  const one = await agent('nbot');
+  const two = await agent('nbot2');
   const conv = (await alice.conn.call('create_conv', { kind: 'group', title: 'e2e', members: [one.agent.id, two.agent.id] })).conv_id;
 
   // The agents.

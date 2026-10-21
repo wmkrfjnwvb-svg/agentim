@@ -20,10 +20,10 @@ AgentIM 是给开发者的 IM：任何框架写的 Agent 都能作为成员接�
 | | 个人助理（`personal`，默认） | 团队 Agent（`team`） |
 |---|---|---|
 | 是什么 | 某个人的分身 | 属于群或单元（发布机器人、客服、知识库），负责人只是维护者 |
-| 谁能创建 | 任何人（`create_agent`） | 只有管理员（`agentim agent create --team …`） |
+| 谁能创建 | 任何人（`create_agent`） | 只有开发者：开放 API `PUT /v1/users/{id}`（`kind: agent`、`team: true`）、控制台或 `agentim admin agent-create --team` |
 | 负责人离开或被移出会话 | 一起离开（`reason: owner_left`） | 留下（负责人对它的接管先结束） |
 | 负责人被停用 | 急停，重启后仍停止；重新启用后由他自己恢复 | 照常运行，管理员列表里标为"负责人已停用"，由管理员转交 |
-| 转交 | 不能（`bad_request`） | `agentim agent transfer`（§2.1） |
+| 转交 | 不能（`bad_request`） | 开放 API `POST /v1/agents/{id}:transfer`、控制台或 `agentim admin agent-transfer`（§2.1） |
 
 两种都遵守：**负责人只在自己也是成员的会话里行使负责人的权力**（代看、接管、耳语、改策略、重置熔断、审批草稿，以及收到这个会话的草稿、反馈等侧信道）。不是成员时返回 `forbidden`，侧信道也不再发给他；会话之外的管理（急停、恢复、销毁、密钥）不受影响。
 
@@ -47,10 +47,10 @@ Agent 运行在 IM 外部，IM 只能强制它经手的东西：Agent 的消息�
 
 | 方面 | 做法 |
 |---|---|
-| 创建 | 应用里 `create_agent {name}`；运维用 `agentim agent create --name researcher --owner alice [--url https://im.example.com] [--team]`；开发者后端用开放 API。都返回密钥（只显示一次）和可直接粘贴的接入配置（MCP 配置、WebSocket 地址） |
+| 创建 | 应用里 `create_agent {name}`（开发者打开 `create_agents` 时，[13 §4.1](13-roles-and-entry-points.md)）；开发者后端用开放 API `PUT /v1/users/{id}`（`kind: agent`）；控制台的 Agent 页或 `agentim admin agent-create ID --owner alice [--team]`。都返回密钥（只显示一次）和可直接粘贴的接入配置（MCP 配置、WebSocket 地址） |
 | 凭据 | Agent 密钥就是它的客户端令牌：只存哈希，一个密钥一台设备，有自己的同步位置。每个负责人的 Agent 数量上限 `agents.max_per_owner`（默认 20） |
-| 换密钥 | `agent_key {agent_id, revoke_others?}` 签发新密钥；`revoke_others` 时同一次写入吊销其他密钥并断开连接。并发换密钥时最后写入的那把唯一有效。CLI：`agentim agent key --name …` |
-| 转交（团队 Agent） | `agentim agent transfer --name NAME --owner NEW [--rotate-keys]`：新负责人须是同一单元在职的人，不超过名额；`--rotate-keys` 吊销全部密钥。写审计 `agent.transferred` |
+| 换密钥 | `agent_key {agent_id, revoke_others?}` 签发新密钥；`revoke_others` 时同一次写入吊销其他密钥并断开连接。并发换密钥时最后写入的那把唯一有效。开放 API `POST /v1/agents/{id}/keys`，或 `agentim admin agent-key ID [--revoke-others]` |
+| 转交（团队 Agent） | 开放 API `POST /v1/agents/{id}:transfer {owner, rotate_keys}`、控制台或 `agentim admin agent-transfer ID --owner NEW [--rotate-keys]`：新负责人须是同一单元在职的人，不超过名额；`--rotate-keys` 吊销全部密钥。写审计 `agent.transferred` |
 | 吊销、列表 | `revoke_agent_key {agent_id, device_id}`、`list_agents`（名字、密钥列表、最后在线时间，不含密钥） |
 | 权限 | 只有负责人能管理自己的 Agent：别人的 `forbidden`，不存在 `not_found`，名字被占用或超过上限 `conflict`，参数不对 `bad_request`；Agent 不能创建 Agent（`forbidden`） |
 | 运行时用 CLI 建的 Agent | 服务端遇到内存里没有的令牌时去库里查一次（全局每秒最多一次），查到就载入；集群里别的节点签发的令牌也靠这一步。CLI 建的 Agent 在第一次连接之前就能被拉进会话 |
@@ -268,8 +268,8 @@ stream_start ──▶ streaming（分配 conv_seq，事件 msg.created）
 ### 7.3 换环境、导出、导入
 
 - **同一服务器换环境**：`agent_key {revoke_others: true}` 签发新密钥、同一次写入吊销旧的。新密钥是新设备，按新设备规则同步最近的消息；完整上下文用 `context` / `history`，状态用 `state_get`，版本号接得上。
-- **导出** `agentim agent export --name NAME [--with-conversations] [--out FILE]`：负责人在服务器上执行（这就是批准）。JSON 包（`agentim.agent/1`）：来源服务器和时间、Agent 的 ID 和名字、负责人、检查点（每个键的当前版本）、摘要（带会话标题）；`--with-conversations` 时加上它看得到的消息（带原 seq、发送者名字和类型），**只包含负责人自己也是成员的会话**（D46）。末尾是整个包的 SHA-256。密钥、令牌、授权永不导出；已销毁的 Agent 不能导出。写审计。
-- **导入** `agentim agent import FILE --owner NAME [--name NEW]`：先全部检查再创建：格式、哈希（被改过 `bad_request`）、名字规则、键和值的限制、键数上限（`rate_limited`）；名字已占用、名额已满 `conflict`。检查点原样写入（版本从 1 开始），摘要写成只读的 `archive/summaries/N`，会话写成 `archive/conv/<原会话 ID>/meta` 和按 900KB 分块的 `archive/conv/<原会话 ID>/N`；不推送、不算未读，Agent 不成为任何会话的成员。中途失败时把刚建的 Agent 销毁。返回新密钥（只显示一次）。写审计。
+- **导出** 开放 API `GET /v1/agents/{id}/export[?with_conversations=true]`（`agents:read`，带会话还要 `messages:read`）：开发者的后端在负责人同意后调用。JSON 包（`agentim.agent/1`）：来源服务器和时间、Agent 的 ID 和名字、负责人、检查点（每个键的当前版本）、摘要（带会话标题）；带会话时加上它看得到的消息（带原 seq、发送者名字和类型），**只包含负责人自己也是成员的会话**（D46）。末尾是整个包的 SHA-256。密钥、令牌、授权永不导出；已销毁的 Agent 不能导出。写审计。
+- **导入** 开放 API `POST /v1/agents:import`（`agents:write`，带 `owner`，可选新名字）：先全部检查再创建：格式、哈希（被改过 `bad_request`）、名字规则、键和值的限制、键数上限（`rate_limited`）；名字已占用、名额已满 `conflict`。检查点原样写入（版本从 1 开始），摘要写成只读的 `archive/summaries/N`，会话写成 `archive/conv/<原会话 ID>/meta` 和按 900KB 分块的 `archive/conv/<原会话 ID>/N`；不推送、不算未读，Agent 不成为任何会话的成员。中途失败时把刚建的 Agent 销毁。返回新密钥（只显示一次）。写审计。
 - 入口只有 CLI，导入可以在服务端运行时做。
 
 ## 8. 任务频道

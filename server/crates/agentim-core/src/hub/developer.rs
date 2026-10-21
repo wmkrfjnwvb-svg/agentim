@@ -87,3 +87,90 @@ impl Hub {
         })
     }
 }
+
+impl Hub {
+    // ------------------------------------------------- client permissions
+
+    /// Reads every person's permission overrides into memory.
+    pub(crate) async fn load_permissions(&self) -> ApiResult<()> {
+        let all = self
+            .read(self.control(), |db| {
+                Box::pin(async move { db.permissions_all().await })
+            })
+            .await?;
+        *self.inner.sh.perms.write().unwrap() = all.into_iter().collect();
+        Ok(())
+    }
+
+    /// What a person may do in their client (docs/13 §4.1).
+    pub fn permissions(&self, u: &User) -> crate::config::AllowConfig {
+        self.inner.sh.allowed(u)
+    }
+
+    pub fn permission_overrides(&self, user_id: &str) -> Overrides {
+        self.inner
+            .sh
+            .perms
+            .read()
+            .unwrap()
+            .get(user_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Changes a person's overrides (`change` as in `Overrides::apply`);
+    /// their connected devices are told.
+    pub async fn set_permissions(&self, user: &User, change: &Value) -> ApiResult<Value> {
+        if user.kind != UserKind::Human {
+            return Err(err("bad_request", "permissions are a person's"));
+        }
+        let o = self
+            .permission_overrides(&user.id)
+            .apply(change)
+            .map_err(|m| err("bad_request", m))?;
+        self.control()
+            .call(Op::SetPermissions {
+                user_id: user.id.clone(),
+                overrides: o.clone(),
+            })
+            .await?;
+        let now = self.permissions(user);
+        self.inner
+            .sh
+            .reg
+            .deliver(vec![crate::registry::Out::ToUser {
+                user_id: user.id.clone(),
+                frame: json!({"type": "user.updated", "user_id": user.id, "permissions": now}),
+            }]);
+        Ok(json!({"permissions": now, "overrides": o}))
+    }
+
+    /// Refuses what the app does not let this person (or this agent's
+    /// owner) do from a client.
+    pub(crate) fn allowed_in_client(&self, me: &User, msg: &ClientMsg) -> ApiResult<()> {
+        let a = self.permissions(me);
+        let (ok, what) = match msg {
+            ClientMsg::CreateConv { kind, .. } if kind == "dm" => {
+                (a.create_direct, "starting direct conversations")
+            }
+            ClientMsg::CreateConv { .. } => (a.create_groups, "creating groups"),
+            ClientMsg::AddMember { .. } => (a.add_members, "adding members"),
+            ClientMsg::FindUser { .. } => (a.find_users, "looking people up"),
+            // Interventions (stop, resume, approve...) stay with the owner
+            // whatever this says; listing their agents too.
+            ClientMsg::CreateAgent { .. }
+            | ClientMsg::AgentKey { .. }
+            | ClientMsg::RevokeAgentKey { .. }
+            | ClientMsg::DestroyAgent { .. } => (a.create_agents, "managing your own agents"),
+            _ => (true, ""),
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(err(
+                "forbidden",
+                format!("the app does not allow this: {what}"),
+            ))
+        }
+    }
+}

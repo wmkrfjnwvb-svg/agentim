@@ -255,7 +255,7 @@ async fn malformed_and_forged_tokens_are_refused_without_trace(db: TestDb) {
     for (i, e) in [
         (now + 60, now + 600),
         (now, now + 7 * day),
-        (now - 10, now + 1),
+        (now - 10, now + 30),
     ] {
         let t = jwt_sign(&kid, &secret, "alice", i, e);
         assert!(login(&hub, &t, "dev1").await.is_ok(), "{i} {e}");

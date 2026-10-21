@@ -28,6 +28,7 @@ type Acks = Vec<(String, i64, i64)>;
 mod agents;
 mod compliance;
 pub use compliance::{CATEGORIES as REPORT_CATEGORIES, DELETED_CAN_SEND, ERASURE_STEP};
+pub mod admin;
 mod developer;
 mod export;
 mod history;
@@ -63,6 +64,10 @@ struct Inner {
     issuers: Mutex<HashMap<String, String>>,
     /// Last reload of the signing keys for an unknown key id.
     keys_looked_up: Mutex<Option<Instant>>,
+    /// The console's one-time setup token (its hash) while there is no admin.
+    setup: Mutex<Option<String>>,
+    /// The cluster crate's status and drain, for the admin API.
+    cluster_query: std::sync::OnceLock<crate::cli::ClusterQuery>,
     /// MCP tool calls per agent key: (tokens, last refill).
     mcp_buckets: Mutex<HashMap<String, (f64, Instant)>>,
     /// One stateless sync at a time per device (MCP `get_updates`).
@@ -145,6 +150,10 @@ pub struct Session {
     client: std::sync::Mutex<ClientState>,
     /// When this session's device was registered (cached).
     device_created: std::sync::Mutex<Option<i64>>,
+    /// The open API as the system acting for a user (e.g. creating a
+    /// group with them as owner): the app's client permissions do not
+    /// apply (docs/13 §4.1).
+    unrestricted: bool,
 }
 
 /// Signals one user may send per second.
@@ -200,6 +209,8 @@ impl Hub {
             tokens: Default::default(),
             signing: Default::default(),
             cutoffs: Default::default(),
+            allow: std::sync::RwLock::new(cfg.clients.allow.clone()),
+            perms: Default::default(),
             deactivated: Default::default(),
             stopped: Default::default(),
             destroyed: Default::default(),
@@ -266,6 +277,8 @@ impl Hub {
                 tokens_looked_up: Mutex::new(None),
                 issuers: Mutex::default(),
                 keys_looked_up: Mutex::new(None),
+                setup: Mutex::new(None),
+                cluster_query: Default::default(),
                 mcp_buckets: Mutex::default(),
                 device_locks: Mutex::default(),
                 conv_buckets: Mutex::default(),
@@ -292,6 +305,8 @@ impl Hub {
     pub async fn finish_open(&self) -> ApiResult<()> {
         self.load().await?;
         self.load_signing().await?;
+        self.load_permissions().await?;
+        self.load_app_settings().await?;
         self.load_agent_flags().await?;
         self.resume_erasures().await?;
         Ok(())
@@ -469,6 +484,7 @@ impl Hub {
                 .call(Op::CreateUser {
                     user: system.clone(),
                     owner_cap: None,
+                    owner_must_be_allowed: false,
                 })
                 .await?;
             sh.users.write().unwrap().insert(system.id.clone(), system);
@@ -769,6 +785,8 @@ impl Hub {
         // Signing keys revoked elsewhere: the devices that connected with
         // them are disconnected.
         self.load_signing().await?;
+        self.load_permissions().await?;
+        self.load_app_settings().await?;
         {
             let keys = sh.signing.read().unwrap();
             for t in &tokens {
@@ -979,6 +997,7 @@ impl Hub {
                     let _ = hub.reload_api_keys().await;
                     hub.repair_indexes().await;
                     let _ = hub.expire_tokens().await;
+                    let _ = hub.expire_admin_sessions().await;
                     let _ = hub.moderation_upkeep().await;
                 }
             }));
@@ -1081,9 +1100,8 @@ impl Hub {
     }
 
     // ------------------------------------------------- password credentials
-    // Kept for the admin accounts of the console (docs/13 problem 2, A5).
+    // The console's admin accounts (docs/12 §4).
 
-    #[allow(dead_code)]
     async fn credentials(&self, user_id: &str) -> ApiResult<crate::db::Credentials> {
         let u = user_id.to_string();
         Ok(self
@@ -1094,7 +1112,6 @@ impl Hub {
             .unwrap_or_default())
     }
 
-    #[allow(dead_code)]
     async fn cred(&self, user_id: &str, change: crate::logic::CredChange) -> ApiResult<Value> {
         self.control()
             .call(Op::Credentials {
@@ -1106,7 +1123,6 @@ impl Hub {
 
     /// Runs a password hash or check in a bounded number of slots, so
     /// unauthenticated logins cannot take all memory and threads.
-    #[allow(dead_code)]
     async fn hash_job<T: Send + 'static>(
         &self,
         f: impl FnOnce() -> T + Send + 'static,
@@ -1142,7 +1158,6 @@ impl Hub {
         hash_slot_count(&self.inner.cfg)
     }
 
-    #[allow(dead_code)]
     async fn login_failed(&self, user_id: &str) -> ApiResult<()> {
         let a = &self.inner.cfg.auth;
         self.cred(
@@ -1304,6 +1319,30 @@ impl Hub {
                 features: Vec::new(),
             }),
             device_created: std::sync::Mutex::new(None),
+            unrestricted: false,
+        };
+        self.dispatch(&sess, msg).await
+    }
+
+    /// `act_as` on behalf of the system (the open API as `"system"`): the
+    /// user's client permissions do not apply, every other rule does.
+    pub async fn act_for(&self, user: &User, msg: ClientMsg) -> ApiResult<Value> {
+        if self.inner.sh.deactivated.read().unwrap().contains(&user.id) {
+            return Err(err("forbidden", "the user is deactivated"));
+        }
+        let sess = Session {
+            hub: self.clone(),
+            sid: 0,
+            user: user.clone(),
+            device_id: None,
+            kicked: Arc::new(tokio::sync::Notify::new()),
+            client: std::sync::Mutex::new(ClientState {
+                protocol: protocol::PROTOCOL_VERSIONS[0],
+                info: None,
+                features: Vec::new(),
+            }),
+            device_created: std::sync::Mutex::new(None),
+            unrestricted: true,
         };
         self.dispatch(&sess, msg).await
     }
@@ -1757,6 +1796,7 @@ impl Hub {
                     features: Vec::new(),
                 }),
                 device_created: std::sync::Mutex::new(None),
+                unrestricted: false,
             },
             rx,
         )
@@ -1784,6 +1824,21 @@ impl Hub {
         owner: Option<&str>,
         unit: Option<&str>,
         team: bool,
+    ) -> ApiResult<(User, Option<String>)> {
+        self.create_user_full(name, kind, owner, unit, team, false)
+            .await
+    }
+
+    /// `owner_must_be_allowed`: an agent its owner creates in their
+    /// client, refused unless the app lets them (docs/13 §4.1).
+    pub(crate) async fn create_user_full(
+        &self,
+        name: &str,
+        kind: UserKind,
+        owner: Option<&str>,
+        unit: Option<&str>,
+        team: bool,
+        owner_must_be_allowed: bool,
     ) -> ApiResult<(User, Option<String>)> {
         if team && (kind != UserKind::Agent || owner.is_none()) {
             return Err(err(
@@ -1813,6 +1868,7 @@ impl Hub {
             .call(Op::CreateUser {
                 user: user.clone(),
                 owner_cap: Some(self.inner.cfg.agents.max_per_owner),
+                owner_must_be_allowed,
             })
             .await?;
         self.inner
@@ -2030,6 +2086,11 @@ impl Hub {
         {
             return Err(err("forbidden", "this is for people"));
         }
+        // What the app lets people do in their client (docs/13 §4.1); the
+        // system user (the open API as "system") is not limited.
+        if me.kind != UserKind::System && !sess.unrestricted {
+            self.allowed_in_client(me, &msg)?;
+        }
         // People's sends are limited per person, over all connections (D95).
         if me.kind == UserKind::Human && matches!(msg, ClientMsg::Send { .. }) {
             let c = &self.inner.cfg.clients;
@@ -2060,6 +2121,9 @@ impl Hub {
                 let mut res = protocol::server_info();
                 res["protocol"] = json!(version);
                 res["me"] = json!(me);
+                if me.kind == UserKind::Human {
+                    res["me"]["permissions"] = json!(self.inner.sh.allowed(me));
+                }
                 res["users"] = json!(users);
                 res["my_agents"] = json!(self.inner.sh.agents_of(&me.id));
                 Ok(res)
@@ -2455,7 +2519,7 @@ impl Hub {
                 let n = self.log_out(&me.id, Some(&device_id)).await?;
                 Ok(json!({"revoked": n}))
             }
-            ClientMsg::CreateAgent { name } => self.create_agent(me, &name).await,
+            ClientMsg::CreateAgent { name } => self.create_agent_in_client(me, &name).await,
             ClientMsg::ListAgents => self.list_agents(me).await,
             ClientMsg::AgentKey {
                 agent_id,

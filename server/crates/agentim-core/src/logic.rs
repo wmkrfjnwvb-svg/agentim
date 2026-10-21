@@ -129,6 +129,39 @@ impl TokenInfo {
     }
 }
 
+/// Writes of the console's accounts and settings (docs/12 §4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AdminOp {
+    Create(crate::db::admin::AdminRow),
+    Update {
+        id: String,
+        role: Option<String>,
+        disabled: Option<bool>,
+    },
+    SessionPut(crate::db::admin::AdminSessionRow),
+    SessionTouch {
+        hash: String,
+    },
+    SessionsDelete {
+        admin_id: Option<String>,
+        hash: Option<String>,
+    },
+    SessionsExpire {
+        idle_before: i64,
+        max_before: i64,
+    },
+    KeyPut(crate::db::admin::AdminKeyRow),
+    KeyRevoke {
+        key_id: String,
+    },
+    /// An app setting; `clients.allow` also changes every node's defaults.
+    Setting {
+        tenant: String,
+        key: String,
+        value: Value,
+    },
+}
+
 pub struct Shared {
     pub reg: Registry,
     pub users: std::sync::RwLock<HashMap<String, User>>,
@@ -139,6 +172,10 @@ pub struct Shared {
     /// (user, device or "") → client tokens issued before these seconds
     /// are refused.
     pub cutoffs: std::sync::RwLock<HashMap<(String, String), i64>>,
+    /// What people may do in their client: the app's defaults and each
+    /// person's overrides (docs/13 §4.1).
+    pub allow: std::sync::RwLock<crate::config::AllowConfig>,
+    pub perms: std::sync::RwLock<HashMap<String, Overrides>>,
     /// Users that may not log in or act (open API deactivation).
     pub deactivated: std::sync::RwLock<HashSet<String>>,
     /// Agents their owners stopped (docs/03-agents.md §4.3–§4.4).
@@ -194,6 +231,17 @@ impl Shared {
                         .unwrap_or_else(|e| e.into_inner())
                         .insert((user_id.clone(), device_id.clone()), *at);
                 }
+                Out::AllowDefaults { allow } => {
+                    *self.allow.write().unwrap_or_else(|e| e.into_inner()) = allow.clone();
+                }
+                Out::Perms { user_id, overrides } => {
+                    let mut p = self.perms.write().unwrap_or_else(|e| e.into_inner());
+                    if overrides.is_empty() {
+                        p.remove(user_id);
+                    } else {
+                        p.insert(user_id.clone(), overrides.clone());
+                    }
+                }
                 Out::KeyRevoked { kid } => {
                     self.signing
                         .write()
@@ -226,6 +274,21 @@ impl Shared {
 }
 
 impl Shared {
+    /// What a person may do in their client (an agent: what its owner may).
+    pub fn allowed(&self, u: &User) -> crate::config::AllowConfig {
+        let id = match u.kind {
+            UserKind::Agent => u.owner_id.as_deref().unwrap_or(&u.id),
+            _ => &u.id,
+        };
+        let d = self.allow.read().unwrap_or_else(|e| e.into_inner()).clone();
+        self.perms
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .map(|o| o.over(&d))
+            .unwrap_or(d)
+    }
+
     /// Whether `a` blocked `b`.
     pub fn blocked(&self, a: &str, b: &str) -> bool {
         self.blocks
@@ -424,7 +487,19 @@ pub enum Op {
     CreateUser {
         user: User,
         owner_cap: Option<usize>,
+        /// The owner creates it in their client: refused unless the owner
+        /// may create agents (checked here, so a revocation committed first
+        /// always wins, docs/13 §4.1).
+        #[serde(default)]
+        owner_must_be_allowed: bool,
     },
+    /// Replaces a person's permission overrides (control database).
+    SetPermissions {
+        user_id: String,
+        overrides: Overrides,
+    },
+    /// Console accounts, sessions, keys and app settings (control database).
+    Admin(AdminOp),
     /// A new device token; `revoke_others` removes every other token of the
     /// user in the same write (agent key rotation). Returns the revoked
     /// device ids.
@@ -765,6 +840,8 @@ impl Op {
             | Op::SetMemberOwner { .. }
             | Op::Audit { .. } => Route::Anywhere,
             Op::CreateUser { .. }
+            | Op::SetPermissions { .. }
+            | Op::Admin(_)
             | Op::IssueToken { .. }
             | Op::LoadToken { .. }
             | Op::RevokeTokens { .. }
@@ -824,6 +901,8 @@ impl Op {
             Op::AgentGone(_) => "agent_gone",
             Op::Barrier => "barrier",
             Op::CreateUser { .. } => "create_user",
+            Op::SetPermissions { .. } => "set_permissions",
+            Op::Admin(_) => "admin",
             Op::IssueToken { .. } => "issue_token",
             Op::LoadToken { .. } => "load_token",
             Op::RevokeTokens { .. } => "revoke_tokens",
@@ -1152,7 +1231,25 @@ impl Ctx<'_, '_> {
                 Ok(json!({}))
             }
             Op::Barrier => Ok(json!({})),
-            Op::CreateUser { user, owner_cap } => {
+            Op::CreateUser {
+                user,
+                owner_cap,
+                owner_must_be_allowed,
+            } => {
+                if owner_must_be_allowed
+                    && let Some(owner) = &user.owner_id
+                    && !self
+                        .db
+                        .permissions(owner)
+                        .await?
+                        .over(&self.sh.allow.read().unwrap_or_else(|e| e.into_inner()))
+                        .create_agents
+                {
+                    return Err(ApiError::new(
+                        "forbidden",
+                        "the app does not allow this: creating agents",
+                    ));
+                }
                 if self.db.name_taken(&user.name).await? {
                     return Err(ApiError::new("conflict", "name taken"));
                 }
@@ -1265,6 +1362,15 @@ impl Ctx<'_, '_> {
                     kick: vec![],
                 });
                 Ok(json!({"new": new}))
+            }
+            Op::Admin(a) => self.admin_op(a).await,
+            Op::SetPermissions { user_id, overrides } => {
+                self.db.set_permissions(&user_id, &overrides).await?;
+                self.out.push(Out::Perms {
+                    user_id,
+                    overrides: overrides.clone(),
+                });
+                Ok(json!({}))
             }
             Op::CreateSigningKey(k) => {
                 self.db.insert_signing_key(&k).await?;
@@ -2923,6 +3029,28 @@ impl Ctx<'_, '_> {
         Ok(json!({"silenced_until": until, "changed": true, "seq": seq}))
     }
 
+    /// A person's own message is edited or recalled only within the time
+    /// the app allows (docs/13 §4.1); moderators and owners acting on
+    /// others' messages are not limited.
+    fn within_window(
+        &self,
+        me: &User,
+        msg: &MsgView,
+        minutes: Option<i64>,
+        what: &str,
+    ) -> ApiResult<()> {
+        if me.kind != UserKind::Human || msg.sender_id != me.id {
+            return Ok(());
+        }
+        match minutes {
+            Some(m) if now_ms() - msg.created_at > m * 60_000 => Err(err(
+                "forbidden",
+                format!("the app does not allow this: messages are {what} within {m} minutes"),
+            )),
+            _ => Ok(()),
+        }
+    }
+
     async fn transfer_owner(
         &mut self,
         me: &User,
@@ -3315,6 +3443,7 @@ impl Ctx<'_, '_> {
         if let Ok(m) = self.require_member(&msg.conv_id, &me.id).await {
             not_silenced(&m)?;
         }
+        self.within_window(me, &msg, self.sh.allowed(me).edit_minutes, "edited")?;
         if msg.state == "streaming" || msg.state == "recalled" {
             return Err(err("conflict", format!("message is {}", msg.state)));
         }
@@ -3401,6 +3530,7 @@ impl Ctx<'_, '_> {
         if !self.can_modify(me, &msg, true).await? {
             return Err(err("forbidden", "cannot recall this message"));
         }
+        self.within_window(me, &msg, self.sh.allowed(me).recall_minutes, "recalled")?;
         if msg.state == "recalled" {
             return Err(err("conflict", "message is already recalled"));
         }
@@ -4241,6 +4371,91 @@ impl Ctx<'_, '_> {
         let seq = ev.seq;
         self.emit(ev).await?;
         Ok(json!({"seq": seq}))
+    }
+}
+
+impl Ctx<'_, '_> {
+    async fn admin_op(&mut self, op: AdminOp) -> ApiResult<Value> {
+        match op {
+            AdminOp::Create(row) => {
+                if self.db.admin_by("name", &row.name).await?.is_some() {
+                    return Err(err("conflict", "an admin with this name exists"));
+                }
+                self.db.insert_admin(&row).await?;
+                Ok(json!({}))
+            }
+            AdminOp::Update { id, role, disabled } => {
+                let Some(cur) = self.db.admin_by("id", &id).await? else {
+                    return Err(err("not_found", "no such admin"));
+                };
+                // The last active owner stays an active owner.
+                let demoted =
+                    role.as_deref().is_some_and(|r| r != "owner") || disabled == Some(true);
+                if cur.role == "owner" && cur.disabled_at.is_none() && demoted {
+                    let owners = self
+                        .db
+                        .admins()
+                        .await?
+                        .iter()
+                        .filter(|a| a.role == "owner" && a.disabled_at.is_none())
+                        .count();
+                    if owners <= 1 {
+                        return Err(err(
+                            "conflict",
+                            "the last owner cannot be demoted or disabled",
+                        ));
+                    }
+                }
+                self.db.update_admin(&id, role.as_deref(), disabled).await?;
+                if disabled == Some(true) {
+                    self.db.delete_admin_sessions(Some(&id), None).await?;
+                }
+                Ok(json!({}))
+            }
+            AdminOp::SessionPut(s) => {
+                self.db.insert_admin_session(&s).await?;
+                Ok(json!({}))
+            }
+            AdminOp::SessionTouch { hash } => {
+                self.db.touch_admin_session(&hash).await?;
+                Ok(json!({}))
+            }
+            AdminOp::SessionsDelete { admin_id, hash } => {
+                let n = self
+                    .db
+                    .delete_admin_sessions(admin_id.as_deref(), hash.as_deref())
+                    .await?;
+                Ok(json!({"deleted": n}))
+            }
+            AdminOp::SessionsExpire {
+                idle_before,
+                max_before,
+            } => {
+                let n = self
+                    .db
+                    .expire_admin_sessions(idle_before, max_before)
+                    .await?;
+                Ok(json!({"deleted": n}))
+            }
+            AdminOp::KeyPut(k) => {
+                self.db.insert_admin_key(&k).await?;
+                Ok(json!({}))
+            }
+            AdminOp::KeyRevoke { key_id } => {
+                Ok(json!({"revoked": self.db.revoke_admin_key(&key_id).await?}))
+            }
+            AdminOp::Setting { tenant, key, value } => {
+                self.db.set_app_setting(&tenant, &key, &value).await?;
+                // Other processes on the same databases reload it.
+                self.db.bump_meta(crate::db::AUTH_EPOCH).await?;
+                if key == "clients.allow"
+                    && let Ok(allow) = serde_json::from_value(value)
+                {
+                    self.out.push(Out::AllowDefaults { allow });
+                }
+                Ok(json!({}))
+            }
+        }
     }
 }
 

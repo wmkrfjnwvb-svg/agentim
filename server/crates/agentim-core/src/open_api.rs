@@ -186,7 +186,7 @@ fn client_ip(hub: &Hub, req: &Request) -> Option<IpAddr> {
 }
 
 /// The TCP peer, from either kind of connect info.
-fn peer_ip(req: &Request) -> Option<IpAddr> {
+pub(crate) fn peer_ip(req: &Request) -> Option<IpAddr> {
     req.extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0.ip())
@@ -517,6 +517,12 @@ async fn profile(hub: &Hub, internal: &str) -> Result<Value, Problem> {
     let mut p = hub.user_profile(internal).await?.unwrap_or_default();
     if let Some(o) = p["owner"].as_str().map(String::from) {
         p["owner"] = json!(external(hub, &o));
+    }
+    if let Some(u) = hub.shared().user(internal)
+        && u.kind == UserKind::Human
+    {
+        p["permissions"] = json!(hub.permissions(&u));
+        p["permission_overrides"] = json!(hub.permission_overrides(&u.id));
     }
     Ok(p)
 }
@@ -1258,6 +1264,16 @@ struct PatchUser {
     display_name: Option<String>,
     avatar: Option<String>,
     fields: Option<Value>,
+    /// What the person may do in their client over the app's defaults
+    /// (docs/13 §4.1); a key set to null, or null for all, follows the
+    /// defaults again.
+    #[serde(default, deserialize_with = "present")]
+    permissions: Option<Value>,
+}
+
+/// Tells a JSON `null` (Some(Null)) from a missing field (None).
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(d).map(Some)
 }
 
 async fn patch_user(
@@ -1271,14 +1287,36 @@ async fn patch_user(
     let req: PatchUser = body(&b)?;
     check_profile(&req.display_name, &req.avatar)?;
     check_fields(&req.fields)?;
-    if req.display_name.is_none() && req.avatar.is_none() && req.fields.is_none() {
+    if req.display_name.is_none()
+        && req.avatar.is_none()
+        && req.fields.is_none()
+        && req.permissions.is_none()
+    {
         return Err(bad("nothing to change"));
     }
+    if let Some(p) = &req.permissions {
+        // Checked before anything changes.
+        if u.kind != UserKind::Human {
+            return Err(bad("permissions are a person's"));
+        }
+        st.hub.permission_overrides(&u.id).apply(p).map_err(bad)?;
+    }
+    if req.display_name.is_some() || req.avatar.is_some() || req.fields.is_some() {
+        st.hub
+            .update_user(&u.id, req.display_name, req.avatar, req.fields)
+            .await?;
+    }
+    if let Some(p) = &req.permissions {
+        st.hub.set_permissions(&u, p).await?;
+    }
     st.hub
-        .update_user(&u.id, req.display_name, req.avatar, req.fields)
-        .await?;
-    st.hub
-        .audit_api(&k.key_id, SYSTEM_ID, "users.update", Some(&id), json!({}))
+        .audit_api(
+            &k.key_id,
+            SYSTEM_ID,
+            "users.update",
+            Some(&id),
+            json!({"permissions": req.permissions}),
+        )
         .await;
     ok(profile(&st.hub, &u.id).await?)
 }
@@ -1397,18 +1435,34 @@ async fn create_conversation(State(st): State<AppState>, Extension(k): K, b: Byt
     for m in &req.members {
         members.push(user(&st.hub, m)?.id);
     }
-    let v = st
-        .hub
-        .act_as(
-            &creator,
-            ClientMsg::CreateConv {
-                kind: req.kind,
-                title: req.title,
-                members,
-                assignee: None,
-            },
-        )
-        .await?;
+    // The system creating it for its owner is not bound by the owner's
+    // client permissions.
+    let system = who.kind == UserKind::System;
+    let v = if system {
+        st.hub
+            .act_for(
+                &creator,
+                ClientMsg::CreateConv {
+                    kind: req.kind.clone(),
+                    title: req.title.clone(),
+                    members: members.clone(),
+                    assignee: None,
+                },
+            )
+            .await?
+    } else {
+        st.hub
+            .act_as(
+                &creator,
+                ClientMsg::CreateConv {
+                    kind: req.kind,
+                    title: req.title,
+                    members,
+                    assignee: None,
+                },
+            )
+            .await?
+    };
     let conv = v["conv_id"].as_str().unwrap_or_default().to_string();
     if let Some(f) = req.fields
         && v["existing"] != true
