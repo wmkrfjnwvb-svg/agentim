@@ -29,9 +29,10 @@ const uid = () => globalThis.crypto.randomUUID();
 
 /** One WebSocket connection: requests by `rid`, pushes to a callback. */
 export class Connection {
-  constructor(url, token, onPush) {
+  /** `device`: a person's device id (agents connect with a key and none). */
+  constructor(url, token, onPush, { device } = {}) {
     const base = url.replace(/^http/, 'ws').replace(/\/$/, '');
-    this.wsUrl = `${base}/ws?token=${encodeURIComponent(token)}`;
+    this.wsUrl = `${base}/ws?token=${encodeURIComponent(token)}${device ? `&device=${encodeURIComponent(device)}` : ''}`;
     this.onPush = onPush;
     this.pending = new Map();
     this.rid = 0;

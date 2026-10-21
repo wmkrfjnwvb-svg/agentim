@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "python"))
 
-from agentim import AgentIM  # noqa: E402  (the server SDK)
+from agentim import AgentIM, create_user_token  # noqa: E402  (the server SDK)
 from agentim_agent import Agent, AgentIMError, Connection  # noqa: E402
 
 BIN = os.environ.get("AGENTIM_BIN", "server/target/debug/agentim")
@@ -90,7 +90,7 @@ class Person:
             elif f["type"] == "resync":
                 asyncio.ensure_future(self.sync())
 
-        self.conn = Connection(URL, self.token, push)
+        self.conn = Connection(URL, self.token, push, device="e2e-browser")
         await self.conn.open()
         await self.sync()
 
@@ -125,10 +125,12 @@ class Person:
 
 async def main():
     start_server()
-    key = cli("api-key", "create", "--name", "e2e", "--scopes", "users:write,tokens:issue")["key"]
+    key = cli("api-key", "create", "--name", "e2e", "--scopes", "users:write")["key"]
     im = AgentIM(URL, key)
     im.upsert_user("alice")
-    token = im.issue_token("alice")["token"]
+    # The developer's backend signs alice's token itself (docs/13 §4.2).
+    sk = cli("signing-key", "create", "--name", "e2e")
+    token = create_user_token(sk["kid"], sk["secret"], "alice")
     one = cli("agent", "create", "--name", "pybot", "--owner", "alice")
     two = cli("agent", "create", "--name", "pybot2", "--owner", "alice")
     alice = Person(token)

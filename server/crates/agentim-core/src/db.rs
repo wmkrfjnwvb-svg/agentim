@@ -207,7 +207,19 @@ fn row_api_key(r: &AnyRow) -> sqlx::Result<ApiKeyRow> {
     })
 }
 
-/// One client token = one device.
+/// A key developers sign client tokens with.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct SigningKeyRow {
+    pub kid: String,
+    pub name: String,
+    /// `k:<wrapped>` (encrypted with the master key) or `p:<secret>`.
+    pub secret: String,
+    pub created_at: i64,
+    pub revoked_at: Option<i64>,
+}
+
+/// One device: an agent key, or a person's device registered by the
+/// first connection with a signed client token.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TokenRow {
     pub hash: String,
@@ -693,6 +705,15 @@ impl Db<'_> {
             .await?;
             n += 1;
         }
+        // Signing secrets of client tokens are wrapped by the master key
+        // too (docs/13 §4.2).
+        for k in self.signing_keys().await? {
+            let w = crate::hub::login::rewrap_secret(self.cx, new, &k.kid, &k.secret).ok_or_else(
+                || ApiError::new("storage", format!("signing key {} does not open", k.kid)),
+            )?;
+            self.set_signing_secret(&k.kid, &w).await?;
+            n += 1;
+        }
         sqlx::query(self.d.q("UPDATE meta SET v = ? WHERE k = ?"))
             .bind(new.fingerprint.clone())
             .bind("kek_fingerprint")
@@ -923,19 +944,16 @@ impl Db<'_> {
         })
     }
 
-    /// People's tokens unused since `idle_before` or issued before
-    /// `issued_before` (0 disables either): deleted, returned as
+    /// People's devices unused since `idle_before`: deleted, returned as
     /// (hash, user, device).
     pub async fn expire_tokens(
         &mut self,
         idle_before: i64,
-        issued_before: i64,
     ) -> ApiResult<Vec<(String, String, String)>> {
         let rows = sqlx::query(self.d.q(
             "SELECT t.hash, t.user_id, t.device_id FROM tokens t JOIN users u ON u.id = t.user_id
-             WHERE u.kind = 'human' AND (t.created_at < ? OR COALESCE(t.last_seen, t.created_at) < ?)",
+             WHERE u.kind = 'human' AND COALESCE(t.last_seen, t.created_at) < ?",
         ))
-        .bind(issued_before)
         .bind(idle_before)
         .fetch_all(&mut *self.c)
         .await?;
@@ -1093,6 +1111,111 @@ impl Db<'_> {
             .map(row_token)
             .collect::<sqlx::Result<_>>()
             .map_err(Into::into)
+    }
+
+    // ---- client token signing keys and cutoffs (docs/13 §4.2)
+
+    pub async fn insert_signing_key(&mut self, k: &SigningKeyRow) -> ApiResult<()> {
+        sqlx::query(self.d.q("INSERT INTO signing_keys (kid, name, secret, created_at, revoked_at) VALUES (?, ?, ?, ?, ?)"))
+            .bind(&k.kid)
+            .bind(&k.name)
+            .bind(&k.secret)
+            .bind(k.created_at)
+            .bind(k.revoked_at)
+            .execute(&mut *self.c)
+            .await?;
+        self.bump_meta(AUTH_EPOCH).await?;
+        Ok(())
+    }
+
+    /// Revokes a key; false when unknown or already revoked.
+    pub async fn revoke_signing_key(&mut self, kid: &str) -> ApiResult<bool> {
+        let r = sqlx::query(
+            self.d
+                .q("UPDATE signing_keys SET revoked_at = ? WHERE kid = ? AND revoked_at IS NULL"),
+        )
+        .bind(now_ms())
+        .bind(kid)
+        .execute(&mut *self.c)
+        .await?;
+        if r.rows_affected() > 0 {
+            self.bump_meta(AUTH_EPOCH).await?;
+        }
+        Ok(r.rows_affected() > 0)
+    }
+
+    pub async fn signing_keys(&mut self) -> ApiResult<Vec<SigningKeyRow>> {
+        let rows = sqlx::query(
+            "SELECT kid, name, secret, created_at, revoked_at FROM signing_keys ORDER BY created_at, kid",
+        )
+        .fetch_all(&mut *self.c)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok(SigningKeyRow {
+                    kid: r.try_get(0)?,
+                    name: r.try_get(1)?,
+                    secret: r.try_get(2)?,
+                    created_at: r.try_get(3)?,
+                    revoked_at: r.try_get(4)?,
+                })
+            })
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    /// Replaces the secrets of all keys (master key rotation).
+    pub async fn set_signing_secret(&mut self, kid: &str, secret: &str) -> ApiResult<()> {
+        sqlx::query(self.d.q("UPDATE signing_keys SET secret = ? WHERE kid = ?"))
+            .bind(secret)
+            .bind(kid)
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
+    }
+
+    /// Tokens of the user (device "" = every device) issued before `at`
+    /// seconds are refused from now on.
+    pub async fn set_cutoff(&mut self, user_id: &str, device_id: &str, at: i64) -> ApiResult<()> {
+        sqlx::query(
+            self.d
+                .q("DELETE FROM token_cutoffs WHERE user_id = ? AND device_id = ?"),
+        )
+        .bind(user_id)
+        .bind(device_id)
+        .execute(&mut *self.c)
+        .await?;
+        sqlx::query(
+            self.d
+                .q("INSERT INTO token_cutoffs (user_id, device_id, at) VALUES (?, ?, ?)"),
+        )
+        .bind(user_id)
+        .bind(device_id)
+        .bind(at)
+        .execute(&mut *self.c)
+        .await?;
+        self.bump_meta(AUTH_EPOCH).await?;
+        Ok(())
+    }
+
+    pub async fn cutoffs(&mut self) -> ApiResult<Vec<(String, String, i64)>> {
+        let rows = sqlx::query("SELECT user_id, device_id, at FROM token_cutoffs")
+            .fetch_all(&mut *self.c)
+            .await?;
+        rows.iter()
+            .map(|r| Ok((r.try_get(0)?, r.try_get(1)?, r.try_get(2)?)))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
+    /// Records the key a device last connected with (`issued_by`).
+    pub async fn set_token_issuer(&mut self, hash: &str, issued_by: &str) -> ApiResult<()> {
+        sqlx::query(self.d.q("UPDATE tokens SET issued_by = ? WHERE hash = ?"))
+            .bind(issued_by)
+            .bind(hash)
+            .execute(&mut *self.c)
+            .await?;
+        Ok(())
     }
 
     pub async fn upsert_unit(&mut self, name: &str, database: &str) -> ApiResult<()> {

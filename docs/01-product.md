@@ -47,7 +47,7 @@
 | 成员 | 移除、退出、角色、转让、解散、拉黑、单聊唯一、用户目录私密 | — |
 | Agent | 凭据和一条命令创建、MCP 服务、Agent SDK（Node、Python）、审批 v1、请人决定、待办、Agent 之间（唤醒、根预算、任务频道、抢单）、历史和检查点、急停和销毁、导出导入、转人工、卡片、护栏（内容过滤、DLP、注入标记、看门狗、熔断）、接管 | 接管锁超时交还 |
 | 开发者接入 | 开放 API `/v1` + OpenAPI、Node / Python / Go 服务端 SDK、Webhook、发送前拦截、自定义字段、协议版本协商 | TypeScript 客户端 SDK + React 组件；多语言客户端 SDK（Swift、Kotlin、C#、Flutter）；开发者控制台和 `agentim admin`；文档站和示例；托管云；从 Stream、Sendbird 迁移的工具 |
-| 安全和合规 | 令牌只存哈希、设备下线、账号密码 + TOTP、内置 TLS、Origin 校验、静态加密默认开启、AI 标记（EU AI Act 第 50 条）、日志不含内容、保留期 | 用户导出和删除账号、举报、基础审核队列（GDPR、DSA、App Store 1.2）；OIDC；端到端加密暂缓 |
+| 安全和合规 | 开发者签名的客户端令牌（JWT，最终用户没有 IM 密码）、Agent 密钥只存哈希、设备下线、内置 TLS、Origin 校验、静态加密默认开启、AI 标记（EU AI Act 第 50 条）、日志不含内容、保留期 | 用户导出和删除账号、举报、基础审核队列（GDPR、DSA、App Store 1.2）；OIDC；端到端加密暂缓 |
 | 存储、运维和集群 | SQLite / PostgreSQL / MySQL、多库路由（高级配置，D101）、表结构自动迁移、Prometheus 指标和告警、集群（租约、转发、交接、滚动升级、数据库主从和切主）、Docker / Compose / Helm | 预编译程序和一条命令安装；写入优化；OpenTelemetry 导出 |
 
 ## 5. 非功能指标

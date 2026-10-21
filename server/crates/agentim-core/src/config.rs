@@ -426,18 +426,19 @@ fn write_private(path: &str, content: &str) -> std::io::Result<()> {
     f.sync_all()
 }
 
-/// Built-in accounts (docs/04-security-compliance.md §1).
+/// Logging in: client tokens (docs/13 §4.2) and the console's admin
+/// accounts (docs/04-security-compliance.md §1).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AuthConfig {
-    /// Failed logins before the account is locked, and for how long.
+    /// Failed admin logins before the account is locked, and for how long.
     pub max_failures: i64,
     pub lock_minutes: i64,
-    /// People's device tokens end after this many days unused, and this
-    /// many days after login whatever happens (0: never); agent keys do not
-    /// expire (D94).
+    /// A person's device unused this many days is forgotten (0: never):
+    /// its next connection is a new device. Agent keys do not expire (D94).
     pub token_idle_days: i64,
-    pub token_max_days: i64,
+    /// Longest lifetime (`exp - iat`) of a client token.
+    pub max_token_days: i64,
     /// Password hashes computed at once (each takes 19 MiB and a core);
     /// 0 means one per core. Callers beyond four times this wait-list are
     /// refused with `rate_limited`.
@@ -451,7 +452,7 @@ impl Default for AuthConfig {
             lock_minutes: 15,
             max_concurrent_hashes: 0,
             token_idle_days: 30,
-            token_max_days: 365,
+            max_token_days: 30,
         }
     }
 }
@@ -929,6 +930,9 @@ impl Config {
         }
         if self.auth.max_failures < 1 || self.auth.lock_minutes < 1 {
             return Err("auth.max_failures and auth.lock_minutes must be >= 1".into());
+        }
+        if !(1..=365).contains(&self.auth.max_token_days) {
+            return Err("auth.max_token_days must be 1..365".into());
         }
         for o in &self.server.allowed_origins {
             if !crate::server::valid_origin(o) {

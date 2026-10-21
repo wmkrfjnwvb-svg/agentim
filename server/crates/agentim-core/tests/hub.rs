@@ -52,10 +52,12 @@ async fn acked_messages_survive_restart_and_retries_are_deduplicated(db: TestDb)
         .collect();
     assert_eq!(created.len(), 1);
     assert_eq!(created[0]["event"]["msg"]["content"], "hi");
-    // Users and tokens come back from the control database.
+    // Users come back from the control database and log in.
+    let t = client_token(&hub, &alice).await;
     assert!(
-        hub.authenticate(&hub.token_of("alice").await.unwrap().1)
-            .is_some()
+        hub.authenticate_client(&t, Some("d1"), None, None)
+            .await
+            .is_ok()
     );
 }
 

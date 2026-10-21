@@ -6,18 +6,17 @@
 
 | 项目 | 做法 | 状态 |
 |---|---|---|
-| 内置账号密码 | Argon2id（m=19 MiB、t=2、p=1，OWASP 最低建议），10–128 个字符且不能等于用户名；`POST /api/auth/login` 登录成功签发一台设备的令牌；名字不存在、没有设置密码、密码错误返回同一个错误，且对不存在的用户也做一次哈希，避免通过时间差探测账号；连续失败 10 次锁定 15 分钟（可配置，重启后仍有效）；同时计算的密码哈希有上限（每核一个，排队超过 4 倍返回 `rate_limited`）；修改密码后其他设备全部下线；自助注册默认关闭（`auth.open_registration`）；运维可用 `agentim user set-password --name …`（从标准输入读密码）重置 | ✅ |
-| 两步验证（TOTP） | RFC 6238（SHA1、6 位、30 秒、前后各容忍一步）；`totp_setup` 生成密钥和 `otpauth://` 链接，`totp_enable` 用一个验证码确认后才生效，`totp_disable` 也需要验证码；每个验证码只能用一次（并发登录也只成功一次） | ✅ |
-| 开发者后端签发令牌 | 开发者的后端用开放 API 给自己的用户签发客户端令牌（[07 §3.4](07-open-api.md)）；内置账号密码是独立使用时的另一种方式 | ✅ |
+| 最终用户没有 IM 密码 | 账号在开发者自己的系统里，IM 只认开发者签名的客户端令牌（[13 §4.2](13-roles-and-entry-points.md)）；内置的密码登录、注册、改密码、TOTP、`user set-password` 已删除（D116）。Argon2id、锁定和 TOTP 的代码留给控制台的管理员登录（A5，[12 §4](12-developer-experience.md)） | ✅ |
+| 客户端令牌（人） | 开发者后端用签名密钥离线签 JWT（HS256，必须有 `kid`、`sub`、`iat`、`exp`，最长 `auth.max_token_days` 天，默认 30），不调 IM；只接受 HS256，`none` 和其他算法一律拒绝；`iat` 最多比服务器时钟快 60 秒。签名密钥由部署者用 `agentim signing-key create/list/revoke` 管理，可以同时有多把以便轮换，用主密钥加密存放（静态加密关闭时明文），吊销后用它签的令牌立即失效、用它连上的设备立即断开（集群里每个节点）。第一次见到的用户 ID 自动建成人；已删除、已停用、Agent、`system` 的 ID 拒绝。被拒绝的令牌不建用户、不登记设备、不写审计 | ✅ |
 | 第三方登录 | OIDC（Google、Microsoft、GitHub）；SAML、SCIM 不做 | 计划 |
-| Agent 凭据 | API Key，"前缀 + 随机密钥"，可以设置权限范围、轮换和吊销；以后支持 OAuth client credentials（MCP 授权规范） | ✅ API Key |
-| 会话令牌 | `atk_` + 256 位随机数；数据库里**只存 SHA-256 哈希**；人的令牌 30 天不用或签发满 1 年失效（`auth.token_idle_days`、`token_max_days`，D94；Agent 密钥不过期）；可以吊销；CLI 在服务端运行时吊销、改密码、停用，服务端 1 秒内生效；握手和登记之间被吊销的连接也会关闭 | ✅ |
-| 设备 | 每个令牌就是一台设备（`device_id`、名称、平台、签发、过期、最近使用时间，[07 §5](07-open-api.md)）；`list_devices`、`logout_device` 让单台设备下线并立即断开 | ✅ |
+| Agent 凭据 | Agent 密钥：`atk_` + 256 位随机数，数据库里**只存 SHA-256 哈希**；负责人在客户端、开发者用开放 API `POST /v1/agents/{id}/keys`（`agents:write`）签发、轮换、吊销；不过期（D94）；以后支持 OAuth client credentials（MCP 授权规范） | ✅ |
+| 登出和吊销 | 下线一台设备（`logout_device`、开放 API）或全部（`DELETE /v1/users/{id}/tokens`）：断开、删掉同步位置，并记下时刻，这个用户（或这台设备）签发时间不晚于该秒的令牌从此被拒绝（Stream 的 `revoke_tokens_issued_before` 是同样做法）；令牌不是按设备签的，拿到令牌的人换个设备 ID 仍能连上直到过期，所以怀疑泄露时下线全部，令牌有效期要短。CLI 在服务端运行时吊销、停用，服务端 1 秒内生效；握手和登记之间被吊销的连接也会关闭 | ✅ |
+| 设备 | 人的设备 ID 由 App 选定并保存（连接时 `device=`，1–64 个 `A-Z a-z 0-9 _ -`），服务端第一次见到时登记（名称、平台、最近使用时间），欢迎帧里带服务端的 `device_id`；30 天不用就忘掉（`auth.token_idle_days`，下次连接算新设备）。Agent 的每把密钥是一台设备。`list_devices`、`logout_device` 让单台设备下线并立即断开 | ✅ |
 | 新设备登录通知 | 新设备登录时，该用户已在线的设备收到 `device.added`，可一键下线 | ✅ |
 | 多端已读同步 | 一台设备标记已读后，同一用户的其他在线设备收到 `read`，未读数立即一致（[08 §2.6](08-sync-and-client.md)） | ✅ |
-| Origin 校验 | 浏览器访问 `/ws` 和登录接口时，`Origin` 必须是本站或 `server.allowed_origins` 里的地址，防止跨站 WebSocket 劫持；App、SDK、Agent 不带 `Origin`，不受影响 | ✅ |
+| Origin 校验 | 浏览器访问 `/ws`、`/mcp` 和演示接口时，`Origin` 必须是本站或 `server.allowed_origins` 里的地址，防止跨站 WebSocket 劫持；App、SDK、Agent 不带 `Origin`，不受影响 | ✅ |
 | 内置 TLS | `[server.tls] cert/key`（PEM）后直接提供 HTTPS 和 WSS（rustls + ring）；握手在接受循环之外进行、10 秒超时；也可以放在 TLS 反向代理之后（`open_api.behind_proxy`；客户端地址取 `X-Forwarded-For` 从右数第 `proxy_hops` 项，客户端自己写的前几项不算） | ✅ |
-| 演示登录 | 只在 `--demo` 下可用，默认关闭 | ✅ |
+| 演示登录 | 只在 `--demo` 下可用：演示自己有签名密钥，`/api/login` 返回签好的令牌；`--demo` 只监听本机地址（否则启动报错，除非加 `--demo-public`）；`/api/dev/users` 也校验 Origin | ✅ |
 | 授权 | 集中在一个策略检查函数里；角色：成员、管理员、所有者 | ✅ |
 
 ## 2. 加密

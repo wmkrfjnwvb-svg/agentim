@@ -278,7 +278,11 @@ async fn keys_are_rotated_and_revoked_by_the_owner_only(db: TestDb) {
         assert_eq!(code(&r), want, "{req}: {r}");
     }
     // Another person's device id is not one of this agent's keys.
-    let bob_dev = hub.devices(&bob.id).await.unwrap()[0].device_id.clone();
+    let bob_dev = hub
+        .authenticate_client(&client_token(&hub, &bob).await, Some("b1"), None, None)
+        .await
+        .unwrap()
+        .device_id;
     let r = a
         .call(json!({"op": "revoke_agent_key", "agent_id": id, "device_id": bob_dev}))
         .await;

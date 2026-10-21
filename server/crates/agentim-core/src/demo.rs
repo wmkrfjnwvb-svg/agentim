@@ -21,6 +21,16 @@ async fn call(s: &Session, v: Value) -> ApiResult<Value> {
 
 /// Creates the demo users and conversations through the normal request path.
 pub async fn seed(hub: &Hub) -> ApiResult<()> {
+    // The demo signs its own client tokens, as a developer's backend
+    // would (docs/13 §4.2).
+    if hub
+        .signing_keys()
+        .await?
+        .iter()
+        .all(|k| !k["revoked_at"].is_null())
+    {
+        hub.create_signing_key("demo").await?;
+    }
     if !hub.users().is_empty() {
         return Ok(());
     }

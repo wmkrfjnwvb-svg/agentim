@@ -4,11 +4,17 @@ Thin clients for the open API (`/v1`, [docs/07-open-api.md](../docs/07-open-api.
 retries network errors, `429` and `503` (POSTs keep the same `Idempotency-Key`) and raises an error carrying the server's `code`
 (the same codes as the WebSocket protocol). The full contract is `GET /v1/openapi.json`.
 
-Create a key first: `agentim --config agentim.toml api-key create --name backend --scopes users:write,tokens:issue,messages:write`.
+Create a key first: `agentim --config agentim.toml api-key create --name backend --scopes users:write,messages:write`.
+
+**Logging your users in**: your users sign in with your own accounts; your backend then signs them a client token with a
+signing key (`agentim signing-key create --name backend` prints its `kid` and `secret` once) and hands it to your app. No call to
+AgentIM is made: `createUserToken({ kid, secret }, "user_1")` (Node), `create_user_token(kid, secret, "user_1")` (Python),
+`agentim.CreateUserToken(kid, secret, "user_1", time.Hour)` (Go). Any JWT library works too: HS256, header `kid`, claims `sub`,
+`iat`, `exp` ([docs/13 §4.2](../docs/13-roles-and-entry-points.md)).
 
 | Language | Path | Example |
 |---|---|---|
-| Node.js 18+ (types included) | `sdk/node` | `const im = new AgentIM({ baseUrl, apiKey }); await im.upsertUser("user_1"); const { token } = await im.issueToken("user_1");` |
+| Node.js 18+ (types included) | `sdk/node` | `const im = new AgentIM({ baseUrl, apiKey }); await im.upsertUser("user_1"); const token = createUserToken(key, "user_1");` |
 | Python 3.9+ | `sdk/python` | `im = AgentIM(base_url, api_key); im.send_to_user("user_2", "user_1", "hi")` |
 | Go 1.21+ | `sdk/go` | `im := agentim.New(baseURL, apiKey); im.SendMessage(ctx, convID, agentim.M{"as": "system", "text": "Maintenance tonight"})` |
 

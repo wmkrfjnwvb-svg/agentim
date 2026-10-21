@@ -9,9 +9,10 @@ cd server
 cargo run --release --bin agentim -- --demo   # open http://127.0.0.1:8080 and log in as alice, bob or carol
 ```
 
-- **Your backend**: `agentim api-key create --name backend --scopes users:write,tokens:issue,messages:write` prints a key for the open API (`/v1`, OpenAPI 3.1 at `/v1/openapi.json`): create users with your own ids, issue login tokens, manage conversations, send as a user or as the system. Server SDKs for [Node, Python and Go](sdk/README.md). See [docs/07-open-api.md](docs/07-open-api.md).
+- **Your users log in with your own accounts**: `agentim signing-key create --name backend` prints a signing key; your backend signs each user a client token with it (an HS256 JWT, `createUserToken` in the server SDKs; no call to AgentIM) and your app connects with it. See [docs/13 §4.2](docs/13-roles-and-entry-points.md).
+- **Your backend**: `agentim api-key create --name backend --scopes users:write,messages:write` prints a key for the open API (`/v1`, OpenAPI 3.1 at `/v1/openapi.json`): create users with your own ids, manage conversations, send as a user or as the system, issue agent keys. Server SDKs for [Node, Python and Go](sdk/README.md). See [docs/07-open-api.md](docs/07-open-api.md).
 - **An agent**: `agentim agent create --name helper --owner alice --url http://127.0.0.1:8080` prints the agent's key once, with an MCP config block for any MCP client (Claude, Cursor, OpenAI Agents SDK; endpoint `POST /mcp`) and the WebSocket address. Agent SDKs for [Node and Python](sdk/README.md#agent-sdks) (no dependencies). See [docs/03-agents.md](docs/03-agents.md).
-- **Configuration** (databases, writer settings, webhooks, TLS, accounts): [`server/agentim.example.toml`](server/agentim.example.toml). More commands: [`server/README.md`](server/README.md).
+- **Configuration** (databases, writer settings, webhooks, TLS, login): [`server/agentim.example.toml`](server/agentim.example.toml). More commands: [`server/README.md`](server/README.md).
 
 ## Features
 
@@ -20,7 +21,7 @@ cargo run --release --bin agentim -- --demo   # open http://127.0.0.1:8080 and l
 - **Messaging**: one-to-one and group conversations, edit, recall, replies, mentions, read state and unread counts across devices, streaming messages, custom message kinds with a plain-text fallback, signals, deduplication. Membership: remove, leave, roles, transfer, dissolve, block. A message is acknowledged only after it is durably committed; pulling by sequence number is the source of truth, pushes are a hint.
 - **AI agents as members**: server-assigned sender types (an agent cannot pose as a human; AI label always shown), owner approval of drafts, asking people to decide, whispers, interruption, takeover, kill switch and destroy, agent-to-agent wake-ups with budgets, task channels, history, checkpoints and search, guardrails (hop limit, loop breaker, rate limits, budgets, prompt-injection flags, DLP), an MCP server.
 - **For your backend**: open API with scoped API keys, idempotency keys, rate limits and RFC 9457 errors; webhooks (signed, ordered, at-least-once); a before-send hook; custom fields; protocol version negotiation.
-- **Security**: encryption at rest on by default (AES-256-GCM, per-conversation keys, crypto-shredding on delete), hashed tokens with per-device logout, passwords (Argon2id) with TOTP, built-in TLS, Origin checks.
+- **Security**: encryption at rest on by default (AES-256-GCM, per-conversation keys, crypto-shredding on delete), client tokens your backend signs itself (JWT, no IM passwords for your users), hashed agent keys, per-device logout, built-in TLS, Origin checks.
 - **Operations**: SQLite, PostgreSQL or MySQL with the same behaviour (the same test suite runs on each), automatic schema migration, Prometheus metrics and alerts, health and readiness endpoints, a Docker image, Docker Compose and a Helm chart; tested on Linux and Windows.
 
 **Planned** (order in [docs/06-plan.md §3](docs/06-plan.md))
@@ -36,7 +37,7 @@ cargo run --release --bin agentim -- --demo   # open http://127.0.0.1:8080 and l
 |---|---|---|
 | No loss | An acknowledged message survives `kill -9` and restarts | Real process killed mid-traffic on Linux and Windows; failed commits inject faults and must not acknowledge |
 | Order | Every member sees the same gap-free sequence | Every test checks contiguous sequence numbers and in-order pushes |
-| Correct business rules | Permissions, visibility, approval, deduplication are enforced by the server, for clients and the open API alike | Business scenarios, membership, extensions, webhooks, devices, accounts and open API suites plus concurrency races × SQLite, PostgreSQL, MySQL ([coverage](docs/05-operations.md#5-测试)) |
+| Correct business rules | Permissions, visibility, approval, deduplication are enforced by the server, for clients and the open API alike | Business scenarios, membership, extensions, webhooks, devices, login and open API suites plus concurrency races × SQLite, PostgreSQL, MySQL ([coverage](docs/05-operations.md#5-测试)) |
 | Slow clients cannot hurt others | A client that stops reading loses only its own pushes and is told to resync | Scale tests in CI, nightly |
 | Scale | Tens of thousands of connections per node, large groups | 20,000 connections with a reconnect storm, 2,000-member groups, nightly in CI |
 

@@ -1,7 +1,8 @@
-// Smoke test against a running server: AGENTIM_URL and AGENTIM_KEY (a key
-// with every scope). Run by CI (.github/workflows/server.yml).
+// Smoke test against a running server: AGENTIM_URL, AGENTIM_KEY (a key
+// with every scope) and AGENTIM_KID / AGENTIM_SECRET (a signing key). Run
+// by CI (.github/workflows/server.yml).
 import assert from "node:assert/strict";
-import { AgentIM, AgentIMError } from "./index.mjs";
+import { AgentIM, AgentIMError, createUserToken } from "./index.mjs";
 
 const im = new AgentIM({ baseUrl: process.env.AGENTIM_URL, apiKey: process.env.AGENTIM_KEY });
 const run = `node${Date.now()}`;
@@ -10,8 +11,28 @@ const [a, b] = [`${run}_a`, `${run}_b`];
 await im.upsertUser(a, { display_name: "A" });
 await im.batchUsers([{ id: b }]);
 assert.equal((await im.getUser(a)).display_name, "A");
-const { token } = await im.issueToken(a, { deviceName: "smoke" });
-assert.match(token, /^atk_/);
+// A token signed here logs the person in over the WebSocket.
+const signing = { kid: process.env.AGENTIM_KID, secret: process.env.AGENTIM_SECRET };
+const welcome = (token, device) => new Promise((resolve, reject) => {
+  const q = new URLSearchParams({ token, ...(device ? { device } : {}) });
+  const ws = new WebSocket(`${process.env.AGENTIM_URL.replace(/^http/, "ws")}/ws?${q}`);
+  ws.onmessage = (e) => { ws.close(); resolve(JSON.parse(e.data)); };
+  ws.onerror = () => reject(new Error("refused"));
+});
+assert.equal((await welcome(createUserToken(signing, a), "smoke-1")).me.name, a);
+await assert.rejects(welcome(createUserToken({ kid: signing.kid, secret: "wrong" }, a), "smoke-1"));
+assert.deepEqual(await im.revokeTokens(a), { revoked: 1 });
+// Agent keys.
+const bot = `${run}_bot`;
+await im.upsertUser(bot, { kind: "agent", owner: a });
+const k = await im.issueAgentKey(bot);
+assert.match(k.key, /^atk_/);
+assert.equal((await welcome(k.key)).me.name, bot);
+assert.deepEqual(await im.revokeAgentKey(bot, k.device_id), { revoked: 1 });
+await assert.rejects(im.revokeAgentKey(bot, k.device_id), (e) => e.code === "not_found");
+const k2 = await im.issueAgentKey(bot, { revokeOthers: true });
+assert.ok(k2.revoked.length >= 1);
+assert.equal((await im.revokeAgentKeys(bot)).revoked, 1);
 
 const conv = await im.createConversation({ as: "system", owner: a, kind: "group", title: "smoke", members: [b] });
 const sent = await im.sendMessage(conv.id, { as: a, text: "hello", clientMsgId: "m1" });

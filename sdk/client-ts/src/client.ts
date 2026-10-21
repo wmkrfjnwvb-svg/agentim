@@ -28,8 +28,21 @@ type WebSocketCtor = new (url: string) => WebSocket;
 export interface ClientOptions {
   /** Server address, e.g. `https://chat.example.com`. */
   url: string;
-  /** Returns a user token from your backend (it calls the open API). Called again when the server refuses the current one. */
+  /**
+   * Returns a client token from your backend, which signs it with its
+   * signing key (docs/13 §4.2). Called again when the server refuses the
+   * current one.
+   */
   tokenProvider: () => Promise<string>;
+  /**
+   * This device's id (1..64 of A-Z a-z 0-9 _ -), the same every time the
+   * app runs on it: the server keeps the device's sync position under it.
+   * Default: a new one per client (a new device each run).
+   */
+  deviceId?: string;
+  /** Shown in the user's device list. */
+  deviceName?: string;
+  platform?: string;
   /**
    * The local cache: `SqliteStore` on devices, `IndexedDBStore` in browsers
    * (docs/12 §2.1); in memory by default. One per account.
@@ -96,7 +109,9 @@ const uid = () =>
 export class AgentIMClient {
   me: Me | null = null;
   state: ConnectionState = 'closed';
-  private o: Required<Omit<ClientOptions, 'store' | 'WebSocket' | 'log' | 'userId'>> & Pick<ClientOptions, 'log' | 'userId'>;
+  private o: Required<Omit<ClientOptions, 'store' | 'WebSocket' | 'log' | 'userId' | 'deviceId' | 'deviceName' | 'platform'>> &
+    Pick<ClientOptions, 'log' | 'userId' | 'deviceName' | 'platform'>;
+  private deviceId: string;
   private store: Store;
   private WS: WebSocketCtor;
   private ws: WebSocket | null = null;
@@ -130,6 +145,7 @@ export class AgentIMClient {
       ...opts,
     };
     this.o.maxCacheBytes = Math.max(this.o.maxCacheBytes, 32 * 1024 * 1024);
+    this.deviceId = opts.deviceId ?? uid().replace(/[^A-Za-z0-9_-]/g, '');
     this.store = opts.store ?? new MemoryStore();
     const ws = opts.WebSocket ?? (globalThis as any).WebSocket;
     if (!ws) throw new Error('no WebSocket: pass options.WebSocket');
@@ -237,7 +253,10 @@ export class AgentIMClient {
   private async open(): Promise<{ closed: Promise<number> }> {
     const token = await this.o.tokenProvider();
     const base = this.o.url.replace(/^http/, 'ws').replace(/\/$/, '');
-    const ws = new this.WS(`${base}/ws?token=${encodeURIComponent(token)}`);
+    const q = new URLSearchParams({ token, device: this.deviceId });
+    if (this.o.deviceName) q.set('device_name', this.o.deviceName);
+    if (this.o.platform) q.set('platform', this.o.platform);
+    const ws = new this.WS(`${base}/ws?${q}`);
     let welcomed = false;
     const closed = new Promise<number>((done) => {
       ws.addEventListener('close', (e: any) => {

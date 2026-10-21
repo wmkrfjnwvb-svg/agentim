@@ -60,6 +60,17 @@ enum Cmd {
         #[command(subcommand)]
         action: EncCmd,
     },
+    /// Keys the developer's backend signs client tokens with (docs/13
+    /// §4.2). Works while the server runs.
+    SigningKey {
+        #[command(subcommand)]
+        action: SigningCmd,
+    },
+    /// Client tokens for local development and tests.
+    Token {
+        #[command(subcommand)]
+        action: TokenCmd,
+    },
     /// Open API keys (docs/07-open-api.md §5).
     ApiKey {
         #[command(subcommand)]
@@ -180,6 +191,33 @@ enum EncCmd {
     },
     /// Prints a new random master key (base64).
     GenerateKey,
+}
+
+#[derive(Subcommand)]
+enum SigningCmd {
+    /// Creates a key and prints its id and secret once.
+    Create {
+        #[arg(long)]
+        name: String,
+    },
+    /// Lists the keys (never the secrets).
+    List,
+    /// Revokes a key: tokens signed with it stop working at once.
+    Revoke { kid: String },
+}
+
+#[derive(Subcommand)]
+enum TokenCmd {
+    /// Signs a client token with the newest signing key, as the
+    /// developer's backend would.
+    Sign {
+        /// The user id (the developer's).
+        #[arg(long)]
+        user: String,
+        /// Lifetime in seconds.
+        #[arg(long, default_value_t = 3600)]
+        ttl: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -339,6 +377,44 @@ pub async fn run_with(cluster: Option<ClusterSupport>) {
             Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
             Err(e) => {
                 eprintln!("encryption: {} {}", e.code, e.message);
+                std::process::exit(1)
+            }
+        }
+        return;
+    }
+
+    if let Some(Cmd::SigningKey { action }) = &args.cmd {
+        let out = match action {
+            SigningCmd::Create { name } => hub.create_signing_key(name).await.map(|mut v| {
+                v["note"] = serde_json::json!(
+                    "store the secret in your backend now; it is not shown again. Sign client tokens with HS256, header kid = this kid (docs/13 §4.2)"
+                );
+                v
+            }),
+            SigningCmd::List => hub.signing_keys().await.map(|v| serde_json::json!(v)),
+            SigningCmd::Revoke { kid } => hub
+                .revoke_signing_key(kid)
+                .await
+                .map(|_| serde_json::json!({"revoked": kid})),
+        };
+        match out {
+            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+            Err(e) => {
+                eprintln!("signing-key: {} {}", e.code, e.message);
+                std::process::exit(1)
+            }
+        }
+        return;
+    }
+
+    if let Some(Cmd::Token {
+        action: TokenCmd::Sign { user, ttl },
+    }) = &args.cmd
+    {
+        match hub.sign_token(user, *ttl) {
+            Ok(t) => println!("{t}"),
+            Err(e) => {
+                eprintln!("token sign: {} {}", e.code, e.message);
                 std::process::exit(1)
             }
         }

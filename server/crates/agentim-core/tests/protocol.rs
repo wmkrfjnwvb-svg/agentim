@@ -353,14 +353,16 @@ async fn refused(url: String) -> (u16, Value) {
 #[tokio::test]
 async fn welcome_declares_the_protocol_and_features() {
     let srv = start(&[]).await;
-    let (_, token) = srv
+    let alice_ = srv
         .hub
         .create_user("alice", UserKind::Human, None, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
+    let token = ws_token(&srv.hub, &alice_).await;
     for (q, want) in [("", 1), ("&v=1", 1), ("&v=2,1", 1), ("&v=%201%20,3", 1)] {
         let (mut ws, _) =
-            tokio_tungstenite::connect_async(format!("ws://{}/ws?token={token}{q}", srv.addr))
+            tokio_tungstenite::connect_async(format!("ws://{}/ws?{token}{q}", srv.addr))
                 .await
                 .unwrap();
         let w = next_json(&mut ws).await;
@@ -381,11 +383,13 @@ async fn welcome_declares_the_protocol_and_features() {
 #[tokio::test]
 async fn incompatible_versions_are_refused_before_the_upgrade() {
     let srv = start(&[]).await;
-    let (_, token) = srv
+    let alice_ = srv
         .hub
         .create_user("alice", UserKind::Human, None, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
+    let token = ws_token(&srv.hub, &alice_).await;
     for (q, want) in [
         ("v=2", "unsupported_protocol"),
         ("v=0", "unsupported_protocol"),
@@ -395,7 +399,7 @@ async fn incompatible_versions_are_refused_before_the_upgrade() {
         ("v=-1", "bad_request"),
         ("v=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17", "bad_request"),
     ] {
-        let (status, body) = refused(format!("ws://{}/ws?token={token}&{q}", srv.addr)).await;
+        let (status, body) = refused(format!("ws://{}/ws?{token}&{q}", srv.addr)).await;
         assert_eq!(status, 400, "{q}");
         assert_eq!(body["error"]["code"], want, "{q}: {body}");
         assert_eq!(
@@ -410,7 +414,7 @@ async fn incompatible_versions_are_refused_before_the_upgrade() {
     // Sixteen versions are allowed.
     let list: Vec<String> = (1..=16).map(|i| i.to_string()).collect();
     let (mut ws, _) = tokio_tungstenite::connect_async(format!(
-        "ws://{}/ws?token={token}&v={}",
+        "ws://{}/ws?{token}&v={}",
         srv.addr,
         list.join(",")
     ))
@@ -422,12 +426,14 @@ async fn incompatible_versions_are_refused_before_the_upgrade() {
 #[tokio::test]
 async fn a_too_old_client_gets_the_reason_and_is_disconnected() {
     let srv = start(&[("agentim-js", "1.2.0")]).await;
-    let (_, token) = srv
+    let alice_ = srv
         .hub
         .create_user("alice", UserKind::Human, None, None)
         .await
-        .unwrap();
-    let url = format!("ws://{}/ws?token={token}", srv.addr);
+        .unwrap()
+        .0;
+    let token = ws_token(&srv.hub, &alice_).await;
+    let url = format!("ws://{}/ws?{token}", srv.addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     next_json(&mut ws).await;
     ws.send(Message::Text(

@@ -137,14 +137,20 @@ async fn websocket_auth_request_response_and_push() {
     assert_eq!(code, 404);
 
     let (mut a, _) = tokio_tungstenite::connect_async_with_config(
-        format!("ws://{addr}/ws?token={}", login(&addr, "alice").await),
+        format!(
+            "ws://{addr}/ws?token={}&device=web-alice",
+            login(&addr, "alice").await
+        ),
         None,
         true,
     )
     .await
     .unwrap();
     let (mut b, _) = tokio_tungstenite::connect_async_with_config(
-        format!("ws://{addr}/ws?token={}", login(&addr, "bob").await),
+        format!(
+            "ws://{addr}/ws?token={}&device=web-bob",
+            login(&addr, "bob").await
+        ),
         None,
         true,
     )
@@ -192,7 +198,10 @@ async fn websocket_auth_request_response_and_push() {
 async fn demo_agent_streams_a_reply_with_coalesced_deltas() {
     let (addr, _dir) = start(true).await;
     let (mut a, _) = tokio_tungstenite::connect_async_with_config(
-        format!("ws://{addr}/ws?token={}", login(&addr, "alice").await),
+        format!(
+            "ws://{addr}/ws?token={}&device=web-alice",
+            login(&addr, "alice").await
+        ),
         None,
         true,
     )

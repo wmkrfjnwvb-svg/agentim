@@ -13,10 +13,14 @@ for _ in $(seq 1 100); do
   curl -fs "http://127.0.0.1:$PORT/readyz" >/dev/null 2>&1 && break
   sleep 0.1
 done
-SCOPES=tokens:issue,users:write,users:read,conversations:write,conversations:read,messages:write,messages:read
+SCOPES=tokens:revoke,agents:write,users:write,users:read,conversations:write,conversations:read,messages:write,messages:read
 KEY=$("$BIN" --db "$DIR/smoke.db" api-key create --name smoke --scopes "$SCOPES" 2>/dev/null | sed -n 's/.*"key": "\(ak_[^"]*\)".*/\1/p')
 test -n "$KEY"
-export AGENTIM_URL="http://127.0.0.1:$PORT" AGENTIM_KEY="$KEY"
+SK=$("$BIN" --db "$DIR/smoke.db" signing-key create --name smoke 2>/dev/null)
+KID=$(echo "$SK" | sed -n 's/.*"kid": "\([^"]*\)".*/\1/p')
+SECRET=$(echo "$SK" | sed -n 's/.*"secret": "\([^"]*\)".*/\1/p')
+test -n "$KID" && test -n "$SECRET"
+export AGENTIM_URL="http://127.0.0.1:$PORT" AGENTIM_KEY="$KEY" AGENTIM_KID="$KID" AGENTIM_SECRET="$SECRET"
 node sdk/node/smoke.mjs
 python3 sdk/python/smoke.py
 (cd sdk/go && go run ./smoke)

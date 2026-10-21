@@ -55,9 +55,10 @@ def _clean(d):
 class Connection:
     """One WebSocket connection: requests by ``rid``, pushes to a callback."""
 
-    def __init__(self, url, token, on_push=None):
+    def __init__(self, url, token, on_push=None, device=None):
+        """``device``: a person's device id (agents connect with a key and none)."""
         base = url.rstrip("/").replace("http", "ws", 1)
-        self.url = f"{base}/ws?token={quote(token)}"
+        self.url = f"{base}/ws?token={quote(token)}" + (f"&device={quote(device)}" if device else "")
         self.on_push = on_push
         self.pending = {}
         self.rids = itertools.count(1)

@@ -84,6 +84,17 @@ pub enum Out {
     /// Security caches changed (blocks, stops, deactivations...): other
     /// nodes reload them now rather than at their next poll.
     Invalidate,
+    /// Client tokens of a user (device "" = every device) issued before
+    /// `at` seconds are refused (docs/13 §4.2).
+    Cutoff {
+        user_id: String,
+        device_id: String,
+        at: i64,
+    },
+    /// A signing key was revoked: tokens signed with it are refused.
+    KeyRevoked {
+        kid: String,
+    },
 }
 
 /// A conversation member as seen by fan-out for one event.
@@ -575,7 +586,12 @@ impl Registry {
                     }
                 }
                 // Caches, not connections (see Shared::apply_tokens).
-                Out::Stream { .. } | Out::Dir { .. } | Out::Block { .. } | Out::Invalidate => {}
+                Out::Stream { .. }
+                | Out::Dir { .. }
+                | Out::Block { .. }
+                | Out::Invalidate
+                | Out::Cutoff { .. }
+                | Out::KeyRevoked { .. } => {}
                 Out::Tokens { kick, .. } => {
                     for (user_id, device_id) in kick {
                         for sid in g.by_user.get(&user_id).into_iter().flatten() {

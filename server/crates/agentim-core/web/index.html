@@ -126,7 +126,9 @@ async function login(name) {
 
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${S.token}`);
+  // A person's device id is chosen by the app and kept (docs/13 §4.2).
+  let dev = null; try { dev = localStorage.getItem('agentim.device'); if (!dev) { dev = crypto.randomUUID(); localStorage.setItem('agentim.device', dev); } } catch { dev = crypto.randomUUID(); }
+  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(S.token)}&device=${dev}&device_name=web&platform=web`);
   S.ws = ws;
   ws.onopen = async () => {
     $('conn').textContent = '在线'; $('conn').className = 'tag ok';

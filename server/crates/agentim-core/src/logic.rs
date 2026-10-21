@@ -134,6 +134,11 @@ pub struct Shared {
     pub users: std::sync::RwLock<HashMap<String, User>>,
     /// SHA-256 of each valid client token → its device.
     pub tokens: std::sync::RwLock<HashMap<String, TokenInfo>>,
+    /// Signing keys in force: kid → (secret, created_at) (docs/13 §4.2).
+    pub signing: std::sync::RwLock<HashMap<String, (String, i64)>>,
+    /// (user, device or "") → client tokens issued before these seconds
+    /// are refused.
+    pub cutoffs: std::sync::RwLock<HashMap<(String, String), i64>>,
     /// Users that may not log in or act (open API deactivation).
     pub deactivated: std::sync::RwLock<HashSet<String>>,
     /// Agents their owners stopped (docs/03-agents.md §4.3–§4.4).
@@ -179,6 +184,22 @@ impl Shared {
                     }
                 }
                 Out::Dir { conv_id, info } => self.dir_set_local(conv_id, info.clone()),
+                Out::Cutoff {
+                    user_id,
+                    device_id,
+                    at,
+                } => {
+                    self.cutoffs
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert((user_id.clone(), device_id.clone()), *at);
+                }
+                Out::KeyRevoked { kid } => {
+                    self.signing
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(kid);
+                }
                 Out::Block {
                     user_id,
                     target,
@@ -419,15 +440,30 @@ pub enum Op {
         hash: String,
     },
     /// All tokens of a user, or of one device. Returns the removed hashes.
+    /// `cutoff` (seconds): client tokens of the user (or that device)
+    /// issued before it are refused from then on.
     RevokeTokens {
         user_id: String,
         device_id: Option<String>,
+        #[serde(default)]
+        cutoff: Option<i64>,
     },
-    /// Control database: deletes people's tokens unused since `idle_before`
-    /// or issued before `issued_before` (D94).
+    /// A person's device seen for the first time with a signed client
+    /// token, or again with another signing key (`issued_by`). Returns
+    /// whether it is new.
+    RegisterDevice {
+        row: crate::db::TokenRow,
+    },
+    CreateSigningKey(crate::db::SigningKeyRow),
+    /// Returns whether a key was revoked; devices that last connected
+    /// with it are disconnected.
+    RevokeSigningKey {
+        kid: String,
+    },
+    /// Control database: forgets people's devices unused since
+    /// `idle_before` (D94).
     ExpireTokens {
         idle_before: i64,
-        issued_before: i64,
     },
     TouchToken {
         hash: String,
@@ -722,6 +758,9 @@ impl Op {
             | Op::IssueToken { .. }
             | Op::LoadToken { .. }
             | Op::RevokeTokens { .. }
+            | Op::RegisterDevice { .. }
+            | Op::CreateSigningKey(_)
+            | Op::RevokeSigningKey { .. }
             | Op::ExpireTokens { .. }
             | Op::UpdateUser { .. }
             | Op::SetDeactivated { .. }
@@ -778,6 +817,9 @@ impl Op {
             Op::IssueToken { .. } => "issue_token",
             Op::LoadToken { .. } => "load_token",
             Op::RevokeTokens { .. } => "revoke_tokens",
+            Op::RegisterDevice { .. } => "register_device",
+            Op::CreateSigningKey(_) => "create_signing_key",
+            Op::RevokeSigningKey { .. } => "revoke_signing_key",
             Op::TouchToken { .. } => "touch_token",
             Op::ExpireTokens { .. } => "expire_tokens",
             Op::UpdateUser { .. } => "update_user",
@@ -1166,11 +1208,24 @@ impl Ctx<'_, '_> {
                 });
                 Ok(json!({"user": user, "deactivated": off}))
             }
-            Op::RevokeTokens { user_id, device_id } => {
+            Op::RevokeTokens {
+                user_id,
+                device_id,
+                cutoff,
+            } => {
                 let gone = self
                     .db
                     .delete_tokens(&user_id, device_id.as_deref())
                     .await?;
+                if let Some(at) = cutoff {
+                    let dev = device_id.clone().unwrap_or_default();
+                    self.db.set_cutoff(&user_id, &dev, at).await?;
+                    self.out.push(Out::Cutoff {
+                        user_id: user_id.clone(),
+                        device_id: dev,
+                        at,
+                    });
+                }
                 self.out.push(Out::Tokens {
                     add: vec![],
                     remove: gone.clone(),
@@ -1178,11 +1233,56 @@ impl Ctx<'_, '_> {
                 });
                 Ok(json!({"hashes": gone}))
             }
-            Op::ExpireTokens {
-                idle_before,
-                issued_before,
-            } => {
-                let gone = self.db.expire_tokens(idle_before, issued_before).await?;
+            Op::RegisterDevice { row } => {
+                let new = match self.db.token_by_hash(&row.hash).await? {
+                    Some(t) => {
+                        if t.issued_by != row.issued_by
+                            && let Some(by) = &row.issued_by
+                        {
+                            self.db.set_token_issuer(&row.hash, by).await?;
+                        }
+                        false
+                    }
+                    None => {
+                        self.db.insert_token(&row).await?;
+                        true
+                    }
+                };
+                self.out.push(Out::Tokens {
+                    add: vec![(row.hash.clone(), TokenInfo::of(&row))],
+                    remove: vec![],
+                    kick: vec![],
+                });
+                Ok(json!({"new": new}))
+            }
+            Op::CreateSigningKey(k) => {
+                self.db.insert_signing_key(&k).await?;
+                self.out.push(Out::Invalidate);
+                Ok(json!({}))
+            }
+            Op::RevokeSigningKey { kid } => {
+                if !self.db.revoke_signing_key(&kid).await? {
+                    return Ok(json!({"revoked": false}));
+                }
+                let by = format!("jwt:{kid}");
+                let kick: Vec<(String, Option<String>)> = self
+                    .db
+                    .tokens_all()
+                    .await?
+                    .into_iter()
+                    .filter(|t| t.issued_by.as_deref() == Some(by.as_str()))
+                    .map(|t| (t.user_id, Some(t.device_id)))
+                    .collect();
+                self.out.push(Out::KeyRevoked { kid });
+                self.out.push(Out::Tokens {
+                    add: vec![],
+                    remove: vec![],
+                    kick,
+                });
+                Ok(json!({"revoked": true}))
+            }
+            Op::ExpireTokens { idle_before } => {
+                let gone = self.db.expire_tokens(idle_before).await?;
                 let n = gone.len();
                 if n > 0 {
                     self.out.push(Out::Tokens {

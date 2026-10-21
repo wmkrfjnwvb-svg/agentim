@@ -32,6 +32,7 @@ impl Hub {
         let (agent, key) = self
             .create_user_with(name, UserKind::Agent, Some(&me.id), Some(&me.unit_id), team)
             .await?;
+        let key = key.unwrap_or_default();
         let device_id = self
             .devices(&agent.id)
             .await?
@@ -90,6 +91,28 @@ impl Hub {
         revoke_others: bool,
     ) -> ApiResult<Value> {
         let agent = self.live_agent(me, agent_id)?;
+        let v = self.issue_agent_key(&agent, &me.id, revoke_others).await?;
+        self.audit_user(
+            me,
+            "agent.key",
+            &agent.id,
+            json!({"device_id": v["device_id"], "revoked": v["revoked"]}),
+        )
+        .await;
+        Ok(v)
+    }
+
+    /// A new key for an agent (its owner, or the developer's backend:
+    /// `by` is who asked). `revoke_others` revokes its other keys.
+    pub async fn issue_agent_key(
+        &self,
+        agent: &User,
+        by: &str,
+        revoke_others: bool,
+    ) -> ApiResult<Value> {
+        if agent.kind != UserKind::Agent || self.is_destroyed(&agent.id) {
+            return Err(err("not_found", "no such agent"));
+        }
         if self.is_deactivated(&agent.id) {
             return Err(err("conflict", "the agent is deactivated"));
         }
@@ -99,18 +122,11 @@ impl Hub {
                 Some(KEY_NAME),
                 None,
                 None,
-                &me.id,
+                by,
                 revoke_others,
                 Some(MAX_AGENT_KEYS),
             )
             .await?;
-        self.audit_user(
-            me,
-            "agent.key",
-            &agent.id,
-            json!({"device_id": row.device_id, "revoked": revoked}),
-        )
-        .await;
         Ok(json!({
             "key": key,
             "device_id": row.device_id,

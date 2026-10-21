@@ -112,12 +112,10 @@ impl Api {
         self.hub.user_by_name(id).unwrap()
     }
 
+    /// A client token for the person, as the developer's backend signs it.
     async fn token(&self, id: &str) -> String {
-        self.ok("POST", &format!("/v1/users/{id}/tokens"), Some(json!({})))
-            .await["token"]
-            .as_str()
-            .unwrap()
-            .to_string()
+        let u = self.hub.user_by_name(id).unwrap();
+        client_token(&self.hub, &u).await
     }
 }
 
@@ -208,10 +206,13 @@ async fn deleting_an_account_erases_what_the_person_wrote(db: TestDb) {
         ),
         "not_found"
     );
-    let (s, _) = api
-        .call("POST", "/v1/users/alice/tokens", Some(json!({})))
-        .await;
-    assert_eq!(s, 403);
+    // Their signed tokens are refused (deleted: ids are not reused).
+    let t = client_token(hub, &alice).await;
+    let e = hub
+        .authenticate_client(&t, Some("d1"), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, "unauthorized");
     let e = erased(hub, &alice).await;
     assert_eq!(e["state"], "done", "{e}");
     assert_eq!(
@@ -543,7 +544,7 @@ async fn export_has_the_persons_own_data(db: TestDb) {
         .await;
     assert_eq!(s, 404);
     let (s, _) = api.raw("GET", "/v1/me/export", Some(&token), None).await;
-    assert_eq!(s, 401, "no export with a client token");
+    assert_eq!(s, 404, "there is no export with a client token");
     let k = hub
         .create_api_key("k", &["users:read".to_string()], None, None)
         .await

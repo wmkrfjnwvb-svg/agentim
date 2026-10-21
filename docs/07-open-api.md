@@ -27,7 +27,8 @@
 
 | 权限范围 | 允许 | 状态 |
 |---|---|---|
-| `tokens:issue` | 吊销用户的全部令牌（令牌由开发者用签名密钥自己签，[13 §4.2](13-roles-and-entry-points.md)） | ✅ |
+| `tokens:revoke` | 让一个人在所有设备上退出（客户端令牌由开发者用签名密钥自己签，不经过开放 API，[13 §4.2](13-roles-and-entry-points.md)） | ✅ |
+| `agents:write` / `agents:read` | 签发、吊销 Agent 密钥（其余 Agent 接口见 [13 §4.1](13-roles-and-entry-points.md)） | ✅ 密钥 |
 | `users:write` / `users:read` | 创建、导入、修改、停用用户；读取用户资料 | ✅ |
 | `conversations:write` / `conversations:read` | 建会话、改资料、管理成员和角色、解散；读取会话和成员 | ✅ |
 | `messages:write` | 以用户或系统身份发消息、编辑、撤回、标记已读 | ✅ |
@@ -53,8 +54,9 @@
 
 | 资源 | 接口 | 说明 | 状态 |
 |---|---|---|---|
-| 登录令牌 | `POST /v1/users/{id}/tokens` | 将删除：改为开发者用签名密钥自己签 JWT（[13 §4.2](13-roles-and-entry-points.md)） | ✅ 待删 |
-| | `DELETE /v1/users/{id}/tokens` | 吊销这个用户的全部令牌（签发时间早于此刻的都失效），并立即断开 | ✅ |
+| 登录 | （无接口） | 客户端令牌由开发者后端用签名密钥离线签 JWT，服务端 SDK 的 `createUserToken` 就是这样做的（[13 §4.2](13-roles-and-entry-points.md)） | ✅ |
+| | `DELETE /v1/users/{id}/tokens` | 让这个人在所有设备上退出：设备删掉、立即断开，签发时间不晚于此刻的令牌都被拒绝；对 Agent 是吊销它的全部密钥 | ✅ |
+| Agent 密钥 | `POST /v1/agents/{id}/keys`、`DELETE …/keys`、`DELETE …/keys/{device}` | 签发一把新密钥（只显示一次，`revoke_others` 同时吊销其他的）、吊销全部、吊销一把 | ✅ |
 | 用户 | `PUT /v1/users/{id}`、`GET`、`PATCH` | 创建或更新、读取、修改资料（昵称、头像、自定义字段） | ✅ |
 | | `POST /v1/users:batch` | 一次最多 100 个，逐个返回结果 | ✅ |
 | | `POST /v1/users/{id}:deactivate`、`:reactivate` | 停用后不能登录，已有的消息保留 | ✅ |
@@ -124,8 +126,8 @@
 |---|---|
 | API Key | 格式 `ak_<key_id>_<secret>`，数据库只存整个 Key 的 SHA-256。命令行管理：`agentim api-key create --scopes …`（只在创建时显示一次）、`api-key list`、`api-key revoke <key_id>`。可选过期时间和 IP 允许列表。服务端运行时新建的 Key 立即可用；吊销在 10 秒内生效（每 10 秒重新读取，未知的 Key 最多每秒查一次库） |
 | 明文 HTTP | 只有来自本机地址的请求允许；部署在 TLS 反向代理之后时设 `open_api.allow_http = true` |
-| 客户端令牌 | 格式 `atk_<43 位 base64url>`（256 位随机数），只存 SHA-256；每个令牌就是一台设备（`device_id`、名称、平台、签发时间、过期时间、最近使用时间） |
-| 设备 | 客户端协议的 `list_devices`、`logout_device {device_id}`（吊销并立即断开那台设备）；开放 API 吊销用户的全部令牌时也立即断开。新设备登录时，这个用户已在线的设备收到 `device.added`；已读在其他设备上同步（`read` 推送） |
+| 客户端令牌 | 开发者后端用签名密钥离线签的 JWT（[13 §4.2](13-roles-and-entry-points.md)），不经过开放 API；Agent 密钥是 `atk_<43 位 base64url>`（256 位随机数），只存 SHA-256，每把密钥是一台设备 |
+| 设备 | 人的设备由 App 连接时的 `device=` 选定，服务端第一次见到时登记；客户端协议的 `list_devices`、`logout_device {device_id}`（立即断开，这台设备上已签发的令牌作废）；`DELETE /v1/users/{id}/tokens` 让这个人在所有设备上退出。新设备登录时，这个用户已在线的设备收到 `device.added`；已读在其他设备上同步（`read` 推送） |
 | 以系统身份 | 内置的系统用户（`kind = system`，名字 `system` 保留）。可以发系统通知（`sender_type = system`，不需要是成员）、拉人、移除非群主的成员（群主要先转让）、改角色、转让群主、撤回任何消息、解散会话、读取任何会话的历史。建会话必须指定 `owner`，按这个用户的身份建，拉黑等规则照常检查 |
 | 以用户身份 | 内部用一个不登记在线状态的会话执行和客户端完全相同的操作，所以规则、去重、推送、审计一致 |
 | 审计 | 每个写操作和每次读取历史都写审计：`api.<操作>`，带 Key ID 和身份 |

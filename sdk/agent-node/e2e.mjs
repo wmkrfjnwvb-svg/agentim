@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Agent, Connection } from './index.mjs';
-import { AgentIM } from '../node/index.mjs';
+import { AgentIM, createUserToken } from '../node/index.mjs';
 
 const BIN = process.env.AGENTIM_BIN ?? 'server/target/debug/agentim';
 const PORT = Number(process.env.PORT ?? 20000 + Math.floor(Math.random() * 20000));
@@ -46,7 +46,7 @@ class Person {
       if (f.type === 'side') this.sides.push(f.event);
       // Pushes could not continue (e.g. a new conversation): sync again.
       if (f.type === 'resync') this.sync().catch(() => {});
-    });
+    }, { device: 'e2e-browser' });
     await this.conn.open();
     await this.sync();
   }
@@ -79,10 +79,11 @@ class Person {
 
 try {
   await startServer();
-  const key = cli('api-key', 'create', '--name', 'e2e', '--scopes', 'users:write,tokens:issue').key;
+  const key = cli('api-key', 'create', '--name', 'e2e', '--scopes', 'users:write').key;
   const im = new AgentIM({ baseUrl: URL, apiKey: key });
   await im.upsertUser('alice');
-  const { token } = await im.issueToken('alice');
+  // The developer's backend signs alice's token itself (docs/13 §4.2).
+  const token = createUserToken(cli('signing-key', 'create', '--name', 'e2e'), 'alice');
   const one = cli('agent', 'create', '--name', 'nbot', '--owner', 'alice');
   const two = cli('agent', 'create', '--name', 'nbot2', '--owner', 'alice');
 

@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import time
 import urllib.error
@@ -11,7 +14,26 @@ import urllib.request
 import uuid
 from typing import Any, Optional
 
-__all__ = ["AgentIM", "AgentIMError"]
+__all__ = ["AgentIM", "AgentIMError", "create_user_token"]
+
+
+def _b64u(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def create_user_token(kid: str, secret: str, user_id: str, expires_in: int = 3600) -> str:
+    """Signs a client token for one of your users (docs/13 §4.2): an HS256
+    JWT with the signing key from `agentim signing-key create`. Do this in
+    your backend after your own login and give the token to your app; no
+    call to AgentIM is made. `expires_in`: seconds (at most
+    `auth.max_token_days`)."""
+    if not kid or not secret:
+        raise ValueError("kid and secret are required")
+    iat = int(time.time())
+    head = _b64u(json.dumps({"alg": "HS256", "typ": "JWT", "kid": kid}, separators=(",", ":")).encode())
+    body = _b64u(json.dumps({"sub": user_id, "iat": iat, "exp": iat + expires_in}, separators=(",", ":")).encode())
+    sig = hmac.new(secret.encode(), f"{head}.{body}".encode(), hashlib.sha256).digest()
+    return f"{head}.{body}.{_b64u(sig)}"
 
 
 class AgentIMError(Exception):
@@ -76,13 +98,20 @@ class AgentIM:
                     continue
                 raise
 
-    # ---- tokens
-    def issue_token(self, user_id, device_name=None, platform=None, ttl_seconds=None):
-        return self.request("POST", f"/v1/users/{_q(user_id)}/tokens",
-                            {"device_name": device_name, "platform": platform, "ttl_seconds": ttl_seconds})
-
+    # ---- login (client tokens are signed with create_user_token)
     def revoke_tokens(self, user_id):
+        """Logs a person out everywhere: client tokens issued until now are refused."""
         return self.request("DELETE", f"/v1/users/{_q(user_id)}/tokens")
+
+    # ---- agent keys
+    def issue_agent_key(self, agent_id, revoke_others=False):
+        return self.request("POST", f"/v1/agents/{_q(agent_id)}/keys", {"revoke_others": revoke_others})
+
+    def revoke_agent_keys(self, agent_id):
+        return self.request("DELETE", f"/v1/agents/{_q(agent_id)}/keys")
+
+    def revoke_agent_key(self, agent_id, device_id):
+        return self.request("DELETE", f"/v1/agents/{_q(agent_id)}/keys/{_q(device_id)}")
 
     # ---- users
     def upsert_user(self, id, **attrs):

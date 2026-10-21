@@ -31,6 +31,7 @@ pub use compliance::{CATEGORIES as REPORT_CATEGORIES, DELETED_CAN_SEND, ERASURE_
 mod export;
 mod history;
 mod lifecycle;
+pub mod login;
 mod requests;
 mod state;
 pub use agents::MAX_AGENT_KEYS;
@@ -57,6 +58,10 @@ struct Inner {
     keys_reloaded: Mutex<Option<Instant>>,
     /// Last lookup of a token unknown to memory (at most one per second).
     tokens_looked_up: Mutex<Option<Instant>>,
+    /// Device row → the signing key it last connected with (`issued_by`).
+    issuers: Mutex<HashMap<String, String>>,
+    /// Last reload of the signing keys for an unknown key id.
+    keys_looked_up: Mutex<Option<Instant>>,
     /// MCP tool calls per agent key: (tokens, last refill).
     mcp_buckets: Mutex<HashMap<String, (f64, Instant)>>,
     /// One stateless sync at a time per device (MCP `get_updates`).
@@ -192,6 +197,8 @@ impl Hub {
             reg: Registry::new(hub_cfg.human_queue, hub_cfg.agent_queue),
             users: Default::default(),
             tokens: Default::default(),
+            signing: Default::default(),
+            cutoffs: Default::default(),
             deactivated: Default::default(),
             stopped: Default::default(),
             destroyed: Default::default(),
@@ -256,6 +263,8 @@ impl Hub {
                 api_keys: Default::default(),
                 keys_reloaded: Mutex::new(None),
                 tokens_looked_up: Mutex::new(None),
+                issuers: Mutex::default(),
+                keys_looked_up: Mutex::new(None),
                 mcp_buckets: Mutex::default(),
                 device_locks: Mutex::default(),
                 conv_buckets: Mutex::default(),
@@ -281,6 +290,7 @@ impl Hub {
     /// shards are taken over.
     pub async fn finish_open(&self) -> ApiResult<()> {
         self.load().await?;
+        self.load_signing().await?;
         self.load_agent_flags().await?;
         self.resume_erasures().await?;
         Ok(())
@@ -634,8 +644,8 @@ impl Hub {
         Some(id)
     }
 
-    /// Ends people's device tokens past their idle or absolute lifetime
-    /// (D94). Returns how many.
+    /// Forgets people's devices unused for `auth.token_idle_days` (D94).
+    /// Returns how many.
     pub async fn expire_tokens(&self) -> ApiResult<u64> {
         let a = &self.inner.cfg.auth;
         let now = now_ms();
@@ -645,7 +655,6 @@ impl Hub {
             .control()
             .call(Op::ExpireTokens {
                 idle_before: before(a.token_idle_days),
-                issued_before: before(a.token_max_days),
             })
             .await?;
         Ok(v["expired"].as_u64().unwrap_or(0))
@@ -682,13 +691,11 @@ impl Hub {
     /// connections of one user are refused the same way (D95).
     pub fn open_device_session(
         &self,
-        user: User,
-        device: String,
-        token: &str,
+        login: &login::Login,
     ) -> (Session, Pushes, Option<&'static str>) {
-        let user_id = user.id.clone();
-        let (s, p) = self.connect_device(user, Some(device));
-        let refused = if self.authenticate_device(token).is_none() {
+        let user_id = login.user.id.clone();
+        let (s, p) = self.connect_device(login.user.clone(), Some(login.device_id.clone()));
+        let refused = if !self.login_valid(login) {
             Some("logged_out")
         } else if self.connections_of(&user_id) > self.inner.cfg.clients.max_connections {
             Some("too_many_connections")
@@ -758,6 +765,19 @@ impl Hub {
             }
         }
         *sh.blocks.write().unwrap() = blocks.into_iter().collect();
+        // Signing keys revoked elsewhere: the devices that connected with
+        // them are disconnected.
+        self.load_signing().await?;
+        {
+            let keys = sh.signing.read().unwrap();
+            for t in &tokens {
+                if let Some(kid) = t.issued_by.as_deref().and_then(|b| b.strip_prefix("jwt:"))
+                    && !keys.contains_key(kid)
+                {
+                    kick.push((t.user_id.clone(), Some(t.device_id.clone())));
+                }
+            }
+        }
         {
             let mut stopped = sh.stopped.write().unwrap();
             let mut destroyed = sh.destroyed.write().unwrap();
@@ -1676,11 +1696,29 @@ impl Hub {
     /// Revokes a user's tokens (all, or one device) and disconnects them.
     /// Returns how many tokens were removed.
     pub async fn revoke_tokens(&self, user_id: &str, device_id: Option<&str>) -> ApiResult<usize> {
+        self.revoke_tokens_with(user_id, device_id, None).await
+    }
+
+    /// Logs a person out (one device, or all): the devices are dropped and
+    /// client tokens issued before now are refused for them, so a token
+    /// the app still holds does not log it back in (docs/13 §4.2).
+    pub async fn log_out(&self, user_id: &str, device_id: Option<&str>) -> ApiResult<usize> {
+        self.revoke_tokens_with(user_id, device_id, Some(now_ms() / 1000))
+            .await
+    }
+
+    async fn revoke_tokens_with(
+        &self,
+        user_id: &str,
+        device_id: Option<&str>,
+        cutoff: Option<i64>,
+    ) -> ApiResult<usize> {
         let v = self
             .control()
             .call(Op::RevokeTokens {
                 user_id: user_id.to_string(),
                 device_id: device_id.map(String::from),
+                cutoff,
             })
             .await?;
         let hashes: Vec<String> = serde_json::from_value(v["hashes"].clone()).unwrap_or_default();
@@ -1733,7 +1771,7 @@ impl Hub {
         kind: UserKind,
         owner: Option<&str>,
         unit: Option<&str>,
-    ) -> ApiResult<(User, String)> {
+    ) -> ApiResult<(User, Option<String>)> {
         self.create_user_with(name, kind, owner, unit, false).await
     }
 
@@ -1745,7 +1783,7 @@ impl Hub {
         owner: Option<&str>,
         unit: Option<&str>,
         team: bool,
-    ) -> ApiResult<(User, String)> {
+    ) -> ApiResult<(User, Option<String>)> {
         if team && (kind != UserKind::Agent || owner.is_none()) {
             return Err(err(
                 "bad_request",
@@ -1782,29 +1820,25 @@ impl Hub {
             .write()
             .unwrap()
             .insert(user.id.clone(), user.clone());
+        // An agent gets its first key; people log in with tokens their
+        // developer signs (docs/13 §4.2).
+        if kind != UserKind::Agent {
+            return Ok((user, None));
+        }
         let (token, _) = self
-            .issue_token(
-                &user.id,
-                Some(if kind == UserKind::Agent {
-                    "agent key"
-                } else {
-                    "first device"
-                }),
-                None,
-                None,
-                "create",
-            )
+            .issue_token(&user.id, Some("agent key"), None, None, "create")
             .await?;
-        Ok((user, token))
+        Ok((user, Some(token)))
     }
 
-    /// Demo login: a new device token for an existing human user.
+    /// Demo login: a signed client token for an existing person (a day).
     pub async fn token_of(&self, name: &str) -> Option<(User, String)> {
-        let u = self.inner.sh.user_by_name(name)?;
-        let (t, _) = self
-            .issue_token(&u.id, Some("web"), Some("web"), None, "demo")
-            .await
-            .ok()?;
+        let u = self
+            .inner
+            .sh
+            .user_by_name(name)
+            .filter(|u| u.kind == UserKind::Human)?;
+        let t = self.sign_token(&u.name, 86400).ok()?;
         Some((u, t))
     }
 
@@ -2417,7 +2451,7 @@ impl Hub {
                 {
                     return Err(err("not_found", "device"));
                 }
-                let n = self.revoke_tokens(&me.id, Some(&device_id)).await?;
+                let n = self.log_out(&me.id, Some(&device_id)).await?;
                 Ok(json!({"revoked": n}))
             }
             ClientMsg::CreateAgent { name } => self.create_agent(me, &name).await,
@@ -3306,6 +3340,12 @@ impl Session {
     /// Completes when this session's device is logged out.
     pub async fn kicked(&self) {
         self.kicked.notified().await
+    }
+
+    /// Whether the session was told to close (consumes the notice; tests).
+    pub fn is_kicked(&self) -> bool {
+        use futures_util::FutureExt;
+        self.kicked.notified().now_or_never().is_some()
     }
 
     pub fn client(&self) -> ClientState {

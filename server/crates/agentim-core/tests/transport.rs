@@ -61,11 +61,8 @@ async fn cross_site_browser_pages_are_refused() {
     let mut c = cfg(&dir);
     c.server.allowed_origins = vec!["https://app.example.com".into()];
     let (addr, hub) = plain(c, true).await;
-    let (_, token) = hub
-        .create_user("alice", UserKind::Human, None, None)
-        .await
-        .unwrap();
-    let url = format!("ws://{addr}/ws?token={token}");
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let url = format!("ws://{addr}/ws?{}", ws_query(&hub, &alice, "d1").await);
     let same = format!("http://{addr}");
     for (origin, want) in [
         (None, 101),
@@ -99,13 +96,9 @@ async fn cross_site_browser_pages_are_refused() {
             .as_u16(),
         403
     );
-    // A refused page created no device.
-    let alice = hub.user_by_name("alice").unwrap();
-    assert_eq!(
-        hub.devices(&alice.id).await.unwrap().len(),
-        2,
-        "first device + one login"
-    );
+    // Only the WebSocket registered a device: logging in signs a token,
+    // and refused pages register nothing.
+    assert_eq!(hub.devices(&alice.id).await.unwrap().len(), 1);
 }
 
 #[test]
@@ -238,8 +231,9 @@ async fn the_server_speaks_tls_itself() {
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-async fn open_ws(addr: &str, token: &str) -> Ws {
-    tokio_tungstenite::connect_async(format!("ws://{addr}/ws?token={token}"))
+/// `query`: `token=…` (an agent) or `token=…&device=…` (a person).
+async fn open_ws(addr: &str, query: &str) -> Ws {
+    tokio_tungstenite::connect_async(format!("ws://{addr}/ws?{query}"))
         .await
         .unwrap()
         .0
@@ -273,10 +267,8 @@ async fn connections_are_capped_and_idle_ones_closed() {
     c.clients.max_connections = 2;
     c.clients.idle_secs = 3;
     let (addr, hub) = plain(c, false).await;
-    let (alice, token) = hub
-        .create_user("alice", UserKind::Human, None, None)
-        .await
-        .unwrap();
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let token = ws_query(&hub, &alice, "d1").await;
     let mut a = open_ws(&addr, &token).await;
     let mut b = open_ws(&addr, &token).await;
     assert!(next_frame(&mut a).await.contains("welcome"));
@@ -318,13 +310,16 @@ async fn connections_are_capped_and_idle_ones_closed() {
 async fn a_logout_before_registration_is_caught() {
     let dir = tempfile::tempdir().unwrap();
     let hub = Hub::open(cfg(&dir), hub_cfg()).await.unwrap();
-    let (alice, token) = hub
-        .create_user("alice", UserKind::Human, None, None)
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let t = client_token(&hub, &alice).await;
+    let login = hub
+        .authenticate_client(&t, Some("d1"), None, None)
         .await
         .unwrap();
-    let (user, device) = hub.authenticate_device(&token).unwrap();
-    hub.revoke_tokens(&alice.id, Some(&device)).await.unwrap();
-    let (_s, _p, refused) = hub.open_device_session(user, device, &token);
+    hub.log_out(&alice.id, Some(&login.device_id))
+        .await
+        .unwrap();
+    let (_s, _p, refused) = hub.open_device_session(&login);
     assert_eq!(refused, Some("logged_out"));
 }
 
@@ -333,29 +328,24 @@ async fn a_logout_before_registration_is_caught() {
 async fn race_logout_during_the_handshake() {
     let dir = tempfile::tempdir().unwrap();
     let (addr, hub) = plain(cfg(&dir), false).await;
-    let (alice, _) = hub
-        .create_user("alice", UserKind::Human, None, None)
-        .await
-        .unwrap();
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let token = client_token(&hub, &alice).await;
     for round in 0..30 {
-        let (token, row) = hub
-            .issue_token(&alice.id, Some("racer"), None, None, "test")
-            .await
-            .unwrap();
-        let a = addr.clone();
+        let dev = format!("racer{round}");
+        let device_id = agentim_core::hub::login::device_id_of(&alice.id, &dev);
+        let (a, token) = (addr.clone(), token.clone());
         let conn = tokio::spawn(async move {
             // Logged out before the handshake: refused with 401.
-            let mut ws = tokio_tungstenite::connect_async(format!("ws://{a}/ws?token={token}"))
-                .await
-                .ok()?
-                .0;
+            let mut ws =
+                tokio_tungstenite::connect_async(format!("ws://{a}/ws?token={token}&device={dev}"))
+                    .await
+                    .ok()?
+                    .0;
             let first = next_frame(&mut ws).await;
             Some((ws, first))
         });
         tokio::time::sleep(Duration::from_micros(round * 150)).await;
-        hub.revoke_tokens(&alice.id, Some(&row.device_id))
-            .await
-            .unwrap();
+        hub.log_out(&alice.id, Some(&device_id)).await.unwrap();
         if let Some((mut ws, first)) = conn.await.unwrap()
             && !first.starts_with("close:")
         {

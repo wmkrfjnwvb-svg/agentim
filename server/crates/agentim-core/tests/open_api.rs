@@ -158,18 +158,8 @@ async fn authentication_and_scopes(db: TestDb) {
         assert_eq!(h["content-type"], "application/problem+json");
     }
     // A client token is not an API key.
-    api.user("alice").await;
-    let (t, _) = api
-        .hub
-        .issue_token(
-            &api.hub.user_by_name("alice").unwrap().id,
-            None,
-            None,
-            None,
-            "t",
-        )
-        .await
-        .unwrap();
+    let alice = api.user("alice").await;
+    let t = client_token(&api.hub, &alice).await;
     assert_eq!(
         api.raw("GET", "/v1/users/alice", Some(&t), None, &[])
             .await
@@ -250,7 +240,10 @@ async fn authentication_and_scopes(db: TestDb) {
     let only_read = api.key(&["users:read"]).await;
     for (m, p, b, scope) in [
         ("PUT", "/v1/users/bob", Some(json!({})), "users:write"),
-        ("POST", "/v1/users/alice/tokens", None, "tokens:issue"),
+        ("DELETE", "/v1/users/alice/tokens", None, "tokens:revoke"),
+        ("POST", "/v1/agents/bot/keys", None, "agents:write"),
+        ("DELETE", "/v1/agents/bot/keys", None, "agents:write"),
+        ("DELETE", "/v1/agents/bot/keys/d_x", None, "agents:write"),
         (
             "POST",
             "/v1/conversations",
@@ -523,18 +516,22 @@ async fn users_lifecycle(db: TestDb) {
         ),
         "bad_request"
     );
-    // Deactivation: tokens revoked, cannot act, cannot get new tokens.
+    // Deactivation: devices dropped, cannot act, cannot log in.
     let u1 = api.hub.user_by_name("user_1").unwrap();
-    let t = api.ok("POST", "/v1/users/user_1/tokens", None).await["token"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let t = client_token(&api.hub, &u1).await;
+    let l = api
+        .hub
+        .authenticate_client(&t, Some("d1"), None, None)
+        .await
+        .unwrap();
     let v = api.ok("POST", "/v1/users/user_1:deactivate", None).await;
     assert_eq!(v["deactivated"], true);
-    assert!(api.hub.authenticate(&t).is_none());
-    assert_eq!(
-        code(&api.call("POST", "/v1/users/user_1/tokens", None).await.1),
-        "forbidden"
+    assert!(!api.hub.login_valid(&l));
+    assert!(
+        api.hub
+            .authenticate_client(&t, Some("d1"), None, None)
+            .await
+            .is_err()
     );
     let (s, v) = api
         .call(
@@ -547,7 +544,12 @@ async fn users_lifecycle(db: TestDb) {
     assert!(api.hub.devices(&u1.id).await.unwrap().is_empty());
     let v = api.ok("POST", "/v1/users/user_1:reactivate", None).await;
     assert_eq!(v["deactivated"], false);
-    api.ok("POST", "/v1/users/user_1/tokens", None).await;
+    assert!(
+        api.hub
+            .authenticate_client(&t, Some("d1"), None, None)
+            .await
+            .is_ok()
+    );
     // Deactivation survives a restart.
     api.ok("POST", "/v1/users/bot_1:deactivate", None).await;
     let url = db.url.clone();
@@ -557,55 +559,123 @@ async fn users_lifecycle(db: TestDb) {
     assert!(!hub.is_deactivated(&u1.id));
 }
 
+/// Logging a person out everywhere and agent keys (docs/13 §4.1–§4.2):
+/// client tokens are signed by the developer, so there is no endpoint
+/// issuing them.
 async fn tokens_for_users(db: TestDb) {
     let api = Api::start(&db).await;
     let alice = api.user("alice").await;
-    let (s, v) = api
-        .call(
-            "POST",
-            "/v1/users/alice/tokens",
-            Some(json!({"device_name": "iPhone", "platform": "ios", "ttl_seconds": 3600})),
-        )
-        .await;
-    assert_eq!(s, 201);
-    let t = v["token"].as_str().unwrap();
-    assert_eq!(
-        api.hub.authenticate_device(t).unwrap().1,
-        v["device"]["device_id"].as_str().unwrap()
-    );
-    assert_eq!(
-        v["device"]["expires_at"].as_i64().unwrap() - v["device"]["created_at"].as_i64().unwrap(),
-        3_600_000
-    );
-    assert!(!v.to_string().contains("hash"));
-    for b in [
-        json!({"ttl_seconds": 0}),
-        json!({"ttl_seconds": -1}),
-        json!({"ttl_seconds": 999_999_999_999i64}),
-        json!({"device_name": ""}),
-        json!({"other": 1}),
-    ] {
-        assert_eq!(
-            code(
-                &api.call("POST", "/v1/users/alice/tokens", Some(b.clone()))
-                    .await
-                    .1
-            ),
-            "bad_request",
-            "{b}"
+    let (s, _) = api.call("POST", "/v1/users/alice/tokens", None).await;
+    assert_eq!(s, 405, "client tokens are not issued here");
+    let t = client_token(&api.hub, &alice).await;
+    let mut logins = vec![];
+    for d in ["phone", "laptop"] {
+        logins.push(
+            api.hub
+                .authenticate_client(&t, Some(d), None, None)
+                .await
+                .unwrap(),
         );
     }
     assert_eq!(
-        code(&api.call("POST", "/v1/users/nobody/tokens", None).await.1),
+        code(&api.call("DELETE", "/v1/users/nobody/tokens", None).await.1),
         "not_found"
     );
-    let n = api.hub.devices(&alice.id).await.unwrap().len();
     let v = api.ok("DELETE", "/v1/users/alice/tokens", None).await;
-    assert_eq!(v["revoked"], n);
-    assert!(api.hub.authenticate(t).is_none());
+    assert_eq!(v["revoked"], 2);
+    for l in &logins {
+        assert!(!api.hub.login_valid(l));
+    }
+    assert!(
+        api.hub
+            .authenticate_client(&t, Some("phone"), None, None)
+            .await
+            .is_err(),
+        "tokens issued before are refused"
+    );
     assert_eq!(
         api.ok("DELETE", "/v1/users/alice/tokens", None).await["revoked"],
         0
+    );
+    // Agent keys.
+    api.ok(
+        "PUT",
+        "/v1/users/bot",
+        Some(json!({"kind": "agent", "owner": "alice"})),
+    )
+    .await;
+    let bot = api.hub.user_by_name("bot").unwrap();
+    let (s, k1) = api.call("POST", "/v1/agents/bot/keys", None).await;
+    assert_eq!(s, 201, "{k1}");
+    let key1 = k1["key"].as_str().unwrap().to_string();
+    assert!(key1.starts_with("atk_"));
+    assert_eq!(
+        api.hub
+            .authenticate_client(&key1, None, None, None)
+            .await
+            .unwrap()
+            .user
+            .id,
+        bot.id
+    );
+    assert!(k1["connect"]["mcp_url"].as_str().unwrap().ends_with("/mcp"));
+    let before = api.hub.devices(&bot.id).await.unwrap().len();
+    // Refusals change nothing.
+    for (m, p, b, want) in [
+        ("POST", "/v1/agents/nobody/keys", None, "not_found"),
+        ("POST", "/v1/agents/alice/keys", None, "not_found"),
+        (
+            "POST",
+            "/v1/agents/bot/keys",
+            Some(json!({"other": 1})),
+            "bad_request",
+        ),
+        ("DELETE", "/v1/agents/bot/keys/d_nope", None, "not_found"),
+        ("DELETE", "/v1/agents/alice/keys", None, "not_found"),
+    ] {
+        let (_, v) = api.call(m, p, b.clone()).await;
+        assert_eq!(code(&v), want, "{m} {p} {b:?}");
+    }
+    assert_eq!(api.hub.devices(&bot.id).await.unwrap().len(), before);
+    // Rotating: a new key, the others revoked in the same write.
+    let k2 = api
+        .ok(
+            "POST",
+            "/v1/agents/bot/keys",
+            Some(json!({"revoke_others": true})),
+        )
+        .await;
+    assert_eq!(k2["revoked"].as_array().unwrap().len(), before);
+    assert!(api.hub.authenticate_device(&key1).is_none());
+    let dev2 = k2["device_id"].as_str().unwrap();
+    let v = api
+        .ok("DELETE", &format!("/v1/agents/bot/keys/{dev2}"), None)
+        .await;
+    assert_eq!(v["revoked"], 1);
+    api.ok("POST", "/v1/agents/bot/keys", None).await;
+    api.ok("POST", "/v1/agents/bot/keys", None).await;
+    assert_eq!(
+        api.ok("DELETE", "/v1/agents/bot/keys", None).await["revoked"],
+        2
+    );
+    assert!(api.hub.devices(&bot.id).await.unwrap().is_empty());
+    // A deactivated agent gets no key.
+    api.ok("POST", "/v1/users/bot:deactivate", None).await;
+    let (s, v) = api.call("POST", "/v1/agents/bot/keys", None).await;
+    assert_eq!((s, code(&v)), (409, "conflict"));
+    // Every call is audited with the key that made it.
+    let log = api.hub.audit_log(200).await.unwrap();
+    for a in [
+        "api.tokens.revoke",
+        "api.agents.key",
+        "api.agents.revoke_key",
+        "api.agents.revoke_keys",
+    ] {
+        assert!(log.iter().any(|r| r["action"] == a), "{a}");
+    }
+    assert!(
+        !json!(log).to_string().contains(&key1),
+        "keys are not audited"
     );
 }
 

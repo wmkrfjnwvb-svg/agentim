@@ -200,3 +200,262 @@ mod password_tests {
         );
     }
 }
+
+// ------------------------------------------------------------ client tokens (JWT)
+
+/// What a verified client token says (docs/13 §4.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Claims {
+    pub kid: String,
+    pub sub: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// Why a client token was refused; the caller only sees 401.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JwtError {
+    Malformed,
+    Algorithm,
+    UnknownKey,
+    Signature,
+    Expired,
+    FromTheFuture,
+    TooLong,
+    Subject,
+}
+
+impl JwtError {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JwtError::Malformed => "malformed",
+            JwtError::Algorithm => "algorithm",
+            JwtError::UnknownKey => "unknown_key",
+            JwtError::Signature => "signature",
+            JwtError::Expired => "expired",
+            JwtError::FromTheFuture => "issued_in_the_future",
+            JwtError::TooLong => "lifetime_too_long",
+            JwtError::Subject => "subject",
+        }
+    }
+}
+
+/// Seconds a token's `iat` may be ahead of the server clock.
+pub const JWT_LEEWAY_S: i64 = 60;
+
+/// Whether a credential looks like a JWT (agent keys start with `atk_`).
+pub fn looks_like_jwt(token: &str) -> bool {
+    token.split('.').count() == 3
+}
+
+fn b64u() -> base64::engine::GeneralPurpose {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+}
+
+fn hs256(secret: &[u8], input: &str) -> Vec<u8> {
+    let mut mac = hmac::Hmac::<Sha256>::new_from_slice(secret).expect("any key length");
+    mac.update(input.as_bytes());
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// Signs a client token the way a developer's backend does (the CLI, the
+/// demo and tests use it).
+pub fn jwt_sign(kid: &str, secret: &str, sub: &str, iat: i64, exp: i64) -> String {
+    let head =
+        b64u().encode(serde_json::json!({"alg": "HS256", "typ": "JWT", "kid": kid}).to_string());
+    let body = b64u().encode(serde_json::json!({"sub": sub, "iat": iat, "exp": exp}).to_string());
+    let input = format!("{head}.{body}");
+    let sig = b64u().encode(hs256(secret.as_bytes(), &input));
+    format!("{input}.{sig}")
+}
+
+/// Verifies a client token: HS256 only, a known key, `iat` not ahead of
+/// `now_s` by more than the leeway, unexpired, at most `max_s` long.
+/// `secret_of(kid)` gives a key's secret, None for unknown or revoked.
+pub fn jwt_verify(
+    token: &str,
+    secret_of: impl Fn(&str) -> Option<String>,
+    now_s: i64,
+    max_s: i64,
+) -> Result<Claims, JwtError> {
+    use JwtError::*;
+    if token.len() > 4096 {
+        return Err(Malformed);
+    }
+    let mut parts = token.split('.');
+    let (Some(h), Some(b), Some(s), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(Malformed);
+    };
+    let json = |p: &str| -> Result<serde_json::Value, JwtError> {
+        let raw = b64u().decode(p).map_err(|_| Malformed)?;
+        let v: serde_json::Value = serde_json::from_slice(&raw).map_err(|_| Malformed)?;
+        if v.is_object() { Ok(v) } else { Err(Malformed) }
+    };
+    let head = json(h)?;
+    // Only HS256: `none` and other algorithms are refused, so a token
+    // cannot pick how it is checked.
+    if head["alg"] != "HS256" {
+        return Err(Algorithm);
+    }
+    if head.get("crit").is_some() {
+        return Err(Malformed);
+    }
+    let kid = head["kid"].as_str().ok_or(Malformed)?.to_string();
+    let secret = secret_of(&kid).ok_or(UnknownKey)?;
+    let sig = b64u().decode(s).map_err(|_| Malformed)?;
+    let input = &token[..h.len() + 1 + b.len()];
+    let mut mac = hmac::Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("any key length");
+    mac.update(input.as_bytes());
+    mac.verify_slice(&sig).map_err(|_| Signature)?;
+    let body = json(b)?;
+    let int = |k: &str| body[k].as_i64().ok_or(Malformed);
+    let (iat, exp) = (int("iat")?, int("exp")?);
+    let sub = body["sub"].as_str().ok_or(Subject)?.to_string();
+    if iat > now_s + JWT_LEEWAY_S {
+        return Err(FromTheFuture);
+    }
+    if exp <= now_s {
+        return Err(Expired);
+    }
+    if exp - iat > max_s || exp <= iat {
+        return Err(TooLong);
+    }
+    Ok(Claims { kid, sub, iat, exp })
+}
+
+/// A new signing key: id and secret (the secret is shown once).
+pub fn new_signing_key() -> (String, String) {
+    let kid = format!("sk_{}", &hash(&new_secret("k"))[..16]);
+    (kid, new_secret("sks"))
+}
+
+#[cfg(test)]
+mod jwt_tests {
+    use super::*;
+
+    const DAY: i64 = 86400;
+
+    fn keys(kid: &str) -> Option<String> {
+        (kid == "k1").then(|| "s3cret".to_string())
+    }
+
+    #[test]
+    fn a_signed_token_verifies() {
+        let t = jwt_sign("k1", "s3cret", "u1", 1000, 1000 + DAY);
+        assert!(looks_like_jwt(&t));
+        assert!(!looks_like_jwt("atk_abc"));
+        let c = jwt_verify(&t, keys, 1000, 30 * DAY).unwrap();
+        assert_eq!(
+            c,
+            Claims {
+                kid: "k1".into(),
+                sub: "u1".into(),
+                iat: 1000,
+                exp: 1000 + DAY
+            }
+        );
+    }
+
+    /// A token from a common JWT library (PyJWT 2.9: jwt.encode({"sub":
+    /// "alice", "iat": 1700000000, "exp": 1700003600}, "s3cret",
+    /// headers={"kid": "k1"})) is accepted: the format is the standard one.
+    #[test]
+    fn a_library_token_verifies() {
+        let t = "eyJhbGciOiJIUzI1NiIsImtpZCI6ImsxIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhbGljZSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAzNjAwfQ.ridO7VIajyWQwFauc8ZH4GIGe4j3vGg3JRd1ugJjg9M";
+        let c = jwt_verify(t, keys, 1_700_000_100, 30 * DAY).unwrap();
+        assert_eq!(c.sub, "alice");
+    }
+
+    #[test]
+    fn refusals() {
+        use JwtError::*;
+        let now = 10 * DAY;
+        let ok = |sub: &str, iat: i64, exp: i64| jwt_sign("k1", "s3cret", sub, iat, exp);
+        let v = |t: &str| jwt_verify(t, keys, now, 30 * DAY).map(|_| ());
+        assert_eq!(v(&ok("u", now - 10, now - 1)), Err(Expired));
+        assert_eq!(v(&ok("u", now - 10, now)), Err(Expired), "exp is exclusive");
+        assert_eq!(v(&ok("u", now + 61, now + DAY)), Err(FromTheFuture));
+        assert_eq!(v(&ok("u", now + 60, now + DAY)), Ok(()), "60 s leeway");
+        assert_eq!(v(&ok("u", now, now + 30 * DAY + 1)), Err(TooLong));
+        assert_eq!(v(&ok("u", now, now + 30 * DAY)), Ok(()), "exactly the most");
+        assert_eq!(
+            v(&jwt_sign("k2", "s3cret", "u", now, now + 9)),
+            Err(UnknownKey)
+        );
+        assert_eq!(
+            v(&jwt_sign("k1", "other", "u", now, now + 9)),
+            Err(Signature)
+        );
+        assert_eq!(v("a.b"), Err(Malformed));
+        assert_eq!(v("a.b.c.d"), Err(Malformed));
+        assert_eq!(v("!!.b.c"), Err(Malformed));
+        assert_eq!(v(&"x".repeat(5000)), Err(Malformed));
+        // A forged header: `none`, another algorithm, no kid, critical
+        // extensions; the body is valid and signed with the right key.
+        let body = b64u().encode(r#"{"sub":"u","iat":864000,"exp":864009}"#);
+        let forge = |head: &str| {
+            let h = b64u().encode(head);
+            let input = format!("{h}.{body}");
+            format!("{input}.{}", b64u().encode(hs256(b"s3cret", &input)))
+        };
+        assert_eq!(v(&forge(r#"{"alg":"none","kid":"k1"}"#)), Err(Algorithm));
+        assert_eq!(v(&forge(r#"{"alg":"HS512","kid":"k1"}"#)), Err(Algorithm));
+        assert_eq!(v(&forge(r#"{"alg":"RS256","kid":"k1"}"#)), Err(Algorithm));
+        assert_eq!(v(&forge(r#"{"alg":"HS256"}"#)), Err(Malformed));
+        assert_eq!(
+            v(&forge(r#"{"alg":"HS256","kid":"k1","crit":["x"]}"#)),
+            Err(Malformed)
+        );
+        assert_eq!(v(&forge(r#"{"alg":"HS256","kid":"k1"}"#)), Ok(()));
+        let unsigned = format!("{}.{body}.", b64u().encode(r#"{"alg":"none","kid":"k1"}"#));
+        assert_eq!(v(&unsigned), Err(Algorithm));
+        // Body fields.
+        let signed_body = |b: &str| {
+            let h = b64u().encode(r#"{"alg":"HS256","kid":"k1"}"#);
+            let input = format!("{h}.{}", b64u().encode(b));
+            format!("{input}.{}", b64u().encode(hs256(b"s3cret", &input)))
+        };
+        assert_eq!(
+            v(&signed_body(r#"{"iat":864000,"exp":864009}"#)),
+            Err(Subject)
+        );
+        assert_eq!(
+            v(&signed_body(r#"{"sub":5,"iat":864000,"exp":864009}"#)),
+            Err(Subject)
+        );
+        assert_eq!(
+            v(&signed_body(r#"{"sub":"u","exp":864009}"#)),
+            Err(Malformed)
+        );
+        assert_eq!(
+            v(&signed_body(r#"{"sub":"u","iat":864000}"#)),
+            Err(Malformed)
+        );
+        assert_eq!(
+            v(&signed_body(r#"{"sub":"u","iat":"864000","exp":864009}"#)),
+            Err(Malformed)
+        );
+        assert_eq!(v(&signed_body(r#"[1]"#)), Err(Malformed));
+        assert_eq!(
+            v(&signed_body(r#"{"sub":"u","iat":864009,"exp":864009}"#)),
+            Err(TooLong)
+        );
+        // A tampered body breaks the signature.
+        let t = ok("u", now, now + 9);
+        let mut p: Vec<&str> = t.split('.').collect();
+        let other = b64u().encode(r#"{"sub":"admin","iat":864000,"exp":864009}"#);
+        p[1] = &other;
+        assert_eq!(v(&p.join(".")), Err(Signature));
+    }
+
+    #[test]
+    fn signing_keys_are_random() {
+        let (a, sa) = new_signing_key();
+        let (b, sb) = new_signing_key();
+        assert!(a.starts_with("sk_") && a.len() == 19, "{a}");
+        assert_ne!(a, b);
+        assert_ne!(sa, sb);
+    }
+}

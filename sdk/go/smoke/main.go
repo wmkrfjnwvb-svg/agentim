@@ -2,10 +2,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -29,6 +32,22 @@ func expect(err error, code string) {
 	}
 }
 
+// wsStatus is the status of a WebSocket handshake to /ws (101: logged in).
+func wsStatus(token, device string) int {
+	u := must(url.Parse(os.Getenv("AGENTIM_URL")))
+	q := url.Values{"token": {token}}
+	if device != "" {
+		q.Set("device", device)
+	}
+	c := must(net.Dial("tcp", u.Host))
+	defer c.Close()
+	fmt.Fprintf(c, "GET /ws?%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n", q.Encode(), u.Host)
+	line := must(bufio.NewReader(c).ReadString('\n'))
+	var code int
+	fmt.Sscanf(strings.Fields(line)[1], "%d", &code)
+	return code
+}
+
 func main() {
 	ctx := context.Background()
 	im := agentim.New(os.Getenv("AGENTIM_URL"), os.Getenv("AGENTIM_KEY"))
@@ -40,9 +59,21 @@ func main() {
 	if must(im.GetUser(ctx, a))["display_name"] != "A" {
 		log.Fatal("profile")
 	}
-	if !strings.HasPrefix(must(im.IssueToken(ctx, a, M{"device_name": "smoke"}))["token"].(string), "atk_") {
-		log.Fatal("token")
+	kid, secret := os.Getenv("AGENTIM_KID"), os.Getenv("AGENTIM_SECRET")
+	if wsStatus(must(agentim.CreateUserToken(kid, secret, a, time.Hour)), "smoke-1") != 101 {
+		log.Fatal("signed token")
 	}
+	if wsStatus(must(agentim.CreateUserToken(kid, "wrong", a, time.Hour)), "smoke-1") != 401 {
+		log.Fatal("wrong secret")
+	}
+	must(im.RevokeTokens(ctx, a))
+	bot := run + "_bot"
+	must(im.UpsertUser(ctx, bot, M{"kind": "agent", "owner": a}))
+	k := must(im.IssueAgentKey(ctx, bot, false))
+	if !strings.HasPrefix(k["key"].(string), "atk_") || wsStatus(k["key"].(string), "") != 101 {
+		log.Fatal("agent key")
+	}
+	must(im.RevokeAgentKey(ctx, bot, k["device_id"].(string)))
 	conv := must(im.CreateConversation(ctx, M{"as": "system", "owner": a, "kind": "group", "title": "smoke", "members": []string{b}}))
 	id := conv["id"].(string)
 	sent := must(im.SendMessage(ctx, id, M{"as": a, "text": "hello", "client_msg_id": "m1"}))

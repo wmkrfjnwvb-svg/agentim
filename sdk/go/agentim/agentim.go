@@ -5,7 +5,10 @@ package agentim
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -150,19 +153,54 @@ func sleep(ctx context.Context, d time.Duration) {
 
 var q = url.PathEscape
 
-// ---- tokens
+// ---- login
 
-func (c *Client) IssueToken(ctx context.Context, userID string, opts M) (M, error) {
-	var out M
-	if opts == nil {
-		opts = M{}
+// CreateUserToken signs a client token for one of your users (docs/13
+// §4.2): an HS256 JWT with the signing key from `agentim signing-key
+// create`. Do this in your backend after your own login and give the token
+// to your app; no call to AgentIM is made.
+func CreateUserToken(kid, secret, userID string, expiresIn time.Duration) (string, error) {
+	if kid == "" || secret == "" {
+		return "", fmt.Errorf("kid and secret are required")
 	}
-	return out, c.Do(ctx, "POST", "/v1/users/"+q(userID)+"/tokens", opts, &out)
+	enc := base64.RawURLEncoding
+	iat := time.Now().Unix()
+	head, err := json.Marshal(M{"alg": "HS256", "typ": "JWT", "kid": kid})
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(M{"sub": userID, "iat": iat, "exp": iat + int64(expiresIn/time.Second)})
+	if err != nil {
+		return "", err
+	}
+	input := enc.EncodeToString(head) + "." + enc.EncodeToString(body)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(input))
+	return input + "." + enc.EncodeToString(mac.Sum(nil)), nil
 }
 
+// RevokeTokens logs a person out everywhere: client tokens issued until
+// now are refused.
 func (c *Client) RevokeTokens(ctx context.Context, userID string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "DELETE", "/v1/users/"+q(userID)+"/tokens", nil, &out)
+}
+
+// ---- agent keys
+
+func (c *Client) IssueAgentKey(ctx context.Context, agentID string, revokeOthers bool) (M, error) {
+	var out M
+	return out, c.Do(ctx, "POST", "/v1/agents/"+q(agentID)+"/keys", M{"revoke_others": revokeOthers}, &out)
+}
+
+func (c *Client) RevokeAgentKeys(ctx context.Context, agentID string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "DELETE", "/v1/agents/"+q(agentID)+"/keys", nil, &out)
+}
+
+func (c *Client) RevokeAgentKey(ctx context.Context, agentID, deviceID string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "DELETE", "/v1/agents/"+q(agentID)+"/keys/"+q(deviceID), nil, &out)
 }
 
 // ---- users

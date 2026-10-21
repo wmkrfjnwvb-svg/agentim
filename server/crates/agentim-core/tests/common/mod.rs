@@ -235,6 +235,25 @@ pub async fn user(hub: &Hub, name: &str, kind: UserKind, owner: Option<&User>) -
         .0
 }
 
+/// A client token for a person, signed the way a developer's backend
+/// would (a signing key is created when the deployment has none).
+pub async fn client_token(hub: &Hub, u: &User) -> String {
+    if hub.sign_token(&u.name, 3600).is_err() {
+        hub.create_signing_key("tests").await.unwrap();
+    }
+    hub.sign_token(&u.name, 3600).unwrap()
+}
+
+/// `ws_query` for a person's first device.
+pub async fn ws_token(hub: &Hub, u: &User) -> String {
+    ws_query(hub, u, "d1").await
+}
+
+/// A person's credential for `/ws`: `token=…&device=…`.
+pub async fn ws_query(hub: &Hub, u: &User, device: &str) -> String {
+    format!("token={}&device={device}", client_token(hub, u).await)
+}
+
 pub async fn user_in(hub: &Hub, name: &str, unit: &str) -> User {
     hub.create_user(name, UserKind::Human, None, Some(unit))
         .await

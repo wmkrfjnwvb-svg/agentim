@@ -145,7 +145,11 @@ async fn keep(logs: &Logs, ev: &Value) {
 impl Client {
     async fn connect(addr: &str, token: &str) -> Result<Client, String> {
         let (ws, _) = tokio_tungstenite::connect_async_with_config(
-            format!("ws://{addr}/ws?token={token}"),
+            format!(
+                "ws://{addr}/ws?token={token}&device={}",
+                // People's tokens need a device; agents' keys ignore it.
+                &agentim_core::auth::hash(token)[..16]
+            ),
             None,
             true,
         )

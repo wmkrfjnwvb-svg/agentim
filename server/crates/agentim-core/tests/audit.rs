@@ -278,7 +278,12 @@ async fn edits_of_older_messages_stay_hidden_from_new_members(db: TestDb) {
     assert_eq!(ids(c.drain()), want, "live, person");
     assert_eq!(ids(g.drain()), want, "live, agent with trigger all");
     // A device syncs, the agent syncs, reads go through the server.
-    let (_, device) = hub.authenticate_device(&token).unwrap();
+    let _ = token;
+    let device = hub
+        .authenticate_client(&client_token(&hub, &carol).await, Some("c1"), None, None)
+        .await
+        .unwrap()
+        .device_id;
     for (who, conn) in [
         ("sync, person", Conn::device(&hub, &carol, &device)),
         ("sync, agent", Conn::new(&hub, &bot)),
@@ -668,38 +673,45 @@ async fn text_that_looks_encrypted_is_kept_as_text(db: TestDb) {
     );
 }
 
-/// M10: a password reset, logout or deactivation done by another process
-/// on the same database (the CLI while the server runs) takes effect in
-/// the running server.
+/// M10: a logout, a revoked agent key or a deactivation done by another
+/// process on the same database (the CLI while the server runs) takes
+/// effect in the running server.
 async fn revocations_by_another_process_take_effect(db: TestDb) {
     let server = open(single(&db.url)).await;
-    let (alice, t1) = server
-        .create_user("alice", UserKind::Human, None, None)
+    let alice = user(&server, "alice", UserKind::Human, None).await;
+    let carol = user(&server, "carol", UserKind::Human, None).await;
+    let (bot, key) = server
+        .create_user("bot", UserKind::Agent, Some(&alice.id), None)
         .await
         .unwrap();
-    let (bob, t2) = server
-        .create_user("bob", UserKind::Human, None, None)
+    let t = client_token(&server, &alice).await;
+    let la = server
+        .authenticate_client(&t, Some("a1"), None, None)
         .await
         .unwrap();
-    let (carol, t3) = server
-        .create_user("carol", UserKind::Human, None, None)
+    let lb = server
+        .authenticate_client(&key.unwrap(), None, None, None)
         .await
         .unwrap();
+    server.refresh_auth().await.unwrap();
     assert!(!server.refresh_auth().await.unwrap(), "nothing changed");
     let cli = open(single(&db.url)).await;
-    cli.revoke_tokens(&alice.id, None).await.unwrap();
-    cli.revoke_tokens(&bob.id, None).await.unwrap();
+    cli.log_out(&alice.id, None).await.unwrap();
+    cli.revoke_tokens(&bot.id, None).await.unwrap();
     cli.set_deactivated(&carol.id, true).await.unwrap();
     // Still trusted until the server notices (at most a second later).
-    assert!(server.authenticate_device(&t1).is_some());
+    assert!(server.login_valid(&la));
     assert!(server.refresh_auth().await.unwrap());
+    assert!(!server.login_valid(&la), "logged out everywhere");
+    assert!(!server.login_valid(&lb), "the agent's key revoked");
     assert!(
-        server.authenticate_device(&t1).is_none(),
-        "all of her tokens revoked"
+        server
+            .authenticate_client(&t, Some("a1"), None, None)
+            .await
+            .is_err(),
+        "her token is cut off on this server too"
     );
-    assert!(server.authenticate_device(&t2).is_none(), "logged out");
     assert!(server.is_deactivated(&carol.id), "deactivated");
-    let _ = t3;
     // Reactivation is picked up too.
     cli.set_deactivated(&carol.id, false).await.unwrap();
     server.refresh_auth().await.unwrap();
@@ -981,25 +993,19 @@ async fn writing_counts_as_reading(db: TestDb) {
     );
 }
 
-/// D94: people's tokens end after the idle or absolute lifetime; agent keys
-/// do not.
+/// D94: people's devices unused too long are forgotten; agent keys do
+/// not expire.
 async fn idle_and_old_tokens_expire(db: TestDb) {
     let mut cfg = single(&db.url);
     cfg.auth.token_idle_days = 30;
-    cfg.auth.token_max_days = 365;
     let hub = open(cfg).await;
-    let (alice, old) = hub
-        .create_user("alice", UserKind::Human, None, None)
-        .await
-        .unwrap();
-    let (_, idle) = hub
-        .issue_token(&alice.id, Some("idle"), None, None, "test")
-        .await
-        .unwrap();
-    let (_, fresh) = hub
-        .issue_token(&alice.id, Some("fresh"), None, None, "test")
-        .await
-        .unwrap();
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let t = client_token(&hub, &alice).await;
+    for d in ["idle", "fresh"] {
+        hub.authenticate_client(&t, Some(d), Some(d), None)
+            .await
+            .unwrap();
+    }
     let (bot, key) = hub
         .create_user("bot", UserKind::Agent, Some(&alice.id), None)
         .await
@@ -1010,9 +1016,9 @@ async fn idle_and_old_tokens_expire(db: TestDb) {
         let db = &db;
         async move { exec(db, &sql, "unused").await }
     };
-    set(format!("UPDATE tokens SET created_at = {} WHERE user_id = '{}' AND device_name = 'first device' AND ? <> ''", now - 400 * day, alice.id)).await;
     set(format!(
-        "UPDATE tokens SET last_seen = {} WHERE device_name = 'idle' AND ? <> ''",
+        "UPDATE tokens SET created_at = {}, last_seen = {} WHERE device_name = 'idle' AND ? <> ''",
+        now - 31 * day,
         now - 31 * day
     ))
     .await;
@@ -1023,17 +1029,17 @@ async fn idle_and_old_tokens_expire(db: TestDb) {
         bot.id
     ))
     .await;
-    let _ = (idle, fresh);
-    assert_eq!(hub.expire_tokens().await.unwrap(), 2);
-    assert!(hub.authenticate_device(&old).is_none(), "older than a year");
-    let devices = hub.devices(&alice.id).await.unwrap();
-    let names: Vec<_> = devices
+    assert_eq!(hub.expire_tokens().await.unwrap(), 1);
+    let names: Vec<_> = hub
+        .devices(&alice.id)
+        .await
+        .unwrap()
         .iter()
         .filter_map(|d| d.device_name.clone())
         .collect();
     assert_eq!(names, ["fresh"]);
     assert!(
-        hub.authenticate_device(&key).is_some(),
+        hub.authenticate_device(&key.unwrap()).is_some(),
         "agent keys do not expire"
     );
     assert_eq!(hub.expire_tokens().await.unwrap(), 0, "idempotent");

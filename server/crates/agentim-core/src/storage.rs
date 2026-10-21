@@ -12,7 +12,7 @@ use crate::model::{ApiError, ApiResult};
 
 /// Version of the schema in `TABLES`. Bump it together with a new entry in
 /// `MIGRATIONS` (docs/02-architecture.md §5.3).
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -371,6 +371,30 @@ pub const TABLES: &[Table] = &[
             n("revoked_at", Big),
         ],
         pk: &["key_id"],
+        indexes: &[],
+        conv_key: None,
+    },
+    // v8: keys developers sign client tokens (JWT) with (docs/13 §4.2).
+    // `secret` is wrapped by the master key when encryption is on.
+    Table {
+        name: "signing_keys",
+        cols: &[
+            c("kid", Id),
+            c("name", Name),
+            c("secret", Text),
+            c("created_at", Big),
+            n("revoked_at", Big),
+        ],
+        pk: &["kid"],
+        indexes: &[],
+        conv_key: None,
+    },
+    // v8: client tokens issued before `at` (seconds) are refused, for one
+    // device or, with device_id "", all of a user's (docs/13 §4.2).
+    Table {
+        name: "token_cutoffs",
+        cols: &[c("user_id", Id), c("device_id", Id), c("at", Big)],
+        pk: &["user_id", "device_id"],
         indexes: &[],
         conv_key: None,
     },
@@ -1074,6 +1098,12 @@ pub const MIGRATIONS: &[Migration] = &[
                 column: "suspended_until",
             },
         ],
+    },
+    Migration {
+        version: 8,
+        compat: 1,
+        about: "client tokens signed by the developer: signing keys and token cutoffs",
+        steps: &[],
     },
 ];
 

@@ -76,7 +76,8 @@ function faultyWS(ctl) {
 const clients = [];
 function client(u, extra = {}) {
   const ctl = { sockets: [], drop: null };
-  const c = new AgentIMClient({ url: URL_, tokenProvider: async () => u.token, WebSocket: faultyWS(ctl), ...extra });
+  // One device per user, as one token used to be (clients of a user share it).
+  const c = new AgentIMClient({ url: URL_, tokenProvider: async () => u.token, deviceId: `dev-${u.name}`, WebSocket: faultyWS(ctl), ...extra });
   c.ctl = ctl;
   clients.push(c);
   return c;
@@ -84,7 +85,7 @@ function client(u, extra = {}) {
 
 /** Raw protocol connection (an agent, or the other side). */
 async function raw(token) {
-  const ws = new WebSocket(`${URL_.replace('http', 'ws')}/ws?token=${token}`);
+  const ws = new WebSocket(`${URL_.replace('http', 'ws')}/ws?token=${token}&device=raw-${++n}`);
   let rid = 0;
   const pending = new Map();
   await new Promise((resolve) => ws.addEventListener('message', (m) => {

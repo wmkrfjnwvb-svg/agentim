@@ -34,11 +34,17 @@ export interface UserAttrs {
   fields?: Record<string, unknown>;
 }
 
+/** Signs a client token for a user (HS256 JWT, docs/13 §4.2); no call to AgentIM. */
+export function createUserToken(key: { kid: string; secret: string }, userId: string, opts?: { expiresIn?: number }): string;
+
 export class AgentIM {
   constructor(opts: { baseUrl: string; apiKey: string; retries?: number; fetch?: typeof fetch });
   request(method: string, path: string, body?: unknown, opts?: { idempotencyKey?: string }): Promise<any>;
-  issueToken(userId: string, opts?: { deviceName?: string; platform?: string; ttlSeconds?: number }): Promise<{ token: string; device: any }>;
+  /** Logs a person out everywhere: client tokens issued until now are refused. */
   revokeTokens(userId: string): Promise<{ revoked: number }>;
+  issueAgentKey(agentId: string, opts?: { revokeOthers?: boolean }): Promise<{ key: string; device_id: string; revoked: string[]; connect: any }>;
+  revokeAgentKeys(agentId: string): Promise<{ revoked: number }>;
+  revokeAgentKey(agentId: string, deviceId: string): Promise<{ revoked: number }>;
   upsertUser(id: string, attrs?: UserAttrs): Promise<any>;
   getUser(id: string): Promise<any>;
   updateUser(id: string, attrs: Pick<UserAttrs, "display_name" | "avatar" | "fields">): Promise<any>;

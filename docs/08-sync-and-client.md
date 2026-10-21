@@ -16,7 +16,7 @@
 
 ### 2.1 同步位置存在服务端，客户端不能伪造
 
-- 每台设备（令牌属于某台设备）对每个会话有一条记录：`(device_id, conv_id, acked_seq, acked_side_seq)`。
+- 每台设备（人的设备由 App 连接时用 `device=` 选定，Agent 的每把密钥一台，[13 §4.2](13-roles-and-entry-points.md)）对每个会话有一条记录：`(device_id, conv_id, acked_seq, acked_side_seq)`。
 - 客户端**不提交"从哪个 seq 开始"**，只说"同步"；服务端从这台设备的 `acked_seq` 往后发。
 - 客户端只能**确认**（`ack`），服务端检查：
   - 不能确认还没发给它的 seq（超过本连接**送达过**的最远位置 → `bad_request`；推送队列满丢掉一条只让下一次同步重发，不会让合法的确认失败）；

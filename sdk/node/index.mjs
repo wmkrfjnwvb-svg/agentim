@@ -1,7 +1,7 @@
 // AgentIM server SDK for Node.js (18+). Thin client for the open API /v1
 // (docs/07-open-api.md). No dependencies.
 
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 
 /** An error answered by the server (RFC 9457 problem details). */
 export class AgentIMError extends Error {
@@ -15,6 +15,25 @@ export class AgentIMError extends Error {
 }
 
 const enc = encodeURIComponent;
+const b64u = (s) => Buffer.from(s).toString("base64url");
+
+/**
+ * Signs a client token for one of your users (docs/13 §4.2): HS256 JWT with
+ * the signing key from `agentim signing-key create`. Do this in your
+ * backend after your own login; give the token to your app. No call to
+ * AgentIM is made.
+ * @param {{kid: string, secret: string}} key
+ * @param {string} userId
+ * @param {{expiresIn?: number}} [opts] seconds (default one hour; at most `auth.max_token_days`)
+ */
+export function createUserToken({ kid, secret }, userId, { expiresIn = 3600 } = {}) {
+  if (!kid || !secret) throw new Error("kid and secret are required");
+  const iat = Math.floor(Date.now() / 1000);
+  const head = b64u(JSON.stringify({ alg: "HS256", typ: "JWT", kid }));
+  const body = b64u(JSON.stringify({ sub: userId, iat, exp: iat + expiresIn }));
+  const sig = createHmac("sha256", secret).update(`${head}.${body}`).digest("base64url");
+  return `${head}.${body}.${sig}`;
+}
 
 export class AgentIM {
   /**
@@ -61,13 +80,18 @@ export class AgentIM {
     }
   }
 
-  // ---- tokens
-  issueToken(userId, { deviceName, platform, ttlSeconds } = {}) {
-    return this.request("POST", `/v1/users/${enc(userId)}/tokens`, {
-      device_name: deviceName, platform, ttl_seconds: ttlSeconds,
-    });
-  }
+  // ---- login (client tokens are signed with createUserToken)
+  /** Logs a person out everywhere: tokens issued until now are refused. */
   revokeTokens(userId) { return this.request("DELETE", `/v1/users/${enc(userId)}/tokens`); }
+
+  // ---- agent keys
+  issueAgentKey(agentId, { revokeOthers = false } = {}) {
+    return this.request("POST", `/v1/agents/${enc(agentId)}/keys`, { revoke_others: revokeOthers });
+  }
+  revokeAgentKeys(agentId) { return this.request("DELETE", `/v1/agents/${enc(agentId)}/keys`); }
+  revokeAgentKey(agentId, deviceId) {
+    return this.request("DELETE", `/v1/agents/${enc(agentId)}/keys/${enc(deviceId)}`);
+  }
 
   // ---- users
   upsertUser(id, attrs = {}) { return this.request("PUT", `/v1/users/${enc(id)}`, attrs); }

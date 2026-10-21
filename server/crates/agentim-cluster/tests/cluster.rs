@@ -27,6 +27,7 @@ cluster_tests!(
     one_message_per_client_msg_id_across_nodes,
     refusals_are_the_same_through_forwarding,
     revocations_and_blocks_reach_every_node,
+    signed_tokens_and_logouts_reach_every_node,
     a_joining_node_gets_its_share_while_traffic_flows,
     leaving_hands_shards_over_at_once,
     start_up_refuses_bad_setups,
@@ -272,6 +273,85 @@ async fn revocations_and_blocks_reach_every_node(db: TestDb) {
     for (h, _) in &nodes {
         let r = Conn::new(h, &alice).send(&dm, "hi").await;
         assert_eq!(r["error"]["code"], "blocked", "{r}");
+    }
+}
+
+/// docs/13 §4.2: a signing key created on one node verifies on every node
+/// (they reload it when told), a person's first login and device made on
+/// one node are known on the others, and a logout or a revoked key on any
+/// node refuses the token everywhere and disconnects its devices.
+async fn signed_tokens_and_logouts_reach_every_node(db: TestDb) {
+    let nodes = cluster(&db, 3).await;
+    let v = nodes[0].0.create_signing_key("backend").await.unwrap();
+    let (kid, secret) = (
+        v["kid"].as_str().unwrap().to_string(),
+        v["secret"].as_str().unwrap().to_string(),
+    );
+    let now = || agentim_core::model::now_ms() / 1000;
+    let t = agentim_core::auth::jwt_sign(&kid, &secret, "dana", now(), now() + 600);
+    // The key reaches every node.
+    for (h, _) in &nodes {
+        let (h, t) = (h.clone(), t.clone());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while h
+            .authenticate_client(&t, Some("probe"), None, None)
+            .await
+            .is_err()
+        {
+            assert!(Instant::now() < deadline, "key unknown on a node");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    // One person, created once, with one device per app device id.
+    let dana = nodes[0].0.user_by_name("dana").unwrap();
+    for (h, _) in &nodes {
+        assert_eq!(h.user_by_name("dana").unwrap().id, dana.id);
+    }
+    let mut logins = vec![];
+    for (i, (h, _)) in nodes.iter().enumerate() {
+        let l = h
+            .authenticate_client(&t, Some(&format!("dev{i}")), None, None)
+            .await
+            .unwrap();
+        let s = h.open_device_session(&l);
+        assert!(s.2.is_none());
+        logins.push((h.clone(), l, s.0));
+    }
+    // Logging one device out on node 1 cuts it off on every node.
+    let dev0 = logins[0].1.device_id.clone();
+    nodes[1].0.log_out(&dana.id, Some(&dev0)).await.unwrap();
+    wait_for("device logout everywhere", Duration::from_secs(3), || {
+        logins[0].2.is_kicked()
+    })
+    .await;
+    for (h, _) in &nodes {
+        let (h, t) = (h.clone(), t.clone());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while h
+            .authenticate_client(&t, Some("dev0"), None, None)
+            .await
+            .is_ok()
+        {
+            assert!(Instant::now() < deadline, "logout not seen on a node");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    assert!(logins[1].0.login_valid(&logins[1].1), "other devices go on");
+    // Revoking the key on node 2: refused everywhere, devices closed.
+    nodes[2].0.revoke_signing_key(&kid).await.unwrap();
+    for (h, l, _) in &logins[1..] {
+        let (h, l) = (h.clone(), l.clone());
+        wait_for("key revocation everywhere", Duration::from_secs(3), || {
+            !h.login_valid(&l)
+        })
+        .await;
+    }
+    for (h, _) in &nodes {
+        assert!(
+            h.authenticate_client(&t, Some("dev1"), None, None)
+                .await
+                .is_err()
+        );
     }
 }
 

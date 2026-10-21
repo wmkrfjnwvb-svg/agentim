@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::hub::Hub;
-use crate::model::{User, UserKind};
+use crate::model::UserKind;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -161,7 +161,12 @@ async fn dev_create_user(
         .create_user(&req.name, kind, req.owner.as_deref(), req.unit.as_deref())
         .await
     {
-        Ok((user, token)) => Json(json!({"user": user, "token": token})).into_response(),
+        Ok((user, key)) => {
+            // An agent's key, or a person's signed client token (connect
+            // with `device=`).
+            let token = key.or_else(|| st.hub.sign_token(&user.name, 86400).ok());
+            Json(json!({"user": user, "token": token})).into_response()
+        }
         Err(e) => (StatusCode::CONFLICT, Json(json!({"error": e.message}))).into_response(),
     }
 }
@@ -200,7 +205,17 @@ async fn readyz(State(st): State<AppState>) -> Response {
 
 #[derive(Deserialize)]
 struct WsQuery {
-    token: String,
+    /// A person's signed client token or an agent's key; native clients
+    /// may send it as `Authorization: Bearer` instead (browsers cannot).
+    #[serde(default)]
+    token: Option<String>,
+    /// The id the app chose for this device (people; docs/13 §4.2).
+    #[serde(default)]
+    device: Option<String>,
+    #[serde(default)]
+    device_name: Option<String>,
+    #[serde(default)]
+    platform: Option<String>,
     /// Protocol versions the client speaks, comma separated (`v=2,1`).
     #[serde(default)]
     v: Option<String>,
@@ -243,8 +258,38 @@ async fn ws(
     if !origin_allowed(&st, &headers) {
         return origin_refused();
     }
-    let Some((user, device)) = st.hub.authenticate_or_load(&q.token).await else {
+    let Some(token) = q.token.clone().or_else(|| bearer(&headers)) else {
         return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let login = match st
+        .hub
+        .authenticate_client(
+            &token,
+            q.device.as_deref(),
+            q.device_name.as_deref(),
+            q.platform.as_deref(),
+        )
+        .await
+    {
+        Ok(l) => l,
+        Err(e) if e.code == "bad_request" => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": {"code": e.code, "message": e.message}})),
+            )
+                .into_response();
+        }
+        Err(e) if e.code == "unauthorized" => {
+            tracing::debug!(reason = e.message, "client token refused");
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": {"code": e.code, "message": e.message}})),
+            )
+                .into_response();
+        }
     };
     let version = match ws_protocol(q.v.as_deref()) {
         Ok(v) => v,
@@ -257,18 +302,12 @@ async fn ws(
         .read_buffer_size(4 * 1024)
         .write_buffer_size(0)
         .max_message_size(1 << 20)
-        .on_upgrade(move |socket| run_socket(st.hub, user, device, q.token, version, socket))
+        .on_upgrade(move |socket| run_socket(st.hub, login, version, socket))
 }
 
-async fn run_socket(
-    hub: Hub,
-    user: User,
-    device: String,
-    token: String,
-    version: u32,
-    socket: WebSocket,
-) {
-    let (session, mut pushes, refused) = hub.open_device_session(user.clone(), device, &token);
+async fn run_socket(hub: Hub, login: crate::hub::login::Login, version: u32, socket: WebSocket) {
+    let user = login.user.clone();
+    let (session, mut pushes, refused) = hub.open_device_session(&login);
     session.set_protocol(version);
     let idle = std::time::Duration::from_secs(hub.clients_config().idle_secs.max(3));
     let (mut sink, mut stream) = socket.split();
@@ -292,6 +331,7 @@ async fn run_socket(
     welcome["type"] = json!("welcome");
     welcome["protocol"] = json!(version);
     welcome["me"] = json!(user);
+    welcome["device_id"] = json!(login.device_id);
     if let Some(reason) = refused {
         let _ = res_tx
             .send(Message::Close(Some(CloseFrame {

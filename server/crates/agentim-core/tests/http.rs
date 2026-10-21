@@ -1,11 +1,14 @@
 //! HTTP and WebSocket endpoints outside the demo: what each one allows,
 //! refuses and reports (docs/05-operations.md §5.5).
 
+mod common;
+
 use agentim_core::config::{Config, sqlite_url};
 use agentim_core::hub::Hub;
 use agentim_core::logic::HubConfig;
 use agentim_core::model::UserKind;
 use agentim_core::server::{AppState, router};
+use common::ws_token;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -22,6 +25,10 @@ async fn start(demo: bool, metrics_token: Option<&str>) -> Server {
     let mut cfg = Config::single_sqlite("unused");
     cfg.storage.databases[0].url = sqlite_url(&dir.path().join("db").to_string_lossy());
     let hub = Hub::open(cfg, HubConfig::default()).await.unwrap();
+    if demo {
+        // As `--demo` does: the demo signs its own client tokens.
+        hub.create_signing_key("demo").await.unwrap();
+    }
     let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = tcp.local_addr().unwrap().to_string();
     let state = AppState {
@@ -56,11 +63,13 @@ async fn http(addr: &str, method: &str, path: &str, headers: &str, body: &str) -
 #[tokio::test]
 async fn outside_the_demo_login_user_creation_and_stats_are_closed() {
     let srv = start(false, None).await;
-    let (alice, token) = srv
+    let alice = srv
         .hub
         .create_user("alice", UserKind::Human, None, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
+    let token = common::client_token(&srv.hub, &alice).await;
     let (c, _) = http(&srv.addr, "POST", "/api/login", "", r#"{"name":"alice"}"#).await;
     assert_eq!(c, 403, "password-less login only in the demo");
     let (c, _) = http(
@@ -195,11 +204,13 @@ async fn readiness_reports_a_storage_failure() {
 #[tokio::test]
 async fn websocket_rejects_bad_tokens_oversized_frames_and_bad_requests() {
     let srv = start(false, None).await;
-    let (_, token) = srv
+    let alice_ = srv
         .hub
         .create_user("alice", UserKind::Human, None, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
+    let token = ws_token(&srv.hub, &alice_).await;
     for url in [
         format!("ws://{}/ws?token=wrong", srv.addr),
         format!("ws://{}/ws", srv.addr),
@@ -209,10 +220,9 @@ async fn websocket_rejects_bad_tokens_oversized_frames_and_bad_requests() {
             "refused"
         );
     }
-    let (mut ws, _) =
-        tokio_tungstenite::connect_async(format!("ws://{}/ws?token={token}", srv.addr))
-            .await
-            .unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}/ws?{token}", srv.addr))
+        .await
+        .unwrap();
     let welcome = ws.next().await.unwrap().unwrap();
     assert!(welcome.to_text().unwrap().contains("welcome"));
     ws.send(Message::Text("{\"op\":\"nope\",\"rid\":3}".into()))
@@ -239,10 +249,9 @@ async fn websocket_rejects_bad_tokens_oversized_frames_and_bad_requests() {
     .unwrap_or(false);
     assert!(closed, "an oversized frame closes the connection");
     // The server is unaffected.
-    let (mut ws2, _) =
-        tokio_tungstenite::connect_async(format!("ws://{}/ws?token={token}", srv.addr))
-            .await
-            .unwrap();
+    let (mut ws2, _) = tokio_tungstenite::connect_async(format!("ws://{}/ws?{token}", srv.addr))
+        .await
+        .unwrap();
     assert!(
         ws2.next()
             .await

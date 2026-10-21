@@ -347,9 +347,9 @@
   },
   "paths": {
     "/v1/users/{id}/tokens": {
-      "post": {
-        "summary": "Issue a client login token (a new device)",
-        "x-scope": "tokens:issue",
+      "delete": {
+        "summary": "Log a person out everywhere: drop their devices and refuse client tokens issued until now (an agent: revoke all its keys)",
+        "x-scope": "tokens:revoke",
         "parameters": [
           {
             "name": "id",
@@ -359,30 +359,18 @@
               "type": "string"
             },
             "description": "Developer user id"
-          },
-          {
-            "name": "Idempotency-Key",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Retries with the same key return the first result for 24 hours"
           }
         ],
         "responses": {
-          "201": {
+          "200": {
             "description": "OK",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "token": {
-                      "type": "string"
-                    },
-                    "device": {
-                      "$ref": "#/components/schemas/Device"
+                    "revoked": {
+                      "type": "integer"
                     }
                   }
                 }
@@ -399,32 +387,13 @@
               }
             }
           }
-        },
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "device_name": {
-                    "type": "string"
-                  },
-                  "platform": {
-                    "type": "string"
-                  },
-                  "ttl_seconds": {
-                    "type": "integer"
-                  }
-                }
-              }
-            }
-          }
         }
-      },
-      "delete": {
-        "summary": "Revoke all of a user's tokens and disconnect them",
-        "x-scope": "tokens:issue",
+      }
+    },
+    "/v1/agents/{id}/keys": {
+      "post": {
+        "summary": "Issue a new key for an agent (shown once)",
+        "x-scope": "agents:write",
         "parameters": [
           {
             "name": "id",
@@ -433,7 +402,130 @@
             "schema": {
               "type": "string"
             },
-            "description": "Developer user id"
+            "description": "Developer user id of the agent"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revoke_others": {
+                    "type": "boolean",
+                    "description": "Also revoke the agent's other keys"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "device_id": {
+                      "type": "string"
+                    },
+                    "revoked": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "connect": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Revoke all of an agent's keys and disconnect it",
+        "x-scope": "agents:write",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Developer user id of the agent"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "revoked": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/keys/{device}": {
+      "delete": {
+        "summary": "Revoke one key of an agent",
+        "x-scope": "agents:write",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Developer user id of the agent"
+          },
+          {
+            "name": "device",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The key's device id"
           }
         ],
         "responses": {

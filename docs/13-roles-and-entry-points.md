@@ -47,9 +47,9 @@
 | `create_agent` `agent_key` `revoke_agent_key` `list_agents` `destroy_agent` | 任何人可以建自己的 Agent、拿密钥、销毁 | ⚠️ 最终用户在设备上拿到 Agent 密钥，开发者无法关闭（问题 3） |
 | `stream_*` `request_human` `cancel_request` `get_request` `history` `context` `search` `put_summary` `state_*` `progress` `handoff` `claim` `release_claim` `floor_*` `respond` `feedback` | Agent 或成员 | ✅ |
 | `list_devices` `logout_device` | 本人 | ✅ 管理自己的设备。Agent 也能调用（问题 9） |
-| `set_password` `totp_setup` `totp_enable` `totp_disable` | 本人 | ⚠️ 这是内置账号体系（问题 2） |
+| ~~`set_password` `totp_setup` `totp_enable` `totp_disable`~~ | — | ✅ 已删除（问题 2） |
 | ~~`delete_account`~~ | — | ✅ 已删除，只走开放 API（问题 1） |
-| `stats` | 任何令牌，只在 `--demo` 时开放 | ⚠️ 返回整个部署的统计、在线名单和最近的审计，属于部署者（问题 5） |
+| ~~`stats`~~ | — | ✅ 已删除，改到 A5 管理 API 的概览（问题 5） |
 
 ### 2.2 HTTP 路由
 
@@ -57,9 +57,9 @@
 |---|---|---|
 | `/v1/...`（除下一行） | 开放 API，需要 API Key | ✅ |
 | ~~`GET /v1/me/export`~~ | — | ✅ 已删除（问题 1） |
-| `POST /api/auth/login`、`POST /api/auth/register` | 内置账号的密码登录和自助注册（注册默认关闭） | ⚠️ 问题 2 |
-| `POST /api/login`、`POST /api/dev/users` | 演示用：免密码登录、随意建用户，只在 `--demo` 时可用 | ⚠️ 问题 6 |
-| `GET /api/stats` | 同 `stats` | ⚠️ 问题 5 |
+| ~~`POST /api/auth/login`、`POST /api/auth/register`~~ | — | ✅ 已删除（问题 2） |
+| `POST /api/login`、`POST /api/dev/users` | 演示用：免密码登录、随意建用户，只在 `--demo` 时可用 | ✅ 两个都校验 Origin，`--demo` 只监听本机（问题 6） |
+| ~~`GET /api/stats`~~ | — | ✅ 已删除（问题 5） |
 | `/mcp` | 只接受 Agent 密钥 | ✅ |
 | `/metrics` `/healthz` `/readyz` | 部署者 | ✅ |
 
@@ -69,7 +69,7 @@
 
 下面这些开发者用开放 API 做不到：
 
-- `user set-password`：问题 2；
+- ~~`user set-password`~~：✅ 已删除（问题 2）；
 - `agent create --team`、`agent transfer`、`agent export`、`agent import`：只能在服务器上执行。自托管时开发者就是部署者，还能用；到了托管云，开发者做不了（问题 3）。
 
 ### 2.4 开放 API 缺的开发者功能
@@ -86,11 +86,11 @@
 | # | 问题 | 建议 |
 |---|---|---|
 | 1 | 删除账号、导出数据有最终用户入口 | 已确认：只保留 `DELETE /v1/users/{id}`、`GET …/erasure`、`GET /v1/users/{id}/export`；删除 `delete_account` 和 `/v1/me/export`，以及每人每小时 3 次的导出限制（开发者按会话分页续传时会被它卡住）；删除记录里写上是哪个 API Key 发起的。✅ 已完成 |
-| 2 | **IM 里有一套最终用户的账号体系**：密码、TOTP、注册、改密码、`user set-password`。最终用户的账号应该在开发者的系统里，IM 只认开发者签发的令牌；现在两套并存，开发者的用户会多出一个"IM 密码" | 去掉最终用户的密码、TOTP、注册和对应的协议操作和路由。已有的代码（Argon2id、锁定、TOTP）挪给 A5 控制台的**管理员**登录用（[12 §4](12-developer-experience.md) 本来就要这些）。演示继续用 `--demo` 的免密码登录 |
+| 2 | **IM 里有一套最终用户的账号体系**：密码、TOTP、注册、改密码、`user set-password`。最终用户的账号应该在开发者的系统里，IM 只认开发者签发的令牌；现在两套并存，开发者的用户会多出一个"IM 密码" | ✅ 去掉最终用户的密码、TOTP、注册和对应的协议操作和路由。已有的代码（Argon2id、锁定、TOTP）挪给 A5 控制台的**管理员**登录用（[12 §4](12-developer-experience.md) 本来就要这些）。演示继续用 `--demo` 的免密码登录 |
 | 3 | **最终用户可以自建 Agent、在设备上拿到 Agent 密钥**，开发者既关不掉、也管不了数量以外的东西；团队 Agent、转交、导出导入又只能在服务器上做 | Agent 的发放和处置放到开放 API（新权限 `agents:write`）：建（个人、团队）、列表、签发和吊销密钥、转交、销毁、导出、导入。客户端的 `create_agent`、`agent_key`、`revoke_agent_key`、`destroy_agent` 改成开发者可开的选项，**默认关**。需要"用户自带 Agent"的产品打开它（见 §4 决定 B） |
 | 4 | 开发者、审核员不能急停或销毁某个 Agent | 开放 API 加急停、恢复、销毁。负责人在客户端的急停和恢复保留：这是人对 AI 的实时介入 |
-| 5 | 整个部署的统计和审计（`stats`、`/api/stats`）挂在最终用户协议上 | 从客户端协议和 `/api` 删掉，挪到 A5 管理 API 的"概览"。演示页的统计面板改为调管理 API |
-| 6 | 演示接口（免密码登录、随意建用户）编进了正式程序，`/api/dev/users` 也没有 Origin 校验 | 保留，只在 `--demo` 下可用，加上 Origin 校验；`--demo` 监听非本机地址时启动报错（除非显式加一个参数）；文档写清"仅限本机开发" |
+| 5 | 整个部署的统计和审计（`stats`、`/api/stats`）挂在最终用户协议上 | ✅ 从客户端协议和 `/api` 删掉，挪到 A5 管理 API 的"概览"。演示页的统计面板改为调管理 API |
+| 6 | 演示接口（免密码登录、随意建用户）编进了正式程序，`/api/dev/users` 也没有 Origin 校验 | ✅ 保留，只在 `--demo` 下可用，加上 Origin 校验；`--demo` 监听非本机地址时启动报错（除非显式加一个参数）；文档写清"仅限本机开发" |
 | 7 | **开发者没有开关决定最终用户在客户端能做什么**（建群、建单聊、拉人、查用户目录、编辑或撤回的时限、自建 Agent） | 加一组应用级的客户端权限，默认值保持现在的行为（自建 Agent 除外，见问题 3）。先放在配置文件 `[clients.allow]`，A5 以后在控制台和管理 API 里改。拒绝时返回 `forbidden`，不留痕迹 |
 | 8 | 开放 API 缺设备列表和单台下线、会话内禁言、某人的拉黑列表；服务端 SDK 没有 A4 接口 | 设备、禁言、SDK 补上；拉黑列表算个人数据，只在导出里出现，不单独开接口 |
 | 9 | 角色检查有漏洞：Agent 能调用 `totp_*`、`list_devices`、`logout_device`、`block`、`feedback`（`find_user` 是 Agent 通过 MCP 找人用的，保留，受问题 7 的开关管）；"只给 Agent 用"的操作，拒绝人时有的返回 `bad_request`、有的返回 `forbidden` | ✅ 补上类型检查。凡是"你这种身份不能做"的统一返回 `forbidden`（CLAUDE.md 的错误码规则），每个都加测试，拒绝不留痕迹 |
@@ -144,7 +144,7 @@
   - 授权和创建并发：收回授权之后，不会再多出新的 Agent；
   - 重启后保持，三种数据库。
 
-### 4.2 登录：开发者用签名密钥自己签发令牌（D118，已确认）
+### 4.2 登录：开发者用签名密钥自己签发令牌（D118，✅ 已实现）
 
 IM 没有账号体系，不存最终用户的密码。用户 ID 只来自开发者：开放 API 的 `PUT /v1/users/{id}`，或者第一次带着有效令牌连上来的 ID。
 
@@ -178,20 +178,21 @@ IM 没有账号体系，不存最终用户的密码。用户 ID 只来自开发�
 
 **用户和设备**：
 
-- **第一次见到的用户 ID 自动创建**（Stream 的客户端连接也会建用户）：有效令牌本身就是开发者的担保。已删除的 ID（[04 §4.2](04-security-compliance.md)）、已停用的用户、`system`、Agent 的 ID 都拒绝。资料由开发者用 `PUT`/`PATCH /v1/users/{id}` 补上。
-- **设备**：令牌里不带设备。客户端 SDK 第一次运行时生成一个设备 ID 存在本地，连接时随 `hello` 带上，同时带设备名和平台；服务端第一次见到时登记这台设备。按设备记同步位置（[08 §2](08-sync-and-client.md)）、设备上限、`list_devices` 都不变。
-- **下线一台设备**（`logout_device`、开放 API）：断开它、删掉它的同步位置，这个设备 ID 以后不能再连。令牌本身不是按设备签的，所以拿到令牌的人仍可以换一个设备 ID 连上，直到令牌过期。真正怀疑泄露时用"吊销这个用户的全部令牌"。业内同样如此：Stream 只能按用户吊销（`revoke_tokens_issued_before`）；Firebase 的 `revokeRefreshTokens` 也只按用户，文档里"设备丢失"的例子同样是整个用户退出；腾讯云 IM、声网 Chat 能把某台设备踢下线，但那是断开连接，不是让令牌失效。补救办法是令牌有效期短，靠 `tokenProvider` 自动续签。
-- **吊销用户的全部令牌**：`DELETE /v1/users/{id}/tokens` 保留，记下吊销时刻，`iat` 早于这个时刻的令牌一律失效，已连接的立即断开（Stream 的 `revoke_tokens_issued_before` 是同样做法）。
-- **Agent 不走这里**：Agent 继续用 Agent 密钥。开放 API 里给 Agent 签发和吊销密钥改为 `POST`/`DELETE /v1/agents/{id}/keys`（并入 §6 第 3 步）。
+- **第一次见到的用户 ID 自动创建**（Stream 的客户端连接也会建用户）：有效令牌本身就是开发者的担保。已删除的 ID（[04 §4.2](04-security-compliance.md)）、已停用的用户、Agent 的 ID 都拒绝；`system` 是保留字（开放 API 的 `"as": "system"`），任何地方都不能用作用户 ID。资料由开发者用 `PUT`/`PATCH /v1/users/{id}` 补上。
+- **设备**：令牌里不带设备。App 第一次运行时生成一个设备 ID 存在本地，连接时带上（`/ws?token=…&device=…`，可以加 `device_name`、`platform`；原生客户端也可以用 `Authorization: Bearer` 传令牌），服务端第一次见到时登记这台设备，欢迎帧里返回服务端的 `device_id`。按设备记同步位置（[08 §2](08-sync-and-client.md)）、`list_devices`、新设备通知都不变；30 天不用就忘掉（`auth.token_idle_days`）。现在没有每人的设备上限。
+- **下线一台设备**（`logout_device`、开放 API）：断开它、删掉它的同步位置，并记下时刻：这台设备上签发时间不晚于这一秒的令牌都被拒绝。App 需要向开发者后端要一个新令牌才能再连上，那时它是一台新设备。令牌本身不是按设备签的，所以拿到令牌的人仍可以换一个设备 ID 连上，直到令牌过期；真正怀疑泄露时用"让这个人在所有设备上退出"。业内同样如此：Stream 只能按用户吊销（`revoke_tokens_issued_before`）；Firebase 的 `revokeRefreshTokens` 也只按用户，文档里"设备丢失"的例子同样是整个用户退出；腾讯云 IM、声网 Chat 能把某台设备踢下线，但那是断开连接，不是让令牌失效。补救办法是令牌有效期短，靠 `tokenProvider` 自动续签。
+- **让一个人在所有设备上退出**：`DELETE /v1/users/{id}/tokens`（权限 `tokens:revoke`），记下吊销时刻，`iat` 不晚于这一秒的令牌一律失效，已连接的立即断开。
+- **令牌过期不断开已连接的连接**：只在连接时检查，和 Stream、Sendbird 一样；断线重连时 SDK 用 `tokenProvider` 拿新令牌。
+- **Agent 不走这里**：Agent 继续用 Agent 密钥。开放 API 里给 Agent 签发和吊销密钥是 `POST /v1/agents/{id}/keys`、`DELETE /v1/agents/{id}/keys[/{device}]`（`agents:write`）。
 
-**开发和测试**：命令行 `agentim token sign --user u1 [--ttl 1h]` 用本机的签名密钥签一个令牌，给本地调试和示例应用用；测试和示例应用也在本地签。
+**开发和测试**：命令行 `agentim token sign --user u1 [--ttl 3600]` 用最新的签名密钥签一个令牌，给本地调试用；`--demo` 自己建一把签名密钥，`/api/login` 返回签好的令牌；服务端 SDK（Node、Python、Go）提供 `createUserToken`。
 
 **测试**：
 
 - 格式：缺字段、`alg` 是 `none` 或 `RS256`、未知 `kid`、签名错、过期、`iat` 在未来、有效期超过上限、`sub` 不合法，都拒绝且不留痕迹（不建用户、不登记设备）。
 - 用户：第一次见到自动创建；已删除、已停用、`system`、Agent 的 ID 拒绝；并发用同一个新 ID 连接只建一个用户。
 - 吊销：吊销密钥、吊销用户全部令牌后，旧令牌立即失效、已连接的断开、新签的可用；吊销和连接并发，吊销之后不会有旧令牌连上；集群里每个节点都生效。
-- 设备：新设备登记、设备上限、下线后这个设备 ID 不能再连、同步位置照常。
+- 设备：新设备登记、同一 App 设备 ID 在不同人之间互不影响、参数校验、下线后旧令牌在这台设备上不能再连而新令牌可以、30 天不用被忘掉、同步位置照常。
 - 重启后保持，三种数据库。
 
 ## 5. 对核心保证（G1–G6）的影响
@@ -204,8 +205,8 @@ IM 没有账号体系，不存最终用户的密码。用户 ID 只来自开发�
 ## 6. 顺序
 
 1. ✅ 问题 1 和问题 9（`totp_*` 随问题 2 一起删除）。
-2. 问题 2、5、6：删掉最终用户账号体系和部署统计，演示改用新入口。
-3. §4.2 的签名令牌（替换 `POST /v1/users/{id}/tokens`）；问题 3、4、8：开放 API 加 Agent 和设备接口，客户端选项；服务端 SDK 补齐。
+2. ✅ 问题 2、5、6：删掉最终用户账号体系和部署统计，演示改用新入口。
+3. ✅ §4.2 的签名令牌（替换 `POST /v1/users/{id}/tokens`）和开放 API 的 Agent 密钥；问题 3、4、8：开放 API 加 Agent 和设备接口，客户端选项；服务端 SDK 补齐。
 4. 问题 7 和 §4.1：客户端权限和按用户授权。
 5. 问题 10：并入 A5。
 

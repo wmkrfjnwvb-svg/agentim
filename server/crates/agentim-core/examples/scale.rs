@@ -362,7 +362,11 @@ async fn ws_connect(
     let tcp = sock.connect(server).await.map_err(|e| e.to_string())?;
     tcp.set_nodelay(true).ok();
     let (ws, _) = tokio_tungstenite::client_async_with_config(
-        format!("ws://{addr}/ws?token={token}"),
+        format!(
+            "ws://{addr}/ws?token={token}&device={}",
+            // People's tokens need a device; agents' keys ignore it.
+            &agentim_core::auth::hash(token)[..16]
+        ),
         tcp,
         None,
     )

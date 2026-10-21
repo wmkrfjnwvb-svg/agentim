@@ -26,7 +26,9 @@ use crate::model::*;
 use crate::server::AppState;
 
 pub const SCOPES: &[&str] = &[
-    "tokens:issue",
+    "tokens:revoke",
+    "agents:write",
+    "agents:read",
     "users:write",
     "users:read",
     "conversations:write",
@@ -456,11 +458,13 @@ fn need(key: &ApiKeyRow, scope: &str) -> Result<(), Problem> {
 
 // --------------------------------------------------------------- helpers
 
-/// Developer-chosen user id (docs/07 §3.3).
+/// Developer-chosen user id (docs/07 §3.3). `system` is reserved: it
+/// names the system user in `"as"`.
 pub fn valid_user_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && !id.starts_with('_')
+        && id != "system"
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "_-.@:".contains(c))
@@ -522,7 +526,15 @@ pub fn routes(state: AppState) -> Router<AppState> {
     Router::new()
         .route(
             "/v1/users/{id}/tokens",
-            post(issue_token).delete(revoke_tokens),
+            axum::routing::delete(revoke_tokens),
+        )
+        .route(
+            "/v1/agents/{id}/keys",
+            post(issue_agent_key).delete(revoke_agent_keys),
+        )
+        .route(
+            "/v1/agents/{id}/keys/{device}",
+            axum::routing::delete(revoke_agent_key),
         )
         .route(
             "/v1/users/{id}",
@@ -570,8 +582,10 @@ pub fn routes(state: AppState) -> Router<AppState> {
 
 /// Every route as `METHOD path`, for the OpenAPI consistency test.
 pub const ROUTES: &[&str] = &[
-    "POST /v1/users/{id}/tokens",
     "DELETE /v1/users/{id}/tokens",
+    "POST /v1/agents/{id}/keys",
+    "DELETE /v1/agents/{id}/keys",
+    "DELETE /v1/agents/{id}/keys/{device}",
     "PUT /v1/users/{id}",
     "GET /v1/users/{id}",
     "PATCH /v1/users/{id}",
@@ -606,66 +620,16 @@ type K = Extension<ApiKeyRow>;
 
 // ---- tokens
 
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct TokenReq {
-    device_name: Option<String>,
-    platform: Option<String>,
-    ttl_seconds: Option<i64>,
-}
-
-async fn issue_token(
-    State(st): State<AppState>,
-    Extension(k): K,
-    Path(id): Path<String>,
-    b: Bytes,
-) -> R {
-    need(&k, "tokens:issue")?;
-    let u = user(&st.hub, &id)?;
-    let req: TokenReq = if b.is_empty() {
-        TokenReq::default()
-    } else {
-        body(&b)?
-    };
-    if st.hub.is_deactivated(&u.id) {
-        return Err(Problem::new(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "the user is deactivated",
-        ));
-    }
-    if req
-        .ttl_seconds
-        .is_some_and(|t| t <= 0 || t > 10 * 365 * 86400)
-    {
-        return Err(bad("ttl_seconds must be 1..315360000"));
-    }
-    let (token, row) = st
-        .hub
-        .issue_token(
-            &u.id,
-            req.device_name.as_deref(),
-            req.platform.as_deref(),
-            req.ttl_seconds.map(|t| t * 1000),
-            &format!("api:{}", k.key_id),
-        )
-        .await?;
-    st.hub
-        .audit_api(
-            &k.key_id,
-            SYSTEM_ID,
-            "tokens.issue",
-            Some(&u.name),
-            json!({"device_id": row.device_id}),
-        )
-        .await;
-    created(json!({"token": token, "device": row.view()}))
-}
-
+/// Logs a person out everywhere: their devices are dropped and client
+/// tokens issued before now are refused (an agent: all its keys).
 async fn revoke_tokens(State(st): State<AppState>, Extension(k): K, Path(id): Path<String>) -> R {
-    need(&k, "tokens:issue")?;
+    need(&k, "tokens:revoke")?;
     let u = user(&st.hub, &id)?;
-    let n = st.hub.revoke_tokens(&u.id, None).await?;
+    let n = if u.kind == UserKind::Agent {
+        st.hub.revoke_tokens(&u.id, None).await?
+    } else {
+        st.hub.log_out(&u.id, None).await?
+    };
     st.hub
         .audit_api(
             &k.key_id,
@@ -673,6 +637,105 @@ async fn revoke_tokens(State(st): State<AppState>, Extension(k): K, Path(id): Pa
             "tokens.revoke",
             Some(&u.name),
             json!({"revoked": n}),
+        )
+        .await;
+    ok(json!({"revoked": n}))
+}
+
+// ---- agent keys
+
+fn agent(hub: &Hub, id: &str) -> Result<User, Problem> {
+    user(hub, id)
+        .ok()
+        .filter(|u| u.kind == UserKind::Agent && !hub.is_destroyed(&u.id))
+        .ok_or_else(|| Problem::new(StatusCode::NOT_FOUND, "not_found", format!("agent {id}")))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct AgentKeyReq {
+    #[serde(default)]
+    revoke_others: bool,
+}
+
+/// A new key for an agent, shown once (docs/13 §4.1).
+async fn issue_agent_key(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path(id): Path<String>,
+    b: Bytes,
+) -> R {
+    need(&k, "agents:write")?;
+    let a = agent(&st.hub, &id)?;
+    let req: AgentKeyReq = if b.is_empty() {
+        AgentKeyReq::default()
+    } else {
+        body(&b)?
+    };
+    let v = st
+        .hub
+        .issue_agent_key(&a, &format!("api:{}", k.key_id), req.revoke_others)
+        .await?;
+    st.hub
+        .audit_api(
+            &k.key_id,
+            SYSTEM_ID,
+            "agents.key",
+            Some(&a.name),
+            json!({"device_id": v["device_id"], "revoked": v["revoked"]}),
+        )
+        .await;
+    created(v)
+}
+
+async fn revoke_agent_keys(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path(id): Path<String>,
+) -> R {
+    need(&k, "agents:write")?;
+    let a = agent(&st.hub, &id)?;
+    let n = st.hub.revoke_tokens(&a.id, None).await?;
+    st.hub
+        .audit_api(
+            &k.key_id,
+            SYSTEM_ID,
+            "agents.revoke_keys",
+            Some(&a.name),
+            json!({"revoked": n}),
+        )
+        .await;
+    ok(json!({"revoked": n}))
+}
+
+async fn revoke_agent_key(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path((id, device)): Path<(String, String)>,
+) -> R {
+    need(&k, "agents:write")?;
+    let a = agent(&st.hub, &id)?;
+    if !st
+        .hub
+        .devices(&a.id)
+        .await?
+        .iter()
+        .any(|d| d.device_id == device)
+    {
+        return Err(Problem::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no such key",
+        ));
+    }
+    let n = st.hub.revoke_tokens(&a.id, Some(&device)).await?;
+    st.hub
+        .audit_api(
+            &k.key_id,
+            SYSTEM_ID,
+            "agents.revoke_key",
+            Some(&a.name),
+            json!({"device_id": device}),
         )
         .await;
     ok(json!({"revoked": n}))
