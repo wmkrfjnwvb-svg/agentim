@@ -446,7 +446,10 @@ async fn users_lifecycle(db: TestDb) {
         )
         .await;
     // The owner by the developer's id; the agent's first key shown once.
-    assert_eq!((s, &v["owner"], &v["team"]), (201, &json!("user_1"), &json!(false)));
+    assert_eq!(
+        (s, &v["owner"], &v["team"]),
+        (201, &json!("user_1"), &json!(false))
+    );
     assert!(v["key"].as_str().unwrap().starts_with("atk_"));
     assert!(v["connect"]["mcp_url"].is_string());
     for (path, b, want) in [

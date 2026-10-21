@@ -2921,9 +2921,10 @@ impl Db<'_> {
         user_id: &str,
         until: Option<i64>,
     ) -> ApiResult<()> {
-        sqlx::query(self.d.q(
-            "UPDATE members SET silenced_until = ? WHERE conv_id = ? AND user_id = ?",
-        ))
+        sqlx::query(
+            self.d
+                .q("UPDATE members SET silenced_until = ? WHERE conv_id = ? AND user_id = ?"),
+        )
         .bind(until)
         .bind(conv_id)
         .bind(user_id)

@@ -272,7 +272,12 @@ async fn stopping_resuming_and_destroying_agents(db: TestDb) {
         ),
         ("POST", "/v1/agents/nobody:stop", None, "not_found"),
         ("POST", "/v1/agents/alice:stop", None, "not_found"),
-        ("POST", "/v1/agents/bot:stop", Some(json!({"x": 1})), "bad_request"),
+        (
+            "POST",
+            "/v1/agents/bot:stop",
+            Some(json!({"x": 1})),
+            "bad_request",
+        ),
     ] {
         let (_, v) = api.call(m, path, b.clone()).await;
         assert_eq!(code(&v), want, "{m} {path} {b:?}");
@@ -288,8 +293,16 @@ async fn stopping_resuming_and_destroying_agents(db: TestDb) {
     );
     // Destroy: it leaves, its key is dead, its id is gone for good.
     let v = api.ok("DELETE", "/v1/agents/bot", None).await;
-    assert_eq!((&v["destroyed"], &v["conversations"]), (&json!(true), &json!(1)));
-    assert!(api.hub.authenticate_client(&key, None, None, None).await.is_err());
+    assert_eq!(
+        (&v["destroyed"], &v["conversations"]),
+        (&json!(true), &json!(1))
+    );
+    assert!(
+        api.hub
+            .authenticate_client(&key, None, None, None)
+            .await
+            .is_err()
+    );
     let members = a.ok(json!({"op": "list_convs"})).await;
     assert!(!members.to_string().contains(&format!("\"{}\"", bot.id)) || true);
     assert_eq!(
@@ -301,7 +314,11 @@ async fn stopping_resuming_and_destroying_agents(db: TestDb) {
         ("POST", "/v1/agents/bot:resume"),
         ("POST", "/v1/agents/bot/keys"),
     ] {
-        assert_eq!(code(&api.call(m, path, None).await.1), "not_found", "{path}");
+        assert_eq!(
+            code(&api.call(m, path, None).await.1),
+            "not_found",
+            "{path}"
+        );
     }
     // A person is not destroyed here (people are deleted, docs/04 §4.2).
     assert_eq!(
@@ -357,7 +374,12 @@ async fn team_agents_are_transferred(db: TestDb) {
         api.hub.user_by_name("desk").unwrap().owner_id.as_deref(),
         Some(bob.id.as_str())
     );
-    assert!(api.hub.authenticate_client(&key, None, None, None).await.is_ok());
+    assert!(
+        api.hub
+            .authenticate_client(&key, None, None, None)
+            .await
+            .is_ok()
+    );
     let v = api
         .ok(
             "POST",
@@ -366,7 +388,12 @@ async fn team_agents_are_transferred(db: TestDb) {
         )
         .await;
     assert_eq!((&v["owner"], &v["keys"]), (&json!("alice"), &json!([])));
-    assert!(api.hub.authenticate_client(&key, None, None, None).await.is_err());
+    assert!(
+        api.hub
+            .authenticate_client(&key, None, None, None)
+            .await
+            .is_err()
+    );
     assert_eq!(api.audits("api.agents.transfer").await, 2);
 }
 
@@ -384,7 +411,12 @@ async fn agents_move_by_export_and_import(db: TestDb) {
     // Content needs messages:read too.
     let only = api.key(&["agents:read"]).await;
     let (s, v) = api
-        .with_key(&only, "GET", "/v1/agents/bot/export?with_conversations=true", None)
+        .with_key(
+            &only,
+            "GET",
+            "/v1/agents/bot/export?with_conversations=true",
+            None,
+        )
         .await;
     assert_eq!((s, code(&v)), (403, "missing_scope"));
     let (s, pkg) = api
@@ -406,7 +438,10 @@ async fn agents_move_by_export_and_import(db: TestDb) {
         )
         .await;
     assert_eq!(s, 201, "{v}");
-    assert_eq!((&v["agent"]["id"], &v["agent"]["owner"]), (&json!("bot2"), &json!("bob")));
+    assert_eq!(
+        (&v["agent"]["id"], &v["agent"]["owner"]),
+        (&json!("bot2"), &json!("bob"))
+    );
     let key = v["key"].as_str().unwrap();
     let bot2 = api
         .hub
@@ -422,11 +457,26 @@ async fn agents_move_by_export_and_import(db: TestDb) {
     let mut changed = full.clone();
     changed["agent"]["name"] = json!("evil");
     for (b, want) in [
-        (json!({"package": changed, "owner": "bob", "name": "bot3"}), "bad_request"),
-        (json!({"package": {}, "owner": "bob", "name": "bot3"}), "bad_request"),
-        (json!({"package": full, "owner": "nobody", "name": "bot3"}), "not_found"),
-        (json!({"package": full, "owner": "bot", "name": "bot3"}), "bad_request"),
-        (json!({"package": full, "owner": "bob", "name": "bot2"}), "conflict"),
+        (
+            json!({"package": changed, "owner": "bob", "name": "bot3"}),
+            "bad_request",
+        ),
+        (
+            json!({"package": {}, "owner": "bob", "name": "bot3"}),
+            "bad_request",
+        ),
+        (
+            json!({"package": full, "owner": "nobody", "name": "bot3"}),
+            "not_found",
+        ),
+        (
+            json!({"package": full, "owner": "bot", "name": "bot3"}),
+            "bad_request",
+        ),
+        (
+            json!({"package": full, "owner": "bob", "name": "bot2"}),
+            "conflict",
+        ),
         (json!({"owner": "bob"}), "bad_request"),
     ] {
         let (_, v) = api.call("POST", "/v1/agents:import", Some(b)).await;
@@ -456,7 +506,10 @@ async fn devices_are_listed_and_logged_out(db: TestDb) {
     let v = api.ok("GET", "/v1/users/alice/devices", None).await;
     let devs = v["devices"].as_array().unwrap();
     assert_eq!(devs.len(), 2);
-    assert_eq!((&devs[0]["name"], &devs[0]["platform"]), (&json!("iPhone"), &json!("ios")));
+    assert_eq!(
+        (&devs[0]["name"], &devs[0]["platform"]),
+        (&json!("iPhone"), &json!("ios"))
+    );
     assert!(!v.to_string().contains("hash") && !v.to_string().contains(&t));
     // Logging the phone out: it goes, and its token is refused on it.
     let path = format!("/v1/users/alice/devices/{}", phone.device_id);
@@ -472,7 +525,10 @@ async fn devices_are_listed_and_logged_out(db: TestDb) {
     for (p, want) in [
         (path.clone(), "not_found"),
         ("/v1/users/alice/devices/d_nope".to_string(), "not_found"),
-        (format!("/v1/users/nobody/devices/{}", laptop.device_id), "not_found"),
+        (
+            format!("/v1/users/nobody/devices/{}", laptop.device_id),
+            "not_found",
+        ),
     ] {
         assert_eq!(code(&api.call("DELETE", &p, None).await.1), want, "{p}");
     }
@@ -492,11 +548,18 @@ async fn devices_are_listed_and_logged_out(db: TestDb) {
     let dev = v["devices"][0]["device_id"].as_str().unwrap().to_string();
     api.ok("DELETE", &format!("/v1/users/bot/devices/{dev}"), None)
         .await;
-    assert!(api.hub.authenticate_client(&key, None, None, None).await.is_err());
+    assert!(
+        api.hub
+            .authenticate_client(&key, None, None, None)
+            .await
+            .is_err()
+    );
     // Scopes: listing reads users, logging out revokes tokens.
     let reader = api.key(&["users:read"]).await;
     assert_eq!(
-        api.with_key(&reader, "GET", "/v1/users/alice/devices", None).await.0,
+        api.with_key(&reader, "GET", "/v1/users/alice/devices", None)
+            .await
+            .0,
         200
     );
     let p = format!("/v1/users/alice/devices/{}", laptop.device_id);
@@ -516,7 +579,10 @@ async fn silenced_members_cannot_speak(db: TestDb) {
     let b = Conn::new(&api.hub, &bob);
     let g = Conn::new(&api.hub, &bot);
     let conv = a.group(&[&bob, &bot]).await;
-    let mine = b.send(&conv, "before").await["msg_id"].as_str().unwrap().to_string();
+    let mine = b.send(&conv, "before").await["msg_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let silence = format!("/v1/conversations/{conv}/members/bob:silence");
     let v = api
         .ok(
@@ -525,7 +591,10 @@ async fn silenced_members_cannot_speak(db: TestDb) {
             Some(json!({"seconds": 600, "reason": "spam"})),
         )
         .await;
-    assert_eq!((&v["changed"], &v["user_id"]), (&json!(true), &json!("bob")));
+    assert_eq!(
+        (&v["changed"], &v["user_id"]),
+        (&json!(true), &json!("bob"))
+    );
     let until = v["silenced_until"].as_i64().unwrap();
     assert!(until > now_ms() + 590_000);
     // Everyone sees it in the log.
@@ -592,15 +661,47 @@ async fn silenced_members_cannot_speak(db: TestDb) {
         (silence.clone(), json!({}), "bad_request"),
         (silence.clone(), json!({"seconds": 0}), "bad_request"),
         (silence.clone(), json!({"seconds": -5}), "bad_request"),
-        (silence.clone(), json!({"seconds": 365 * 86400 + 1}), "bad_request"),
-        (silence.clone(), json!({"seconds": 5, "reason": ""}), "bad_request"),
-        (silence.clone(), json!({"seconds": 5, "x": 1}), "bad_request"),
+        (
+            silence.clone(),
+            json!({"seconds": 365 * 86400 + 1}),
+            "bad_request",
+        ),
+        (
+            silence.clone(),
+            json!({"seconds": 5, "reason": ""}),
+            "bad_request",
+        ),
+        (
+            silence.clone(),
+            json!({"seconds": 5, "x": 1}),
+            "bad_request",
+        ),
         (unsilence.clone(), json!({"seconds": 5}), "bad_request"),
-        (format!("/v1/conversations/{conv}/members/carol:silence"), json!({"seconds": 5}), "not_found"),
-        (format!("/v1/conversations/{conv}/members/nobody:silence"), json!({"seconds": 5}), "not_found"),
-        (format!("/v1/conversations/{conv}/members/system:silence"), json!({"seconds": 5}), "not_found"),
-        ("/v1/conversations/c_nope/members/bob:silence".into(), json!({"seconds": 5}), "not_found"),
-        (format!("/v1/conversations/{conv}/members/bob:shout"), json!({}), "not_found"),
+        (
+            format!("/v1/conversations/{conv}/members/carol:silence"),
+            json!({"seconds": 5}),
+            "not_found",
+        ),
+        (
+            format!("/v1/conversations/{conv}/members/nobody:silence"),
+            json!({"seconds": 5}),
+            "not_found",
+        ),
+        (
+            format!("/v1/conversations/{conv}/members/system:silence"),
+            json!({"seconds": 5}),
+            "not_found",
+        ),
+        (
+            "/v1/conversations/c_nope/members/bob:silence".into(),
+            json!({"seconds": 5}),
+            "not_found",
+        ),
+        (
+            format!("/v1/conversations/{conv}/members/bob:shout"),
+            json!({}),
+            "not_found",
+        ),
     ] {
         let (_, v) = api.call("POST", &path, Some(body.clone())).await;
         assert_eq!(code(&v), want, "{path} {body}");
@@ -634,7 +735,10 @@ async fn silences_end_and_survive_a_restart(db: TestDb) {
         .await;
     api.ok("POST", &path("alice"), Some(json!({"seconds": 3600})))
         .await;
-    assert_eq!(ws_code(&Conn::new(&api.hub, &bob).send(&conv, "x").await), "forbidden");
+    assert_eq!(
+        ws_code(&Conn::new(&api.hub, &bob).send(&conv, "x").await),
+        "forbidden"
+    );
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert_eq!(
         Conn::new(&api.hub, &bob).send(&conv, "it ended").await["ok"],
@@ -647,7 +751,10 @@ async fn silences_end_and_survive_a_restart(db: TestDb) {
     drop(api);
     let hub = Hub::open(single(&url), hub_cfg()).await.unwrap();
     let alice = hub.user_by_name("alice").unwrap();
-    assert_eq!(ws_code(&Conn::new(&hub, &alice).send(&conv, "x").await), "forbidden");
+    assert_eq!(
+        ws_code(&Conn::new(&hub, &alice).send(&conv, "x").await),
+        "forbidden"
+    );
 }
 
 /// An agent's drafts approved while it is silenced are not published.
@@ -678,7 +785,10 @@ async fn a_silenced_agents_drafts_wait(db: TestDb) {
         None,
     )
     .await;
-    assert_eq!(a.call(json!({"op": "approve", "draft_id": draft})).await["ok"], true);
+    assert_eq!(
+        a.call(json!({"op": "approve", "draft_id": draft})).await["ok"],
+        true
+    );
 }
 
 /// A member sends in a loop while moderation silences them: once the

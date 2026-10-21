@@ -60,10 +60,7 @@ impl Hub {
         reason: Option<String>,
     ) -> ApiResult<Value> {
         if seconds.is_some_and(|s| !(1..=MAX_SILENCE_S).contains(&s)) {
-            return Err(err(
-                "bad_request",
-                format!("seconds is 1..{MAX_SILENCE_S}"),
-            ));
+            return Err(err("bad_request", format!("seconds is 1..{MAX_SILENCE_S}")));
         }
         if reason
             .as_ref()

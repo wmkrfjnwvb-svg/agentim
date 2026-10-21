@@ -545,10 +545,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
             "/v1/agents/{id}/keys/{device}",
             axum::routing::delete(revoke_agent_key),
         )
-        .route(
-            "/v1/agents/{id}",
-            post(agent_action).delete(destroy_agent),
-        )
+        .route("/v1/agents/{id}", post(agent_action).delete(destroy_agent))
         .route("/v1/agents/{id}/export", get(export_agent))
         .route("/v1/agents:import", post(import_agent))
         .route("/v1/users/{id}/agents", get(list_agents))
@@ -779,12 +776,7 @@ async fn revoke_agent_key(
 
 /// An agent as the developer sees it: their ids, its keys (never secrets).
 async fn agent_view(hub: &Hub, a: &User) -> Result<Value, Problem> {
-    let keys: Vec<Value> = hub
-        .devices(&a.id)
-        .await?
-        .iter()
-        .map(|d| d.view())
-        .collect();
+    let keys: Vec<Value> = hub.devices(&a.id).await?.iter().map(|d| d.view()).collect();
     Ok(json!({
         "id": a.name,
         "owner": a.owner_id.as_deref().map(|o| external(hub, o)),
@@ -984,7 +976,10 @@ async fn import_agent(State(st): State<AppState>, Extension(k): K, b: Bytes) -> 
         )
         .await;
     let mut out = v.clone();
-    if let Some(a) = v["agent"]["id"].as_str().and_then(|i| st.hub.shared().user(i)) {
+    if let Some(a) = v["agent"]["id"]
+        .as_str()
+        .and_then(|i| st.hub.shared().user(i))
+    {
         out["agent"] = agent_view(&st.hub, &a).await?;
     }
     created(out)
