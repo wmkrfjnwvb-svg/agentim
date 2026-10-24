@@ -756,7 +756,9 @@ impl Inner {
                     .iter()
                     .any(|n| n.node_id == *id && n.boot_id == p.boot_id && n.addr == p.addr);
                 if !keep {
-                    p.stop();
+                    // Answers to requests already sent still arrive (a node
+                    // that left answers for a moment); nothing new goes there.
+                    p.clone().retire(FORWARD_WAIT);
                 }
                 keep
             });

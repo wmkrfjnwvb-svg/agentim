@@ -116,6 +116,18 @@ impl Peer {
         lock(&self.pending).clear();
     }
 
+    /// Stops once the requests waiting for an answer have it (or after
+    /// `wait`); the caller no longer sends anything here.
+    pub fn retire(self: Arc<Self>, wait: Duration) {
+        tokio::spawn(async move {
+            let end = tokio::time::Instant::now() + wait;
+            while !lock(&self.pending).is_empty() && tokio::time::Instant::now() < end {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            self.stop();
+        });
+    }
+
     /// Ends the current connection (it is dialed again).
     pub fn stop_session(&self) {
         lock(&self.tx).take();

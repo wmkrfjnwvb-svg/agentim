@@ -64,27 +64,30 @@ impl Core {
     /// The message under `key` as the app sees it, or None (gone).
     pub(crate) fn render(&self, conv: &str, key: &str) -> Option<Value> {
         if let Some(cm) = key.strip_prefix("local:") {
+            // Until the message itself arrives, also once the server took
+            // it (its answer can come before the message).
             let op = self
                 .ops
                 .iter()
-                .find(|o| matches!(&o.kind, Kind::Send { cm: c, sent: None, .. } if c == cm))?;
+                .find(|o| matches!(&o.kind, Kind::Send { cm: c, .. } if c == cm))?;
             let Kind::Send {
                 text,
                 msg_kind,
                 payload,
                 reply_to,
+                sent,
                 ..
             } = &op.kind
             else {
                 return None;
             };
             let mut m = json!({
-                "key": key, "msg_id": key, "client_msg_id": cm, "conv_id": conv,
+                "key": key, "msg_id": sent.as_deref().unwrap_or(key), "client_msg_id": cm, "conv_id": conv,
                 "sender_id": self.me["id"], "sender_name": self.me["name"], "sender_type": "human",
                 "kind": msg_kind.clone().unwrap_or_else(|| "text".into()),
                 "content": text, "payload": payload, "reply_to": reply_to,
                 "created_at": op.created_at, "version": 0, "state": "committed",
-                "status": if op.failed.is_some() { "failed" } else { "sending" },
+                "status": if sent.is_some() { "sent" } else if op.failed.is_some() { "failed" } else { "sending" },
                 "order": LOCAL_ORDER + op.n as i64,
             });
             if let Some(e) = &op.failed {
@@ -129,7 +132,7 @@ impl Core {
             })
             .unwrap_or_default();
         k.extend(self.ops.iter().filter_map(|o| match &o.kind {
-            Kind::Send { cm, sent: None, .. } if o.conv_id == conv => Some(format!("local:{cm}")),
+            Kind::Send { cm, .. } if o.conv_id == conv => Some(format!("local:{cm}")),
             _ => None,
         }));
         k

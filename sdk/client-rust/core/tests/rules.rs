@@ -563,6 +563,49 @@ fn sends_offline_show_at_once_and_go_out_once() {
 }
 
 #[test]
+fn a_send_answered_before_its_message_arrives_stays_shown() {
+    let mut w = World::new(1);
+    w.server.conv("c1");
+    w.connected();
+    w.cmd(json!({"cmd": "messages", "conv_id": "c1"}));
+    // The server's answer comes first: the push of the message is lost and
+    // only found again later (the position check, then sync).
+    w.lose_pushes = 1;
+    w.ask(json!({"cmd": "send", "conv_id": "c1", "text": "hi", "client_msg_id": "cmS"}))
+        .unwrap();
+    w.run(200);
+    let v = w.view("c1");
+    assert_eq!(v.len(), 1, "still shown: {v:?}");
+    assert_eq!(v[0]["key"], "local:cmS");
+    assert_eq!(v[0]["status"], "sent");
+    let id = v[0]["msg_id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("m_") || !id.starts_with("local:"), "{id}");
+    w.run(40_000);
+    let v = w.view("c1");
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert_eq!(
+        (v[0]["key"].as_str(), v[0]["status"].as_str()),
+        (Some(id.as_str()), Some("sent"))
+    );
+    // At no point did the app see it go: every event that removes the
+    // local copy puts the stored one in its place.
+    for e in w.emitted("messages") {
+        let ch = e["changes"].as_array().unwrap();
+        if ch
+            .iter()
+            .any(|c| c["op"] == "remove" && c["key"] == "local:cmS")
+        {
+            assert!(
+                ch.iter()
+                    .any(|c| c["op"] == "upsert" && c["message"]["key"] == id.as_str()),
+                "{e}"
+            );
+        }
+    }
+    w.assert_converged();
+}
+
+#[test]
 fn a_lost_answer_is_resent_with_the_same_ids_and_applied_once() {
     let mut w = World::new(1);
     w.server.conv("c1");

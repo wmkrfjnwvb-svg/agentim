@@ -588,7 +588,9 @@ impl Core {
                         self.emit_op(&op, None);
                     }
                     self.mark_changed(&conv, &local(&cm));
-                    self.mark_changed(&conv, &id);
+                    if arrived {
+                        self.mark_changed(&conv, &id);
+                    }
                 } else {
                     let op = self.remove_op(i);
                     self.emit_op(&op, None);
