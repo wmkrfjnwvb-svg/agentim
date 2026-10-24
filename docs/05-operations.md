@@ -218,7 +218,7 @@ PostgreSQL 的测试库用 ICU `en-US` 排序规则建（大多数安装是按�
 **暂时无法自动测试的项**：MySQL 的持久性设置（`innodb_flush_log_at_trx_commit`、`sync_binlog`）只能全局修改，会影响同时运行的其他测试，所以只测了 PostgreSQL；MySQL 这部分靠代码审查和启动日志。
 
 - 2026-10-24 补：令牌缓存刷新（M10）只按读到的快照删令牌，快照之后才登记的设备令牌会被误删，这台设备随后连接被拒、已连上的被断开（B10 的一个原因）。现在快照里没有的令牌再到库里查一次，确实没了才删；`race_new_devices_and_auth_refresh` 三种数据库都测，修复前每次失败。
-- 2026-10-24 补：一个新集群的几个节点同时对着空库启动（`docker compose up`）时，都去建系统用户，后建的报 `name taken` 退出。现在冲突说明别的节点已建好，照常启动；`race_servers_starting_together_on_an_empty_database` 四个服务同时打开三个新库（三种数据库都测），修复前 SQLite 和 PostgreSQL 都会失败。
+- 2026-10-24 补：一个新集群的几个节点同时对着空库启动（`docker compose up`）时，都去建系统用户，后建的报 `name taken` 退出。现在冲突说明别的节点已建好，照常启动；`race_servers_starting_together_on_an_empty_database` 四个服务同时打开三个新库（三种数据库都测），修复前 SQLite 和 PostgreSQL 都会失败。同一测试在 CI 上又暴露两处启动竞争，已修：主密钥指纹和 webhook 游标是"先查后插"，同时启动时后插的撞主键（`UNIQUE meta.k`），现在插入失败就读回别人写的值（指纹不同仍拒绝启动）；SQLite 新文件切到 WAL 要独占锁，几个进程同时打开时 SQLite 不等 `busy_timeout` 直接报 `database is locked`，现在这条 PRAGMA 在 5 秒内重试（本地 40 轮失败 3 次，修复后 60 轮全过）。
 
 ### 5.6 代码覆盖率复查（M4 之后）
 

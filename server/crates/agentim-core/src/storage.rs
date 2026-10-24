@@ -99,7 +99,21 @@ pub async fn open_writer(url: &str, d: Dialect) -> ApiResult<AnyConnection> {
             "PRAGMA foreign_keys = ON",
             "PRAGMA secure_delete = ON",
         ] {
-            sqlx::query(p).execute(&mut c).await?;
+            // Turning a new file to WAL takes an exclusive lock, and SQLite
+            // reports busy at once instead of waiting when other processes
+            // open the same file at that moment (nodes starting together):
+            // tried again for as long as busy_timeout.
+            let mut tries = 0;
+            loop {
+                match sqlx::query(p).execute(&mut c).await {
+                    Ok(_) => break,
+                    Err(e) if tries < 50 && is_transient(&e.to_string()) => {
+                        tries += 1;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
         }
     }
     Ok(c)

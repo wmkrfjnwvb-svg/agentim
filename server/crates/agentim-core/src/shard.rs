@@ -188,11 +188,7 @@ impl Shard {
                 .fetch_optional(&mut conn)
                 .await?;
             if have.is_none() {
-                sqlx::query(dialect.q("INSERT INTO meta (k, v) VALUES (?, ?)"))
-                    .bind(key)
-                    .bind(max.to_string())
-                    .execute(&mut conn)
-                    .await?;
+                meta_insert_once(&mut conn, dialect, &key, &max.to_string()).await?;
             }
         }
         let wake: Wake = Arc::new(tokio::sync::watch::channel(max).0);
@@ -1198,12 +1194,44 @@ async fn open_crypto(
         }
         Some(_) => {}
         None => {
-            sqlx::query(d.q("INSERT INTO meta (k, v) VALUES (?, ?)"))
-                .bind("kek_fingerprint")
-                .bind(kek.fingerprint.clone())
-                .execute(&mut *conn)
-                .await?;
+            // Another node starting at the same time may record it first.
+            let f = meta_insert_once(conn, d, "kek_fingerprint", &kek.fingerprint).await?;
+            if f != kek.fingerprint {
+                return Err(ApiError::new(
+                    "config",
+                    format!("database {name} was encrypted with a different master key"),
+                ));
+            }
         }
     }
     Ok(crate::crypto::Crypto::new(Some(kek)))
+}
+
+/// Records a meta value that is set once (at start-up); when another
+/// process starting at the same moment wrote it first, its value is
+/// returned instead.
+async fn meta_insert_once(
+    conn: &mut AnyConnection,
+    d: Dialect,
+    k: &str,
+    v: &str,
+) -> ApiResult<String> {
+    let r = sqlx::query(d.q("INSERT INTO meta (k, v) VALUES (?, ?)"))
+        .bind(k.to_string())
+        .bind(v.to_string())
+        .execute(&mut *conn)
+        .await;
+    match r {
+        Ok(_) => Ok(v.to_string()),
+        Err(e) => {
+            let have = sqlx::query(d.q("SELECT v FROM meta WHERE k = ?"))
+                .bind(k.to_string())
+                .fetch_optional(&mut *conn)
+                .await?;
+            match have {
+                Some(row) => Ok(row.try_get(0)?),
+                None => Err(e.into()),
+            }
+        }
+    }
 }

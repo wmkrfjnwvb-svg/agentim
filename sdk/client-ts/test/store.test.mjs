@@ -181,8 +181,12 @@ for (const [kind, make] of Object.entries(kinds)) {
     if (kind === 'sqlite') {
       const raw = new DatabaseSync(plain.path);
       const bodies = raw.prepare('SELECT msg_id, body FROM agentim_messages').all();
-      assert.ok(!bodies.find((r) => r.msg_id === 'm2').body.includes('secret'), 'stored text is not readable');
-      assert.ok(!raw.prepare('SELECT body FROM agentim_outbox').all()[0].body.includes('o1'));
+      // Encrypted rows are "e1:" and base64, which has no quotes: a quoted
+      // value would be plain JSON (a bare 'o1' can occur in base64 by chance).
+      const m2 = bodies.find((r) => r.msg_id === 'm2').body;
+      assert.ok(m2.startsWith('e1:') && !m2.includes('"secret words"'), 'stored text is not readable');
+      const o1 = raw.prepare('SELECT body FROM agentim_outbox').all()[0].body;
+      assert.ok(o1.startsWith('e1:') && !o1.includes('"o1"'), o1);
       // Moving an encrypted row to another place is detected (the row is skipped).
       raw.prepare(`INSERT INTO agentim_messages (conv_id, msg_id, seq, sent, created_at, bytes, body) VALUES ('c1', 'm3', 3, 1, 3, 1, ?)`).run(bodies.find((r) => r.msg_id === 'm2').body);
       raw.close();
