@@ -3,5 +3,9 @@
 		lb_policy least_conn
 		health_uri /readyz
 		health_interval 2s
+		# A node that just stopped is skipped at once: the request goes to
+		# another node instead of failing until the next health check.
+		lb_try_duration 5s
+		fail_duration 10s
 	}
 }

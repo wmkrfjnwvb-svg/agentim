@@ -436,7 +436,18 @@ async fn mutation_without_the_check_a_stale_holder_writes(db: TestDb) {
 }
 
 async fn mutation_without_the_progress_gate_a_stuck_writer_keeps_its_shards(db: TestDb) {
-    let nodes = cluster(&db, 2).await;
+    // Roomier times than the other tests: a few renewals that time out on a
+    // busy machine must not look like the gate giving the shards up (with
+    // the gate the shard goes after about stop_ms).
+    let mut nodes = vec![];
+    for i in 0..2 {
+        let mut cfg = cluster_cfg(&db.url, &format!("n{i}"));
+        cfg.cluster.op_timeout_ms = 1_500;
+        cfg.cluster.stop_ms = 3_500;
+        cfg.cluster.lease_ms = 6_000;
+        nodes.push(start_with(cfg).await.expect("node starts"));
+    }
+    settled(&nodes).await;
     let (alice, bob) = people(&nodes[0].0).await;
     let a0 = Conn::new(&nodes[0].0, &alice);
     let conv = conv_held_by(&nodes, 1, &a0, &[&bob]).await;
@@ -452,7 +463,7 @@ async fn mutation_without_the_progress_gate_a_stuck_writer_keeps_its_shards(db: 
     // Leases are renewed although nothing is written: the shard never
     // moves, which `an_answer_lost_after_commit_is_found_by_the_retry`
     // would report.
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(7)).await;
     assert!(
         nodes[1].1.held(0).contains(&shard(&conv)),
         "kept while stuck"
