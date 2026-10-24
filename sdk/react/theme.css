@@ -1,0 +1,91 @@
+/* AgentIM default theme (docs/12 §3): CSS variables only, light and dark.
+   Override any variable on .aim-chat or an ancestor. */
+:root {
+  --aim-bg: #ffffff;
+  --aim-fg: #1b1f24;
+  --aim-muted: #59636e;
+  --aim-border: #d1d9e0;
+  --aim-bubble: #f1f3f5;
+  --aim-bubble-mine: #0b57d0;
+  --aim-bubble-mine-fg: #ffffff;
+  --aim-accent: #0b57d0;
+  --aim-danger: #b3261e;
+  --aim-ai-bg: #6b2fd6;
+  --aim-ai-fg: #ffffff;
+  --aim-radius: 12px;
+  --aim-gap: 8px;
+  --aim-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --aim-focus: 2px solid #0b57d0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --aim-bg: #0f1419;
+    --aim-fg: #e6edf3;
+    --aim-muted: #9198a1;
+    --aim-border: #3d444d;
+    --aim-bubble: #1f262e;
+    --aim-bubble-mine: #4c8df6;
+    --aim-bubble-mine-fg: #0f1419;
+    --aim-accent: #4c8df6;
+    --aim-danger: #f2b8b5;
+    --aim-ai-bg: #b794f6;
+    --aim-ai-fg: #0f1419;
+    --aim-focus: 2px solid #4c8df6;
+  }
+}
+:root[data-theme="dark"] {
+  --aim-bg: #0f1419;
+  --aim-fg: #e6edf3;
+  --aim-muted: #9198a1;
+  --aim-border: #3d444d;
+  --aim-bubble: #1f262e;
+  --aim-bubble-mine: #4c8df6;
+  --aim-bubble-mine-fg: #0f1419;
+  --aim-accent: #4c8df6;
+  --aim-danger: #f2b8b5;
+  --aim-ai-bg: #b794f6;
+  --aim-ai-fg: #0f1419;
+  --aim-focus: 2px solid #4c8df6;
+}
+
+.aim-chat { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--aim-bg); color: var(--aim-fg); font: 15px/1.45 var(--aim-font); }
+.aim-chat :focus-visible { outline: var(--aim-focus); outline-offset: 2px; }
+.aim-banner { padding: 6px 12px; font-size: 13px; color: var(--aim-muted); border-bottom: 1px solid var(--aim-border); }
+.aim-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: var(--aim-gap); overflow-anchor: auto; }
+.aim-top { text-align: center; font-size: 13px; color: var(--aim-muted); }
+.aim-top button { font: inherit; color: var(--aim-accent); background: none; border: 0; cursor: pointer; padding: 4px 8px; }
+/* Long histories: the browser skips laying out rows off screen. */
+.aim-row { display: flex; gap: 6px; align-items: flex-start; content-visibility: auto; contain-intrinsic-size: auto 56px; }
+.aim-row[data-mine] { flex-direction: row-reverse; }
+.aim-ai { flex: none; font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 6px; background: var(--aim-ai-bg); color: var(--aim-ai-fg); margin-top: 4px; }
+.aim-bubble { max-width: min(80%, 640px); padding: 8px 12px; border-radius: var(--aim-radius); background: var(--aim-bubble); overflow-wrap: anywhere; }
+.aim-bubble[data-mine] { background: var(--aim-bubble-mine); color: var(--aim-bubble-mine-fg); }
+.aim-sender { font-size: 12px; color: var(--aim-muted); margin-bottom: 2px; }
+.aim-text { white-space: pre-wrap; }
+.aim-meta { display: flex; gap: 8px; font-size: 12px; opacity: 0.8; margin-top: 2px; flex-wrap: wrap; }
+.aim-meta button { font: inherit; background: none; border: 0; color: inherit; text-decoration: underline; cursor: pointer; padding: 0 2px; }
+.aim-failed { color: var(--aim-danger); }
+.aim-recalled { font-size: 13px; color: var(--aim-muted); font-style: italic; }
+.aim-sources { margin: 6px 0 0; padding-inline-start: 18px; font-size: 13px; }
+.aim-sources a { color: inherit; }
+.aim-card { display: flex; flex-direction: column; gap: 8px; }
+.aim-card-title { font-weight: 600; }
+.aim-card-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.aim-card button, .aim-card select, .aim-card input { font: inherit; }
+.aim-card button { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--aim-border); background: var(--aim-bg); color: var(--aim-fg); cursor: pointer; }
+.aim-card button[data-style="primary"] { background: var(--aim-accent); color: var(--aim-bg); border-color: var(--aim-accent); }
+.aim-card button[data-style="danger"] { color: var(--aim-danger); border-color: var(--aim-danger); }
+.aim-card-form { display: flex; flex-direction: column; gap: 6px; }
+.aim-card-form label { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.aim-typing { min-height: 20px; padding: 0 12px; font-size: 12px; color: var(--aim-muted); }
+.aim-composer { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--aim-border); }
+.aim-composer textarea { flex: 1; resize: none; font: inherit; color: var(--aim-fg); background: var(--aim-bg); border: 1px solid var(--aim-border); border-radius: 8px; padding: 8px 10px; min-height: 40px; max-height: 160px; }
+.aim-composer button { font: inherit; padding: 0 16px; border-radius: 8px; border: 0; background: var(--aim-accent); color: var(--aim-bg); cursor: pointer; }
+.aim-composer button:disabled { opacity: 0.5; cursor: default; }
+.aim-convs { display: flex; flex-direction: column; }
+.aim-conv { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; text-align: start; font: inherit; color: var(--aim-fg); background: none; border: 0; border-bottom: 1px solid var(--aim-border); padding: 10px 12px; cursor: pointer; }
+.aim-conv[aria-current] { background: var(--aim-bubble); }
+.aim-conv-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aim-conv-last { grid-column: 1; font-size: 13px; color: var(--aim-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aim-unread { grid-column: 2; grid-row: 1 / span 2; align-self: center; min-width: 20px; padding: 0 6px; border-radius: 10px; background: var(--aim-accent); color: var(--aim-bg); font-size: 12px; text-align: center; }
+.aim-empty { margin: auto; color: var(--aim-muted); font-size: 14px; padding: 24px; text-align: center; }

@@ -131,7 +131,7 @@ jobs:
           AGENTIM_SIM_SEEDS=300 cargo llvm-cov -p agentim-client-core --fail-under-lines 98 --summary-only
 
   client-web:
-    name: browser SDK (wasm core, Node and Chromium)
+    name: browser SDK and React components (wasm core, Node and Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -157,6 +157,13 @@ jobs:
           npm install --no-save --prefix ../../server/ci playwright@1.56.1
           npx --prefix ../../server/ci playwright install --with-deps chromium
           PLAYWRIGHT="$PWD/../../server/ci/node_modules/playwright" node test/browser.mjs
+      - name: React components (every state, then the support window in Chromium with a real agent)
+        working-directory: sdk/react
+        run: |
+          npm ci
+          npm test
+          mkdir -p "$RUNNER_TEMP/shots"
+          PLAYWRIGHT="$PWD/../../server/ci/node_modules/playwright" OUT="$RUNNER_TEMP/shots" npm run e2e
 
   client-wrappers:
     name: client SDK wrappers (C#, Kotlin/JVM, Swift, Dart) against the server

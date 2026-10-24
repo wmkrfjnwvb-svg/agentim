@@ -107,7 +107,7 @@ stream_start ──▶ streaming（分配 conv_seq，事件 msg.created）
 ### 3.2 卡片
 
 - 消息类型 `agentim.card`（`agentim.` 前缀保留，自定义类型不能冒充）。`text` 是不支持卡片的客户端显示的降级文字（必填）；`payload` 是声明式 JSON，不执行脚本：`{title?, blocks: [...], once?}`。
-- 组件：`text`；`buttons`（1–10 个 `{id, label, style?: primary|danger}`）；`form`（1–10 个字段 `{id, label, type: text|number|select|checkbox, required?, options?, max?}` 和提交按钮文字）。最多 20 个组件、整张 16KB；ID 是 1–64 个 `a-z0-9_-`，卡片内唯一；标签 1–100 字节。
+- 组件：`{type: "text", text}`；`{type: "buttons", id, options}`（1–10 个按钮 `{id, label, style?: primary|danger}`）；`{type: "form", id, fields, submit}`（1–10 个字段 `{id, label, type: text|number|select|checkbox, required?, options?, max?}`，`select` 的 `options` 是 1–10 个互不相同的字符串，`submit` 是提交按钮文字）。最多 20 个组件、整张 16KB；ID 是 1–64 个 `a-z0-9_-`，卡片内唯一；标签 1–100 字节。
 - 回应 `respond {msg_id, block_id, action? | values?}`：按钮给 `action`，表单给 `values`（必填、数字、选项、长度都检查）。发卡片的人自己不能回应；每人每张只能回应一次；`once: true` 时整张只接受第一个回应（之后 `conflict`）；已撤回的卡片 `bad_request`。回应写进主日志（`card.response`），唤醒发卡片的 Agent。
 
 ### 3.3 进度
