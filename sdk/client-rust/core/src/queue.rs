@@ -138,6 +138,20 @@ impl Core {
         op
     }
 
+    /// A send has its server id: changes queued against its local key name
+    /// the id from now on, stored, so they still apply after a restart.
+    fn retarget(&mut self, cm: &str, id: &str) {
+        let key = local(cm);
+        for i in 0..self.ops.len() {
+            if let Kind::Edit { target, .. } | Kind::Recall { target } = &mut self.ops[i].kind
+                && *target == key
+            {
+                *target = id.to_string();
+                self.save_op(i);
+            }
+        }
+    }
+
     fn find_send(&self, cm: &str) -> Option<usize> {
         self.ops
             .iter()
@@ -459,16 +473,9 @@ impl Core {
         let resolve = |t: &str| -> Option<String> {
             match t.strip_prefix("local:") {
                 None => Some(t.to_string()),
-                Some(cm) => self.sent_ids.get(cm).cloned().or_else(|| {
-                    self.ops.iter().find_map(|x| match &x.kind {
-                        Kind::Send {
-                            cm: c,
-                            sent: Some(id),
-                            ..
-                        } if c == cm => Some(id.clone()),
-                        _ => None,
-                    })
-                }),
+                // Changes are retargeted once their send has an id, so a
+                // local key here means the send never got one.
+                Some(cm) => self.sent_ids.get(cm).cloned(),
             }
         };
         let v = match &o.kind {
@@ -566,6 +573,7 @@ impl Core {
                     let cm = cm.clone();
                     *sent = Some(id.clone());
                     self.sent_ids.insert(cm.clone(), id.clone());
+                    self.retarget(&cm, &id);
                     // Its event may have come first.
                     let arrived = self
                         .convs
@@ -661,6 +669,7 @@ impl Core {
             let op = self.remove_op(i);
             if let Kind::Send { cm, .. } = &op.kind {
                 self.sent_ids.insert(cm.clone(), id.to_string());
+                self.retarget(cm, id);
                 self.mark_changed(conv, &local(cm));
             }
             if by_cm.is_some() && by_id.is_none() {

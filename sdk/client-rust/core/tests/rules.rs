@@ -600,6 +600,45 @@ fn server_trouble_is_retried_and_business_refusals_fail() {
 }
 
 #[test]
+fn a_change_to_a_message_whose_send_is_refused_fails_too() {
+    let mut w = World::new(1);
+    w.server.conv("c2");
+    w.server.forbidden.insert("c2".into());
+    w.connected();
+    w.cmd(json!({"cmd": "messages", "conv_id": "c2"}));
+    w.ask(json!({"cmd": "send", "conv_id": "c2", "text": "no", "client_msg_id": "bad"}))
+        .unwrap();
+    // The send is on its way: the edit waits behind it as its own operation.
+    w.ask(json!({"cmd": "edit", "conv_id": "c2", "client_msg_id": "bad", "text": "no!"}))
+        .unwrap();
+    assert_eq!(w.core.debug_state()["queue"].as_array().unwrap().len(), 2);
+    w.run(1_000);
+    let results: Vec<(String, String)> = w
+        .events
+        .iter()
+        .filter(|e| e["type"] == "operation" && e["result"] == "failed")
+        .map(|e| {
+            (
+                e["kind"].as_str().unwrap().to_string(),
+                e["error"]["code"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    // The edit fails with the reason its message did.
+    assert_eq!(
+        results,
+        [
+            ("send".to_string(), "forbidden".to_string()),
+            ("edit".to_string(), "forbidden".to_string())
+        ]
+    );
+    // The failed send stays for retry or discard; the edit is gone; nothing reached the server.
+    assert_eq!(w.core.debug_state()["queue"].as_array().unwrap().len(), 1);
+    assert!(w.server.requests.iter().all(|r| r["op"] != "edit"));
+    w.assert_converged();
+}
+
+#[test]
 fn queued_changes_merge_before_they_go() {
     let mut w = World::new(1);
     w.server.conv("c1");
@@ -740,6 +779,44 @@ fn the_queue_survives_a_restart_and_is_sent_once() {
     let mut cms = w.server.applied_cms.clone();
     cms.sort();
     assert_eq!(cms, ["k1", "k2"]);
+    w.assert_converged();
+}
+
+#[test]
+fn an_edit_queued_behind_its_send_survives_a_restart() {
+    let mut w = World::new(1);
+    w.server.conv("c1");
+    w.connected();
+    w.cmd(json!({"cmd": "messages", "conv_id": "c1"}));
+    w.ask(json!({"cmd": "send", "conv_id": "c1", "text": "draft", "client_msg_id": "a"}))
+        .unwrap();
+    // The send is on its way: the edit is queued after it, by the local key.
+    w.ask(json!({"cmd": "edit", "conv_id": "c1", "client_msg_id": "a", "text": "final"}))
+        .unwrap();
+    // The send's answer arrives; the app stops before the edit is answered.
+    for _ in 0..100 {
+        w.run(5);
+        if w.core.debug_state()["queue"].as_array().unwrap().len() == 1 {
+            break;
+        }
+    }
+    assert_eq!(w.server.applied_cms, ["a"]);
+    w.cmd(json!({"cmd": "close"}));
+    w.restart(2);
+    w.cmd(json!({"cmd": "messages", "conv_id": "c1"}));
+    w.cmd(json!({"cmd": "connect"}));
+    w.run(2_000);
+    let id = w.server.cms["a"].clone();
+    assert_eq!(
+        w.server.cur[&id]["content"], "final",
+        "the edit names the sent message after the restart"
+    );
+    assert!(
+        w.events
+            .iter()
+            .all(|e| !(e["type"] == "operation" && e["result"] == "failed"))
+    );
+    assert!(w.store.ops.is_empty());
     w.assert_converged();
 }
 
