@@ -147,6 +147,15 @@ pub fn test_clients() -> agentim_core::config::ClientsConfig {
     }
 }
 
+/// Paging back without the per-person limit (tests/pages.rs tests it).
+pub fn test_history() -> agentim_core::config::HistoryConfig {
+    agentim_core::config::HistoryConfig {
+        rate_per_second: 1e6,
+        burst: 1e6,
+        ..Default::default()
+    }
+}
+
 /// A fixed master key, so reopening a test database finds its content.
 pub const TEST_MASTER_KEY: &str = "dGVzdC1tYXN0ZXIta2V5LWZvci1hZ2VudGltLXRlc3Q=";
 
@@ -183,6 +192,7 @@ pub fn single(url: &str) -> Config {
         agents: Default::default(),
         mcp: Default::default(),
         moderation: Default::default(),
+        history: test_history(),
         cluster: Default::default(),
     }
 }
@@ -226,6 +236,7 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
         agents: Default::default(),
         mcp: Default::default(),
         moderation: Default::default(),
+        history: test_history(),
         cluster: Default::default(),
     }
 }

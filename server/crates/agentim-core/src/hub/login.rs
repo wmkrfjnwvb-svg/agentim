@@ -236,8 +236,10 @@ impl Hub {
         if user.kind != UserKind::Human || user.name != claims.sub {
             return Err(refused("subject"));
         }
+        // A valid token of someone the developer turned off: the app
+        // should stop retrying (403, not 401, docs/08 §2.9).
         if self.is_deactivated(&user.id) {
-            return Err(refused("deactivated"));
+            return Err(err("forbidden", "this person is deactivated"));
         }
         let device_id = device_id_of(&user.id, device);
         if self.cut_off(&user.id, &device_id, claims.iat) {
@@ -273,6 +275,18 @@ impl Hub {
                 .call(Op::RegisterDevice { row: row.clone() })
                 .await?;
             self.remember_issuer(&hash, row.issued_by.as_deref());
+            // In a cluster the write may have run on another node; its
+            // cache update reaches this one a moment later. The session is
+            // only opened once this node knows the device (a revocation in
+            // between keeps it unknown: retry, then refused).
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while !self.inner.sh.tokens.read().unwrap().contains_key(&hash) {
+                if std::time::Instant::now() > deadline {
+                    return Err(err("unavailable", "the device is being registered; retry")
+                        .retry_after(1000));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
             v["new"] == true
         };
         if fresh {

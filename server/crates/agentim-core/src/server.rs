@@ -285,12 +285,32 @@ async fn ws(
             tracing::debug!(reason = e.message, "client token refused");
             return StatusCode::UNAUTHORIZED.into_response();
         }
-        Err(e) => {
+        Err(e) if e.code == "forbidden" => {
             return (
-                StatusCode::SERVICE_UNAVAILABLE,
+                StatusCode::FORBIDDEN,
                 Json(json!({"error": {"code": e.code, "message": e.message}})),
             )
                 .into_response();
+        }
+        Err(e) => {
+            // Busy or storage trouble: come back later, not all at once.
+            let (status, wait) = if e.code == "rate_limited" {
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    e.retry_after_ms.unwrap_or(1000),
+                )
+            } else {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    e.retry_after_ms.unwrap_or_else(spread_ms),
+                )
+            };
+            let mut r = (status, Json(json!({"error": e.to_json()}))).into_response();
+            r.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from(wait.div_ceil(1000).max(1)),
+            );
+            return r;
         }
     };
     let version = match ws_protocol(q.v.as_deref()) {
@@ -305,6 +325,14 @@ async fn ws(
         .write_buffer_size(0)
         .max_message_size(1 << 20)
         .on_upgrade(move |socket| run_socket(st.hub, login, version, socket))
+}
+
+/// The application-level heartbeat clients are asked for (docs/08 §2.9).
+const HEARTBEAT_MS: u64 = 25_000;
+
+/// A random wait of 0–5 s that spreads reconnections and retries.
+fn spread_ms() -> u64 {
+    (uuid::Uuid::new_v4().as_u128() % 5000) as u64
 }
 
 async fn run_socket(hub: Hub, login: crate::hub::login::Login, version: u32, socket: WebSocket) {
@@ -334,6 +362,10 @@ async fn run_socket(hub: Hub, login: crate::hub::login::Login, version: u32, soc
     welcome["protocol"] = json!(version);
     welcome["me"] = json!(user);
     welcome["device_id"] = json!(login.device_id);
+    // How often the client should ping when nothing else is sent, and how
+    // long the server waits for any frame before closing (docs/08 §2.9).
+    welcome["heartbeat_ms"] = json!(HEARTBEAT_MS.min(idle.as_millis() as u64 / 3));
+    welcome["idle_ms"] = json!(idle.as_millis() as u64);
     if let Some(reason) = refused {
         let _ = res_tx
             .send(Message::Close(Some(CloseFrame {
@@ -371,8 +403,11 @@ async fn run_socket(hub: Hub, login: crate::hub::login::Login, version: u32, soc
                 let _ = res_tx.send(Message::Ping(Vec::new().into())).await;
                 continue;
             }
-            // This node is leaving: reconnect to another one.
+            // This node is leaving: reconnect to another one, after a
+            // random wait so the clients do not all come back at once.
             _ = hub.going_away() => {
+                let goaway = json!({"type": "goaway", "reason": "server_restart", "retry_after_ms": spread_ms()});
+                let _ = res_tx.send(Message::Text(goaway.to_string().into())).await;
                 let _ = res_tx
                     .send(Message::Close(Some(CloseFrame {
                         code: close_code::RESTART,

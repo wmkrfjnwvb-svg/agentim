@@ -286,10 +286,13 @@ impl Shard {
             }
             Err(mpsc::error::TrySendError::Full(_)) => {
                 metrics::counter!(m::WRITE_REJECTED, "reason" => "overloaded").increment(1);
+                // Spread the retries of everyone refused at once.
+                let wait = 500 + (uuid::Uuid::new_v4().as_u128() % 1500) as u64;
                 return Err(ApiError::new(
                     "overloaded",
                     "server is busy, retry with the same client_msg_id",
-                ));
+                )
+                .retry_after(wait));
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 return Err(ApiError::new("storage_unavailable", "writer stopped"));

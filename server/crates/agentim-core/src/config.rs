@@ -61,6 +61,33 @@ pub struct Config {
     /// Reports and the moderation queue (docs/04-security-compliance.md §4.2).
     #[serde(default)]
     pub moderation: ModerationConfig,
+    /// People reading older messages page by page (docs/08 §2.8, D108).
+    #[serde(default)]
+    pub history: HistoryConfig,
+}
+
+/// `[history]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HistoryConfig {
+    /// Off: pages come back empty with `before_end = "disabled"`.
+    pub enabled: bool,
+    /// Most messages on each side of the anchor.
+    pub page_max: i64,
+    /// Pages per second per person (all connections), and the burst.
+    pub rate_per_second: f64,
+    pub burst: f64,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        HistoryConfig {
+            enabled: true,
+            page_max: 100,
+            rate_per_second: 5.0,
+            burst: 20.0,
+        }
+    }
 }
 
 /// `[moderation]`.
@@ -175,11 +202,13 @@ impl Default for SyncFile {
             max_gap: d.max_gap,
             device_ttl_days: 30,
             window_days: 90,
-            max_messages: d.max_messages,
+            // A new device gets the last 30 of each conversation; older
+            // pages on demand (D108).
+            max_messages: 30,
             older_enabled: d.older_enabled,
             older_messages: d.older_messages,
             older_max: d.older_max,
-            member_messages: d.member_messages,
+            member_messages: 30,
             member_days: 30,
             share_max: d.share_max,
             rate_per_second: d.rate.0,
@@ -847,6 +876,7 @@ impl Config {
             agents: Default::default(),
             mcp: Default::default(),
             moderation: Default::default(),
+            history: Default::default(),
             cluster: Default::default(),
         }
     }
@@ -962,6 +992,15 @@ impl Config {
             if b.timeout_ms == 0 {
                 return Err("before_send.timeout_ms must be > 0".into());
             }
+        }
+        let h = &self.history;
+        if !(1..=1000).contains(&h.page_max)
+            || h.rate_per_second.is_nan()
+            || h.rate_per_second <= 0.0
+            || h.burst.is_nan()
+            || h.burst < 1.0
+        {
+            return Err("history.page_max must be 1..1000, history.rate_per_second > 0 and history.burst >= 1".into());
         }
         if self.auth.max_failures < 1 || self.auth.lock_minutes < 1 {
             return Err("auth.max_failures and auth.lock_minutes must be >= 1".into());
@@ -1121,6 +1160,7 @@ mod tests {
             agents: Default::default(),
             mcp: Default::default(),
             moderation: Default::default(),
+            history: Default::default(),
             cluster: Default::default(),
         }
     }
@@ -1241,6 +1281,9 @@ mod tests {
             ("[before_send]\nurl = \"https://x\"\nsecret = \"short\"\n".to_string(), "before_send.secret"),
             ("[before_send]\nurl = \"https://x\"\nsecret = \"0123456789abcdef\"\ntimeout_ms = 0\n".to_string(), "before_send.timeout_ms"),
             ("[auth]\nmax_failures = 0\n".to_string(), "auth.max_failures"),
+            ("[history]\npage_max = 0\n".to_string(), "history.page_max"),
+            ("[history]\nrate_per_second = 0\n".to_string(), "history.page_max"),
+            ("[history]\nburst = 0.5\n".to_string(), "history.page_max"),
             ("[auth]\nlock_minutes = 0\n".to_string(), "auth.max_failures"),
             ("[open_api]\nrate_per_second = 0.0\n".to_string(), "open_api.rate_per_second"),
             ("[open_api]\nburst = 0.5\n".to_string(), "open_api.rate_per_second"),

@@ -34,6 +34,7 @@ mod export;
 mod history;
 mod lifecycle;
 pub mod login;
+mod pages;
 mod requests;
 mod state;
 pub use agents::MAX_AGENT_KEYS;
@@ -692,11 +693,12 @@ impl Hub {
         *tokens = (*tokens + now.duration_since(*at).as_secs_f64() * rate).min(burst);
         *at = now;
         if *tokens < 1.0 {
-            let wait = ((1.0 - *tokens) / rate * 1000.0).ceil() as i64;
+            let wait = ((1.0 - *tokens) / rate * 1000.0).ceil() as u64;
             return Err(err(
                 "rate_limited",
                 format!("too many {kind} requests; retry in {wait} ms"),
-            ));
+            )
+            .retry_after(wait));
         }
         *tokens -= 1.0;
         Ok(())
@@ -2006,7 +2008,7 @@ impl Hub {
                 v
             }
             Err(e) => {
-                json!({"type": "res", "rid": env.rid, "ok": false, "error": {"code": e.code, "message": e.message}})
+                json!({"type": "res", "rid": env.rid, "ok": false, "error": e.to_json()})
             }
         }
     }
@@ -2065,7 +2067,7 @@ impl Hub {
     async fn dispatch(&self, sess: &Session, msg: ClientMsg) -> ApiResult<Value> {
         let me = &sess.user;
         // A stopped agent may still say hello and learn why nothing works.
-        if !matches!(msg, ClientMsg::Hello { .. }) && self.is_stopped(&me.id) {
+        if !matches!(msg, ClientMsg::Hello { .. } | ClientMsg::Ping) && self.is_stopped(&me.id) {
             return Err(err(
                 "conflict",
                 "your owner stopped you; wait until you are resumed",
@@ -2355,14 +2357,35 @@ impl Hub {
                 wait_secs,
             } => self.get_request(me, &request_id, wait_secs).await,
             ClientMsg::Inbox => self.inbox(me).await,
+            ClientMsg::Ping => Ok(json!({"t": now_ms()})),
             ClientMsg::History {
                 conv_id,
                 after_seq,
                 before_seq,
                 limit,
+                anchor,
+                before,
+                after,
             } => {
-                self.history(me, &conv_id, after_seq, before_seq, limit)
-                    .await
+                if me.kind == UserKind::Human {
+                    if after_seq.is_some() || before_seq.is_some() || limit.is_some() {
+                        return Err(err(
+                            "bad_request",
+                            "people page with anchor, before and after (docs/08 §2.8)",
+                        ));
+                    }
+                    self.page(me, &conv_id, anchor.as_ref(), before, after)
+                        .await
+                } else {
+                    if anchor.is_some() || before.is_some() || after.is_some() {
+                        return Err(err(
+                            "bad_request",
+                            "agents read with after_seq, before_seq and limit",
+                        ));
+                    }
+                    self.history(me, &conv_id, after_seq, before_seq, limit)
+                        .await
+                }
             }
             ClientMsg::Context {
                 conv_id,

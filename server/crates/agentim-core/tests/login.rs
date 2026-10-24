@@ -302,15 +302,17 @@ async fn refused_subjects(db: TestDb) {
     hub.erasures_idle().await;
     hub.set_deactivated(&off.id, true).await.unwrap();
     let sign = |s: &str| jwt_sign(&kid, &secret, s, now_s(), now_s() + 60);
-    for sub in [
-        bot.name.as_str(), // agents use keys
-        "system",          // the system user
-        "gone",            // deleted: ids are not reused
-        "off",             // deactivated
-        alice.id.as_str(), // an internal id is not a user id
+    // Not a person's id: 401. A person the developer turned off (deleted,
+    // deactivated): 403, so the app stops retrying (docs/08 §2.9).
+    for (sub, want) in [
+        (bot.name.as_str(), "unauthorized"), // agents use keys
+        ("system", "unauthorized"),          // the system user
+        (alice.id.as_str(), "unauthorized"), // an internal id is not a user id
+        ("gone", "forbidden"),               // deleted: ids are not reused
+        ("off", "forbidden"),                // deactivated
     ] {
         let e = login(&hub, &sign(sub), "dev1").await.unwrap_err();
-        assert_eq!(e.code, "unauthorized", "{sub}");
+        assert_eq!(e.code, want, "{sub}");
     }
     assert!(
         hub.devices(&bot.id).await.unwrap().len() == 1,

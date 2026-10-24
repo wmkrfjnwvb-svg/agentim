@@ -687,7 +687,10 @@ pub enum ClientMsg {
     FloorRelease {
         conv_id: String,
     },
-    /// Agents read what they may see of a conversation (docs/03-agents.md §7.1).
+    /// Agents read what they may see of a conversation by seq
+    /// (`after_seq` / `before_seq` / `limit`, docs/03-agents.md §7.1);
+    /// people read pages of messages around an anchor (`anchor`, `before`,
+    /// `after`, docs/08 §2.8).
     History {
         conv_id: String,
         #[serde(default)]
@@ -696,7 +699,15 @@ pub enum ClientMsg {
         before_seq: Option<i64>,
         #[serde(default)]
         limit: Option<i64>,
+        #[serde(default)]
+        anchor: Option<Value>,
+        #[serde(default)]
+        before: Option<i64>,
+        #[serde(default)]
+        after: Option<i64>,
     },
+    /// Application-level heartbeat (docs/08 §2.9): answers the server time.
+    Ping,
     Context {
         conv_id: String,
         #[serde(default)]
@@ -865,6 +876,7 @@ impl ClientMsg {
             ClientMsg::CancelRequest { .. } => "cancel_request",
             ClientMsg::GetRequest { .. } => "get_request",
             ClientMsg::Inbox => "inbox",
+            ClientMsg::Ping => "ping",
             ClientMsg::UpdateTask { .. } => "update_task",
             ClientMsg::Claim { .. } => "claim",
             ClientMsg::ReleaseClaim { .. } => "release_claim",
@@ -950,6 +962,9 @@ pub fn now_ms() -> i64 {
 pub struct ApiError {
     pub code: &'static str,
     pub message: String,
+    /// For temporary refusals (`rate_limited`, `overloaded`, …): how long
+    /// the caller should wait before trying again (docs/08 §2.9).
+    pub retry_after_ms: Option<u64>,
 }
 
 impl ApiError {
@@ -957,7 +972,22 @@ impl ApiError {
         ApiError {
             code,
             message: message.into(),
+            retry_after_ms: None,
         }
+    }
+
+    pub fn retry_after(mut self, ms: u64) -> Self {
+        self.retry_after_ms = Some(ms);
+        self
+    }
+
+    /// The `error` object of a response frame.
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut v = serde_json::json!({"code": self.code, "message": self.message});
+        if let Some(ms) = self.retry_after_ms {
+            v["retry_after_ms"] = serde_json::json!(ms);
+        }
+        v
     }
 
     /// An error received from another node: its code as one of this
@@ -979,7 +1009,7 @@ impl ApiError {
             }
             None => "unavailable",
         };
-        ApiError { code, message }
+        ApiError::new(code, message)
     }
 }
 

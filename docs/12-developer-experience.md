@@ -282,7 +282,7 @@ agentim                                    # 打开 http://127.0.0.1:8080
 | 步 | 内容 |
 |---|---|
 | S0 | 探路：最小核心编成 wasm 量体积；Unity IL2CPP 在 iOS 上收回调；Android 16 KB 页；结果写回本节 |
-| S1 | 服务端：人的历史读取（D108）、应用层 `ping`、欢迎帧带心跳间隔、过载和下线带 `retry_after_ms`（[08 §2.4](08-sync-and-client.md)、§2.7） |
+| S1 | ✅ 服务端：人的历史读取（D108）、应用层 `ping`、欢迎帧带心跳间隔、过载和下线带 `retry_after_ms`（[08 §2.8、§2.9](08-sync-and-client.md)） |
 | S2 | Rust 核心 + 原生运行层（SQLite、WebSocket）+ 核心测试和一致性场景 |
 | S3 | 浏览器封装：wasm、IndexedDB、加密、多标签页 |
 | S4 | Swift、Kotlin |

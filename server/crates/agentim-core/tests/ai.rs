@@ -369,7 +369,13 @@ fn card() -> Value {
 
 fn send_card(conv: &str, payload: Value) -> Value {
     let id = uuid::Uuid::new_v4().to_string();
-    json!({"op": "send", "conv_id": conv, "client_msg_id": id, "text": format!("Refund request {id}: please answer in the app"), "kind": "agentim.card", "payload": payload})
+    // Distinct texts without digit runs (a random run can pass as a card
+    // number and be blocked by the DLP filter).
+    let tag: String = id
+        .chars()
+        .map(|c| c.to_digit(10).map_or(c, |d| (b'g' + d as u8) as char))
+        .collect();
+    json!({"op": "send", "conv_id": conv, "client_msg_id": id, "text": format!("Refund request {tag}: please answer in the app"), "kind": "agentim.card", "payload": payload})
 }
 
 fn respond(msg: &Value, block: &str, action: Option<&str>, values: Option<Value>) -> Value {

@@ -55,11 +55,11 @@ max_unacked = 1000        # 每个会话未确认的事件上限（流量控制�
 max_gap = 10000           # 落后超过这么多条就重置
 device_ttl_days = 30      # 多久没确认的设备按新设备处理
 window_days = 90          # 新设备只同步最近多少天，上限 90
-max_messages = 30         # 新设备每个会话先同步最近多少条（窗口内，后端可改）；更早的用户往上翻时按页取（§2.8）。原来 200，2026-10-19 改为 30
+max_messages = 30         # 新设备每个会话先同步最近多少条（窗口内，后端可改）；更早的用户往上翻时按页取（§2.8）
 older_enabled = false     # 窗口内没有消息的会话是否也同步一些更早的消息
 older_messages = 20       # 同步多少条（默认）
 older_max = 100           # 上限
-member_messages = 50      # 新成员（人）默认带最近多少条
+member_messages = 30      # 新成员（人）默认带最近多少条（不能超过 max_messages）
 member_days = 30          # 且在最近多少天内
 share_max = 200           # 拉人时最多能选带多少条
 rate_per_second = 10      # 每个用户每秒 sync 次数（令牌桶），burst = 20
@@ -78,7 +78,7 @@ days = 180                # 0 表示永久保留
 | Agent | 默认不带历史，见 [03 §7](03-agents.md) |
 
 - 加入时把"可见的最早 seq"记在成员记录上：之后改设置不影响已经在群里的人；退出再加入按新设置重新算。
-- 新设备只同步最近一段；更早的由客户端按页向服务端要（§2.8，D108，📝 待批准）。
+- 新设备只同步最近一段；更早的由客户端按页向服务端要（§2.8，D108）。
 - 拉人事件里写明带了多少历史，所有成员都看得到。
 - 单聊加人变成群聊时：不改原来的单聊，新建一个群，避免单聊内容被新加的人看到。
 
@@ -102,41 +102,43 @@ days = 180                # 0 表示永久保留
 
 Agent 和人走同一条同步通道，但收到什么、能不能读历史、历史和状态放在哪里都和人不同，见 [09 Agent 通信与 Agent 历史](03-agents.md)。
 
-### 2.8 往回翻历史（D108，📝 待批准）
+### 2.8 往回翻历史（D108，✅ 2026-10-21）
 
 人（客户端）能按页读自己能看到的历史：新设备、本地被清掉、缓存被淘汰后都能往回翻、跳到某条消息。参照 Zulip（锚点 + 前后各多少条，一个接口覆盖往回翻、往后翻、跳到某条、跳到第一条未读）、Discord（前后各最多 100 条）、Matrix（可见范围在加入时定下、之后改设置不追溯；明确告诉客户端"到头了"）。
 
-**请求** `history {conv_id, anchor, before?, after?}`：
-- `anchor`：一个 seq，或 `"newest"`、`"first_unread"`；`before` / `after` 各 0–100（默认 `before = 50, after = 0`），两个都是 0 是 `bad_request`。
-- 返回 `{messages, has_before, has_after, before_end?}`：消息按 seq 升序，是**当前状态**（编辑过的是新内容，撤回的只剩撤回标记，流式中的带已生成的部分）；`before_end` 说明为什么前面没有了：`start`（会话开头）、`visible_from`（这个成员的可见起点）、`retention`（保留期删掉了）、`disabled`（开关关了）。
+**请求** `history {conv_id, anchor?, before?, after?}`：
+- `anchor`：一个 seq，或 `"newest"`（默认）、`"first_unread"`（自己的已读位置）。`before` 是 seq **不大于** `anchor` 的最多几条（含锚点那条），`after` 是**大于** `anchor` 的最多几条；各 0–`page_max`（默认 `before = 50, after = 0`），两个都是 0 是 `bad_request`。锚点可以不是某条消息的 seq（比如一个成员事件），也可以超出范围。
+- 返回 `{conv_id, messages, has_before, has_after, before_end?}`：消息按 seq 升序，是**当前状态**（编辑过的是新内容和新版本号，撤回的只剩撤回标记，流式中的带已生成的部分）；`before_end` 在 `has_before` 为 false 时说明为什么前面没有了：`start`（会话开头）、`visible_from`（这个成员的可见起点）、`retention`（保留期删掉了）、`disabled`（开关关了）。
+- Agent 继续用自己的形式（`after_seq` / `before_seq` / `limit`，[03 §7.1](03-agents.md)，写审计）；人用 Agent 的参数、Agent 用人的参数都是 `bad_request`。
 
 **规则**：
 - 只能读**现在是成员**的会话（否则 `forbidden`，未知会话 `not_found`），和同步同一套权限检查（§2.3）。
-- 只返回 seq ≥ 成员的可见起点（§2.4，加入时定下，之后改设置不追溯）、在保留期内的；被移出又拉回时中间那段不返回（D92）。
+- 只返回 seq ≥ 成员的可见起点（§2.4，加入时定下，之后改设置不追溯）、在保留期内的；被移出又拉回时，以前那段成员期照样返回，中间那段不返回（D92）。比可见起点早的消息后来被编辑也不返回。
 - 侧信道（耳语、草稿、仅某人可见）不在这里返回，仍走同步。
 - 不改变设备的同步位置，不确认任何东西；客户端把它当成本地缓存的补充（[12 §2.8](12-developer-experience.md)）。
-- 集群和多库：按会话路由，和其他会话操作一样；读从库时同样不越过 `confirmed_seq`（C3 的读取水位线），不会读到还没确认的消息。
-- 限流：按用户的令牌桶，超出 `rate_limited` 并带 `retry_after_ms`。
+- 集群和多库：按会话路由，和其他会话操作一样；读从库时同样不越过 `confirmed_seq`（C3 的读取水位线）。
+- 限流：按用户的令牌桶（所有连接合计），超出 `rate_limited` 并带 `retry_after_ms`。
 - 不写审计（成员读自己的会话，业内都不记）；开放 API 的历史读取照旧写审计。拒绝的请求不留痕迹。
 
 **配置**：
 
 ```toml
 [history]
-enabled = true            # 人能否向服务端往回翻；关掉时返回空页和 before_end = "disabled"
-page_max = 100            # before / after 的上限
-rate_per_second = 5       # 每个用户（所有连接合计），burst = 20
+enabled = true            # 人能否向服务端往回翻；关掉时返回空页和 before_end = "disabled"（成员检查照旧）
+page_max = 100            # before / after 的上限（1–1000）
+rate_per_second = 5       # 每个用户（所有连接合计）
+burst = 20
 ```
 
-是否再加"按会话类型 / 按会话"的开关（Sendbird 按应用、Telegram 和 Zulip 按会话）见 D108 的待确认项。
+按会话类型或按会话的开关先不做（D108）。
 
-### 2.9 连接保活和重连提示（📝 待批准）
+### 2.9 连接保活和重连提示（✅ 2026-10-21）
 
 客户端的重连和发送策略（[12 §2.4–§2.5](12-developer-experience.md)）需要服务端配合：
-- **应用层心跳**：新增 `ping {}` → `res {t}`（服务端时间）。浏览器的脚本看不到 WebSocket 协议层的 ping，只能靠它判断连接是否还活着。欢迎帧带 `heartbeat_ms`（默认 25000）和 `idle_ms`（服务端多久没收到任何帧就断开，现在是 90 秒）。
-- **关闭原因带等待时间**：`server_restart`、`overloaded` 的关闭原因里带 `retry_after_ms`（服务端随机给 0–5000 毫秒，把重启后涌回来的连接摊开）；`logged_out`、`client_too_old` 表示不要重连。
-- **握手被拒**：过载、限流时 HTTP 503 / 429 带 `Retry-After`；令牌无效 401（客户端换令牌重试一次），被停用 403（不再重试）。
-- **请求级的暂时性错误**（`overloaded`、`unavailable`、`storage_unavailable`、`rate_limited`）带 `retry_after_ms`（有的话）。
+- **应用层心跳**：`ping {}` → `res {t}`（服务端时间，毫秒）。浏览器的脚本看不到 WebSocket 协议层的 ping，只能靠它判断连接是否还活着。被急停的 Agent 也能 `ping`。欢迎帧带 `heartbeat_ms`（25000，且不超过 `idle_ms` 的三分之一）和 `idle_ms`（服务端多久没收到任何帧就断开，`clients.idle_secs`，默认 90 秒）。
+- **节点下线带等待时间**：节点要下线时（`server_restart`），先发一帧 `{"type": "goaway", "reason": "server_restart", "retry_after_ms": 0–5000 的随机值}`，再用 1012 / `server_restart` 关闭。用单独一帧而不是把时间塞进关闭原因，旧客户端照样按关闭原因处理（HTTP/2 的 GOAWAY、Discord 的 reconnect 也是先发一条通知）。`logged_out`、`client_too_old` 表示不要重连。
+- **握手被拒**：令牌无效 401（客户端换令牌重试一次）；这个人被停用或已删除 403（不再重试）；限流 429、存储忙 503，都带 `Retry-After`（秒）和 `retry_after_ms`。
+- **请求级的暂时性错误**：`rate_limited`（按令牌桶算出的等待时间）、`overloaded`（写队列满，500–2000 毫秒的随机值）带 `retry_after_ms`。
 
 ## 3. 客户端 SDK 的状态和接口
 

@@ -30,6 +30,7 @@ pub const FEATURES: &[&str] = &[
 /// a malformed known one (`unknown_op` vs `bad_request`).
 pub const OPS: &[&str] = &[
     "hello",
+    "ping",
     "list_convs",
     "create_conv",
     "add_member",

@@ -1903,6 +1903,42 @@ impl Db<'_> {
     }
 
     /// (visible_from, until_seq) of a member's previous membership.
+    /// Messages of a conversation in their current state, for people paging
+    /// back (docs/08 §2.8): created at or below `pivot` (newest first) or
+    /// above it (oldest first), within what the reader may see: from
+    /// `visible_from`, or inside an earlier membership `past`.
+    pub async fn messages_page(
+        &mut self,
+        conv_id: &str,
+        visible_from: i64,
+        past: Option<(i64, i64)>,
+        pivot: i64,
+        down: bool,
+        limit: i64,
+    ) -> ApiResult<Vec<MsgView>> {
+        let (pf, pu) = past.unwrap_or((1, 0));
+        let (cmp, order) = if down { ("<=", "DESC") } else { (">", "ASC") };
+        let rows = sqlx::query(self.d.q(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE conv_id = ? AND created_seq {cmp} ?
+             AND (created_seq >= ? OR (created_seq >= ? AND created_seq <= ?))
+             ORDER BY created_seq {order} LIMIT ?"
+        )))
+        .bind(conv_id)
+        .bind(pivot)
+        .bind(visible_from)
+        .bind(pf)
+        .bind(pu)
+        .bind(limit)
+        .fetch_all(&mut *self.c)
+        .await?;
+        self.preload(&rows, &["content", "payload", "envelope"])
+            .await?;
+        rows.iter()
+            .map(|r| row_msg(r, self.cx))
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
+    }
+
     pub async fn past_member(
         &mut self,
         conv_id: &str,

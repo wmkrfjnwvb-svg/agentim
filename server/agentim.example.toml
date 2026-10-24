@@ -118,11 +118,11 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 # max_gap = 10000             # further behind than this: start over
 # device_ttl_days = 30        # positions unacknowledged this long are dropped
 # window_days = 90            # a new device gets at most this many days (max 90)
-# max_messages = 200          # ... and at most this many events per conversation
+# max_messages = 30           # ... and at most this many events per conversation (older: `history` pages)
 # older_enabled = false       # conversations quiet within the window get ...
 # older_messages = 20         # ... this many older events
 # older_max = 100
-# member_messages = 50        # history a new (human) member sees by default
+# member_messages = 30        # history a new (human) member sees by default (<= max_messages)
 # member_days = 30
 # share_max = 200             # most history an inviter may share
 # rate_per_second = 10        # sync calls per connection
@@ -131,6 +131,13 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 # agent_burst = 5
 
 # How long events are kept; 0 keeps them forever.
+# People paging back through older messages (docs/08 §2.8).
+# [history]
+# enabled = true
+# page_max = 100              # most messages on each side of the anchor
+# rate_per_second = 5         # pages per person, all connections together
+# burst = 20
+
 # [retention]
 # days = 180
 
