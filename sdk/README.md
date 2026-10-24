@@ -38,3 +38,26 @@ Both offer: replies and streamed replies, progress, cards and their responses, s
 to decide (`askHuman` / `ask_human`), handing off to a person, history, context, search, summaries, checkpoints, claims and
 tasks; `call(op, ...)` reaches any other protocol operation. `sdk/agent_e2e.sh` runs the same end-to-end scenario in both
 languages against a real server (Linux and Windows in CI).
+
+## Client SDKs
+
+For your app's users, on their devices. They are built on one Rust core (`client-rust/core`), which holds every rule: connect
+and reconnect, sync without gaps, the offline queue (stored first, sent once and in order), the local cache, and paging back
+through history. Each platform has a thin wrapper. Each wrapper gives three things the UI follows (connection, conversations,
+the messages of a conversation) and methods that return once the change is shown. See
+[docs/12 §2](../docs/12-developer-experience.md); what is done per platform is in its §2.14.
+
+| Platform | Path | State |
+|---|---|---|
+| Browser, Node | `client-web` (`@agentim/client-web`) | The core in WebAssembly (146 KB gzipped), an encrypted IndexedDB cache, one connection shared by all tabs |
+| React | `react` (`@agentim/react`) | Hooks and components (a support chat window, conversation list), themes, AI label, cards, RTL |
+| React Native | `client-react-native` | JSI binding (compiles), TypeScript tested against a fake binding; not yet run on a device |
+| iOS, macOS | `client-swift` | Swift package, `@Observable`; tested on Linux, the XCFramework is not built yet |
+| Android, JVM | `client-kotlin` | Kotlin with a JNI bridge, `StateFlow`; tested on the JVM, the AAR is not built yet |
+| .NET, Unity | `client-dotnet` | C#, net8.0 and netstandard2.1, a Unity package; tested on .NET, not yet in Unity |
+| Flutter, Dart | `client-flutter` | Dart FFI; tested on the Dart VM, the Flutter plugin is not packaged yet |
+| Native (C) | `client-rust/native` | The runtime (WebSocket, SQLite) and the C ABI in `include/agentim.h` that the wrappers use |
+
+Every wrapper runs the same conformance scenario against a real `agentim` (CI job `client-wrappers`). `sdk/client-ts`, the earlier
+TypeScript SDK, is replaced by `client-web`; whether to remove it is pending (docs/06 §1.1 D122).
+

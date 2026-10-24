@@ -38,7 +38,9 @@ agentim                                    # 打开 http://127.0.0.1:8080
 
 ## 2. 客户端 SDK
 
-> 状态：📝 设计待你批准（2026-10-19）。已确认：核心用 Rust，浏览器也用（2026-10-19）。调研和来源见 [research/client-sdk.md](research/client-sdk.md)。批准前不写代码；现有的 TypeScript SDK（`sdk/client-ts`）停在存储第二版，它的规则和测试是下面核心的规格。
+> 状态：🔧 设计 2026-10-20 批准（D104），S1–S7 已实现到本环境能做到的程度（2026-10-24），每一步的结果和与设计的差别见 §2.14。调研和来源见 [research/client-sdk.md](research/client-sdk.md)。旧的 TypeScript SDK（`sdk/client-ts`）停在存储第二版，它的规则和测试是核心的规格；它的去留待定（[06 §1.1](06-plan.md)）。
+
+代码：核心和原生运行层 `sdk/client-rust`（`core`、`native`、`wasm`），浏览器 `sdk/client-web`，React `sdk/react`，React Native `sdk/client-react-native`，Swift `sdk/client-swift`，Kotlin `sdk/client-kotlin`，C# 和 Unity `sdk/client-dotnet`，Flutter 和 Dart `sdk/client-flutter`。
 
 ### 2.1 目标
 
@@ -237,7 +239,7 @@ agentim                                    # 打开 http://127.0.0.1:8080
 
 ### 2.10 浏览器多标签页
 
-同一个账号同一时间只有一个"主标签页"：核心跑在它的 Worker 里，持有连接、写库；其他标签页通过 BroadcastChannel 拿状态变化、把操作交给主标签页。用 Web Locks 选主，主标签页关闭后锁释放，另一个立即接替。Firestore、Notion、PowerSync 都是这个结构，不这样做会出现两个标签页同时写坏库。
+同一个账号同一时间只有一个"主标签页"：核心跑在它里面（现在在页面主线程，没放进 Worker，见 §2.14），持有连接、写库；其他标签页通过 BroadcastChannel 拿状态变化、把操作交给主标签页。用 Web Locks 选主，主标签页关闭后锁释放，另一个立即接替。Firestore、Notion、PowerSync 都是这个结构，不这样做会出现两个标签页同时写坏库。接替的标签页接着做旧主标签页在做的事（在连就接着连）；交接的空档里发出的命令不丢：可以重复执行的（发送、已读、查询等；发送的 `client_msg_id` 在标签页里生成，重复仍是一条）由新主标签页重新执行，其他的返回 `disconnected` 让调用方决定。
 
 ### 2.11 给应用的接口
 
@@ -279,24 +281,36 @@ agentim                                    # 打开 http://127.0.0.1:8080
 
 ### 2.14 分步
 
-| 步 | 内容 |
-|---|---|
-| S0 | 探路：最小核心编成 wasm 量体积；Unity IL2CPP 在 iOS 上收回调；Android 16 KB 页；结果写回本节 |
-| S1 | ✅ 服务端：人的历史读取（D108）、应用层 `ping`、欢迎帧带心跳间隔、过载和下线带 `retry_after_ms`（[08 §2.8、§2.9](08-sync-and-client.md)） |
-| S2 | Rust 核心 + 原生运行层（SQLite、WebSocket）+ 核心测试和一致性场景 |
-| S3 | 浏览器封装：wasm、IndexedDB、加密、多标签页 |
-| S4 | Swift、Kotlin |
-| S5 | C#（.NET、Unity，含 WebGL 桥） |
-| S6 | Flutter、React Native |
-| S7 | React 界面组件和客服窗口示例（§3） |
+| 步 | 内容 | 状态（2026-10-24） |
+|---|---|---|
+| S0 | 探路：最小核心编成 wasm 量体积；Unity IL2CPP 在 iOS 上收回调；Android 16 KB 页；结果写回本节 | 🔧 wasm 核心 450 KB、压缩后 **146 KB**（预算 300 KB，CI 超了失败）；Linux x86_64 原生库压缩后 1.6 MB（预算 3 MB）。IL2CPP 回调和 16 KB 页没有验证：本环境没有 Unity、iOS、Android 工具链 |
+| S1 | 服务端：人的历史读取（D108）、应用层 `ping`、欢迎帧带心跳间隔、过载和下线带 `retry_after_ms`（[08 §2.8、§2.9](08-sync-and-client.md)） | ✅ |
+| S2 | Rust 核心 + 原生运行层（SQLite、WebSocket）+ 核心测试和一致性场景 | ✅ 核心不做 IO，§2.3–§2.9 的规则都在里面；原生运行层：tokio 单线程、rustls、SQLite（缓存库和队列库分开、20 MB 预留文件）、C ABI（`include/agentim.h`，每个入口捕获 panic） |
+| S3 | 浏览器封装：wasm、IndexedDB、加密、多标签页 | ✅ `@agentim/client-web`：IndexedDB（AES-GCM，密钥不可导出）、打不开时用内存；Web Locks + BroadcastChannel 一个账号一条连接，主标签页关闭后接替；Node 也能用 |
+| S4 | Swift、Kotlin | 🔧 封装写完，在 Linux 上对着真实服务端跑通一致性场景（Swift 6.2；Kotlin 通过 JNI 在 JVM 上）。XCFramework、AAR、模拟器没做 |
+| S5 | C#（.NET、Unity，含 WebGL 桥） | 🔧 .NET（net8.0、netstandard2.1）跑通一致性场景；Unity 包（主线程、暂停和恢复、网络）写了但没在 Unity 里跑过；WebGL 桥没做 |
+| S6 | Flutter、React Native | 🔧 Dart FFI 在 Dart VM 上跑通一致性场景，Flutter 插件打包没做；React Native：JSI 绑定能对着 0.87.1 的头文件编译，TypeScript 部分用假绑定测试，没在设备上跑过 |
+| S7 | React 界面组件和客服窗口示例（§3） | ✅ `@agentim/react`：hooks 和组件，每种状态的组件测试，客服窗口在 Chromium 里对着真实服务端和真实 Agent 跑通 |
+
+**每个封装都跑的一致性场景**（W1–W9，对着真实 `agentim`）：两边连上；发送返回时消息已在列表里、之后变成已发送、对方收到、会话进列表（含表情）；编辑和撤回到达对方；被业务拒绝的发送显示失败并报告、删除后消失；在线请求返回服务端的错误码、未知命令 `bad_request`；重启后队列先从缓存显示、连上后按顺序发出且只发一次、队列清空；断网后不是已连接、离线发的消息恢复后只发一次；令牌被拒后停在 `failed`（`unauthenticated`）；关闭后命令返回 `closed`、关两次没问题。
+
+**和设计的差别**（待定的写进 [06 §1.1](06-plan.md)）：
+- 浏览器的核心跑在主标签页的主线程，不在 Worker 里（§2.2、§2.10）。核心很小、每次处理很快，先这样；要放进 Worker 时接口不用变。
+- 各语言的类型是手写的，没有从 JSON Schema 生成、也没有 CI 一致性检查（§2.2）；靠每个封装都跑同一套一致性场景兜底。
+- 覆盖率（§2.13）：核心行覆盖 98.4%，CI 门槛 98%，测不到的行和理由在 [05 §5](05-operations.md)；各语言封装没跑覆盖率工具。没跑 `cargo mutants`，守护顺序和确认的测试做了手工变异验证（[05 §5](05-operations.md)）。
+- 平台测试只有 Linux（原生、JVM、Swift、Dart、.NET）和 Chromium；没有 macOS、Windows 上的封装、iOS 和 Android 模拟器、Firefox 和 WebKit、Unity 批处理模式。
+- 一致性场景：TypeScript SDK 的 46 项没有全部改写；核心的规则测试（35 项）、细节测试（18 项）和随机模拟覆盖了规则，原生运行层 6 项、浏览器 4 + 1 项、每个封装 W1–W9 对着真实服务端。
+- 发布（npm、SwiftPM、Maven Central、NuGet、OpenUPM、pub.dev）都没做，归到 A9。
 
 ## 3. P3 React 界面组件
 
 包名 `@agentim/react`，建在 §2.11 的可订阅对象上。
 
+> 状态：🔧 2026-10-24 实现了第一版（`sdk/react`），和下面设计的差别：没做 `usePresence`（服务端没有在线状态）和 `useApproval`（审批用卡片和 `respond`，组件里已有）；转人工提示和成员列表组件没做；消息列表没做真正的虚拟滚动，用 `content-visibility: auto` 让浏览器跳过屏幕外的行；截图对比没做（端到端测试会保存亮色、暗色、从右到左的截图，供人看）；Web 演示端还没改用这套组件。
+
 - **两层**：一层 hooks（`useConversations`、`useMessages`、`useSend`、`useTyping`、`usePresence`、`useApproval`），开发者完全自己画界面也能用；一层组件，建在 hooks 上。
 - **组件**：会话列表、消息列表（虚拟滚动；流式 AI 消息、AI 标记、卡片、来源、反馈）、输入框、审批卡片、转人工提示、成员列表、正在输入。
-- **AI 标记不可关闭**（D36、EU AI Act 第 50 条）：消息组件按 `sender_type` 显示，替换组件时文档写明这一条义务。
+- **AI 标记不可关闭**（D36、EU AI Act 第 50 条）：按 `sender_type` 显示，由消息列表画在可替换的消息组件外面，换掉消息组件也去不掉。
 - **换主题和替换组件**：样式全部用 CSS 变量，附一套默认主题（亮色、暗色）；不依赖任何 CSS 框架。每个组件可以通过 `components` 属性换成自己的实现（Stream 的做法），文档里给出完整例子。
 - **无障碍和多语言**：键盘操作、读屏标签，按 WCAG 2.1 AA（欧盟无障碍法的要求）；界面文字可以整体替换，支持从右到左的语言。
 - **Web 演示端**改用 P2 + P3 重写，作为组件的活样例。

@@ -12,6 +12,7 @@ cargo run --release --bin agentim -- --demo   # open http://127.0.0.1:8080 and l
 - **Your users log in with your own accounts**: `agentim signing-key create --name backend` prints a signing key; your backend signs each user a client token with it (an HS256 JWT, `createUserToken` in the server SDKs; no call to AgentIM) and your app connects with it. See [docs/13 §4.2](docs/13-roles-and-entry-points.md).
 - **Your backend**: `agentim api-key create --name backend --scopes users:write,messages:write` prints a key for the open API (`/v1`, OpenAPI 3.1 at `/v1/openapi.json`): create users with your own ids, manage conversations, send as a user or as the system, issue agent keys. Server SDKs for [Node, Python and Go](sdk/README.md). See [docs/07-open-api.md](docs/07-open-api.md).
 - **An agent**: your backend creates it with the open API (`PUT /v1/users/helper` with `{"kind": "agent", "owner": "alice"}`, or `agentim admin agent-create helper --owner alice`), which returns the agent's key once, with an MCP config block for any MCP client (Claude, Cursor, OpenAI Agents SDK; endpoint `POST /mcp`) and the WebSocket address. Agent SDKs for [Node and Python](sdk/README.md#agent-sdks) (no dependencies). See [docs/03-agents.md](docs/03-agents.md).
+- **Your app**: client SDKs keep the connection, sync, the offline queue, the local cache and history for you, with one Rust core on every platform: the browser (`@agentim/client-web`, the core in WebAssembly, an encrypted IndexedDB cache, one connection shared by all tabs), React components (`@agentim/react`), Swift, Kotlin, C# (.NET, Unity), Dart (Flutter) and React Native. See [sdk/README.md](sdk/README.md#client-sdks) and [docs/12 §2](docs/12-developer-experience.md).
 - **The console** at `/console`: on first start the server prints a one-time setup link (open it on the same machine) to create the first owner. Developers manage keys, people, agents, conversations (reading content needs a reason and is audited), reports and client permissions; operators see databases and the cluster. `agentim admin --url … --key …` does the same from the command line. See [docs/12 §4](docs/12-developer-experience.md).
 - **Configuration** (databases, writer settings, webhooks, TLS, login): [`server/agentim.example.toml`](server/agentim.example.toml). More commands: [`server/README.md`](server/README.md).
 
@@ -23,14 +24,15 @@ cargo run --release --bin agentim -- --demo   # open http://127.0.0.1:8080 and l
 - **AI agents as members**: server-assigned sender types (an agent cannot pose as a human; AI label always shown), owner approval of drafts, asking people to decide, whispers, interruption, takeover, kill switch and destroy, agent-to-agent wake-ups with budgets, task channels, history, checkpoints and search, guardrails (hop limit, loop breaker, rate limits, budgets, prompt-injection flags, DLP), an MCP server.
 - **For your backend**: open API with scoped API keys, idempotency keys, rate limits and RFC 9457 errors; webhooks (signed, ordered, at-least-once); a before-send hook; custom fields; protocol version negotiation.
 - **Security**: encryption at rest on by default (AES-256-GCM, per-conversation keys, crypto-shredding on delete), client tokens your backend signs itself (JWT, no IM passwords for your users), hashed agent keys, per-device logout, built-in TLS, Origin checks.
+- **Client SDKs**: one Rust core (reconnects with backoff and jitter, the offline queue sent once and in order, an encrypted local cache, paging back through history, detection of gaps), used by the browser SDK, React components, and Swift, Kotlin, C#, Dart and React Native wrappers. Each wrapper runs the same scenario against a real server in CI.
 - **Operations**: SQLite, PostgreSQL or MySQL with the same behaviour (the same test suite runs on each), automatic schema migration, Prometheus metrics and alerts, health and readiness endpoints, a Docker image, Docker Compose and a Helm chart; tested on Linux and Windows.
 
 **Planned** (order in [docs/06-plan.md §3](docs/06-plan.md))
 
-- TypeScript client SDK and React UI components, then client SDKs for Swift, Kotlin, C# (Unity, .NET) and Flutter.
-- A hosted cloud with a free tier, and a developer console built into `agentim`.
+- Packages for every client SDK (npm, SwiftPM, Maven Central, NuGet, OpenUPM, pub.dev), with iOS, Android and Unity builds tested on their simulators.
 - Prebuilt binaries and one-command install, a documentation site and three example apps.
-- Search filters; files and images; user data export, account deletion, reports and a moderation queue; import from other chat providers.
+- Files and images; offline push notifications (APNs, FCM); import from other chat providers.
+- A hosted cloud (later).
 
 ## Guarantees and how they are tested
 

@@ -7,7 +7,7 @@
 
 **方向**（2026-10-18 确认）：只服务开发者；一个产品、一个程序 `agentim`，全部功能免费；已做完的 Agent 能力全部保留，没开始的 Agent 中间件不做；下一阶段做开发者体验闭环：发现 → 5 分钟跑起来 → 30 分钟嵌进自己的应用 → 用开发者控制台管理 → 付费（托管云或支持服务，D102）。
 
-**当前位置**：消息核心、开发者接入、AI 部分（L1–L7）和集群（C0–C4）已经完成。§3 第 1–3 步（合并 Lite、A4 合规基础、入口按角色划分、A5 管理 API 和控制台）已完成；正在做第 4 步 A7 客户端 SDK。每一项都先写设计、你确认后再写代码；开发者体验的设计见 [12](12-developer-experience.md)。
+**当前位置**：消息核心、开发者接入、AI 部分（L1–L7）和集群（C0–C4）已经完成。§3 第 1–4 步（合并 Lite、A4 合规基础、入口按角色划分、A5 管理 API 和控制台、A7 客户端 SDK）已完成；A7 里需要 macOS、Android、Unity 工具链的部分（打包、模拟器、Unity 里跑）没做，和发布一起放到 A9，待定事项见 §1.1 D120–D123。每一项都先写设计、你确认后再写代码；开发者体验的设计见 [12](12-developer-experience.md)。
 
 **测试**：全部通过。CI 每次推送跑：Linux 和 Windows 上 SQLite、PostgreSQL、MySQL 的全部测试，多节点集群测试，真实数据库主从和切主测试，Docker 镜像和三节点 Compose 冒烟，浏览器冒烟，压测，服务端和 Agent SDK 的端到端；规模测试夜间跑。
 
@@ -20,7 +20,7 @@
 | 账号和设备（M3） | 🔧 | 开发者签名的客户端令牌（D118）、Agent 密钥只存哈希、设备列表和下线、多端已读、新设备通知、内置 TLS、Origin 校验 | OIDC（以后） |
 | 静态加密（M4） | ✅ | 默认开启（`managed`）、老库加密、先开后关（旧密文照常读、`decrypt-existing`，B4）、主密钥轮换、解散即加密销毁；开销约 2% | — |
 | 存储 | ✅ | SQLite / PostgreSQL / MySQL；多库路由和在线迁移 | 多库路由的定位待 D101 |
-| 同步协议（L1） | 🔧 | 服务端全部：按设备记位置、只同步、分批确认、历史范围、免打扰、未读、限流、保留期、位置校验 | 客户端 SDK（P2） |
+| 同步协议（L1） | ✅ | 服务端全部：按设备记位置、只同步、分批确认、历史范围、免打扰、未读、限流、保留期、位置校验；客户端核心（A7） | — |
 | AI：Agent 接入（L2） | ✅ | 凭据、一条命令创建、换密钥、MCP 服务 | — |
 | AI：请人决定和待办（L3） | ✅ | 批准 / 回答 / 选择、只有一个决定生效、待办、审批 v1 | — |
 | AI：Agent 之间（L4） | ✅ | 接收方式、信封、唤醒、根预算、任务频道、抢单、发言权 | 主题 / 广播（以后） |
@@ -31,8 +31,8 @@
 | 集群 | ✅ | C0–C4：租约和校验、转发、交接和下线、滚动升级、数据库主从和切主、管理命令、指标和告警、Docker / Compose / Helm、多节点压测（[11](11-cluster.md)） | 数据倒退的恢复（D100） |
 | 合并 Lite 和 AgentIM | ✅ | 只有一个程序 `agentim`；握手只报 `agentim`、`AgentIM` 和版本（D105） | — |
 | **发布流程（P1）** | 🔧 | `deploy/`：Dockerfile、Compose、Helm（CI 里构建和冒烟） | 预编译程序和签名、一条命令安装、GHCR 镜像、版本和更新日志、依赖扫描（[12 §1](12-developer-experience.md)） |
-| **客户端 SDK（P2）** | 📝 | 设计待批准：[12 §2](12-developer-experience.md) | Rust 核心 + 浏览器、Swift、Kotlin、C#/Unity、Flutter、React Native 封装 |
-| **React 组件（P3）** | ⏳ | 设计：[12 §3](12-developer-experience.md) | 组件、主题；Web 演示端改用 P2 和 P3 |
+| **客户端 SDK（P2）** | 🔧 | Rust 核心（连接、同步、离线队列、缓存、历史）、原生运行层和 C ABI、浏览器（wasm、IndexedDB、多标签页）、Swift、Kotlin、C#、Dart 封装对着真实服务端跑通，React Native 的 JSI 绑定能编译（[12 §2.14](12-developer-experience.md)） | iOS、Android、Unity、Flutter 打包和模拟器测试；Unity WebGL 桥；发布（A9） |
+| **React 组件（P3）** | 🔧 | `@agentim/react`：hooks、客服窗口组件、主题、AI 标记、卡片、从右到左（[12 §3](12-developer-experience.md)） | 成员列表、转人工提示、截图对比；Web 演示端改用 P2 和 P3 |
 | **开发者控制台（P4）** | ✅ | 管理 API `/admin/v1`（应用、部署两块，四种角色）、管理员账号（一次性初始化、密码 + TOTP、会话和 CSRF）、管理密钥、`agentim admin`、内置在 `agentim` 里的控制台 `/console`（[12 §4](12-developer-experience.md)） | Webhook、发送前拦截、审核时限搬进"应用设置"（现在只读） |
 | **文档站和示例（P5）** | ⏳ | 设计：[12 §5](12-developer-experience.md) | 文档站、三个示例应用、Agent 框架模板 |
 | 托管云（P6） | ⏳ | 先不做（2026-10-19） | 注册即用、免费额度、按合并后的消息计费 |
@@ -70,6 +70,10 @@
 
 | # | 事项 | 我的建议 |
 |---|---|---|
+| D120 | 浏览器 SDK 的核心跑在主标签页的主线程，设计里写的是 Worker（[12 §2.10](12-developer-experience.md)） | 先保持主线程：核心 146 KB、每次处理很快，测试里没有卡顿；等有真实应用测到界面卡再放进 Worker（接口不用变） |
+| D121 | 客户端覆盖率：设计要求 100%，现在核心 98.4%、CI 门槛 98%，没覆盖的行和理由列在 [05 §5](05-operations.md)；各语言封装没跑覆盖率工具 | 门槛先定 98%，把"没测的边角"补上测试后提到 99%；封装的覆盖率在 A9 有 macOS、Android 机器时一起做 |
+| D122 | 旧的 TypeScript SDK `sdk/client-ts`（它的规则已经搬进 Rust 核心，`@agentim/client-web` 替代它） | 删掉，文档里指向 `client-web`；在你确认前保留 |
+| D123 | iOS、Android、Unity、Flutter 的打包和模拟器测试需要 macOS 和 Android 的 CI 机器（GitHub 有），本环境做不了 | 放进 A9：XCFramework、AAR（16 KB 页）、NuGet / OpenUPM、pub.dev、npm 一起发布，CI 加 macOS 任务跑 iOS 模拟器和 Unity 批处理 |
 | D119 | 离线推送（APNs、FCM）：手机 App 切到后台后靠系统推送收到新消息。现在服务端没有实现，计划里也没有单独一项 | 补上，放在最后，排在文件和图片之后（2026-10-20 负责人定）。A7 的设备 ID 先留好以后登记推送令牌的位置。做之前先调研 Stream、Sendbird、腾讯云 IM，再出设计 |
 | D99 | 规模测试 `slow` 场景在 GitHub 的 Linux 机器上：停止读取超过空闲时间的连接，服务端已经关闭（连接数指标减少），但客户端恢复读取后既收不到剩余的帧也看不到关闭，本地和 Windows 上都能看到。消息不会丢：客户端重连后按设备位置同步，测试证明数据完整 | 测试工具现在按 SDK 的做法：一分钟没收到任何东西就自己重连并同步，单独计数。原因仍未查明（本地和 Windows 都复现不了）。C2 加了位置校验（`heads`，Agent SDK 每 30 秒一次），真实客户端即使遇到这种情况也会在 30 秒内发现并补齐。**告知你，暂不需要决定** |
 
@@ -129,7 +133,7 @@
 | A4 | 合规的基础部分：用户导出自己的数据、删除账号、基础保留期、举报、基础审核队列 | — | ✅ 2026-10-20（[04 §4.2](04-security-compliance.md)） |
 | A5 | `agentim admin` 和管理 API（缩小后的 D63），和开发者控制台一起 | D63 | ✅ 2026-10-21（[12 §4](12-developer-experience.md)） |
 | A6 | 文件和图片 | 你的设计 | ⏸ 先不做 |
-| A7 | 客户端 SDK（P2） | D104 | 🔧 设计已批准 [12 §2](12-developer-experience.md) |
+| A7 | 客户端 SDK（P2） | D104 | ✅ 2026-10-24，本环境能做的部分（[12 §2.14](12-developer-experience.md)）；平台打包和模拟器归 A9 |
 | A9 | 安装和发布（P1） | — | 🔧 [12 §1](12-developer-experience.md) |
 
 **B. 已知问题**
@@ -151,7 +155,7 @@
 | 2 | ✅ A4 合规基础：导出自己的数据、删除账号、基础保留期、举报、基础审核队列（2026-10-20） |
 | 2.5 | ✅ 入口按角色划分（D116–D118，[13 §6](13-roles-and-entry-points.md)，2026-10-21） |
 | 3 | ✅ A5 管理 API `/admin/v1`、`agentim admin`、开发者控制台（2026-10-21） |
-| 4 | A7 客户端 SDK：服务端配合（历史、心跳、重连提示）、Rust 核心、浏览器、Swift、Kotlin、C#（Unity、.NET）、Flutter、React Native、React 组件（[12 §2.14](12-developer-experience.md) S0–S7） |
+| 4 | ✅ A7 客户端 SDK（2026-10-24）：服务端配合（历史、心跳、重连提示）、Rust 核心、浏览器、Swift、Kotlin、C#（Unity、.NET）、Flutter、React Native、React 组件（[12 §2.14](12-developer-experience.md) S0–S7） |
 | 5 | A9 安装和发布（P1） |
 | 6 | B 类已知问题（B2、B9） |
 | 7 | 官网、文档站、README、示例应用；生态接入（D107）：Claude Agent SDK、Codex SDK 等 Agent 框架的接入包、npm 包 |

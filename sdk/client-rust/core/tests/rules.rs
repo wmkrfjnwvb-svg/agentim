@@ -358,6 +358,43 @@ fn back_in_the_foreground_it_checks_the_connection_and_syncs() {
 }
 
 #[test]
+fn back_in_the_foreground_while_down_it_tries_at_once_unless_failed() {
+    let mut w = World::new(4);
+    w.start();
+    for _ in 0..200 {
+        w.plan.push_back(Outcome::Unreachable);
+    }
+    w.cmd(json!({"cmd": "connect"}));
+    // Down for long: retries are a minute apart now.
+    w.run(SUSPEND_AFTER_MS + 31_000);
+    assert_eq!(w.state(), "suspended");
+    w.plan.clear();
+    w.input(Input::Foreground(false));
+    let before = w.connects.len();
+    w.input(Input::Foreground(true));
+    w.run(500);
+    assert_eq!(
+        w.connects.len(),
+        before + 1,
+        "tried at once, not at the next minute"
+    );
+    assert_eq!(w.state(), "connected");
+    // Failed (the token was refused): coming back does not retry.
+    let mut f = World::new(5);
+    f.start();
+    f.tokens.push_back(Err(true));
+    f.cmd(json!({"cmd": "connect"}));
+    f.run(1_000);
+    assert_eq!(f.state(), "failed");
+    let before = f.connects.len();
+    f.input(Input::Foreground(false));
+    f.input(Input::Foreground(true));
+    f.run(60_000);
+    assert_eq!(f.connects.len(), before);
+    assert_eq!(f.state(), "failed");
+}
+
+#[test]
 fn close_stops_everything() {
     let mut w = World::new(1);
     w.connected();
