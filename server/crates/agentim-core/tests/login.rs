@@ -35,6 +35,7 @@ backend_tests!(
     reads_sync_to_the_users_other_devices,
     race_revocations_and_connections,
     race_first_logins_of_one_new_person,
+    race_new_devices_and_auth_refresh,
 );
 
 fn code(r: &Value) -> &str {
@@ -630,6 +631,53 @@ async fn race_revocations_and_connections(db: TestDb) {
         let after = login(&hub, &t, "d0").await;
         assert!(after.is_err(), "round {round}");
         tokio::time::sleep(Duration::from_millis(1100)).await;
+    }
+}
+
+/// Devices log in while the server reloads its token cache (another
+/// process changed something, M10): a token issued after the reload read
+/// its snapshot stays valid and its session opens.
+async fn race_new_devices_and_auth_refresh(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let cli = open(single(&db.url)).await;
+    let (kid, secret) = key(&hub).await;
+    user(&hub, "alice", UserKind::Human, None).await;
+    let t = jwt_sign(&kid, &secret, "alice", now_s(), now_s() + 600);
+    for round in 0..6 {
+        let refresh = {
+            let (hub, cli) = (hub.clone(), cli.clone());
+            tokio::spawn(async move {
+                for _ in 0..8 {
+                    cli.create_signing_key("elsewhere").await.unwrap();
+                    hub.refresh_auth().await.unwrap();
+                }
+            })
+        };
+        let tasks: Vec<_> = (0..16)
+            .map(|i| {
+                let (h, t) = (hub.clone(), t.clone());
+                tokio::spawn(async move { login(&h, &t, &format!("r{round}d{i}")).await.unwrap() })
+            })
+            .collect();
+        let mut logins = vec![];
+        for task in tasks {
+            logins.push(task.await.unwrap());
+        }
+        refresh.await.unwrap();
+        hub.refresh_auth().await.unwrap();
+        for l in &logins {
+            assert!(
+                hub.login_valid(l),
+                "round {round}: {} lost its token",
+                l.device_id
+            );
+            let (s, _p, refused) = hub.open_device_session(l);
+            assert!(
+                refused.is_none() && !s.is_kicked(),
+                "round {round}: {}",
+                l.device_id
+            );
+        }
     }
 }
 

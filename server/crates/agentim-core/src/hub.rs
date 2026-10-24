@@ -768,10 +768,37 @@ impl Hub {
         let live: std::collections::HashSet<String> =
             tokens.iter().map(|t| t.hash.clone()).collect();
         let mut kick = vec![];
+        // A token issued after the snapshot was read can already be in the
+        // cache (it is applied once committed): what the snapshot misses is
+        // looked up again, and only what is still gone is dropped.
+        let missing: Vec<String> = sh
+            .tokens
+            .read()
+            .unwrap()
+            .keys()
+            .filter(|h| !live.contains(*h))
+            .cloned()
+            .collect();
+        let gone: std::collections::HashSet<String> = if missing.is_empty() {
+            Default::default()
+        } else {
+            self.read(control, move |db| {
+                Box::pin(async move {
+                    let mut gone = std::collections::HashSet::new();
+                    for h in missing {
+                        if db.token_by_hash(&h).await?.is_none() {
+                            gone.insert(h);
+                        }
+                    }
+                    Ok(gone)
+                })
+            })
+            .await?
+        };
         {
             let mut t = sh.tokens.write().unwrap();
             t.retain(|h, info| {
-                let keep = live.contains(h);
+                let keep = !gone.contains(h);
                 if !keep {
                     kick.push((info.user_id.clone(), Some(info.device_id.clone())));
                 }
