@@ -64,7 +64,11 @@ jobs:
         with:
           workspaces: server
       - name: same acceptance suite against every backend, plus mixed-backend units
-        run: cargo test --test hub --test multidb --test scenarios --test concurrency --test membership --test coverage --test protocol --test schema --test extensions --test webhooks --test devices --test open_api --test transport --test accounts --test encryption --test edges --test sync --test agents --test mcp --test requests --test routing --test tasks --test history --test state --test lifecycle --test migrate --test ai --test audit --test team_agents --test compliance -- --nocapture 2>&1 | tee result.txt; test ${PIPESTATUS[0]} -eq 0
+        # Every file with three-database tests, found here so a new or renamed one is never left out.
+        run: |
+          args=$(for f in $(grep -l 'backend_tests!' crates/agentim-core/tests/*.rs) crates/agentim-core/tests/multidb.rs; do printf -- '--test %s ' "$(basename "$f" .rs)"; done)
+          echo "$args"
+          cargo test $args -- --nocapture 2>&1 | tee result.txt; test ${PIPESTATUS[0]} -eq 0
       - name: no test may be silently skipped here
         run: "! grep -q 'skipped:' result.txt"
       - name: cluster (several nodes on one database, docs/11 §12)

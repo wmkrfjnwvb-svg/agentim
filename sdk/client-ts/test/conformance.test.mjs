@@ -39,10 +39,27 @@ before(async () => {
   server = spawn(BIN, ['--demo', '--db', join(dir, 'a.db'), '--addr', `127.0.0.1:${PORT}`], { stdio: 'ignore' });
   await until('server ready', async () => fetch(`${URL_}/readyz`).then((r) => r.ok).catch(() => false), 30000);
 });
-after(() => {
+// Every cache database the tests open, closed before the files go
+// (Windows cannot remove an open file).
+const dbs = [];
+function openDb(path) {
+  const db = new DatabaseSync(path);
+  dbs.push(db);
+  return db;
+}
+
+after(async () => {
   for (const c of clients) c.close();
+  for (const db of dbs) {
+    try {
+      db.close();
+    } catch {
+      // Already closed.
+    }
+  }
   server?.kill();
-  rmSync(dir, { recursive: true, force: true });
+  await new Promise((r) => (server && server.exitCode === null ? server.once('exit', r) : r()));
+  rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 });
 
 let n = 0;
@@ -157,7 +174,7 @@ test('a send cut off mid-way is retried with the same id and stored once', async
 for (const kind of ['memory', 'sqlite']) test(`offline, then back (${kind} cache): what was missed is synced in order, nothing twice`, async () => {
   const [ua, ub] = [await user('alice'), await user('bob')];
   const path = join(dir, `cache-${ub.id}.db`);
-  const store = kind === 'memory' ? new MemoryStore() : new SqliteStore(nodeSqlite(new DatabaseSync(path)));
+  const store = kind === 'memory' ? new MemoryStore() : new SqliteStore(nodeSqlite(openDb(path)));
   const a = client(ua);
   let b = client(ub, { store });
   await a.connect();
@@ -169,7 +186,7 @@ for (const kind of ['memory', 'sqlite']) test(`offline, then back (${kind} cache
   for (const t of ['o1', 'o2', 'o3', 'o4', 'o5']) await a.send(conv, t);
   // Same cache (as after a reload, for SQLite a new connection to the
   // file): shown before connecting, then caught up.
-  b = client(ub, { userId: ub.id, store: kind === 'memory' ? store : new SqliteStore(nodeSqlite(new DatabaseSync(path))) });
+  b = client(ub, { userId: ub.id, store: kind === 'memory' ? store : new SqliteStore(nodeSqlite(openDb(path))) });
   assert.deepEqual(await b.load(conv).then((ms) => ms.filter((m) => m.kind === 'text').map((m) => m.content)), ['before']);
   await b.connect();
   await until('bob caught up', () => texts(b, conv).length === 6);
@@ -181,7 +198,7 @@ for (const kind of ['memory', 'sqlite']) test(`offline, then back (${kind} cache
 test('a reload shows the newest page from the cache; older pages come from it too; another user sees nothing', async () => {
   const [ua, ub, uc] = [await user('alice'), await user('bob'), await user('carol')];
   const path = join(dir, `pages-${ub.id}.db`);
-  const open = () => new SqliteStore(nodeSqlite(new DatabaseSync(path)));
+  const open = () => new SqliteStore(nodeSqlite(openDb(path)));
   const a = client(ua);
   let b = client(ub, { store: open(), pageSize: 20 });
   await a.connect();

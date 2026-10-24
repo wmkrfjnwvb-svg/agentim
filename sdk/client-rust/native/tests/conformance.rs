@@ -589,6 +589,13 @@ fn a_deactivated_person_stops_retrying() {
 #[test]
 fn the_c_abi_from_c() {
     let s = Server::start();
+    // `cargo test` builds the library as rlib only: build the shared one.
+    let built = Command::new(env!("CARGO"))
+        .args(["build", "-p", "agentim-client"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .expect("cargo");
+    assert!(built.success(), "cargo build -p agentim-client");
     let lib_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/debug");
     let out_dir = tempfile::tempdir().unwrap();
     let exe = out_dir.path().join("abi_test");

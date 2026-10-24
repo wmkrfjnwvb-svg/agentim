@@ -155,7 +155,7 @@ async fn history_refusals_leave_no_trace(db: TestDb) {
     let g = Conn::new(&hub, &bot);
     let o = Conn::new(&hub, &other);
     let cases: Vec<(&Conn, Value, &str)> = vec![
-        (&a, hist(&conv), "forbidden"),
+        // People page back with `history` too (pages.rs); agents only for the rest.
         (&a, json!({"op": "context", "conv_id": conv}), "forbidden"),
         (&a, json!({"op": "search", "query": "hi"}), "forbidden"),
         (

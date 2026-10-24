@@ -218,6 +218,18 @@ impl Client {
                 .await
                 .unwrap_or_else(|e| panic!("{v}: {e}"));
             let code = r["error"]["code"].as_str().unwrap_or("");
+            // A limit the server sets is waited out, as the SDKs do (docs/12 §2.5).
+            if r["ok"] != true
+                && v.get("client_msg_id").is_some()
+                && code == "rate_limited"
+                && tries < 200
+            {
+                tries += 1;
+                RETRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let wait = r["error"]["retry_after_ms"].as_u64().unwrap_or(50).max(10);
+                tokio::time::sleep(Duration::from_millis(wait)).await;
+                continue;
+            }
             if r["ok"] != true
                 && v.get("client_msg_id").is_some()
                 && matches!(code, "unavailable" | "overloaded")
@@ -438,12 +450,26 @@ async fn main() {
     let ref_fp = fingerprint(&reference);
     let mut pushed_total = 0usize;
     let mut deltas_total = 0usize;
+    let first_msg = ref_fp
+        .iter()
+        .find(|f| f.1 == "msg.created")
+        .map(|f| f.0)
+        .unwrap_or(i64::MAX);
     for c in &clients {
-        assert_eq!(
-            fingerprint(&c.pull_all(&conv).await),
-            ref_fp,
-            "clients disagree on the log"
+        // A new device starts at the last page of the conversation (D108),
+        // so a client's log is the reference from its first event on, with
+        // every message (all sent after the clients connected).
+        let fp = fingerprint(&c.pull_all(&conv).await);
+        let start = fp.first().map(|f| f.0).unwrap_or(i64::MAX);
+        assert!(
+            start <= first_msg,
+            "a client is missing messages: starts at {start}"
         );
+        let from = ref_fp
+            .iter()
+            .position(|f| f.0 == start)
+            .expect("start in the reference");
+        assert_eq!(fp, ref_fp[from..], "clients disagree on the log");
         let pushes = c.pushes.lock().await;
         let pushed: Vec<i64> = pushes
             .iter()

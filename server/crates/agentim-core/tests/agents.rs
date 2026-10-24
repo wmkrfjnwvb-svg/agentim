@@ -707,11 +707,11 @@ async fn each_kind_is_refused_what_belongs_to_the_other(db: TestDb) {
         assert_eq!(code(&r), "forbidden", "agent {op}: {r}");
     }
     for op in [
+        // (`history` is for people too: pages.rs.)
         json!({"op": "state_get", "key": "k"}),
         json!({"op": "state_put", "key": "k", "value": {}, "version": 0}),
         json!({"op": "state_list"}),
         json!({"op": "state_delete", "key": "k", "version": 1}),
-        json!({"op": "history", "conv_id": conv}),
         json!({"op": "context", "conv_id": conv}),
         json!({"op": "search", "query": "bot"}),
         json!({"op": "put_summary", "conv_id": conv, "from_seq": 1, "to_seq": 1, "text": "s"}),

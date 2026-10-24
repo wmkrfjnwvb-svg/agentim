@@ -331,4 +331,4 @@ test('indexeddb: two tabs write the same conversation: positions only go forward
   await b.close();
 });
 
-test('cleanup', () => rmSync(dir, { recursive: true, force: true }));
+test('cleanup', () => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));

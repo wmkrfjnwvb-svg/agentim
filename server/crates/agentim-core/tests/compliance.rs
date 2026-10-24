@@ -206,13 +206,14 @@ async fn deleting_an_account_erases_what_the_person_wrote(db: TestDb) {
         ),
         "not_found"
     );
-    // Their signed tokens are refused (deleted: ids are not reused).
+    // Their signed tokens are refused (deleted: ids are not reused), as
+    // forbidden: a fresh token cannot help (docs/08 §2.9).
     let t = client_token(hub, &alice).await;
     let e = hub
         .authenticate_client(&t, Some("d1"), None, None)
         .await
         .unwrap_err();
-    assert_eq!(e.code, "unauthorized");
+    assert_eq!(e.code, "forbidden");
     let e = erased(hub, &alice).await;
     assert_eq!(e["state"], "done", "{e}");
     assert_eq!(
