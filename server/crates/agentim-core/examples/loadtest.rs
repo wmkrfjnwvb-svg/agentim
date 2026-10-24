@@ -127,6 +127,8 @@ struct Client {
     /// The client's local log per conversation, by seq: what sync returned
     /// and what was pushed live (a push counts as delivered).
     logs: Logs,
+    /// Why the connection ended (a close frame or an error), for reports.
+    ended: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 type Logs = Arc<Mutex<HashMap<String, BTreeMap<i64, Value>>>>;
@@ -167,9 +169,27 @@ impl Client {
         let pending: Pending = Arc::default();
         let pushes: Arc<Mutex<Vec<Value>>> = Arc::default();
         let logs: Logs = Arc::default();
-        let (p2, pu2, l2) = (pending.clone(), pushes.clone(), logs.clone());
+        let ended: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
+        let (p2, pu2, l2, e2) = (pending.clone(), pushes.clone(), logs.clone(), ended.clone());
         tokio::spawn(async move {
-            while let Some(Ok(Message::Text(t))) = stream.next().await {
+            loop {
+                let t = match stream.next().await {
+                    Some(Ok(Message::Text(t))) => t,
+                    // Pings are answered by the library; other frames carry nothing for us.
+                    Some(Ok(Message::Close(f))) => {
+                        *e2.lock().unwrap() = Some(format!("closed by the server: {f:?}"));
+                        break;
+                    }
+                    Some(Ok(_)) => continue,
+                    Some(Err(e)) => {
+                        *e2.lock().unwrap() = Some(format!("read error: {e}"));
+                        break;
+                    }
+                    None => {
+                        *e2.lock().unwrap() = Some("stream ended".into());
+                        break;
+                    }
+                };
                 let v: Value = serde_json::from_str(t.as_str()).unwrap();
                 if v["type"] == "res" {
                     if let Some(tx) = p2.lock().await.remove(&v["rid"].as_u64().unwrap_or(0)) {
@@ -190,6 +210,7 @@ impl Client {
             rid: Default::default(),
             pushes,
             logs,
+            ended,
         })
     }
 
@@ -203,7 +224,10 @@ impl Client {
             .map_err(|_| "closed".to_string())?;
         match tokio::time::timeout(Duration::from_secs(30), rx).await {
             Ok(Ok(r)) => Ok(r),
-            Ok(Err(_)) => Err("connection closed".into()),
+            Ok(Err(_)) => Err(format!(
+                "connection closed ({})",
+                self.ended.lock().unwrap().clone().unwrap_or_default()
+            )),
             Err(_) => Err("timeout".into()),
         }
     }

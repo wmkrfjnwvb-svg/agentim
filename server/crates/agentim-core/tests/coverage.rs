@@ -34,6 +34,7 @@ backend_tests!(
     user_and_conversation_listing_edges,
     account_and_stats_ops_are_gone,
     side_channel_paging_and_read_errors,
+    race_servers_starting_together_on_an_empty_database,
 );
 
 fn code(r: &Value) -> &str {
@@ -919,5 +920,43 @@ async fn writes_wait_for_a_concurrent_sqlite_writer() {
         let r = sending.await.unwrap();
         assert_eq!(r["ok"], true, "round {round}: {r}");
         assert!(hub.storage_failed().is_none());
+    }
+}
+
+/// Nodes of a new cluster start at the same moment on an empty database
+/// (docker compose up): each creates what is missing (the system user)
+/// and every one of them starts.
+async fn race_servers_starting_together_on_an_empty_database(db: TestDb) {
+    for round in 0..3 {
+        let backend = if db.url.starts_with("postgres") {
+            Backend::Postgres
+        } else if db.url.starts_with("mysql") {
+            Backend::Mysql
+        } else {
+            Backend::Sqlite
+        };
+        let fresh = if round == 0 {
+            None
+        } else {
+            new_db(backend).await
+        };
+        let url = fresh
+            .as_ref()
+            .map(|d| d.url.clone())
+            .unwrap_or(db.url.clone());
+        let opens = (0..4).map(|_| {
+            let url = url.clone();
+            tokio::spawn(async move { Hub::open(single(&url), hub_cfg()).await })
+        });
+        let mut hubs: Vec<Hub> = vec![];
+        for h in opens.collect::<Vec<_>>() {
+            hubs.push(h.await.unwrap().expect("every server starts"));
+        }
+        // One system user, seen by all, and each server works.
+        for h in &hubs {
+            assert!(h.user_by_name("_system").is_some(), "round {round}");
+        }
+        let a = user(&hubs[0], &format!("alice{round}"), UserKind::Human, None).await;
+        Conn::new(&hubs[3], &a).group(&[]).await;
     }
 }

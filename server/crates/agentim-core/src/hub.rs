@@ -481,13 +481,20 @@ impl Hub {
                 unit_id: UNIT_DEFAULT.into(),
                 team: false,
             };
-            control
+            match control
                 .call(Op::CreateUser {
                     user: system.clone(),
                     owner_cap: None,
                     owner_must_be_allowed: false,
                 })
-                .await?;
+                .await
+            {
+                Ok(_) => {}
+                // Another server starting on the same new database made it
+                // first (a cluster's nodes start together): the same user.
+                Err(e) if e.code == "conflict" => {}
+                Err(e) => return Err(e),
+            }
             sh.users.write().unwrap().insert(system.id.clone(), system);
         }
         let blocks = self
