@@ -3,5 +3,5 @@
   "rootNamespace": "AgentIM.Client",
   "allowUnsafeCode": true,
   "autoReferenced": true,
-  "excludePlatforms": ["WebGL"]
+  "excludePlatforms": []
 }

@@ -35,8 +35,16 @@ network changes to the client. On iOS the library links statically (`__Internal`
 callback carries `MonoPInvokeCallback` for IL2CPP. Unity does not ship `System.Text.Json`; add it
 with NuGetForUnity.
 
-Not done yet: WebGL (a `.jslib` bridge to `@agentim/client-web`). This environment also has no
-Unity editor, so the package is not built or tested here.
+**WebGL**: `Runtime/Plugins/WebGL/AgentIM.jslib` implements the same C functions in the browser
+over `@agentim/client-web`, so the C# code is the same on every platform. The WebGL page loads
+the browser SDK before the Unity loader:
+`<script type="module">import * as w from './agentim/index.js'; window.AgentIMWeb = w;</script>`.
+A store name keeps the cache in IndexedDB (encrypted). The browser's own online and visibility
+signals reach the client directly.
+
+`unity/test/jslib.test.mjs` loads the jslib the way Unity's emscripten build does and plays the
+C# side, against a real server. The package has not been run inside the Unity editor here
+(there is no editor in this environment).
 
 ## Tests
 

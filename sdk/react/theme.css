@@ -89,3 +89,8 @@
 .aim-conv-last { grid-column: 1; font-size: 13px; color: var(--aim-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aim-unread { grid-column: 2; grid-row: 1 / span 2; align-self: center; min-width: 20px; padding: 0 6px; border-radius: 10px; background: var(--aim-accent); color: var(--aim-bg); font-size: 12px; text-align: center; }
 .aim-empty { margin: auto; color: var(--aim-muted); font-size: 14px; padding: 24px; text-align: center; }
+.aim-handoff { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; font-size: 13px; background: var(--aim-bubble); border-bottom: 1px solid var(--aim-border); }
+.aim-handoff-note { color: var(--aim-muted); }
+.aim-members { list-style: none; margin: 0; padding: 0; }
+.aim-members li { display: flex; gap: 6px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--aim-border); }
+.aim-role { margin-inline-start: auto; font-size: 12px; color: var(--aim-muted); }

@@ -42,7 +42,12 @@ static JNIEnv *env_here(int *detach_after) {
     JNIEnv *env = NULL;
     *detach_after = 0;
     if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) == JNI_OK) return env;
+    /* Android's jni.h takes JNIEnv**, the JDK's void**. */
+#ifdef __ANDROID__
+    if ((*vm)->AttachCurrentThreadAsDaemon(vm, &env, NULL) != JNI_OK) return NULL;
+#else
     if ((*vm)->AttachCurrentThreadAsDaemon(vm, (void **)&env, NULL) != JNI_OK) return NULL;
+#endif
 #ifdef _WIN32
     *detach_after = 1;
 #else

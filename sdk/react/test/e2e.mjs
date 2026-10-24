@@ -61,6 +61,8 @@ const bot = new Agent({ url: IM, key: support.token });
 bot.onMessage(async (msg, ctx) => {
   if (msg.content.includes('card')) {
     await bot.sendCard(ctx.convId, 'Refund the order? (yes / no)', { title: 'Refund the order?', blocks: [{ type: 'buttons', id: 'go', options: [{ id: 'yes', label: 'Yes, refund', style: 'primary' }, { id: 'no', label: 'No' }] }] }, { replyTo: msg.msg_id });
+  } else if (msg.content.includes('person')) {
+    await bot.handoff(ctx.convId, 'A person will take it from here');
   } else if (msg.content.includes('source')) {
     await ctx.reply('Here is the policy.', { sources: [{ title: 'Refund policy', url: 'https://example.com/refunds' }] });
   } else {
@@ -125,6 +127,11 @@ try {
   await box.fill('source?');
   await box.press('Enter');
   await waitFor('.aim-sources a[href="https://example.com/refunds"]', 'sources are links');
+
+  await box.fill('a person please');
+  await box.press('Enter');
+  await waitFor('.aim-handoff >> text=The assistant handed this conversation to a person', 'a handoff is announced');
+  await waitFor('.aim-handoff >> text=A person will take it from here', 'with the note');
 
   // Offline: queued and shown, sent once back.
   await ctx.setOffline(true);

@@ -53,9 +53,9 @@ the messages of a conversation) and methods that return once the change is shown
 | React | `react` (`@agentim/react`) | Hooks and components (a support chat window, conversation list), themes, AI label, cards, RTL |
 | React Native | `client-react-native` | JSI binding (compiles), TypeScript tested against a fake binding; not yet run on a device |
 | iOS, macOS | `client-swift` | Swift package, `@Observable`; tested on Linux, the XCFramework is not built yet |
-| Android, JVM | `client-kotlin` | Kotlin with a JNI bridge, `StateFlow`; tested on the JVM, the AAR is not built yet |
-| .NET, Unity | `client-dotnet` | C#, net8.0 and netstandard2.1, a Unity package; tested on .NET, not yet in Unity |
-| Flutter, Dart | `client-flutter` | Dart FFI; tested on the Dart VM, the Flutter plugin is not packaged yet |
+| Android, JVM | `client-kotlin` | Kotlin with a JNI bridge, `StateFlow`; tested on the JVM; the AAR is built for 4 ABIs with 16 KB pages, not yet run on an emulator |
+| .NET, Unity | `client-dotnet` | C#, net8.0 and netstandard2.1, a Unity package with a WebGL bridge (`.jslib` over `client-web`); tested on .NET and the bridge in Node, not yet in the Unity editor |
+| Flutter, Dart | `client-flutter` | Dart FFI, and the `agentim_flutter` plugin that builds and bundles the core; tested on the Dart VM and as a Linux Flutter app |
 | Native (C) | `client-rust/native` | The runtime (WebSocket, SQLite) and the C ABI in `include/agentim.h` that the wrappers use |
 
 Every wrapper runs the same conformance scenario against a real `agentim` (CI job `client-wrappers`). `sdk/client-ts`, the earlier

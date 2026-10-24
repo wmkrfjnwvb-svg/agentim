@@ -245,7 +245,8 @@ class AgentIMClient private constructor(private val o: ClientOptions) : AutoClos
     /** Any core command (`{"cmd": …}`); returns its result (a JSONObject, or null). */
     suspend fun command(cmd: JSONObject): Any? = command(cmd, null)
 
-    private suspend fun command(cmd: JSONObject, applyInOrder: ((Any?) -> Unit)?): Any? {
+    /** Hands the command to the core now (so commands keep their order) and returns its answer to await. */
+    private fun issue(cmd: JSONObject, applyInOrder: ((Any?) -> Unit)?): Pair<Long, CompletableDeferred<Any?>> {
         val id = next.incrementAndGet()
         val d = CompletableDeferred<Any?>()
         pending[id] = d
@@ -256,8 +257,16 @@ class AgentIMClient private constructor(private val o: ClientOptions) : AutoClos
         if (r != 0) {
             pending.remove(id)
             inOrder.remove(id)
-            throw if (r == null) AgentIMException("closed", "the client is closed") else AgentIMException("bad_request", "not a command")
+            d.completeExceptionally(
+                if (r == null) AgentIMException("closed", "the client is closed") else AgentIMException("bad_request", "not a command"),
+            )
         }
+        return id to d
+    }
+
+    private suspend fun command(cmd: JSONObject, applyInOrder: ((Any?) -> Unit)?): Any? {
+        val (id, d) = issue(cmd, applyInOrder)
+        if (d.isCompleted) return d.await()
         return withTimeoutOrNull(o.commandTimeoutMs) { d.await() }.also {
             if (!d.isCompleted) {
                 pending.remove(id)
@@ -292,13 +301,10 @@ class AgentIMClient private constructor(private val o: ClientOptions) : AutoClos
             Messages(this, it)
         }
         if (created) {
-            scope.launch {
-                runCatching {
-                    command(JSONObject().put("cmd", "messages").put("conv_id", convId)) { r ->
-                        val o = r as JSONObject
-                        v.reset(o.optJSONArray("messages"), o.optBoolean("has_older"), o.optString("older_end").takeIf { !o.isNull("older_end") })
-                    }
-                }
+            // Issued now, before any command that follows: the snapshot comes first.
+            issue(JSONObject().put("cmd", "messages").put("conv_id", convId)) { r ->
+                val o = r as JSONObject
+                v.reset(o.optJSONArray("messages"), o.optBoolean("has_older"), o.optString("older_end").takeIf { !o.isNull("older_end") })
             }
         }
         return v

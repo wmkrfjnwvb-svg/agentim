@@ -42,6 +42,10 @@ export const defaultStrings = {
   } as Record<string, string>,
   messages: 'Messages',
   conversations: 'Conversations',
+  members: 'Members',
+  roles: { owner: 'Owner', admin: 'Admin', member: '' } as Record<string, string>,
+  handedOff: 'The assistant handed this conversation to a person',
+  handedBack: 'The assistant is back',
 };
 export type Strings = typeof defaultStrings;
 
@@ -405,11 +409,62 @@ export function Composer({ convId }: { convId: string }) {
   );
 }
 
+/** The conversation's members; agents carry the AI mark. */
+export function MemberList({ convId }: { convId: string }) {
+  const conv = useConversations().find((c) => c.conv_id === convId);
+  const { strings } = useUi();
+  const members: any[] = conv?.members ?? [];
+  return (
+    <ul className="aim-members" aria-label={strings.members}>
+      {members.map((m) => (
+        <li key={m.user_id} data-kind={m.kind}>
+          <span dir="auto">{m.name}</span>
+          {m.kind === 'agent' ? (
+            <span className="aim-ai" title={strings.aiTitle} aria-label={strings.aiTitle}>
+              {strings.ai}
+            </span>
+          ) : null}
+          {strings.roles[m.role] ? <span className="aim-role">{strings.roles[m.role]}</span> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Says when an agent hands the conversation to a person, and when it is back (docs/03 §3.6). */
+export function HandoffNotice({ convId }: { convId: string }) {
+  const client = useClient();
+  const { strings } = useUi();
+  const [notice, setNotice] = useState<{ text: string; note?: string } | null>(null);
+  useEffect(() => {
+    setNotice(null);
+    return client.on('event', (e) => {
+      const ev = e.event ?? {};
+      if (ev.conv_id !== convId || ev.type !== 'agent.state') return;
+      const d = ev.data ?? {};
+      if (d.state === 'taken_over' && d.handoff) setNotice({ text: strings.handedOff, note: d.note });
+      else if (d.state === 'active' && d.handback) setNotice({ text: strings.handedBack, note: d.note });
+    });
+  }, [client, convId, strings]);
+  if (!notice) return null;
+  return (
+    <div className="aim-handoff" role="status">
+      <span>{notice.text}</span>
+      {notice.note ? (
+        <span className="aim-handoff-note" dir="auto">
+          {notice.note}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 /** A whole chat window (the customer-service widget): status, messages, typing, composer. */
 export function Chat({ convId }: { convId: string }) {
   return (
     <section className="aim-chat">
       <ConnectionBanner />
+      <HandoffNotice convId={convId} />
       <MessageList convId={convId} />
       <TypingIndicator convId={convId} />
       <Composer convId={convId} />

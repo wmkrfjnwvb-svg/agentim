@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { Observable } from '@agentim/client-web';
-import { AgentIM, Chat, ConversationList, MessageList, type MessageProps } from '../src/index.js';
+import { AgentIM, Chat, ConversationList, MemberList, MessageList, type MessageProps } from '../src/index.js';
 
 afterEach(cleanup);
 
@@ -273,5 +273,41 @@ describe('ConversationList', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(() => render(<MessageList convId="c1" />)).toThrow(/AgentIMProvider/);
     err.mockRestore();
+  });
+});
+
+describe('MemberList and HandoffNotice', () => {
+  it('lists members with roles and the AI mark on agents', () => {
+    const { client } = fake();
+    render(
+      <AgentIM client={client as any}>
+        <MemberList convId="c1" />
+      </AgentIM>,
+    );
+    expect(screen.queryAllByRole('listitem')).toHaveLength(0);
+    act(() =>
+      client.conversations.set([
+        { conv_id: 'c1', members: [{ user_id: 'u1', name: 'Alice', kind: 'human', role: 'owner' }, { user_id: 'u2', name: 'Helper', kind: 'agent', role: 'member' }] },
+      ]),
+    );
+    expect(screen.getAllByRole('listitem')).toHaveLength(2);
+    expect(screen.getByText('Owner')).toBeTruthy();
+    const mark = screen.getByLabelText('Written by an AI agent');
+    expect(mark.closest('li')?.textContent).toContain('Helper');
+  });
+
+  it('says when the agent hands over and when it is back, for this conversation only', () => {
+    const { client } = fake();
+    chat(client);
+    client.emit('event', { event: { conv_id: 'other', type: 'agent.state', data: { state: 'taken_over', handoff: true } } });
+    expect(screen.queryByText(/handed this conversation/)).toBeNull();
+    client.emit('event', { event: { conv_id: 'c1', type: 'agent.state', data: { state: 'taken_over', handoff: true, note: 'Refund over 100' } } });
+    expect(screen.getByText('The assistant handed this conversation to a person')).toBeTruthy();
+    expect(screen.getByText('Refund over 100')).toBeTruthy();
+    // A takeover that is not a handoff (a person took over) says nothing new.
+    client.emit('event', { event: { conv_id: 'c1', type: 'agent.state', data: { state: 'tripped' } } });
+    expect(screen.getByText('The assistant handed this conversation to a person')).toBeTruthy();
+    client.emit('event', { event: { conv_id: 'c1', type: 'agent.state', data: { state: 'active', handback: true } } });
+    expect(screen.getByText('The assistant is back')).toBeTruthy();
   });
 });

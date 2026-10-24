@@ -21,12 +21,15 @@ await client.send(convId, 'hello');       // in messages(convId).list when it re
 - `setNetwork(online)` from `connectivity_plus`, `setForeground(bool)` from
   `AppLifecycleListener`.
 
-## Packaging (not built here)
+## Flutter plugin
 
-A Flutter FFI plugin bundles `agentim_client` and `agentim_dart` for each platform: Android
-(4 ABIs, 16 KB pages), iOS (static, `DynamicLibrary.process()`), macOS, Windows and Linux.
-Flutter web uses `@agentim/client-web` instead. This environment has no Android or iOS
-toolchain, so the plugin packaging is not done yet. The wrapper runs on the Dart VM.
+`agentim_flutter/` is an FFI plugin. Its CMake builds the Rust core with cargo (on Android one
+target per ABI, with 16 KB pages) and the shim, and bundles both into the app. The app then
+uses `package:agentim_flutter/agentim_flutter.dart` without `libraryDir`.
+
+`agentim_flutter/test.sh` builds `example/` for Linux and runs it under Xvfb against a real
+server. The Android, iOS, macOS and Windows plugin builds have not been run here; iOS and macOS
+need the XCFramework (A9). Flutter web uses `@agentim/client-web` instead.
 
 ## Tests
 

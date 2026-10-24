@@ -328,6 +328,19 @@ public final class AgentIMClient: @unchecked Sendable {
         }
     }
 
+    /// Hands a command to the core now, without waiting for its answer;
+    /// `applyInOrder` gets the result in event order.
+    private func issue(_ cmd: JSONObject, applyInOrder: @escaping (Any?) -> Void) {
+        guard let data = try? JSONSerialization.data(withJSONObject: cmd), let json = String(data: data, encoding: .utf8) else { return }
+        lock.withLock {
+            guard let ptr else { return }
+            next += 1
+            inOrder[next] = applyInOrder
+            let id = next
+            if json.withCString({ agentim_client_command(ptr, id, $0) }) != 0 { inOrder[id] = nil }
+        }
+    }
+
     private func fail(_ id: UInt64, _ e: Error) {
         lock.lock()
         let c = pending.removeValue(forKey: id)
@@ -365,11 +378,10 @@ public final class AgentIMClient: @unchecked Sendable {
         if let v = views[convId] { return v }
         let v = Messages(self, convId)
         views[convId] = v
-        Task {
-            _ = try? await self.command(["cmd": "messages", "conv_id": convId]) { r in
-                let o = r as? JSONObject
-                v.reset(o?["messages"] as? [Any], hasOlder: o?["has_older"] as? Bool, olderEnd: o?["older_end"] as? String)
-            }
+        // Issued now, before any command that follows: the snapshot comes first.
+        issue(["cmd": "messages", "conv_id": convId]) { r in
+            let o = r as? JSONObject
+            v.reset(o?["messages"] as? [Any], hasOlder: o?["has_older"] as? Bool, olderEnd: o?["older_end"] as? String)
         }
         return v
     }

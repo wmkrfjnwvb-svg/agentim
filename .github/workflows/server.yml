@@ -176,6 +176,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/rn" && (cd "$RUNNER_TEMP/rn" && npm pack react-native@0.87.1 --silent && tar -xzf react-native-0.87.1.tgz)
           RN="$RUNNER_TEMP/rn/package/ReactCommon"
           c++ -std=c++20 -Wall -Wextra -Werror -fsyntax-only -I"$RN/jsi" -I"$RN/callinvoker" -I../client-rust/native/include cpp/AgentIMJsi.cpp
+      - name: Unity WebGL bridge (the jslib over client-web, as emscripten loads it)
+        working-directory: sdk/client-dotnet
+        run: node --no-warnings --test --test-timeout=60000 --test-force-exit unity/test/*.test.mjs
 
   client-wrappers:
     name: client SDK wrappers (C#, Kotlin/JVM, Swift, Dart) against the server
@@ -206,7 +209,10 @@ jobs:
         run: cargo build -p agentim-client
       - name: C# (.NET; the Unity sources build as netstandard2.1)
         working-directory: sdk/client-dotnet
-        run: dotnet build AgentIM.Client && dotnet run --project Conformance
+        run: |
+          dotnet build AgentIM.Client
+          dotnet build AgentIM.Client -f netstandard2.1 -p:DefineConstants=UNITY_WEBGL
+          dotnet run --project Conformance
       - name: Kotlin (JNI bridge, JVM)
         working-directory: sdk/client-kotlin
         run: |
@@ -218,6 +224,57 @@ jobs:
         run: sh test.sh
       - name: Dart (FFI shim, Dart VM)
         working-directory: sdk/client-flutter
+        run: sh test.sh
+
+  client-android:
+    name: Android library (4 ABIs, 16 KB pages, JNI exports)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdk/client-rust
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: NDK r28c, android-35, kotlinc
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r28c-linux.zip && unzip -q ndk.zip
+          curl -sSfL -o p.zip https://dl.google.com/android/repository/platform-35_r02.zip && unzip -q p.zip
+          curl -sSfL -o k.zip https://github.com/JetBrains/kotlin/releases/download/v2.2.20/kotlin-compiler-2.2.20.zip && unzip -q k.zip
+      - name: build and check the AAR
+        working-directory: sdk/client-kotlin
+        run: ANDROID_NDK="$RUNNER_TEMP/android-ndk-r28c" ANDROID_JAR="$RUNNER_TEMP/android-35/android.jar" KOTLINC="$RUNNER_TEMP/kotlinc/bin/kotlinc" sh android/build-aar.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentim-client-aar
+          path: sdk/client-kotlin/build/agentim-client.aar
+
+  client-flutter:
+    name: Flutter plugin (a Linux app built with the bundled core, against the server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            sdk/client-rust
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev ninja-build clang xvfb
+      - run: cargo build --bin agentim
+      - name: build the example app and run it
+        working-directory: sdk/client-flutter/agentim_flutter
         run: sh test.sh
 
   replicas:

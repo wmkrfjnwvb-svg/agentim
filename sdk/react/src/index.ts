@@ -3,6 +3,8 @@ export {
   AgentIM,
   Chat,
   Composer,
+  HandoffNotice,
+  MemberList,
   ConnectionBanner,
   ConversationList,
   MessageList,

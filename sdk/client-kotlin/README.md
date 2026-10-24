@@ -28,15 +28,25 @@ client.send(convId, "hello")      // in view.list when it returns
 - JSON is `org.json` (built into Android; one jar on the JVM). Strings cross JNI as UTF-8 bytes,
   because JNI's modified UTF-8 breaks emoji. The SDK thread detaches from the JVM when it exits.
 
-## Android packaging (not built here)
+## Android library (AAR)
 
-The AAR needs, for each of `arm64-v8a`, `armeabi-v7a`, `x86_64` and `x86`:
+`android/build-aar.sh` builds `build/agentim-client.aar` with NDK r28c for `arm64-v8a`,
+`armeabi-v7a`, `x86_64` and `x86`. It contains:
 
-- `libagentim_client.so`, built with `cargo ndk` and linked with `-Wl,-z,max-page-size=16384`
-  (16 KB pages, required by Google Play from Android 15);
-- `libagentim_jni.so`, built from `src/main/c` with CMake.
+- the Rust runtime (`libagentim_client.so`) and the JNI bridge (`libagentim_jni.so`), both linked
+  with 16 KB pages (required by Google Play for Android 15 and later);
+- the Kotlin classes, compiled against `android.jar`;
+- ProGuard rules that keep the JNI names.
 
-This environment has no Android SDK or NDK, so neither the AAR nor an emulator run is done yet.
+The script then checks every library: each LOAD segment is 16 KB aligned, and the bridge
+exports its 7 JNI functions. The app adds `kotlinx-coroutines-core`; `org.json` is part of
+Android.
+
+```bash
+ANDROID_NDK=…/android-ndk-r28c ANDROID_JAR=…/android-35/android.jar KOTLINC=… sh android/build-aar.sh
+```
+
+No emulator run yet: that needs a machine with KVM (docs/06 D123).
 
 ## Tests
 
