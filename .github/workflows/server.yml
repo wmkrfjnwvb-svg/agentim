@@ -130,6 +130,34 @@ jobs:
           cargo install cargo-llvm-cov --locked
           AGENTIM_SIM_SEEDS=300 cargo llvm-cov -p agentim-client-core --fail-under-lines 98 --summary-only
 
+  client-web:
+    name: browser SDK (wasm core, Node and Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            sdk/client-rust
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --bin agentim
+      - name: build (types, wasm size budget) and Node tests against the server
+        working-directory: sdk/client-web
+        run: npm ci && npm test
+      - name: Chromium (IndexedDB, two tabs, takeover, offline)
+        working-directory: sdk/client-web
+        run: |
+          npm install --no-save --prefix ../../server/ci playwright@1.56.1
+          npx --prefix ../../server/ci playwright install --with-deps chromium
+          PLAYWRIGHT="$PWD/../../server/ci/node_modules/playwright" node test/browser.mjs
+
   replicas:
     name: database replicas and failover (PostgreSQL 16, MySQL 8.4)
     runs-on: ubuntu-latest

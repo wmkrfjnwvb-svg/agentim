@@ -29,6 +29,10 @@ dependencies = [
 [[package]]
 name = "agentim-client-wasm"
 version = "0.1.0"
+dependencies = [
+ "agentim-client-core",
+ "serde_json",
+]
 
 [[package]]
 name = "bitflags"

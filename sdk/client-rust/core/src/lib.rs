@@ -20,6 +20,7 @@ mod queue;
 mod rng;
 mod sync;
 mod view;
+pub mod wire;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
@@ -567,6 +568,8 @@ impl Core {
                 format!("unknown command {name:?}"),
             )),
         };
+        // When the answer arrives the views are already updated (§2.11).
+        self.emit_changes();
         self.reply(id, r);
     }
 }

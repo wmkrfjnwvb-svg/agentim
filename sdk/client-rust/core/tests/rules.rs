@@ -133,6 +133,29 @@ fn an_unauthorized_token_is_replaced_once_at_once() {
 }
 
 #[test]
+fn a_failure_without_a_status_gets_a_fresh_token_first() {
+    // Browsers do not show the handshake's status: an expired token looks
+    // like any failure. After a working connection, one fresh token first.
+    let mut w = World::new(1);
+    w.connected();
+    w.cut(1006, "");
+    w.plan.push_back(Outcome::Unreachable);
+    w.run(200);
+    assert_eq!(w.token_calls, 2, "a fresh token at once");
+    assert_eq!(w.state(), "connected");
+    // During an outage the fresh token is kept: plain backoff.
+    w.cut(1006, "");
+    w.plan.extend([
+        Outcome::Unreachable,
+        Outcome::Unreachable,
+        Outcome::Unreachable,
+    ]);
+    w.run(60_000);
+    assert_eq!(w.token_calls, 3);
+    assert_eq!(w.state(), "connected");
+}
+
+#[test]
 fn refusals_that_retrying_cannot_fix_stop() {
     for (outcome, reason) in [
         (Outcome::Refuse(403, None), "unauthenticated"),

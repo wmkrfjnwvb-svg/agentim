@@ -159,6 +159,12 @@ impl Core {
                 self.schedule_retry(true, retry_after, "server_busy");
             }
             Some(_) => self.schedule_retry(false, retry_after, "server_error"),
+            // No status (browsers never show the handshake's): the token
+            // may be what failed. A cached one is replaced once, at once.
+            None if self.token.is_some() && !self.token_fresh => {
+                self.token = None;
+                self.start_attempt();
+            }
             None => self.schedule_retry(false, None, "server_unreachable"),
         }
     }
