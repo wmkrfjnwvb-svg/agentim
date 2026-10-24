@@ -94,6 +94,42 @@ jobs:
         working-directory: sdk/client-ts
         run: npm ci && npm test
 
+  client-core:
+    name: Rust client core and native runtime (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            sdk/client-rust
+      - run: cargo build --bin agentim
+      - name: fmt / clippy
+        working-directory: sdk/client-rust
+        run: cargo fmt --check && cargo clippy --all-targets -- -D warnings
+      - name: core rules, details and 1000 simulation seeds
+        working-directory: sdk/client-rust
+        run: AGENTIM_SIM_SEEDS=1000 cargo test -p agentim-client-core
+      - name: native runtime against the server (conformance, C ABI)
+        if: runner.os == 'Linux'
+        working-directory: sdk/client-rust
+        run: cargo test -p agentim-client
+      - name: core coverage
+        if: runner.os == 'Linux'
+        working-directory: sdk/client-rust
+        run: |
+          cargo install cargo-llvm-cov --locked
+          AGENTIM_SIM_SEEDS=300 cargo llvm-cov -p agentim-client-core --fail-under-lines 98 --summary-only
+
   replicas:
     name: database replicas and failover (PostgreSQL 16, MySQL 8.4)
     runs-on: ubuntu-latest

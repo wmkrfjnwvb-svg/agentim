@@ -1,0 +1,17 @@
+# The client SDK (docs/12 §2): a sans-IO core shared by every platform, the
+# native runtime with its C ABI, and the browser build.
+[workspace]
+resolver = "2"
+members = ["core", "native", "wasm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

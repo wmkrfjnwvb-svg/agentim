@@ -1,0 +1,10 @@
+[package]
+name = "agentim-client-core"
+description = "AgentIM client core: connection, sync, offline queue and history rules without IO (docs/12 §2.2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

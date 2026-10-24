@@ -1,0 +1,5 @@
+[package]
+name = "agentim-client-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
