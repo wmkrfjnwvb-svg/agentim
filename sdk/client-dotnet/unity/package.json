@@ -1,0 +1,9 @@
+{
+  "name": "com.agentim.client",
+  "version": "0.1.0",
+  "displayName": "AgentIM Client",
+  "description": "AgentIM client SDK for Unity (Android, iOS, Windows, macOS): the Rust core through its C ABI, events on the main thread (docs/12 §2).",
+  "unity": "2021.3",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

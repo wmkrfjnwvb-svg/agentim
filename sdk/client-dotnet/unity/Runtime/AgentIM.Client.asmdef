@@ -1,0 +1,7 @@
+{
+  "name": "AgentIM.Client",
+  "rootNamespace": "AgentIM.Client",
+  "allowUnsafeCode": true,
+  "autoReferenced": true,
+  "excludePlatforms": ["WebGL"]
+}

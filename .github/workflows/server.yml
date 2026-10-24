@@ -158,6 +158,49 @@ jobs:
           npx --prefix ../../server/ci playwright install --with-deps chromium
           PLAYWRIGHT="$PWD/../../server/ci/node_modules/playwright" node test/browser.mjs
 
+  client-wrappers:
+    name: client SDK wrappers (C#, Kotlin/JVM, Swift, Dart) against the server
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            sdk/client-rust
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+      - uses: dart-lang/setup-dart@v1
+      - run: cargo build --bin agentim
+      - name: native runtime (the library every wrapper loads)
+        working-directory: sdk/client-rust
+        run: cargo build -p agentim-client
+      - name: C# (.NET; the Unity sources build as netstandard2.1)
+        working-directory: sdk/client-dotnet
+        run: dotnet build AgentIM.Client && dotnet run --project Conformance
+      - name: Kotlin (JNI bridge, JVM)
+        working-directory: sdk/client-kotlin
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/kotlin.zip" https://github.com/JetBrains/kotlin/releases/download/v2.2.20/kotlin-compiler-2.2.20.zip
+          unzip -q "$RUNNER_TEMP/kotlin.zip" -d "$RUNNER_TEMP"
+          KOTLINC="$RUNNER_TEMP/kotlinc/bin/kotlinc" sh test.sh
+      - name: Swift
+        working-directory: sdk/client-swift
+        run: sh test.sh
+      - name: Dart (FFI shim, Dart VM)
+        working-directory: sdk/client-flutter
+        run: sh test.sh
+
   replicas:
     name: database replicas and failover (PostgreSQL 16, MySQL 8.4)
     runs-on: ubuntu-latest
