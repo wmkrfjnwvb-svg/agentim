@@ -1,11 +1,11 @@
-# @agentim/client-react-native
+# @agentimhq/client-react-native
 
 The AgentIM client for React Native (docs/12 §2.12). The Rust core runs natively and is reached
 through JSI (`cpp/AgentIMJsi.cpp` installs `global.__agentim`). The API is the same as
-`@agentim/client-web`, so the hooks of `@agentim/react` work unchanged.
+`@agentimhq/client-web`, so the hooks of `@agentimhq/react` work unchanged.
 
 ```ts
-import { AgentIMClient } from '@agentim/client-react-native';
+import { AgentIMClient } from '@agentimhq/client-react-native';
 
 const client = AgentIMClient.create({
   url: 'https://chat.example.com',

@@ -17,7 +17,6 @@ updates:
       - "/sdk/client-web"
       - "/sdk/react"
       - "/sdk/client-react-native"
-      - "/sdk/client-ts"
     schedule: {interval: weekly}
     cooldown: {default-days: 14}
     groups:

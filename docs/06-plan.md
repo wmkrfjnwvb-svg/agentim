@@ -32,7 +32,7 @@
 | 合并 Lite 和 AgentIM | ✅ | 只有一个程序 `agentim`；握手只报 `agentim`、`AgentIM` 和版本（D105） | — |
 | **发布流程（P1）** | 🔧 | `deploy/`：Dockerfile、Compose、Helm（CI 里构建和冒烟） | 预编译程序和签名、一条命令安装、GHCR 镜像、版本和更新日志、依赖扫描（[12 §1](12-developer-experience.md)） |
 | **客户端 SDK（P2）** | 🔧 | Rust 核心（连接、同步、离线队列、缓存、历史）、原生运行层和 C ABI、浏览器（wasm、IndexedDB、多标签页）、Swift、Kotlin、C#、Dart 封装对着真实服务端跑通，React Native 的 JSI 绑定能编译（[12 §2.14](12-developer-experience.md)） | iOS、Android、Unity、Flutter 打包和模拟器测试；Unity WebGL 桥；发布（A9） |
-| **React 组件（P3）** | 🔧 | `@agentim/react`：hooks、客服窗口组件、主题、AI 标记、卡片、从右到左（[12 §3](12-developer-experience.md)） | 成员列表、转人工提示、截图对比；Web 演示端改用 P2 和 P3 |
+| **React 组件（P3）** | 🔧 | `@agentimhq/react`：hooks、客服窗口组件、主题、AI 标记、卡片、从右到左（[12 §3](12-developer-experience.md)） | 成员列表、转人工提示、截图对比；Web 演示端改用 P2 和 P3 |
 | **开发者控制台（P4）** | ✅ | 管理 API `/admin/v1`（应用、部署两块，四种角色）、管理员账号（一次性初始化、密码 + TOTP、会话和 CSRF）、管理密钥、`agentim admin`、内置在 `agentim` 里的控制台 `/console`（[12 §4](12-developer-experience.md)） | Webhook、发送前拦截、审核时限搬进"应用设置"（现在只读） |
 | **文档站和示例（P5）** | ⏳ | 设计：[12 §5](12-developer-experience.md) | 文档站、三个示例应用、Agent 框架模板 |
 | 托管云（P6） | ⏳ | 先不做（2026-10-19） | 注册即用、免费额度、按合并后的消息计费 |
@@ -72,16 +72,18 @@
 |---|---|---|
 | D120 | 浏览器 SDK 的核心跑在主标签页的主线程，设计里写的是 Worker（[12 §2.10](12-developer-experience.md)） | 先保持主线程：核心 146 KB、每次处理很快，测试里没有卡顿；等有真实应用测到界面卡再放进 Worker（接口不用变） |
 | D121 | 客户端覆盖率：设计要求 100%，现在核心 98.4%、CI 门槛 98%，没覆盖的行和理由列在 [05 §5](05-operations.md)；各语言封装没跑覆盖率工具 | 门槛先定 98%，把"没测的边角"补上测试后提到 99%；封装的覆盖率在 A9 有 macOS、Android 机器时一起做 |
-| D122 | 旧的 TypeScript SDK `sdk/client-ts`（它的规则已经搬进 Rust 核心，`@agentim/client-web` 替代它） | 删掉，文档里指向 `client-web`；在你确认前保留 |
 | D123 | Android AAR（四种 ABI、16 KB 页）、Flutter 插件（Linux 应用跑通）和 Unity WebGL 桥已做；还缺 iOS 的 XCFramework、Android 模拟器和 Unity 编辑器里的测试，需要 macOS、带 KVM 的 Linux 和 Unity 许可（GitHub 的 macOS 和 Linux 机器都有前两样），本环境做不了 | 放进 A9：XCFramework、各包发布（npm、SwiftPM、Maven Central、NuGet、OpenUPM、pub.dev）一起做，CI 加 macOS 任务跑 iOS 模拟器、Linux 任务用模拟器跑 AAR 和 Flutter Android；Unity 用 game-ci 跑批处理（要许可） |
 | D119 | 离线推送（APNs、FCM）：手机 App 切到后台后靠系统推送收到新消息。现在服务端没有实现，计划里也没有单独一项 | 补上，放在最后，排在文件和图片之后（2026-10-20 负责人定）。A7 的设备 ID 先留好以后登记推送令牌的位置。做之前先调研 Stream、Sendbird、腾讯云 IM，再出设计 |
-| D124 | npm 作用域 `@agentim` 已被另一个也叫 AgentIM 的开源项目占用（[NoPKT/AgentIM](https://github.com/NoPKT/AgentIM)，用户 `nopkt`，2026-02 发布了 `@agentim/shared`），我们的 `@agentim/client-web`、`@agentim/react`、`@agentim/client-react-native` 发不上去；产品名也重名 | 你来定：换一个 npm 作用域（例如你的组织名），或和对方联系；产品名是否要调整也一起考虑。NuGet、pub.dev、OpenUPM 上的名字目前都没人用 |
 | D125 | Swift 包：SwiftPM 要求 `Package.swift` 在仓库根目录 | 建议单独建 `agentim-swift` 仓库，只放 `Package.swift`（`binaryTarget` 指向 Release 上的 XCFramework 和它的 checksum）和 Swift 源码，由发布流程更新（Mozilla 的 application-services 就这样，[说明](https://searchfox.org/firefox-main/source/third_party/application-services/docs/design/swift-package-manager.md)）；需要你建仓库并给发布流程写权限。另一种是把 `Package.swift` 放到本仓库根目录，用户会克隆整个仓库 |
 | D126 | Maven Central 的命名空间 | 需要你在 Sonatype Central Portal 注册并验证命名空间（有域名用 `com.<域名>`，否则 `io.github.<你的 GitHub 名>`），生成发布令牌和 GPG 签名密钥，放进仓库的 Secrets；在这之前 Android 包只挂在 GitHub Release 上 |
 | D127 | Flutter 插件构建时要本机有 Rust | 发布到 pub.dev 前改成构建时下载对应平台的预编译库并核对 SHA-256，没有网络或想自己编时才用 Rust（cargokit 的做法） |
 | D99 | 规模测试 `slow` 场景在 GitHub 的 Linux 机器上：停止读取超过空闲时间的连接，服务端已经关闭（连接数指标减少），但客户端恢复读取后既收不到剩余的帧也看不到关闭，本地和 Windows 上都能看到。消息不会丢：客户端重连后按设备位置同步，测试证明数据完整 | 测试工具现在按 SDK 的做法：一分钟没收到任何东西就自己重连并同步，单独计数。原因仍未查明（本地和 Windows 都复现不了）。C2 加了位置校验（`heads`，Agent SDK 每 30 秒一次），真实客户端即使遇到这种情况也会在 30 秒内发现并补齐。**告知你，暂不需要决定** |
 
 ### 1.2 已确认
+
+- **2026-10-25 负责人："按你的想法修复就行"**，以下按建议定：
+  - D122：删掉旧的 TypeScript SDK `sdk/client-ts`（规则和测试已在 Rust 核心里，git 历史里还在）。
+  - D124：npm 作用域 `@agentim` 已被另一个也叫 AgentIM 的开源项目占用（[NoPKT/AgentIM](https://github.com/NoPKT/AgentIM)，2026-02 发布了 `@agentim/shared`），我们的包改用 `@agentimhq`（`@agentimhq/client-web`、`@agentimhq/react`、`@agentimhq/client-react-native`、`@agentimhq/server`、`@agentimhq/agent`）。产品名不改。发布前需要你在 npm 上建 `agentimhq` 组织（免费）。
 
 | # | 事项 | 结果 |
 |---|---|---|

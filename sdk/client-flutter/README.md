@@ -29,7 +29,7 @@ uses `package:agentim_flutter/agentim_flutter.dart` without `libraryDir`.
 
 `agentim_flutter/test.sh` builds `example/` for Linux and runs it under Xvfb against a real
 server. The Android, iOS, macOS and Windows plugin builds have not been run here; iOS and macOS
-need the XCFramework (A9). Flutter web uses `@agentim/client-web` instead.
+need the XCFramework (A9). Flutter web uses `@agentimhq/client-web` instead.
 
 ## Tests
 

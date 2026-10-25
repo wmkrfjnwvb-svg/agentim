@@ -1,11 +1,11 @@
-# @agentim/react
+# @agentimhq/react
 
-React hooks and components for AgentIM (docs/12 §3), built on `@agentim/client-web`.
+React hooks and components for AgentIM (docs/12 §3), built on `@agentimhq/client-web`.
 
 ```tsx
-import { AgentIMClient } from '@agentim/client-web';
-import { AgentIM, Chat } from '@agentim/react';
-import '@agentim/react/theme.css';
+import { AgentIMClient } from '@agentimhq/client-web';
+import { AgentIM, Chat } from '@agentimhq/react';
+import '@agentimhq/react/theme.css';
 
 const client = await AgentIMClient.create({ url, deviceId, tokenProvider });
 client.connect();

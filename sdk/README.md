@@ -49,8 +49,8 @@ the messages of a conversation) and methods that return once the change is shown
 
 | Platform | Path | State |
 |---|---|---|
-| Browser, Node | `client-web` (`@agentim/client-web`) | The core in WebAssembly (146 KB gzipped), an encrypted IndexedDB cache, one connection shared by all tabs |
-| React | `react` (`@agentim/react`) | Hooks and components (a support chat window, conversation list), themes, AI label, cards, RTL |
+| Browser, Node | `client-web` (`@agentimhq/client-web`) | The core in WebAssembly (146 KB gzipped), an encrypted IndexedDB cache, one connection shared by all tabs |
+| React | `react` (`@agentimhq/react`) | Hooks and components (a support chat window, conversation list), themes, AI label, cards, RTL |
 | React Native | `client-react-native` | JSI binding (compiles), TypeScript tested against a fake binding; not yet run on a device |
 | iOS, macOS | `client-swift` | Swift package, `@Observable`; tested on Linux, the XCFramework is not built yet |
 | Android, JVM | `client-kotlin` | Kotlin with a JNI bridge, `StateFlow`; tested on the JVM; the AAR is built for 4 ABIs with 16 KB pages, not yet run on an emulator |
@@ -58,6 +58,5 @@ the messages of a conversation) and methods that return once the change is shown
 | Flutter, Dart | `client-flutter` | Dart FFI, and the `agentim_flutter` plugin that builds and bundles the core; tested on the Dart VM and as a Linux Flutter app |
 | Native (C) | `client-rust/native` | The runtime (WebSocket, SQLite) and the C ABI in `include/agentim.h` that the wrappers use |
 
-Every wrapper runs the same conformance scenario against a real `agentim` (CI job `client-wrappers`). `sdk/client-ts`, the earlier
-TypeScript SDK, is replaced by `client-web`; whether to remove it is pending (docs/06 §1.1 D122).
+Every wrapper runs the same conformance scenario against a real `agentim` (CI job `client-wrappers`).
 

@@ -1,5 +1,5 @@
 // Unity WebGL bridge (docs/12 §2.12): the C ABI of the native runtime
-// (agentim.h), implemented in the browser over @agentim/client-web, so the
+// (agentim.h), implemented in the browser over @agentimhq/client-web, so the
 // C# wrapper is the same on every platform. The page loads the browser SDK
 // first and puts it in `window.AgentIMWeb` (see README).
 //

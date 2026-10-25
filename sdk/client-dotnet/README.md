@@ -36,7 +36,7 @@ callback carries `MonoPInvokeCallback` for IL2CPP. Unity does not ship `System.T
 with NuGetForUnity.
 
 **WebGL**: `Runtime/Plugins/WebGL/AgentIM.jslib` implements the same C functions in the browser
-over `@agentim/client-web`, so the C# code is the same on every platform. The WebGL page loads
+over `@agentimhq/client-web`, so the C# code is the same on every platform. The WebGL page loads
 the browser SDK before the Unity loader:
 `<script type="module">import * as w from './agentim/index.js'; window.AgentIMWeb = w;</script>`.
 A store name keeps the cache in IndexedDB (encrypted). The browser's own online and visibility

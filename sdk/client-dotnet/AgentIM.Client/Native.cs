@@ -12,7 +12,7 @@ namespace AgentIM.Client
     {
 #if (UNITY_IOS || UNITY_WEBGL) && !UNITY_EDITOR
         // iOS: linked statically into the app. WebGL: AgentIM.jslib, the same
-        // functions over @agentim/client-web.
+        // functions over @agentimhq/client-web.
         private const string Lib = "__Internal";
 #else
         private const string Lib = "agentim_client";

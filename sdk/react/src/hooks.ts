@@ -1,9 +1,9 @@
-// Hooks over @agentim/client-web (docs/12 §3): the client's observables
+// Hooks over @agentimhq/client-web (docs/12 §3): the client's observables
 // read with useSyncExternalStore (the snapshot is the same object until
 // it changes), its methods wrapped for components.
 
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import type { AgentIMClient, Connection, Message } from '@agentim/client-web';
+import type { AgentIMClient, Connection, Message } from '@agentimhq/client-web';
 
 /** What the hooks need from a client: `AgentIMClient`, or a fake in tests. */
 export type Client = Pick<AgentIMClient, 'connection' | 'conversations' | 'messages' | 'send' | 'retry' | 'discard' | 'feedback' | 'respond' | 'read' | 'call' | 'on'>;

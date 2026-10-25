@@ -5,7 +5,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { Observable } from '@agentim/client-web';
+import { Observable } from '@agentimhq/client-web';
 import { AgentIM, Chat, ConversationList, MemberList, MessageList, type MessageProps } from '../src/index.js';
 
 afterEach(cleanup);

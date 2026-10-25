@@ -1,5 +1,5 @@
 {
-  "name": "@agentim/server",
+  "name": "@agentimhq/server",
   "version": "0.1.0",
   "description": "AgentIM open API client for Node.js backends",
   "type": "module",

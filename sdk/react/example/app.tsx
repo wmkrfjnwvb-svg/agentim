@@ -3,7 +3,7 @@
 // (a real app gets the token from its own backend).
 
 import { createRoot } from 'react-dom/client';
-import { AgentIMClient } from '@agentim/client-web';
+import { AgentIMClient } from '@agentimhq/client-web';
 import { AgentIM, Chat } from '../src/index.js';
 
 const q = new URLSearchParams(location.search);

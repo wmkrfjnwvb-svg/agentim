@@ -1,6 +1,6 @@
 // AgentIM client for React Native (docs/12 §2.12): the native core through
 // JSI (`global.__agentim`, cpp/AgentIMJsi.cpp). The same API as
-// @agentim/client-web, so the hooks of @agentim/react work here too.
+// @agentimhq/client-web, so the hooks of @agentimhq/react work here too.
 //
 //   const client = AgentIMClient.create({
 //     url: 'https://chat.example.com',
@@ -12,7 +12,7 @@
 //   NetInfo.addEventListener((s) => client.setNetwork(!!s.isConnected));
 //   client.connect();
 
-import { AgentIMError, Messages, Observable, TokenRefused, type Connection, type Message } from '@agentim/client-web';
+import { AgentIMError, Messages, Observable, TokenRefused, type Connection, type Message } from '@agentimhq/client-web';
 
 export { AgentIMError, Messages, Observable, TokenRefused, type Connection, type Message };
 

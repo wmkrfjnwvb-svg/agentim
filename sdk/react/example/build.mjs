@@ -16,4 +16,4 @@ await build({
 });
 copyFileSync(here('index.html'), here('out/index.html'));
 copyFileSync(here('../theme.css'), here('out/theme.css'));
-copyFileSync(here('../node_modules/@agentim/client-web/dist/agentim_core.wasm'), here('out/agentim_core.wasm'));
+copyFileSync(here('../node_modules/@agentimhq/client-web/dist/agentim_core.wasm'), here('out/agentim_core.wasm'));

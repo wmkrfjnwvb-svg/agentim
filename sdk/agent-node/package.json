@@ -1,5 +1,5 @@
 {
-  "name": "@agentim/agent",
+  "name": "@agentimhq/agent",
   "version": "0.1.0",
   "description": "AgentIM agent SDK: connect an agent with its key, receive what concerns it in order, act (no dependencies).",
   "type": "module",

@@ -13,7 +13,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { Agent } from '../../agent-node/index.mjs';
-import { AgentIMClient, MemoryStore } from '@agentim/client-web';
+import { AgentIMClient, MemoryStore } from '@agentimhq/client-web';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT ?? 'playwright');

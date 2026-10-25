@@ -5,7 +5,7 @@
 // Act art. 50): a replacement Message cannot drop it.
 
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentType, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import type { Message } from '@agentim/client-web';
+import type { Message } from '@agentimhq/client-web';
 import { AgentIMProvider, useClient, useConnection, useConversations, useMessages, useSend, useTyping, type Client } from './hooks.js';
 
 export const defaultStrings = {

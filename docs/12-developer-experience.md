@@ -51,7 +51,7 @@ agentim                                    # 打开 http://127.0.0.1:8080
 
 ## 2. 客户端 SDK
 
-> 状态：🔧 设计 2026-10-20 批准（D104），S1–S7 已实现到本环境能做到的程度（2026-10-24），每一步的结果和与设计的差别见 §2.14。调研和来源见 [research/client-sdk.md](research/client-sdk.md)。旧的 TypeScript SDK（`sdk/client-ts`）停在存储第二版，它的规则和测试是核心的规格；它的去留待定（[06 §1.1](06-plan.md)）。
+> 状态：🔧 设计 2026-10-20 批准（D104），S1–S7 已实现到本环境能做到的程度（2026-10-24），每一步的结果和与设计的差别见 §2.14。调研和来源见 [research/client-sdk.md](research/client-sdk.md)。旧的 TypeScript SDK（`sdk/client-ts`）的规则和测试已搬进 Rust 核心，2026-10-25 删除（D122，git 历史里还在）。
 
 代码：核心和原生运行层 `sdk/client-rust`（`core`、`native`、`wasm`），浏览器 `sdk/client-web`，React `sdk/react`，React Native `sdk/client-react-native`，Swift `sdk/client-swift`，Kotlin `sdk/client-kotlin`，C# 和 Unity `sdk/client-dotnet`，Flutter 和 Dart `sdk/client-flutter`。
 
@@ -315,11 +315,11 @@ agentim                                    # 打开 http://127.0.0.1:8080
 | S0 | 探路：最小核心编成 wasm 量体积；Unity IL2CPP 在 iOS 上收回调；Android 16 KB 页；结果写回本节 | 🔧 wasm 核心 450 KB、压缩后 **146 KB**（预算 300 KB，CI 超了失败）；Linux x86_64 原生库压缩后 1.6 MB（预算 3 MB）；Android 四种 ABI 压缩后 1.4–1.7 MB，每个段都按 16 KB 对齐（CI 检查）。IL2CPP 在 iOS 上收回调没有验证：本环境没有 macOS 和 Unity |
 | S1 | 服务端：人的历史读取（D108）、应用层 `ping`、欢迎帧带心跳间隔、过载和下线带 `retry_after_ms`（[08 §2.8、§2.9](08-sync-and-client.md)） | ✅ |
 | S2 | Rust 核心 + 原生运行层（SQLite、WebSocket）+ 核心测试和一致性场景 | ✅ 核心不做 IO，§2.3–§2.9 的规则都在里面；原生运行层：tokio 单线程、rustls、SQLite（缓存库和队列库分开、20 MB 预留文件）、C ABI（`include/agentim.h`，每个入口捕获 panic） |
-| S3 | 浏览器封装：wasm、IndexedDB、加密、多标签页 | ✅ `@agentim/client-web`：IndexedDB（AES-GCM，密钥不可导出）、打不开时用内存；Web Locks + BroadcastChannel 一个账号一条连接，主标签页关闭后接替；Node 也能用 |
+| S3 | 浏览器封装：wasm、IndexedDB、加密、多标签页 | ✅ `@agentimhq/client-web`：IndexedDB（AES-GCM，密钥不可导出）、打不开时用内存；Web Locks + BroadcastChannel 一个账号一条连接，主标签页关闭后接替；Node 也能用 |
 | S4 | Swift、Kotlin | 🔧 封装写完，在 Linux 上对着真实服务端跑通一致性场景（Swift 6.2；Kotlin 通过 JNI 在 JVM 上）。Android 库（AAR）能构建：NDK r28c 编四种 ABI 的核心和 JNI 桥（16 KB 页），Kotlin 对着 `android.jar` 编译，CI 检查对齐和 JNI 入口；没在模拟器或真机上跑过（本环境没有 KVM）。XCFramework 没做（需要 macOS） |
-| S5 | C#（.NET、Unity，含 WebGL 桥） | 🔧 .NET（net8.0、netstandard2.1）跑通一致性场景；Unity 包（主线程、暂停和恢复、网络）写了但没在 Unity 里跑过；WebGL 桥：`AgentIM.jslib` 在浏览器里实现和 C ABI 同名的函数（底下是 `@agentim/client-web`），C# 代码各平台一样，测试按 emscripten 的方式加载它、模拟 C# 一侧，对着真实服务端跑；C# 的 WebGL 编译路径在 CI 编译 |
+| S5 | C#（.NET、Unity，含 WebGL 桥） | 🔧 .NET（net8.0、netstandard2.1）跑通一致性场景；Unity 包（主线程、暂停和恢复、网络）写了但没在 Unity 里跑过；WebGL 桥：`AgentIM.jslib` 在浏览器里实现和 C ABI 同名的函数（底下是 `@agentimhq/client-web`），C# 代码各平台一样，测试按 emscripten 的方式加载它、模拟 C# 一侧，对着真实服务端跑；C# 的 WebGL 编译路径在 CI 编译 |
 | S6 | Flutter、React Native | 🔧 Dart FFI 在 Dart VM 上跑通一致性场景；Flutter 插件 `agentim_flutter`（FFI 插件，构建时用 cargo 编核心、编垫片并打进应用）：Linux 桌面应用在虚拟显示里对着真实服务端跑通，Android、iOS、macOS、Windows 的插件构建没跑过；React Native：JSI 绑定能对着 0.87.1 的头文件编译，TypeScript 部分用假绑定测试，没在设备上跑过 |
-| S7 | React 界面组件和客服窗口示例（§3） | ✅ `@agentim/react`：hooks 和组件（含成员列表、转人工提示），每种状态的组件测试，客服窗口在 Chromium 里对着真实服务端和真实 Agent 跑通 |
+| S7 | React 界面组件和客服窗口示例（§3） | ✅ `@agentimhq/react`：hooks 和组件（含成员列表、转人工提示），每种状态的组件测试，客服窗口在 Chromium 里对着真实服务端和真实 Agent 跑通 |
 
 **每个封装都跑的一致性场景**（W1–W9，对着真实 `agentim`）：两边连上；发送返回时消息已在列表里、之后变成已发送、对方收到、会话进列表（含表情）；编辑和撤回到达对方；被业务拒绝的发送显示失败并报告、删除后消失；在线请求返回服务端的错误码、未知命令 `bad_request`；重启后队列先从缓存显示、连上后按顺序发出且只发一次、队列清空；断网后不是已连接、离线发的消息恢复后只发一次；令牌被拒后停在 `failed`（`unauthenticated`）；关闭后命令返回 `closed`、关两次没问题。
 
@@ -333,7 +333,7 @@ agentim                                    # 打开 http://127.0.0.1:8080
 
 ## 3. P3 React 界面组件
 
-包名 `@agentim/react`，建在 §2.11 的可订阅对象上。
+包名 `@agentimhq/react`，建在 §2.11 的可订阅对象上。
 
 > 状态：🔧 2026-10-24 实现了第一版（`sdk/react`），和下面设计的差别：没做 `usePresence`（服务端没有在线状态）和 `useApproval`（审批用卡片和 `respond`，组件里已有）；消息列表没做真正的虚拟滚动，用 `content-visibility: auto` 让浏览器跳过屏幕外的行；截图对比没做（端到端测试会保存亮色、暗色、从右到左的截图，供人看）；Web 演示端还没改用这套组件。
 

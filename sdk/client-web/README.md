@@ -1,4 +1,4 @@
-# @agentim/client-web
+# @agentimhq/client-web
 
 The AgentIM client SDK for browsers and Node (docs/12 §2): the Rust core,
 compiled to WebAssembly, keeps the connection, sync without gaps, the
@@ -7,7 +7,7 @@ IndexedDB and paging back through history. Tabs of the same account share
 one connection.
 
 ```js
-import { AgentIMClient, TokenRefused } from '@agentim/client-web';
+import { AgentIMClient, TokenRefused } from '@agentimhq/client-web';
 
 const client = await AgentIMClient.create({
   url: 'https://chat.example.com',
@@ -22,6 +22,6 @@ view.subscribe((list) => renderMessages(list));
 await client.send(convId, 'hello');         // shown when this returns; sent once, also after a reload
 ```
 
-React components are in `@agentim/react`. Errors are `AgentIMError` with
+React components are in `@agentimhq/react`. Errors are `AgentIMError` with
 the server's codes (`forbidden`, `not_found`, `conflict`, `bad_request`,
 `rate_limited`, ...). Licensed under Apache-2.0.

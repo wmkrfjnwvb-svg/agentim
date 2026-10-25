@@ -1,7 +1,7 @@
 {
-  "name": "@agentim/client-react-native",
+  "name": "@agentimhq/client-react-native",
   "version": "0.1.0",
-  "description": "AgentIM client SDK for React Native: the native core through JSI (docs/12 §2.12), same API as @agentim/client-web",
+  "description": "AgentIM client SDK for React Native: the native core through JSI (docs/12 §2.12), same API as @agentimhq/client-web",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -16,7 +16,7 @@
     "cpp"
   ],
   "peerDependencies": {
-    "@agentim/client-web": "0.1.x",
+    "@agentimhq/client-web": "0.1.x",
     "react-native": ">=0.76"
   },
   "scripts": {
@@ -24,7 +24,7 @@
     "test": "npm run build && node --no-warnings --test test/*.test.mjs"
   },
   "devDependencies": {
-    "@agentim/client-web": "file:../client-web",
+    "@agentimhq/client-web": "file:../client-web",
     "typescript": "5.9.3"
   }
 }
