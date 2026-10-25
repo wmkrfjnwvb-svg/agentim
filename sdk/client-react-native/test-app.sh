@@ -58,6 +58,9 @@ android)
   echo "ok   two people talk through the core in the Android emulator"
   ;;
 ios)
+  # The package needs iOS 17 (its core is built for it); a new app targets less.
+  sed -i '' "s/^platform :ios, .*/platform :ios, '17.0'/" ios/Podfile
+  sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 17.0;/' ios/AgentIMApp.xcodeproj/project.pbxproj
   (cd ios && bundle install > /dev/null && bundle exec pod install > pod.log 2>&1) || { tail -50 ios/pod.log; exit 1; }
   xcodebuild -quiet -workspace ios/AgentIMApp.xcworkspace -scheme AgentIMApp -configuration Release \
     -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build \

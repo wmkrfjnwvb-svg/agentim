@@ -13,6 +13,7 @@ async function person(name: string) {
     headers: { 'Content-Type': 'application/json', Origin: URL },
     body: JSON.stringify({ name }),
   });
+  if (!r.ok) throw new Error(`POST /api/dev/users: HTTP ${r.status} ${await r.text()}`);
   return r.json();
 }
 
@@ -23,7 +24,9 @@ async function until(f: () => boolean) {
 
 async function run(): Promise<string> {
   if (!AgentIMClient.version()) return 'no version';
-  const [alice, bob] = [await person('alice'), await person('bob')];
+  // Unique names: demo mode already has alice and bob.
+  const tag = Date.now();
+  const [alice, bob] = [await person(`rn-a${tag}`), await person(`rn-b${tag}`)];
   const make = (p: any, device: string) =>
     AgentIMClient.create({ url: URL, deviceId: device, tokenProvider: async () => p.token });
   const a = make(alice, 'alice-rn');

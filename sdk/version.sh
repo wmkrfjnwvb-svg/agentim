@@ -19,7 +19,7 @@ check client-flutter/pubspec.yaml "version: $v"
 check client-dotnet/AgentIM.Client/Client.cs "ClientVersion { get; set; } = \"$v\""
 check client-flutter/lib/agentim_client.dart "this.clientVersion = '$v'"
 check client-kotlin/src/main/kotlin/com/agentim/client/AgentIMClient.kt "val clientVersion: String = \"$v\""
-check client-react-native/src/index.ts "o.clientVersion ?? '$v'"
+check client-react-native/src/client.ts "o.clientVersion ?? '$v'"
 check client-swift/Sources/AgentIM/AgentIMClient.swift "public var clientVersion = \"$v\""
 if [ $# -gt 0 ] && [ "$1" != "sdk-v$v" ]; then echo "tag $1 is not sdk-v$v" >&2; bad=1; fi
 [ $bad = 0 ] || exit 1

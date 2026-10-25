@@ -146,8 +146,11 @@ try {
   // Client permissions.
   await page.click('nav a:has-text("Client permissions")');
   await page.check('input[name=create_agents]');
+  // Until the save answers: the setting applies before its audit record is
+  // written, so the button alone (disabled while sending) is too early.
+  const saved = page.waitForResponse((r) => r.url().includes('/app/settings/clients') && r.request().method() === 'PUT');
   await page.click('button:has-text("Save")');
-  await page.waitForFunction(() => document.querySelector('button')?.textContent !== null && [...document.querySelectorAll('button')].some((b) => b.textContent === 'Save' && b.disabled));
+  check((await saved).ok(), 'the client permissions are saved');
   const hello = await asPerson(jwt(kid, signing, 'alice'), { op: 'hello' });
   check(hello.me?.permissions?.create_agents === true, 'people may now create agents in their app');
 

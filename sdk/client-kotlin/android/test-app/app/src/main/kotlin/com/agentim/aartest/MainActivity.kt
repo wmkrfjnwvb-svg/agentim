@@ -40,13 +40,17 @@ class MainActivity : Activity() {
         c.setRequestProperty("Content-Type", "application/json")
         c.setRequestProperty("Origin", url)
         c.outputStream.use { it.write(JSONObject().put("name", name).toString().toByteArray()) }
+        val code = c.responseCode
+        if (code != 200) error("POST /api/dev/users: HTTP $code ${c.errorStream?.bufferedReader()?.readText()}")
         JSONObject(c.inputStream.bufferedReader().readText())
     }
 
     private suspend fun run(): String {
         if (AgentIMClient.version.isEmpty()) return "no version"
-        val alice = person("alice")
-        val bob = person("bob")
+        // Unique names: demo mode already has alice and bob.
+        val tag = System.currentTimeMillis()
+        val alice = person("aar-a$tag")
+        val bob = person("aar-b$tag")
         fun client(p: JSONObject, device: String) =
             AgentIMClient.create(ClientOptions(url = url, deviceId = device, tokenProvider = { p.getString("token") }))
         val a = client(alice, "alice-aar")

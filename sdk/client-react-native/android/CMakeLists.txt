@@ -15,6 +15,8 @@ add_library(agentim_rn STATIC
   ${ROOT}/cpp/NativeAgentIM.cpp
   ${ROOT}/cpp/AgentIMJsi.cpp)
 target_include_directories(agentim_rn PUBLIC ${ROOT}/cpp ${ROOT}/include)
+# React Native's headers need C++20.
+target_compile_features(agentim_rn PUBLIC cxx_std_20)
 target_compile_options(agentim_rn PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(agentim_rn
   react_codegen_AgentIMSpec
