@@ -16,6 +16,8 @@ artifact=client
 dir="$out/$(echo "$group" | tr . /)/$artifact/$version"
 base="$dir/$artifact-$version"
 rm -rf "$out" && mkdir -p "$dir"
+out=$(cd "$out" && pwd) dir=$(cd "$dir" && pwd)
+base="$dir/$artifact-$version"
 cp "$aar" "$base.aar"
 (cd "$here/src/main/kotlin" && jar cf "$base-sources.jar" .)
 docs=$(mktemp -d) && cp "$here/README.md" "$docs/" && (cd "$docs" && jar cf "$base-javadoc.jar" README.md) && rm -rf "$docs"

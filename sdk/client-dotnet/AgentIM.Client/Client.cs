@@ -240,6 +240,14 @@ namespace AgentIM.Client
 
         private AgentIMClient(ClientOptions o) => this.o = o;
 
+        // A short name like the other SDKs send (OSDescription on macOS is a
+        // whole kernel version line).
+        static string OsName() =>
+            RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "windows"
+            : RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "macos"
+            : RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? "linux"
+            : RuntimeInformation.OSDescription;
+
         public static AgentIMClient Create(ClientOptions o)
         {
             var c = new AgentIMClient(o);
@@ -248,7 +256,7 @@ namespace AgentIM.Client
                 ["url"] = o.Url,
                 ["device_id"] = o.DeviceId,
                 ["device_name"] = o.DeviceName,
-                ["platform"] = o.Platform ?? RuntimeInformation.OSDescription,
+                ["platform"] = o.Platform ?? OsName(),
                 ["client_name"] = o.ClientName,
                 ["client_version"] = o.ClientVersion,
             };

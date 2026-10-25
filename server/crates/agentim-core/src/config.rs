@@ -373,11 +373,17 @@ impl Config {
                 Err(_) => {}
             }
             let k = crate::crypto::Kek::generate_base64();
-            write_private(&f, &k).map_err(|err| {
+            let created = create_key_file(&f, &k).map_err(|err| {
                 format!(
                     "could not create the master key {f}: {err}; start agentim in a directory it can write, pass --db <path>, or set encryption.key_file"
                 )
             })?;
+            if !created {
+                // Another process starting on the same database made it first.
+                return read_key_file(&f, true)
+                    .map(Some)
+                    .map_err(|err| format!("{f}: {err}"));
+            }
             tracing::warn!(
                 file = f,
                 "generated the master key for encryption at rest; back it up together with the database"
@@ -490,6 +496,29 @@ fn read_key_file(path: &str, strict: bool) -> std::io::Result<String> {
     }
     let _ = strict;
     Ok(std::fs::read_to_string(path)?.trim().to_string())
+}
+
+/// Creates the key file whole or not at all: written to a private file of
+/// its own, then linked into place, which fails when the file exists. False
+/// when another process created it first (its key is the one to use).
+fn create_key_file(path: &str, key: &str) -> std::io::Result<bool> {
+    let tmp = format!(
+        "{path}.{}-{}.tmp",
+        std::process::id(),
+        crate::crypto::Kek::generate_base64()
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .take(12)
+            .collect::<String>()
+    );
+    write_private(&tmp, key)?;
+    let linked = std::fs::hard_link(&tmp, path);
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 fn write_private(path: &str, content: &str) -> std::io::Result<()> {
@@ -1348,6 +1377,42 @@ mod tests {
         let c =
             parse("[before_send]\nurl = \"https://x\"\nsecret = \"0123456789abcdef\"\n").unwrap();
         assert!(c.before_send.unwrap().timeout_ms > 0, "default timeout");
+    }
+
+    #[test]
+    fn starts_racing_on_a_new_database_share_one_master_key() {
+        // A server and an `agentim` command started together on a new
+        // database: one creates the key, every other reads that one.
+        for round in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            let db = dir.path().join("a.db").to_string_lossy().to_string();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let keys: Vec<Result<Option<String>, String>> = (0..8)
+                .map(|_| {
+                    let (db, b) = (db.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        b.wait();
+                        Config::single_sqlite(&db).master_key()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .collect();
+            let on_disk = std::fs::read_to_string(format!("{db}.key")).unwrap();
+            for k in &keys {
+                assert_eq!(
+                    k.as_ref().unwrap().as_deref(),
+                    Some(on_disk.trim()),
+                    "round {round}"
+                );
+            }
+            let files: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(files.len(), 1, "no temporary files left: {files:?}");
+        }
     }
 
     #[cfg(unix)]

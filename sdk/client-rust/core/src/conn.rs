@@ -6,6 +6,17 @@ use serde_json::{Value, json};
 
 use crate::*;
 
+/// The server takes device and client labels of 1..=64 bytes (anything
+/// longer refuses the connection): a longer one is cut at a character
+/// boundary, an empty one is left out.
+pub(crate) fn label(s: &str) -> Option<&str> {
+    let mut end = s.len().min(64);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(&s[..end]).filter(|v| !v.is_empty())
+}
+
 fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -114,10 +125,10 @@ impl Core {
             enc(self.token.as_deref().unwrap_or("")),
             enc(&self.cfg.device_id)
         );
-        if let Some(n) = &self.cfg.device_name {
+        if let Some(n) = self.cfg.device_name.as_deref().and_then(label) {
             url.push_str(&format!("&device_name={}", enc(n)));
         }
-        if let Some(p) = &self.cfg.platform {
+        if let Some(p) = self.cfg.platform.as_deref().and_then(label) {
             url.push_str(&format!("&platform={}", enc(p)));
         }
         self.phase = Phase::Opening;
@@ -449,7 +460,10 @@ impl Core {
         }
         self.request(
             "hello",
-            json!({"client": {"name": self.cfg.client_name, "version": self.cfg.client_version}}),
+            json!({"client": {
+                "name": label(&self.cfg.client_name).unwrap_or(""),
+                "version": label(&self.cfg.client_version).unwrap_or(""),
+            }}),
             Purpose::Hello,
         );
     }

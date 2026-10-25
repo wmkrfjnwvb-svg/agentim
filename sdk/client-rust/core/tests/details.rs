@@ -631,6 +631,36 @@ fn urls_and_odd_inputs() {
 }
 
 #[test]
+fn labels_longer_than_the_server_takes_are_cut() {
+    // The server refuses labels over 64 bytes (a platform string such as
+    // macOS's kernel description is longer): cut at a character, empty left out.
+    let mut w = World::new(1);
+    w.core = Core::new(Config {
+        url: "https://h".into(),
+        device_id: "d".into(),
+        device_name: Some(String::new()),
+        platform: Some("é".repeat(40)),
+        client_name: "n".repeat(70),
+        client_version: "v".repeat(64),
+        seed: 1,
+    });
+    w.connected();
+    let url = &w.connects[0];
+    assert!(!url.contains("device_name"), "{url}");
+    let p = url.split("&platform=").nth(1).unwrap();
+    assert_eq!(p, "%C3%A9".repeat(32), "64 bytes, whole characters");
+    let hello = w
+        .server
+        .requests
+        .iter()
+        .find(|r| r["op"] == "hello")
+        .unwrap();
+    assert_eq!(hello["client"]["name"], "n".repeat(64));
+    assert_eq!(hello["client"]["version"], "v".repeat(64));
+    assert_eq!(w.state(), "connected");
+}
+
+#[test]
 fn more_connection_edges() {
     // A request in flight when the connection goes: answered `disconnected`.
     let mut w = World::new(1);
