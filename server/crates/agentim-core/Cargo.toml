@@ -4,6 +4,7 @@ description = "AgentIM core: messaging, sync, agents, governance and storage, sh
 license = "Apache-2.0"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [dependencies]
 argon2 = "0.5"

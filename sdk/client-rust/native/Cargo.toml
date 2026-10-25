@@ -4,6 +4,7 @@ description = "AgentIM client SDK, native runtime: WebSocket, SQLite cache and t
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 
 [lib]
 crate-type = ["rlib", "cdylib", "staticlib"]

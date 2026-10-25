@@ -68,3 +68,5 @@ try {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
 Write-Host 'install.ps1: all checks passed'
+# $LASTEXITCODE still holds the refused install above.
+exit 0

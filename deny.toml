@@ -1,0 +1,42 @@
+# cargo-deny (docs/12 §1): licenses, known vulnerabilities and where
+# crates come from, for both Rust workspaces (server/, sdk/client-rust/):
+#   cargo deny --manifest-path server/Cargo.toml check --config deny.toml
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec: a vulnerability fails the check; an unmaintained or yanked
+# crate fails it too, so it gets a decision (listed here with the reason).
+version = 2
+yanked = "deny"
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses only, compatible with Apache-2.0 (our license).
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,61 @@
+# Dependency checks (docs/12 §1): Rust crates (cargo-deny: known
+# vulnerabilities, licenses, sources) and npm packages (npm audit, high and
+# above). Weekly too, since new advisories appear without any change here;
+# the release workflow runs it before publishing.
+name: deps
+
+on:
+  push:
+    paths:
+      - "**/Cargo.lock"
+      - "**/Cargo.toml"
+      - "**/package-lock.json"
+      - "deny.toml"
+      - ".github/workflows/deps.yml"
+  pull_request:
+    paths:
+      - "**/Cargo.lock"
+      - "**/Cargo.toml"
+      - "**/package-lock.json"
+      - "deny.toml"
+      - ".github/workflows/deps.yml"
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [server, sdk/client-rust]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - name: cargo-deny 0.20.2 (checked download)
+        run: |
+          f=cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          curl -fsSLO "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/$f"
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  $f" | sha256sum -c
+          tar -xzf "$f" --strip-components=1 -C /usr/local/bin cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
+      - run: cargo-deny --manifest-path ${{ matrix.workspace }}/Cargo.toml --config deny.toml check
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [server/console, sdk/client-web, sdk/react, sdk/client-react-native, sdk/client-ts]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: {node-version: 22}
+      # Build tools included: they make what ships (the console, the SDKs).
+      - working-directory: ${{ matrix.package }}
+        run: npm audit --audit-level=high

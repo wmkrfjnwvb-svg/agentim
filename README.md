@@ -5,9 +5,25 @@
 ## Quick start
 
 ```bash
-cd server
-cargo run --release --bin agentim -- --demo   # open http://127.0.0.1:8080 and log in as alice, bob or carol
+# Linux and macOS
+curl -fsSL https://github.com/wmkrfjnwvb-svg/agentim/releases/latest/download/install.sh | sh
+# Windows (PowerShell)
+irm https://github.com/wmkrfjnwvb-svg/agentim/releases/latest/download/install.ps1 | iex
+# or Docker
+docker run -p 8080:8080 -v agentim:/var/lib/agentim ghcr.io/wmkrfjnwvb-svg/agentim --db /var/lib/agentim/agentim.db
+
+agentim          # in an empty folder: creates agentim.db and its master key, prints the address and the console setup link
+agentim --demo   # or try it: open http://127.0.0.1:8080 and log in as alice, bob or carol
 ```
+
+The install scripts put `agentim` in `~/.agentim/bin` without root and stop if the download's SHA-256 does not match. Every release file is signed with Sigstore and has a build provenance attestation (`gh attestation verify <file> --repo wmkrfjnwvb-svg/agentim`); see [docs/12 §1](docs/12-developer-experience.md). The first release is v0.1.0; until it is out, build from source:
+
+```bash
+cd server
+cargo run --release --bin agentim -- --demo
+```
+
+Back up `agentim.db.key` with the database: without it the encrypted content cannot be read. In Docker the console setup link only works from inside the container; create the first owner with `docker exec <container> agentim admin-key create --db /var/lib/agentim/agentim.db --name me --role owner` and then `agentim admin --url http://127.0.0.1:8080 --key <key> admin-create <name> --role owner` (the password is read from standard input; [docs/12 §4](docs/12-developer-experience.md)).
 
 - **Your users log in with your own accounts**: `agentim signing-key create --name backend` prints a signing key; your backend signs each user a client token with it (an HS256 JWT, `createUserToken` in the server SDKs; no call to AgentIM) and your app connects with it. See [docs/13 §4.2](docs/13-roles-and-entry-points.md).
 - **Your backend**: `agentim api-key create --name backend --scopes users:write,messages:write` prints a key for the open API (`/v1`, OpenAPI 3.1 at `/v1/openapi.json`): create users with your own ids, manage conversations, send as a user or as the system, issue agent keys. Server SDKs for [Node, Python and Go](sdk/README.md). See [docs/07-open-api.md](docs/07-open-api.md).
@@ -25,12 +41,13 @@ cargo run --release --bin agentim -- --demo   # open http://127.0.0.1:8080 and l
 - **For your backend**: open API with scoped API keys, idempotency keys, rate limits and RFC 9457 errors; webhooks (signed, ordered, at-least-once); a before-send hook; custom fields; protocol version negotiation.
 - **Security**: encryption at rest on by default (AES-256-GCM, per-conversation keys, crypto-shredding on delete), client tokens your backend signs itself (JWT, no IM passwords for your users), hashed agent keys, per-device logout, built-in TLS, Origin checks.
 - **Client SDKs**: one Rust core (reconnects with backoff and jitter, the offline queue sent once and in order, an encrypted local cache, paging back through history, detection of gaps), used by the browser SDK, React components, and Swift, Kotlin, C#, Dart and React Native wrappers. Each wrapper runs the same scenario against a real server in CI.
+- **Releases**: static builds for Linux (x86_64, aarch64), macOS and Windows, one-command install that checks the download, Sigstore signatures and build provenance, images for amd64 and arm64 with an SBOM, the Helm chart as an OCI package; dependencies checked for vulnerabilities and licenses on every change and weekly.
 - **Operations**: SQLite, PostgreSQL or MySQL with the same behaviour (the same test suite runs on each), automatic schema migration, Prometheus metrics and alerts, health and readiness endpoints, a Docker image, Docker Compose and a Helm chart; tested on Linux and Windows.
 
 **Planned** (order in [docs/06-plan.md §3](docs/06-plan.md))
 
 - Packages for every client SDK (npm, SwiftPM, Maven Central, NuGet, OpenUPM, pub.dev), with iOS, Android and Unity builds tested on their simulators.
-- Prebuilt binaries and one-command install, a documentation site and three example apps.
+- A documentation site and three example apps.
 - Files and images; offline push notifications (APNs, FCM); import from other chat providers.
 - A hosted cloud (later).
 

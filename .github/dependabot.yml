@@ -1,0 +1,36 @@
+# Version updates (docs/12 §1). A new version is proposed once it has been
+# out for 14 days (our rule for dependencies; security updates, which are
+# switched on in the repository settings, are not held back). The pinned
+# action commits in the workflows are updated the same way.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directories: ["/server", "/sdk/client-rust"]
+    schedule: {interval: weekly}
+    cooldown: {default-days: 14}
+    groups:
+      cargo: {patterns: ["*"], update-types: [minor, patch]}
+
+  - package-ecosystem: npm
+    directories:
+      - "/server/console"
+      - "/sdk/client-web"
+      - "/sdk/react"
+      - "/sdk/client-react-native"
+      - "/sdk/client-ts"
+    schedule: {interval: weekly}
+    cooldown: {default-days: 14}
+    groups:
+      npm: {patterns: ["*"], update-types: [minor, patch]}
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: {interval: weekly}
+    cooldown: {default-days: 14}
+    groups:
+      actions: {patterns: ["*"]}
+
+  - package-ecosystem: docker
+    directory: "/deploy"
+    schedule: {interval: weekly}
+    cooldown: {default-days: 14}

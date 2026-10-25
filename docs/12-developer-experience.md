@@ -32,7 +32,7 @@
 
 **版本和更新日志**：语义化版本，1.0 之前次版本号可以有不兼容改动，但协议靠能力协商兼容相邻版本（[11 §7](11-cluster.md)）。`CHANGELOG.md` 按 Keep a Changelog 的格式，每个改动在提交时写进"未发布"一节，发布时归档。
 
-**依赖扫描**：CI 加 `cargo-deny`（许可证、已知漏洞、来源）和 `npm audit`；Dependabot 管 Cargo、npm 和 Actions；镜像用 Trivy 扫描。有高危漏洞时发布任务失败。
+**依赖扫描**（✅ 2026-10-25，`.github/workflows/deps.yml`，每次改依赖时、每周一次、每次发布前都跑）：`cargo-deny`（根目录的 `deny.toml`，两个 Rust 工作区：RustSec 已知漏洞和不安全、只允许宽松许可证、只从 crates.io 来；自己的 crate 都标了 `publish = false`）和 `npm audit --audit-level=high`（五个有锁文件的包，连构建工具一起）；Dependabot 管 Cargo、npm、Actions 和 Docker，新版本发布满 14 天才提（`cooldown`，安全更新不等）。镜像扫描用 Grype（`--only-fixed --fail-on high`，有修复的高危才拦），不用设计里写的 Trivy：Trivy 的 GitHub Action 和程序在 2026 年 3 月被攻破，trivy-action 76 个版本标签里 75 个被改成偷 CI 密钥的代码，三周内第二次（[Wiz](https://wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack)、[Snyk](https://snyk.io/es/articles/trivy-github-actions-supply-chain-compromise/)）；Grype 也不用 Action，直接下载固定版本并核对 SHA-256。第一次跑 `cargo-deny` 就查出服务端依赖里 rustls、rustls-webpki、tokio、ctutils、webpki-root-certs 的 8 个公告（7 个漏洞、1 个不安全），已升级到修复版本（安全修复不等两周）。
 
 **第一次运行要顺**（5 分钟目标的关键；✅ 2026-10-25）：
 - `agentim` 不带参数：在当前目录建 `agentim.db`，并在旁边生成主密钥文件 `agentim.db.key`（权限 0600）；启动输出里和地址放在一起提示"已生成主密钥、和数据库一起备份，丢了就读不出加密的内容"。已有密钥文件就用它。

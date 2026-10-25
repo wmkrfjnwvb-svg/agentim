@@ -42,5 +42,10 @@ notes are taken from it.
 
 ### Security
 
+- Updated rustls (0.23.46), rustls-webpki (0.103.16), tokio (1.53.3),
+  ctutils (0.4.4) and webpki-root-certs (1.0.10) for RUSTSEC-2026-0346,
+  -0347, -0348, -0349, -0382, -0383, -0385 and -0386.
+- Dependencies are checked for known vulnerabilities and licenses on
+  every change, weekly and before each release.
 - The generated master key file must be readable by its owner only;
   otherwise the server does not start.

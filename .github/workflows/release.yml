@@ -51,6 +51,9 @@ jobs:
           if [ "$PUBLISH" = true ]; then tag="$GITHUB_REF_NAME"; fi
           echo "version=$(sh deploy/release/version.sh $tag)" >> "$GITHUB_OUTPUT"
 
+  deps:
+    uses: ./.github/workflows/deps.yml
+
   console:
     runs-on: ubuntu-latest
     steps:
@@ -191,6 +194,20 @@ jobs:
             test "$(docker exec "t-$arch" agentim --version)" = "agentim ${{ needs.version.outputs.version }}"
             docker rm -f "t-$arch"
           done
+      # High-severity issues with a fix stop the release (Grype, a checked
+      # download; Trivy's actions and binaries were compromised in 2026-03).
+      - name: scan the image (Grype 0.120.1)
+        run: |
+          v=0.120.1
+          f="grype_${v}_linux_amd64.tar.gz"
+          curl -fsSLO "https://github.com/anchore/grype/releases/download/v$v/$f"
+          echo "$GRYPE_SHA256  $f" | sha256sum -c
+          tar -xzf "$f" grype
+          for arch in amd64 arm64; do
+            ./grype "agentim:test-$arch" --only-fixed --fail-on high
+          done
+        env:
+          GRYPE_SHA256: 0a9ee97ef5ae2ee953b0a80098105052e846cdbe319a57d808b519c33cd1343d
       - if: env.PUBLISH == 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -259,7 +276,7 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [version, install, image, helm]
+    needs: [version, deps, install, image, helm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
