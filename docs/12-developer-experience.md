@@ -286,7 +286,7 @@ agentim                                    # 打开 http://127.0.0.1:8080
 | 包 | 内容 | 测试 | 发布 |
 |---|---|---|---|
 | 原生库 | `libagentim_client`：Linux x64/arm64（glibc 2.28，cargo-zigbuild）、macOS x64/arm64、Windows x64；每个附 SHA-256 | 各平台跑 C ABI 测试 | 作为 NuGet、Unity 包的内容，也挂在 GitHub Release 上 |
-| XCFramework | 静态库：iOS 真机 arm64、iOS 模拟器 arm64+x86_64、macOS arm64+x86_64，带头文件和 module map，压缩包附 SwiftPM 的 checksum | macOS 上用它跑 Swift 一致性场景（W1–W9），并为 iOS 模拟器编译 | 见 D125：SwiftPM 要求 `Package.swift` 在仓库根目录 |
+| XCFramework | 静态库：iOS 真机 arm64、iOS 模拟器 arm64+x86_64、macOS arm64+x86_64，带头文件和 module map，压缩包附 SwiftPM 的 checksum | macOS 上用它跑 Swift 一致性场景（W1–W9），并为 iOS 模拟器编译 | SwiftPM 要求 `Package.swift` 在仓库根目录，所以发到单独的 `agentim-swift` 仓库（D125）：`sdk/client-swift/release-package.sh` 生成它的内容（Swift 源码 + `binaryTarget` 指向 Release 上的压缩包和 checksum），CI 用 `swift package dump-package` 检查；推送到那个仓库要等负责人建仓库和令牌 |
 | NuGet `AgentIM.Client` | net8.0 和 netstandard2.1 的程序集 + `runtimes/<rid>/native/` 下的原生库 | Linux、macOS、Windows 上用本地源装进一个新项目、连真实服务端发一条消息 | trusted publishing |
 | npm（浏览器、React、React Native） | `npm pack` 的内容和 `files` 一致、不含源码以外的东西 | 已有的单元和端到端测试 | trusted publishing + provenance；作用域见 D124 |
 | Unity `com.agentim.client` | 和 NuGet 同一份 C#，加各平台插件和导入设置（`.meta`），WebGL 用 `.jslib` | 包结构检查；编辑器里的测试要 Unity 许可（D123） | OpenUPM 从 Git 标签取 |
