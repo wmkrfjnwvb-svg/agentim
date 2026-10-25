@@ -307,6 +307,29 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: npm, path: npm, if-no-files-found: error}
 
+  # The Unity package: a UPM tarball with every platform's core and the
+  # .meta files Unity needs (checked); a test in the editor needs a Unity
+  # license (docs/06 D123).
+  unity:
+    needs: [native, android, xcframework]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: {pattern: native-*, path: native, merge-multiple: true}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: {name: android, path: android}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: {name: xcframework, path: xcframework}
+      - run: |
+          unzip -q android/agentim-client.aar 'jni/*' -d aar
+          unzip -q xcframework/AgentIMCore.xcframework.zip -d xcframework
+          sh sdk/client-dotnet/unity/pack.sh native aar/jni xcframework/AgentIMCore.xcframework/ios-arm64/libagentim_client.a unity
+          mkdir check && tar -xzf unity/*.tgz -C check && python3 sdk/client-dotnet/unity/meta.py --check check/package
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: {name: unity, path: unity, if-no-files-found: error}
+
   # The React Native package in a new app, installed from its tarball.
   react-native-android:
     needs: npm

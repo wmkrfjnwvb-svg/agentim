@@ -65,7 +65,7 @@ jobs:
           cp artifacts/dart-prebuilt/* release/
           cp artifacts/xcframework/AgentIMCore.xcframework.zip release/
           cp artifacts/nupkg/*.nupkg artifacts/npm/*.tgz release/
-          cp artifacts/android/agentim-client.aar release/
+          cp artifacts/android/agentim-client.aar artifacts/unity/*.tgz release/
           (cd artifacts && tar -czf ../release/agentim-swift.tar.gz swift-package)
           (cd release && sha256sum * > SHA256SUMS)
           cat release/SHA256SUMS
