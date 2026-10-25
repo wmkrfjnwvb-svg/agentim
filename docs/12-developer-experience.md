@@ -290,7 +290,7 @@ agentim                                    # 打开 http://127.0.0.1:8080
 | NuGet `AgentIM.Client` | net8.0 和 netstandard2.1 的程序集 + `runtimes/<rid>/native/` 下的原生库 | Linux、macOS、Windows 上用本地源装进一个新项目、连真实服务端发一条消息 | trusted publishing |
 | npm（浏览器、React、React Native） | `npm pack` 的内容和 `files` 一致、不含源码以外的东西 | 已有的单元和端到端测试 | trusted publishing + provenance；作用域见 D124 |
 | Unity `com.agentim.client` | 和 NuGet 同一份 C#，加各平台插件和导入设置（`.meta`），WebGL 用 `.jslib` | 包结构检查；编辑器里的测试要 Unity 许可（D123） | OpenUPM 从 Git 标签取 |
-| Android `com.agentim:client` | AAR（四种 ABI、16 KB 页）+ POM + 源码和 javadoc 包 + GPG 签名 | 模拟器上的仪器测试（后续） | Maven Central，见 D126 |
+| Android `com.agentim:client` | AAR（四种 ABI、16 KB 页）+ POM + 源码和 javadoc 包，各带 md5、sha1，按 Central Portal 的上传格式打成一个包（`android/maven-bundle.sh`，CI 每次生成并检查）；有负责人的密钥时加 GPG 签名 | 模拟器上的仪器测试（后续） | Maven Central，组名等负责人验证命名空间（D126） |
 | Flutter、Dart `agentim_client` | Dart FFI（`@Native`）+ 构建钩子 `hook/build.dart` + `hook/prebuilt.json`（12 个预编译库的文件名和 SHA-256：Android 四种 ABI、iOS 真机和模拟器、Linux、macOS、Windows）；钩子按目标平台下载对应的库并核对，不对就构建失败；仓库里没有 `prebuilt.json`，钩子用 cargo 编（D127） | Dart VM 上的一致性场景；按发布的样子（仓库外的副本、从 `file://` 下载）在 Linux、macOS、Windows 上跑同一场景，改错 SHA-256 构建失败；Flutter Linux 应用在 Xvfb 里对着真实服务端 | pub.dev automated publishing；预编译库挂在 `sdk-v<版本>` Release 上 |
 
 第一步（本次）先做不依赖账号和决定的部分：原生库、XCFramework（含 macOS 上的 Swift 场景和 iOS 模拟器编译）、NuGet 包和它在三种系统上的安装测试、npm 包内容检查。第二步已做 Flutter 和 Dart 的预编译库和构建钩子；还剩 Unity 插件导入设置、Android 模拟器、iOS 模拟器里跑场景、React Native 的 podspec 和 Gradle，以及打标签时的上传。

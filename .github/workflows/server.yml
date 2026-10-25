@@ -232,10 +232,15 @@ jobs:
       - name: build and check the AAR
         working-directory: sdk/client-kotlin
         run: ANDROID_NDK="$RUNNER_TEMP/android-ndk-r28c" ANDROID_JAR="$RUNNER_TEMP/android-35/android.jar" KOTLINC="$RUNNER_TEMP/kotlinc/bin/kotlinc" sh android/build-aar.sh
+      - name: the Maven Central bundle (unsigned until D126)
+        working-directory: sdk/client-kotlin
+        run: sh android/maven-bundle.sh build/agentim-client.aar build/maven
       - uses: actions/upload-artifact@v4
         with:
           name: agentim-client-aar
-          path: sdk/client-kotlin/build/agentim-client.aar
+          path: |
+            sdk/client-kotlin/build/agentim-client.aar
+            sdk/client-kotlin/build/maven-bundle.zip
 
   client-flutter:
     name: Flutter (a Linux app with the core from the build hook, against the server)
