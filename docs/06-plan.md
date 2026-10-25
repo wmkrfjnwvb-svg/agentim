@@ -134,7 +134,7 @@
 | A5 | `agentim admin` 和管理 API（缩小后的 D63），和开发者控制台一起 | D63 | ✅ 2026-10-21（[12 §4](12-developer-experience.md)） |
 | A6 | 文件和图片 | 你的设计 | ⏸ 先不做 |
 | A7 | 客户端 SDK（P2） | D104 | ✅ 2026-10-24，本环境能做的部分（[12 §2.14](12-developer-experience.md)）；平台打包和模拟器归 A9 |
-| A9 | 安装和发布（P1） | — | 🔧 [12 §1](12-developer-experience.md) |
+| A9 | 安装和发布（P1） | — | 🔧 [12 §1](12-developer-experience.md)：第一次运行、发布流程（程序、签名、镜像、Chart）、安装脚本和 CHANGELOG 已做（2026-10-25）；依赖扫描、README 快速开始、客户端各包的发布（D123）在做 |
 
 **B. 已知问题**
 

@@ -2,8 +2,10 @@
 replicas: 3
 
 image:
+  # Released charts point to the image of the same release (the release
+  # workflow sets the repository); empty tag: the chart's appVersion.
   repository: agentim
-  tag: local
+  tag: ""
   pullPolicy: IfNotPresent
 
 # The agentim.toml every node uses. Database URLs and the master key come

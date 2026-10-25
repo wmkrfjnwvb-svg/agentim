@@ -20,6 +20,16 @@
 
 **为什么不用 cargo-dist**（2026-10-25 调研）：dist（原 cargo-dist，0.33）还在维护，但它生成的安装脚本在机器上没有 `sha256sum` 时只提示一句就跳过校验（模板 `installer.sh.j2` 第 1628 行），macOS 默认只有 `shasum`，等于不校验；它还会接管并重新生成发布工作流。所以安装脚本自己写（校验不过就停，`sha256sum` 和 `shasum -a 256` 都支持），发布工作流也自己写。
 
+**做成的样子**（2026-10-25，`.github/workflows/release.yml`）：
+- 打 `v*` 标签时发布；PR 上改到 `server/`、`deploy/`、发布流程或 `CHANGELOG.md` 时整套空跑（构建、安装测试、镜像测试、Chart 检查），只是不上传。程序、Chart 的 `version`/`appVersion`、标签、`CHANGELOG.md` 里的小节必须一致，否则一开始就失败（`deploy/release/version.sh`）；发布说明取 `CHANGELOG.md` 那一节。
+- 五个目标：`x86_64`/`aarch64-unknown-linux-musl`（cargo-zigbuild 静态链接）、`x86_64`/`aarch64-apple-darwin`、`x86_64-pc-windows-msvc`；固定 Rust 版本、不用构建缓存、`--locked`；先构建控制台再嵌进程序。文件名不带版本（`agentim-<目标>.tar.gz`、Windows 是 `.zip`），每个旁边一个 `.sha256`，另有汇总的 `SHA256SUMS`，这样安装脚本总能用 `releases/latest/download/`。
+- 安装测试在 Linux、macOS、Windows 上真实运行：从本机起的下载地址安装、`--version`、在空目录里不带参数启动、`/readyz`、用开放 API 发第一条消息并读回（`deploy/smoke/first_message.py`）、再装一次（升级）、改坏的压缩包不装；macOS 上另用 Rosetta 跑 Intel 版。
+- 镜像用 Dockerfile 的 `release` 阶段装上面构建好的静态程序（和下载的是同一个程序，arm64 不用在 QEMU 里编译）；推送前 amd64 和 arm64 各起一次（arm64 在 QEMU 里）检查 `/readyz` 和版本；推送带 SBOM 和构建来源证明，用户和组都是 10001，再用 cosign 签名。
+- Chart 指向同一版本的镜像（`image.tag` 为空时取 `appVersion`），`helm lint`、渲染检查后以 OCI 推到 `ghcr.io/<owner>/charts/agentim` 并签名。
+- 发布物（压缩包、安装脚本、`SHA256SUMS`）每个都有 Sigstore 签名（`.sigstore.json`）和 GitHub 构建来源证明。验证：`gh attestation verify agentim-x86_64-unknown-linux-musl.tar.gz --repo <owner>/agentim`，或 `cosign verify-blob --bundle <文件>.sigstore.json --certificate-identity https://github.com/<owner>/agentim/.github/workflows/release.yml@refs/tags/<版本> --certificate-oidc-issuer https://token.actions.githubusercontent.com <文件>`；镜像 `cosign verify ghcr.io/<owner>/agentim:<版本>`（同样的身份参数）。
+- 会发布的工作流里第三方 Action 都固定到提交，这是 GitHub 安全加固指南的建议（[Security hardening for GitHub Actions](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#using-third-party-actions)）；标签可以被改写，2025 年 3 月 tj-actions/changed-files 就是这样被投毒的（CVE-2025-30066）。版本按"发布满两周"挑选。
+- 安装脚本 `deploy/install/install.sh`、`install.ps1`：只装到用户目录（`~/.agentim/bin`），Windows 加进用户的 PATH（`AGENTIM_NO_MODIFY_PATH=1` 不加），Unix 只提示怎么加；`AGENTIM_VERSION` 装指定版本；没有 `sha256sum` 也没有 `shasum` 时不装；替换程序时一步换掉（运行中的也不受影响）；Windows 出错用 `throw` 而不是 `exit`，免得 `iex` 关掉用户的窗口。
+
 **版本和更新日志**：语义化版本，1.0 之前次版本号可以有不兼容改动，但协议靠能力协商兼容相邻版本（[11 §7](11-cluster.md)）。`CHANGELOG.md` 按 Keep a Changelog 的格式，每个改动在提交时写进"未发布"一节，发布时归档。
 
 **依赖扫描**：CI 加 `cargo-deny`（许可证、已知漏洞、来源）和 `npm audit`；Dependabot 管 Cargo、npm 和 Actions；镜像用 Trivy 扫描。有高危漏洞时发布任务失败。

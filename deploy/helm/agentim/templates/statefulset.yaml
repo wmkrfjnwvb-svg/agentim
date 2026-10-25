@@ -32,7 +32,7 @@ spec:
             - {name: run, mountPath: /run/agentim}
       containers:
         - name: agentim
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["--config", "/run/agentim/agentim.toml", "--log-format", "json"]
           env:
