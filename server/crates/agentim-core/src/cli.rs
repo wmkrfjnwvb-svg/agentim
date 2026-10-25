@@ -542,6 +542,11 @@ pub async fn run_with(cluster: Option<ClusterSupport>) {
         });
     tracing::info!(addr = %args.addr, demo = args.demo, "AgentIM listening");
     println!("AgentIM listening on {scheme}://{}", args.addr);
+    if let Some(f) = crate::config::GENERATED_KEY.get() {
+        println!(
+            "Created the master key {f}: back it up with the database. Without it the encrypted content cannot be read."
+        );
+    }
     // No admin yet: a one-time link to set up the console (docs/12 §4).
     match setup {
         Ok(Some(t)) => {

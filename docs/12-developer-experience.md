@@ -12,18 +12,21 @@
 
 | 发布物 | 做法 |
 |---|---|
-| 预编译程序 | Linux x86_64 / aarch64（musl 静态链接）、macOS x86_64 / arm64、Windows x86_64；用 cargo-dist 生成，每个附 SHA-256 |
+| 预编译程序 | Linux x86_64 / aarch64（musl 静态链接）、macOS x86_64 / arm64、Windows x86_64；GitHub Actions 自己构建（不用 cargo-dist，见下），每个附 SHA-256 |
 | 签名 | 用 Sigstore（cosign，无密钥，凭 GitHub 的身份签名）签发布物，并附 GitHub 构建来源证明；macOS 公证和 Windows Authenticode 需要付费证书（D106） |
 | 一条命令安装 | `curl -fsSL https://…/install.sh \| sh`、`irm https://…/install.ps1 \| iex`：下载对应平台的程序、校验 SHA-256、放进用户目录的 `bin`，不需要 root |
 | Docker 镜像 | `ghcr.io/<org>/agentim:<版本>` 和 `:latest`，amd64 + arm64，用现有的 `deploy/Dockerfile`；镜像签名和 SBOM |
 | Helm Chart | 现有的 `deploy/helm/agentim` 以 OCI 包发布到 GHCR，版本和程序一致 |
 
+**为什么不用 cargo-dist**（2026-10-25 调研）：dist（原 cargo-dist，0.33）还在维护，但它生成的安装脚本在机器上没有 `sha256sum` 时只提示一句就跳过校验（模板 `installer.sh.j2` 第 1628 行），macOS 默认只有 `shasum`，等于不校验；它还会接管并重新生成发布工作流。所以安装脚本自己写（校验不过就停，`sha256sum` 和 `shasum -a 256` 都支持），发布工作流也自己写。
+
 **版本和更新日志**：语义化版本，1.0 之前次版本号可以有不兼容改动，但协议靠能力协商兼容相邻版本（[11 §7](11-cluster.md)）。`CHANGELOG.md` 按 Keep a Changelog 的格式，每个改动在提交时写进"未发布"一节，发布时归档。
 
 **依赖扫描**：CI 加 `cargo-deny`（许可证、已知漏洞、来源）和 `npm audit`；Dependabot 管 Cargo、npm 和 Actions；镜像用 Trivy 扫描。有高危漏洞时发布任务失败。
 
-**第一次运行要顺**（5 分钟目标的关键）：现在没有配置时会因为没有主密钥拒绝启动。改为：
-- `agentim` 不带参数：在当前目录建 `agentim.db`，并生成主密钥文件 `agentim.key`（权限 0600），日志里醒目地提示备份它；已有密钥文件就用它。
+**第一次运行要顺**（5 分钟目标的关键；✅ 2026-10-25）：
+- `agentim` 不带参数：在当前目录建 `agentim.db`，并在旁边生成主密钥文件 `agentim.db.key`（权限 0600）；启动输出里和地址放在一起提示"已生成主密钥、和数据库一起备份，丢了就读不出加密的内容"。已有密钥文件就用它。
+- 密钥文件的权限：自动生成的那个只能本人读，别人能读（组或其他人有任何权限）就拒绝启动，并说明 `chmod 600`（OpenSSH 和 PostgreSQL 对私钥也这样）；用 `encryption.key_file` 指定的文件（多是挂进来的 Secret）只在所有人可读时警告，组可读不算（Kubernetes 用 `fsGroup` 加 `defaultMode: 0440`，Helm Chart 已改成这样）。目录不可写时说明可以换目录、`--db` 或 `encryption.key_file`，不留下半成品。
 - 启动后打印本机地址和控制台的一次性初始化链接（第一次打开时设置管理员密码和 TOTP，见 §4）。
 - `agentim --demo` 保持现状（演示用户和演示 Agent）。
 

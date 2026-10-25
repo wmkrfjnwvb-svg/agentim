@@ -111,3 +111,89 @@ fn admin_commands_reach_a_running_server() {
     let _ = server.kill();
     let _ = server.wait();
 }
+
+/// `agentim` with no arguments in an empty folder (docs/12 §1): it makes
+/// the database and its master key, says where the key is and to back it
+/// up, and prints the address and the console setup link. The second start
+/// reuses the key; a key others can read stops it (Unix).
+#[test]
+fn the_first_run_needs_nothing() {
+    use std::io::{BufRead, BufReader};
+    let dir = tempfile::tempdir().unwrap();
+    let start = || {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr = format!("127.0.0.1:{port}");
+        let mut p = Command::new(BIN)
+            .args(["--addr", &addr])
+            .current_dir(dir.path())
+            .env_remove("AGENTIM_MASTER_KEY")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut seen = vec![];
+        for l in BufReader::new(p.stdout.take().unwrap()).lines() {
+            let l = l.unwrap();
+            let done = l.contains("/console/setup?token=");
+            seen.push(l);
+            if done {
+                break;
+            }
+        }
+        let _ = p.kill();
+        let _ = p.wait();
+        (addr, seen.join("\n"))
+    };
+    let (addr, out) = start();
+    let key = dir.path().join("agentim.db.key");
+    assert!(dir.path().join("agentim.db").exists());
+    assert!(
+        out.contains(&format!("listening on http://{addr}")),
+        "{out}"
+    );
+    assert!(
+        out.contains("Created the master key")
+            && out.contains("agentim.db.key")
+            && out.contains("back it up"),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!("http://{addr}/console/setup?token=setup_")),
+        "{out}"
+    );
+    let k = std::fs::read_to_string(&key).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    // Again: the same key, nothing created.
+    let (_, out) = start();
+    assert!(!out.contains("Created the master key"), "{out}");
+    assert_eq!(std::fs::read_to_string(&key).unwrap(), k);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let out = Command::new(BIN)
+            .args(["--addr", "127.0.0.1:0"])
+            .current_dir(dir.path())
+            .env_remove("AGENTIM_MASTER_KEY")
+            .output()
+            .unwrap();
+        assert_ne!(out.status.code(), Some(0));
+        let err = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(err.contains("chmod 600"), "{err}");
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), k, "the key is kept");
+    }
+}

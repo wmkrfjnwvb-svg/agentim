@@ -17,7 +17,7 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
-      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001}
       initContainers:
         # The database URL goes into the config file without landing in
         # the ConfigMap.
@@ -63,4 +63,5 @@ spec:
         - name: run
           emptyDir: {medium: Memory}
         - name: key
-          secret: {secretName: {{ .Values.existingSecret }}, items: [{key: master-key, path: master-key}]}
+          # Readable by the service's group only (fsGroup above).
+          secret: {secretName: {{ .Values.existingSecret }}, defaultMode: 0440, items: [{key: master-key, path: master-key}]}
