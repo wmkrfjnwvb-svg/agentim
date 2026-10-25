@@ -119,7 +119,8 @@ try
     using var a = Client(alice);
     using var b = Client(bob);
     await Task.WhenAll(a.ConnectAsync(), b.ConnectAsync());
-    Check(await Until(() => a.Connection.Value.State == "connected" && b.Connection.Value.State == "connected"), "W1 both connect");
+    Check(await Until(() => a.Connection.Value.State == "connected" && b.Connection.Value.State == "connected"),
+        $"W1 both connect ({a.Connection.Value.State} {a.Connection.Value.Reason}, {b.Connection.Value.State} {b.Connection.Value.Reason})");
 
     var conv = (string)(await a.CallAsync("create_conv", new JsonObject { ["kind"] = "group", ["title"] = "dotnet", ["members"] = new JsonArray(bob.Id) }))!["conv_id"]!;
     var av = a.Messages(conv);

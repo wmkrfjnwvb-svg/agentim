@@ -401,7 +401,15 @@ async fn a_joining_node_gets_its_share_while_traffic_flows(db: TestDb) {
 }
 
 async fn leaving_hands_shards_over_at_once(db: TestDb) {
-    let nodes = cluster(&db, 2).await;
+    // A long lease, so taking over well before it ends cannot be expiry.
+    let mut nodes = vec![];
+    for i in 0..2 {
+        let mut cfg = cluster_cfg(&db.url, &format!("n{i}"));
+        cfg.cluster.lease_ms = 15_000;
+        cfg.cluster.stop_ms = 10_000;
+        nodes.push(start_with(cfg).await.expect("node starts"));
+    }
+    settled(&nodes).await;
     let alice = user(&nodes[0].0, "alice", UserKind::Human, None).await;
     let bob = user(&nodes[0].0, "bob", UserKind::Human, None).await;
     let mut convs = vec![];
@@ -415,12 +423,12 @@ async fn leaving_hands_shards_over_at_once(db: TestDb) {
     nodes[stays].1.nudge();
     wait_for(
         "the other node takes everything",
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         || nodes[stays].1.held(0).len() == (SHARDS + 2) as usize,
     )
     .await;
     assert!(
-        t0.elapsed() < Duration::from_secs(3),
+        t0.elapsed() < Duration::from_secs(8),
         "no wait for expiry: {:?}",
         t0.elapsed()
     );
