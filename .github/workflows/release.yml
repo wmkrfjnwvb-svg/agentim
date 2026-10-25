@@ -8,8 +8,15 @@
 name: release
 
 on:
+  # Tags always run (path filters do not apply to tag pushes); a branch
+  # push runs it when the release machinery itself changed.
   push:
     tags: ["v*"]
+    branches: ["**"]
+    paths:
+      - ".github/workflows/release.yml"
+      - "deploy/**"
+      - "CHANGELOG.md"
   pull_request:
     paths:
       - ".github/workflows/release.yml"
