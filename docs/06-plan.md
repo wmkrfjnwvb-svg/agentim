@@ -72,7 +72,7 @@
 |---|---|---|
 | D120 | 浏览器 SDK 的核心跑在主标签页的主线程，设计里写的是 Worker（[12 §2.10](12-developer-experience.md)） | 先保持主线程：核心 146 KB、每次处理很快，测试里没有卡顿；等有真实应用测到界面卡再放进 Worker（接口不用变） |
 | D121 | 客户端覆盖率：设计要求 100%，现在核心 98.4%、CI 门槛 98%，没覆盖的行和理由列在 [05 §5](05-operations.md)；各语言封装没跑覆盖率工具 | 门槛先定 98%，把"没测的边角"补上测试后提到 99%；封装的覆盖率在 A9 有 macOS、Android 机器时一起做 |
-| D123 | Android AAR（四种 ABI、16 KB 页）、Flutter 插件（Linux 应用跑通）和 Unity WebGL 桥已做；还缺 iOS 的 XCFramework、Android 模拟器和 Unity 编辑器里的测试，需要 macOS、带 KVM 的 Linux 和 Unity 许可（GitHub 的 macOS 和 Linux 机器都有前两样），本环境做不了 | 放进 A9：XCFramework、各包发布（npm、SwiftPM、Maven Central、NuGet、OpenUPM、pub.dev）一起做，CI 加 macOS 任务跑 iOS 模拟器、Linux 任务用模拟器跑 AAR 和 Flutter Android；Unity 用 game-ci 跑批处理（要许可） |
+| D123 | 客户端包：XCFramework、NuGet、npm（含 React Native 原生部分）、Dart 预编译库、AAR 和 Maven bundle、Swift 包仓库内容、Unity tarball 都已在 CI 构建并按应用的样子测过（[12 §2.12.1](12-developer-experience.md)），打 `sdk-v*` 标签由 `sdk-release.yml` 发布。还缺：Android 模拟器里跑场景（AAR、Flutter、React Native；GitHub 的 Linux 机器有 KVM），Unity 编辑器里的测试（要 Unity 许可） | Android 模拟器用 `reactivecircus/android-emulator-runner` 做下一步；Unity 许可要你决定是否买（个人版免费许可也能在 CI 里用，需要你的 Unity 账号生成许可文件放进 Secrets） |
 | D119 | 离线推送（APNs、FCM）：手机 App 切到后台后靠系统推送收到新消息。现在服务端没有实现，计划里也没有单独一项 | 补上，放在最后，排在文件和图片之后（2026-10-20 负责人定）。A7 的设备 ID 先留好以后登记推送令牌的位置。做之前先调研 Stream、Sendbird、腾讯云 IM，再出设计 |
 | D99 | 规模测试 `slow` 场景在 GitHub 的 Linux 机器上：停止读取超过空闲时间的连接，服务端已经关闭（连接数指标减少），但客户端恢复读取后既收不到剩余的帧也看不到关闭，本地和 Windows 上都能看到。消息不会丢：客户端重连后按设备位置同步，测试证明数据完整 | 测试工具现在按 SDK 的做法：一分钟没收到任何东西就自己重连并同步，单独计数。原因仍未查明（本地和 Windows 都复现不了）。C2 加了位置校验（`heads`，Agent SDK 每 30 秒一次），真实客户端即使遇到这种情况也会在 30 秒内发现并补齐。**告知你，暂不需要决定** |
 
