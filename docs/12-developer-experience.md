@@ -288,7 +288,8 @@ agentim                                    # 打开 http://127.0.0.1:8080
 | 原生库 | `libagentim_client`：Linux x64/arm64（glibc 2.28，cargo-zigbuild）、macOS x64/arm64、Windows x64；每个附 SHA-256 | 各平台跑 C ABI 测试 | 作为 NuGet、Unity 包的内容，也挂在 GitHub Release 上 |
 | XCFramework | 静态库：iOS 真机 arm64、iOS 模拟器 arm64+x86_64、macOS arm64+x86_64，带头文件和 module map，压缩包附 SwiftPM 的 checksum | macOS 上用它跑 Swift 一致性场景（W1–W9），并为 iOS 模拟器编译 | SwiftPM 要求 `Package.swift` 在仓库根目录，所以发到单独的 `agentim-swift` 仓库（D125）：`sdk/client-swift/release-package.sh` 生成它的内容（Swift 源码 + `binaryTarget` 指向 Release 上的压缩包和 checksum），CI 用 `swift package dump-package` 检查；推送到那个仓库要等负责人建仓库和令牌 |
 | NuGet `AgentIM.Client` | net8.0 和 netstandard2.1 的程序集 + `runtimes/<rid>/native/` 下的原生库 | Linux、macOS、Windows 上用本地源装进一个新项目、连真实服务端发一条消息 | trusted publishing |
-| npm（浏览器、React、React Native） | `npm pack` 的内容和 `files` 一致、不含源码以外的东西 | 已有的单元和端到端测试 | trusted publishing + provenance；作用域见 D124 |
+| npm（浏览器、React） | `npm pack` 的内容和 `files` 一致、不含源码以外的东西 | 已有的单元和端到端测试 | trusted publishing + provenance；作用域见 D124 |
+| npm `@agentimhq/client-react-native` | 纯 C++ TurboModule（`install()` 装上 JSI 绑定），自动链接：Android 用 `android/CMakeLists.txt`（`react-native.config.cjs` 的 `cxxModule*` 三项），iOS 用 podspec；原生核心放在包里：Android 四种 ABI 的 `.so`（16 KB 页，CMake 导入库，应用打包时带上），iOS 动态 XCFramework（带隐私清单）。不放静态 XCFramework：压缩后 70 MB，动态的三份 dylib 不到 5 MB | 新建一个 0.87.1 应用、从 tarball 安装：Android 打 release APK 并检查核心和模块在里面，iOS 打模拟器 release 包、在模拟器里对着真实服务端两人收发 | 同上 |
 | Unity `com.agentim.client` | 和 NuGet 同一份 C#，加各平台插件和导入设置（`.meta`），WebGL 用 `.jslib` | 包结构检查；编辑器里的测试要 Unity 许可（D123） | OpenUPM 从 Git 标签取 |
 | Android `com.agentim:client` | AAR（四种 ABI、16 KB 页）+ POM + 源码和 javadoc 包，各带 md5、sha1，按 Central Portal 的上传格式打成一个包（`android/maven-bundle.sh`，CI 每次生成并检查）；有负责人的密钥时加 GPG 签名 | 模拟器上的仪器测试（后续） | Maven Central，组名等负责人验证命名空间（D126） |
 | Flutter、Dart `agentim_client` | Dart FFI（`@Native`）+ 构建钩子 `hook/build.dart` + `hook/prebuilt.json`（12 个预编译库的文件名和 SHA-256：Android 四种 ABI、iOS 真机和模拟器、Linux、macOS、Windows）；钩子按目标平台下载对应的库并核对，不对就构建失败；仓库里没有 `prebuilt.json`，钩子用 cargo 编（D127） | Dart VM 上的一致性场景；按发布的样子（仓库外的副本、从 `file://` 下载）在 Linux、macOS、Windows 上跑同一场景，改错 SHA-256 构建失败；Flutter Linux 应用在 Xvfb 里对着真实服务端 | pub.dev automated publishing；预编译库挂在 `sdk-v<版本>` Release 上 |
@@ -297,7 +298,7 @@ agentim                                    # 打开 http://127.0.0.1:8080
 
 **发布**（`.github/workflows/sdk-release.yml`，打 `sdk-v<版本>` 标签）：`sdk/version.sh` 先查所有包的版本号一致、和标签相同（每次 CI 也查）；然后依赖检查、整套构建和测试（复用 `sdk-packages.yml`）；再把所有文件放上 GitHub Release：Dart 的 12 个预编译库（先核对和包里记录的 SHA-256 一致）、XCFramework、NuGet、npm 包、AAR、`agentim-swift` 的内容，加 `SHA256SUMS`、每个文件的 Sigstore 签名和构建来源证明。之后才发各注册表，每个注册表要负责人先在那边设好（变量或密钥，见工作流开头的说明），没设的跳过、包只在 Release 上：npm（trusted publishing + provenance，先发 client-web）、NuGet（`NuGet/login` 换临时密钥）、pub.dev（automated publishing；`dart pub publish --dry-run` 每次 CI 都跑，必须 0 个警告）、`agentim-swift` 仓库（提交并打版本标签）、Maven Central（签名后上传 bundle）。
 
-还剩 Unity 插件导入设置、Android 模拟器、iOS 模拟器里跑场景、React Native 的 podspec 和 Gradle。
+还剩 Unity 插件导入设置、Android 模拟器里跑场景（AAR、Flutter、React Native）。
 
 ### 2.13 测试和覆盖率
 

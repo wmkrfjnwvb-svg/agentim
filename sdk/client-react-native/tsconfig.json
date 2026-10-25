@@ -8,7 +8,15 @@
     "outDir": "dist",
     "rootDir": "src",
     "skipLibCheck": true,
-    "lib": ["ES2022"]
+    "lib": [
+      "ES2022"
+    ]
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "src/NativeAgentIM.ts",
+    "src/react-native.ts"
+  ]
 }

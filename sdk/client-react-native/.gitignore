@@ -1,2 +1,5 @@
 node_modules/
 dist/
+android/jniLibs/
+ios/AgentIMCore.xcframework/
+include/

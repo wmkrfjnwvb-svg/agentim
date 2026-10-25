@@ -1,7 +1,7 @@
 {
   "name": "@agentimhq/client-react-native",
   "version": "0.1.0",
-  "description": "AgentIM client SDK for React Native: the native core through JSI (docs/12 §2.12), same API as @agentimhq/client-web",
+  "description": "AgentIM client SDK for React Native: the native core through JSI (docs/12 \u00a72.12), same API as @agentimhq/client-web",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -13,7 +13,14 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "cpp"
+    "src",
+    "cpp",
+    "include",
+    "android/CMakeLists.txt",
+    "android/jniLibs",
+    "ios",
+    "AgentIMReactNative.podspec",
+    "react-native.config.cjs"
   ],
   "peerDependencies": {
     "@agentimhq/client-web": "0.1.x",
@@ -26,5 +33,19 @@
   "devDependencies": {
     "@agentimhq/client-web": "file:../client-web",
     "typescript": "5.9.3"
+  },
+  "react-native": "src/react-native.ts",
+  "codegenConfig": {
+    "name": "AgentIMSpec",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "android": {
+      "javaPackageName": "com.agentim.reactnative"
+    },
+    "ios": {
+      "modulesProvider": {
+        "AgentIM": "AgentIMModuleProvider"
+      }
+    }
   }
 }
