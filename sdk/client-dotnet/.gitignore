@@ -4,3 +4,5 @@ unity/Runtime/Client.cs
 unity/Runtime/Native.cs
 unity/Runtime/Plugins/*
 !unity/Runtime/Plugins/WebGL/
+AgentIM.Client/runtimes/
+out/

@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "React hooks and components for AgentIM (docs/12 §3), on @agentim/client-web",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wmkrfjnwvb-svg/agentim.git",
+    "directory": "sdk/react"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

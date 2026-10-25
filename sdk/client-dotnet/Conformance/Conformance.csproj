@@ -6,7 +6,14 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
-  <ItemGroup>
+  <!-- -p:AgentIMPackage=<version>: the published package instead of the project. -->
+  <ItemGroup Condition="'$(AgentIMPackage)' == ''">
     <ProjectReference Include="../AgentIM.Client/AgentIM.Client.csproj" />
   </ItemGroup>
+  <ItemGroup Condition="'$(AgentIMPackage)' != ''">
+    <PackageReference Include="AgentIM.Client" Version="$(AgentIMPackage)" />
+  </ItemGroup>
+  <PropertyGroup Condition="'$(AgentIMPackage)' != ''">
+    <DefineConstants>$(DefineConstants);AGENTIM_PACKAGE</DefineConstants>
+  </PropertyGroup>
 </Project>

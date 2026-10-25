@@ -3,10 +3,18 @@
   "version": "0.1.0",
   "description": "AgentIM client SDK for React Native: the native core through JSI (docs/12 §2.12), same API as @agentim/client-web",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wmkrfjnwvb-svg/agentim.git",
+    "directory": "sdk/client-react-native"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "cpp"],
+  "files": [
+    "dist",
+    "cpp"
+  ],
   "peerDependencies": {
     "@agentim/client-web": "0.1.x",
     "react-native": ">=0.76"

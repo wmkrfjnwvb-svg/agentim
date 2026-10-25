@@ -17,12 +17,17 @@ using AgentIM.Client;
 var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../.."));
 var exe = OperatingSystem.IsWindows() ? ".exe" : "";
 var bin = Environment.GetEnvironmentVariable("AGENTIM_BIN") ?? Path.Combine(root, "server/target/debug/agentim" + exe);
+#if !AGENTIM_PACKAGE
+// Built against the project: the library from the local Rust build. Built
+// against the NuGet package (-p:AgentIMPackage=<version>), .NET loads the
+// one the package ships for this platform.
 var libDir = Environment.GetEnvironmentVariable("AGENTIM_LIB") ?? Path.Combine(root, "sdk/client-rust/target/debug");
 NativeLibrary.SetDllImportResolver(typeof(AgentIMClient).Assembly, (name, asm, path) =>
 {
     var file = OperatingSystem.IsWindows() ? "agentim_client.dll" : OperatingSystem.IsMacOS() ? "libagentim_client.dylib" : "libagentim_client.so";
     return NativeLibrary.Load(Path.Combine(libDir, file));
 });
+#endif
 
 var dir = Directory.CreateTempSubdirectory("agentim-dotnet-").FullName;
 var port = 19800 + Random.Shared.Next(150);

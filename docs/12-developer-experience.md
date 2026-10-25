@@ -279,6 +279,22 @@ agentim                                    # 打开 http://127.0.0.1:8080
 
 体积：原生每个平台每种架构压缩后不超过 3 MB，wasm 压缩后不超过 300 KB；CI 记录体积，超了失败。版本：语义化版本，旧的主版本至少维护 12 个月；服务端可以告诉太旧的 SDK 升级（`client_too_old`）。
 
+#### 2.12.1 打包和发布（A9 / D123，2026-10-25 设计）
+
+所有客户端包用同一个版本号（`sdk/client-rust` 工作区的版本），打 `sdk-v*` 标签时发布；改到 `sdk/` 的推送和 PR 上整套构建、测试、打包，只是不上传（`.github/workflows/sdk-packages.yml`）。能用 OIDC 的注册表都不存长期密钥：npm（[trusted publishers](https://docs.npmjs.com/trusted-publishers)，带 provenance）、NuGet（[trusted publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing)，`NuGet/login` 换一小时的临时密钥）、pub.dev（[automated publishing](https://dart.dev/go/automated-publishing)，按标签）。这三个都要先在注册表网站上登记仓库和工作流文件名，npm 还要求包先存在（第一次手动发布）。
+
+| 包 | 内容 | 测试 | 发布 |
+|---|---|---|---|
+| 原生库 | `libagentim_client`：Linux x64/arm64（glibc 2.28，cargo-zigbuild）、macOS x64/arm64、Windows x64；每个附 SHA-256 | 各平台跑 C ABI 测试 | 作为 NuGet、Unity 包的内容，也挂在 GitHub Release 上 |
+| XCFramework | 静态库：iOS 真机 arm64、iOS 模拟器 arm64+x86_64、macOS arm64+x86_64，带头文件和 module map，压缩包附 SwiftPM 的 checksum | macOS 上用它跑 Swift 一致性场景（W1–W9），并为 iOS 模拟器编译 | 见 D125：SwiftPM 要求 `Package.swift` 在仓库根目录 |
+| NuGet `AgentIM.Client` | net8.0 和 netstandard2.1 的程序集 + `runtimes/<rid>/native/` 下的原生库 | Linux、macOS、Windows 上用本地源装进一个新项目、连真实服务端发一条消息 | trusted publishing |
+| npm（浏览器、React、React Native） | `npm pack` 的内容和 `files` 一致、不含源码以外的东西 | 已有的单元和端到端测试 | trusted publishing + provenance；作用域见 D124 |
+| Unity `com.agentim.client` | 和 NuGet 同一份 C#，加各平台插件和导入设置（`.meta`），WebGL 用 `.jslib` | 包结构检查；编辑器里的测试要 Unity 许可（D123） | OpenUPM 从 Git 标签取 |
+| Android `com.agentim:client` | AAR（四种 ABI、16 KB 页）+ POM + 源码和 javadoc 包 + GPG 签名 | 模拟器上的仪器测试（后续） | Maven Central，见 D126 |
+| Flutter | `agentim_client`（Dart FFI）和 `agentim_flutter` 插件 | 已有的 Linux 应用测试 | pub.dev；插件现在构建时要本机有 Rust，发布前改成下载对应平台的预编译库并核对 SHA-256（flutter_rust_bridge 的 cargokit 也这样），见 D127 |
+
+第一步（本次）先做不依赖账号和决定的部分：原生库、XCFramework（含 macOS 上的 Swift 场景和 iOS 模拟器编译）、NuGet 包和它在三种系统上的安装测试、npm 包内容检查。Unity 插件导入设置、Android 模拟器、iOS 模拟器里跑场景、Flutter 预编译库、React Native 的 podspec 和 Gradle 是第二步。
+
 ### 2.13 测试和覆盖率
 
 **覆盖率 100%**：核心（Rust）用 `cargo llvm-cov` 统计行和分支，低于 100% CI 失败；各语言封装用各自的工具（TypeScript c8、Swift xccov、Kotlin Kover、C# coverlet、Dart coverage），同样 100%。确实测不到的行（比如平台不可能返回的错误分支）必须加标注并在 [05 §5](05-operations.md) 列出理由。覆盖率只是底线，下面这些才是主体：
