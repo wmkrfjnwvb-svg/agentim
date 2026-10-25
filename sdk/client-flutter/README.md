@@ -37,6 +37,9 @@ plugin is needed:
 
 `prebuilt.sh` writes `prebuilt.json` from the release files (`sdk-packages.yml`).
 
+On Android the app needs `<uses-permission android:name="android.permission.INTERNET" />` in
+`android/app/src/main/AndroidManifest.xml` (Flutter adds it to debug builds only).
+
 ## Tests
 
 `test.sh` checks format and analysis, then runs the conformance scenario (docs/12 §2.13,

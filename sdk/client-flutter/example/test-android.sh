@@ -20,7 +20,7 @@ cd "$work/example"
 rm -rf build .dart_tool
 sed -i.bak 's#path: \.\.#path: ../agentim_client#' pubspec.yaml
 flutter create --platforms android --project-name agentim_example . > /dev/null
-sed -i.bak 's/<application /<application android:usesCleartextTraffic="true" /' android/app/src/main/AndroidManifest.xml
+python3 "$pkg/../allow-cleartext.py" android/app/src/main/AndroidManifest.xml
 flutter build apk --release --target-platform android-x64 --dart-define=AGENTIM_URL=http://127.0.0.1:$port
 apk=build/app/outputs/flutter-apk/app-release.apk
 unzip -l "$apk" | grep -q "lib/x86_64/libagentim_client.so" || { echo "FAIL the core is not in the APK"; exit 1; }

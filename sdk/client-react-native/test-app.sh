@@ -29,13 +29,13 @@ start_server() {
 # The result line from the app's log, waited for up to two minutes.
 await_result() { # log file
   for i in $(seq 120); do grep -q "AGENTIM_SMOKE" "$1" && break; sleep 1; done
-  grep "AGENTIM_SMOKE" "$1" || { echo "FAIL no result from the app"; exit 1; }
+  grep "AGENTIM_SMOKE" "$1" || { echo "FAIL no result from the app"; return 1; }
   grep -q "AGENTIM_SMOKE ok" "$1"
 }
 case "$platform" in
 android)
   # The test talks plain HTTP to the server on this machine (adb reverse).
-  sed -i.bak 's/<application /<application android:usesCleartextTraffic="true" /' android/app/src/main/AndroidManifest.xml
+  python3 "$here/../allow-cleartext.py" android/app/src/main/AndroidManifest.xml
   (cd android && ./gradlew --no-daemon -q assembleRelease -PreactNativeArchitectures=arm64-v8a,x86_64)
   apk=android/app/build/outputs/apk/release/app-release.apk
   for abi in arm64-v8a x86_64; do
@@ -77,11 +77,17 @@ print(next(x['udid'] for k,v in d.items() if 'iOS' in k for x in v if 'iPhone' i
   xcrun simctl bootstatus "$udid" -b > /dev/null
   xcrun simctl install "$udid" "$app"
   log="$work/app.log"
-  xcrun simctl spawn "$udid" log stream --style compact --predicate 'eventMessage CONTAINS "AGENTIM_SMOKE"' > "$log" 2>&1 &
+  # Everything the app logs, so a crash or a hang shows why.
+  xcrun simctl spawn "$udid" log stream --style compact --level debug --predicate 'process == "AgentIMApp"' > "$log" 2>&1 &
   logger=$!
   sleep 2
   xcrun simctl launch "$udid" org.reactjs.native.example.AgentIMApp > /dev/null
-  await_result "$log" || { kill $logger; exit 1; }
+  if ! await_result "$log"; then
+    kill $logger 2>/dev/null || true
+    tail -n 150 "$log"
+    ls "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep -i agentim && tail -n 60 "$HOME"/Library/Logs/DiagnosticReports/AgentIMApp* 2>/dev/null
+    exit 1
+  fi
   kill $logger 2>/dev/null || true
   echo "ok   two people talk through the core in the iOS simulator"
   ;;
