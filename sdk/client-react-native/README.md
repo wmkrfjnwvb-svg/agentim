@@ -43,5 +43,5 @@ Nothing to do beyond `npm install` (React Native 0.76+, the new architecture; iO
   `react-native` 0.87.1 (CI).
 - `test-app.sh android|ios <tarballs>`: a new React Native 0.87.1 app with the package installed
   from its tarball. Android: a release APK for arm64-v8a and x86_64 with the core and the module
-  in it. iOS: a release build for the simulator that embeds the core, run there against a real
+  in it, run in an emulator against a real `agentim` (`EMULATOR=1`). iOS: a release build for the simulator that embeds the core, run there against a real
   `agentim`: two people connect and one gets the other's message (CI, `sdk-packages.yml`).
