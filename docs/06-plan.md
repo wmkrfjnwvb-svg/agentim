@@ -74,9 +74,6 @@
 | D121 | 客户端覆盖率：设计要求 100%，现在核心 98.4%、CI 门槛 98%，没覆盖的行和理由列在 [05 §5](05-operations.md)；各语言封装没跑覆盖率工具 | 门槛先定 98%，把"没测的边角"补上测试后提到 99%；封装的覆盖率在 A9 有 macOS、Android 机器时一起做 |
 | D123 | Android AAR（四种 ABI、16 KB 页）、Flutter 插件（Linux 应用跑通）和 Unity WebGL 桥已做；还缺 iOS 的 XCFramework、Android 模拟器和 Unity 编辑器里的测试，需要 macOS、带 KVM 的 Linux 和 Unity 许可（GitHub 的 macOS 和 Linux 机器都有前两样），本环境做不了 | 放进 A9：XCFramework、各包发布（npm、SwiftPM、Maven Central、NuGet、OpenUPM、pub.dev）一起做，CI 加 macOS 任务跑 iOS 模拟器、Linux 任务用模拟器跑 AAR 和 Flutter Android；Unity 用 game-ci 跑批处理（要许可） |
 | D119 | 离线推送（APNs、FCM）：手机 App 切到后台后靠系统推送收到新消息。现在服务端没有实现，计划里也没有单独一项 | 补上，放在最后，排在文件和图片之后（2026-10-20 负责人定）。A7 的设备 ID 先留好以后登记推送令牌的位置。做之前先调研 Stream、Sendbird、腾讯云 IM，再出设计 |
-| D125 | Swift 包：SwiftPM 要求 `Package.swift` 在仓库根目录 | 建议单独建 `agentim-swift` 仓库，只放 `Package.swift`（`binaryTarget` 指向 Release 上的 XCFramework 和它的 checksum）和 Swift 源码，由发布流程更新（Mozilla 的 application-services 就这样，[说明](https://searchfox.org/firefox-main/source/third_party/application-services/docs/design/swift-package-manager.md)）；需要你建仓库并给发布流程写权限。另一种是把 `Package.swift` 放到本仓库根目录，用户会克隆整个仓库 |
-| D126 | Maven Central 的命名空间 | 需要你在 Sonatype Central Portal 注册并验证命名空间（有域名用 `com.<域名>`，否则 `io.github.<你的 GitHub 名>`），生成发布令牌和 GPG 签名密钥，放进仓库的 Secrets；在这之前 Android 包只挂在 GitHub Release 上 |
-| D127 | Flutter 插件构建时要本机有 Rust | 发布到 pub.dev 前改成构建时下载对应平台的预编译库并核对 SHA-256，没有网络或想自己编时才用 Rust（cargokit 的做法） |
 | D99 | 规模测试 `slow` 场景在 GitHub 的 Linux 机器上：停止读取超过空闲时间的连接，服务端已经关闭（连接数指标减少），但客户端恢复读取后既收不到剩余的帧也看不到关闭，本地和 Windows 上都能看到。消息不会丢：客户端重连后按设备位置同步，测试证明数据完整 | 测试工具现在按 SDK 的做法：一分钟没收到任何东西就自己重连并同步，单独计数。原因仍未查明（本地和 Windows 都复现不了）。C2 加了位置校验（`heads`，Agent SDK 每 30 秒一次），真实客户端即使遇到这种情况也会在 30 秒内发现并补齐。**告知你，暂不需要决定** |
 
 ### 1.2 已确认
@@ -84,6 +81,9 @@
 - **2026-10-25 负责人："按你的想法修复就行"**，以下按建议定：
   - D122：删掉旧的 TypeScript SDK `sdk/client-ts`（规则和测试已在 Rust 核心里，git 历史里还在）。
   - D124：npm 作用域 `@agentim` 已被另一个也叫 AgentIM 的开源项目占用（[NoPKT/AgentIM](https://github.com/NoPKT/AgentIM)，2026-02 发布了 `@agentim/shared`），我们的包改用 `@agentimhq`（`@agentimhq/client-web`、`@agentimhq/react`、`@agentimhq/client-react-native`、`@agentimhq/server`、`@agentimhq/agent`）。产品名不改。发布前需要你在 npm 上建 `agentimhq` 组织（免费）。
+  - D127：Flutter 和 Dart 包改用 Dart 的构建钩子（[hooks](https://dart.dev/tools/hooks)，Dart 3.10 起稳定；Flutter 文档 [Binding to native code](https://docs.flutter.dev/platform-integration/bind-native-code)）：`agentim_client` 的 `hook/build.dart` 在发布出去的包里按平台下载 `sdk-v<版本>` Release 上的预编译库，按包里记录的 SHA-256 核对，不对就构建失败；在本仓库里用 cargo 编。用户不需要装 Rust，也不需要单独的插件，`agentim_flutter` 插件和 C 垫片删掉（垫片的事由核心的 `agentim_dart_new` 做）。没选 CocoaPods 的 `prepare_command`：它对本地路径的 pod 不执行。
+  - D125：Swift 包单独建 `agentim-swift` 仓库（只放 `Package.swift` 和 Swift 源码，`binaryTarget` 指向 Release 上的 XCFramework 和 checksum），由发布流程更新。需要你建这个仓库，并给发布流程一个能写它的令牌（仓库 Secrets）；在这之前 XCFramework 只挂在 Release 上。
+  - D126：Android 包发到 Maven Central。需要你在 Sonatype Central Portal 注册并验证命名空间（有域名用 `com.<域名>`，否则 `io.github.<你的 GitHub 名>`），生成发布令牌和 GPG 签名密钥放进 Secrets；在这之前 AAR 只挂在 Release 上。
 
 | # | 事项 | 结果 |
 |---|---|---|

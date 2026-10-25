@@ -1,5 +1,6 @@
 /* The C ABI from C: connect with a token, create a conversation, send,
- * and see the message sent. Prints what happened; exits 0 on success.
+ * and see the message sent; the Dart entry points connect too, each event
+ * a copy the callback frees. Prints what happened; exits 0 on success.
  *   abi_test <url> <token> */
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,18 @@ static void on_event(void *ctx, const char *json) {
     }
     if (strstr(json, "\"type\":\"operation\"") && strstr(json, "\"result\":\"done\"")) sent = 1;
     pthread_mutex_unlock(&mu);
+}
+
+static agentim_client *dart;
+static int dart_connected;
+
+/* Owns json, as Dart does (it reads it after the call returned). */
+static void on_dart_event(char *json) {
+    pthread_mutex_lock(&mu);
+    if (strstr(json, "\"type\":\"need_token\"")) agentim_client_token(dart, token, 0);
+    if (strstr(json, "\"type\":\"connection\"") && strstr(json, "\"state\":\"connected\"")) dart_connected = 1;
+    pthread_mutex_unlock(&mu);
+    agentim_dart_string_free(json);
 }
 
 static int wait_for(int *flag) {
@@ -62,6 +75,17 @@ int main(int argc, char **argv) {
     agentim_client_command(client, 3, cmd);
     if (!wait_for(&sent)) { printf("not sent\n"); return 8; }
     printf("sent\n");
+    if (agentim_dart_new("not json", NULL, on_dart_event) != NULL) return 9;
+    snprintf(cfg, sizeof cfg, "{\"url\":\"%s\",\"device_id\":\"c-dart\"}", argv[1]);
+    pthread_mutex_lock(&mu);
+    dart = agentim_dart_new(cfg, NULL, on_dart_event);
+    pthread_mutex_unlock(&mu);
+    if (!dart) return 10;
+    agentim_client_command(dart, 1, "{\"cmd\":\"connect\"}");
+    if (!wait_for(&dart_connected)) { printf("dart not connected\n"); return 11; }
+    printf("dart connected\n");
+    agentim_client_free(dart);
+    agentim_dart_string_free(NULL);
     agentim_client_network(client, 1, 1);
     agentim_client_foreground(client, 1);
     agentim_client_free(client);

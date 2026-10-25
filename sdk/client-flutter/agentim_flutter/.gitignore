@@ -1,8 +1,0 @@
-.dart_tool/
-build/
-pubspec.lock
-.flutter-plugins*
-example/build/
-example/.dart_tool/
-example/linux/flutter/ephemeral/
-example/pubspec.lock

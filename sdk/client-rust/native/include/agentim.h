@@ -31,6 +31,13 @@ void agentim_client_foreground(agentim_client *c, int foreground);
 void agentim_client_free(agentim_client *c);
 const char *agentim_version(void);
 
+/* Dart: each event is a copy the callback owns; free it with
+ * agentim_dart_string_free (Dart reads it after the call returned). */
+typedef void (*agentim_dart_event_cb)(char *json);
+agentim_client *agentim_dart_new(const char *config_json, const char *store_dir,
+                                 agentim_dart_event_cb callback);
+void agentim_dart_string_free(char *json);
+
 #ifdef __cplusplus
 }
 #endif

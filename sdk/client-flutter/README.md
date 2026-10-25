@@ -1,9 +1,10 @@
 # AgentIM client SDK for Flutter and Dart
 
 Dart FFI over the Rust core's C ABI (`sdk/client-rust/native`, docs/12 §2). Events arrive
-through `NativeCallable.listener`, in the core's order, on the isolate's event loop. The small
-C shim `src/agentim_dart.c` copies each event, because the core's string is gone by the time
-Dart runs.
+through `NativeCallable.listener`, in the core's order, on the isolate's event loop; the core's
+`agentim_dart_new` gives each event as a copy, because Dart reads it after the native call
+returned. The same package works in Flutter apps and in Dart programs; Flutter web uses
+`@agentimhq/client-web` instead.
 
 ```dart
 final client = AgentIMClient.create(ClientOptions(
@@ -21,21 +22,30 @@ await client.send(convId, 'hello');       // in messages(convId).list when it re
 - `setNetwork(online)` from `connectivity_plus`, `setForeground(bool)` from
   `AppLifecycleListener`.
 
-## Flutter plugin
+## The native core
 
-`agentim_flutter/` is an FFI plugin. Its CMake builds the Rust core with cargo (on Android one
-target per ABI, with 16 KB pages) and the shim, and bundles both into the app. The app then
-uses `package:agentim_flutter/agentim_flutter.dart` without `libraryDir`.
+The build hook `hook/build.dart` provides the core for the platform being built (Dart 3.10+,
+[hooks](https://dart.dev/tools/hooks)); Flutter bundles it into the app. No Rust toolchain or
+plugin is needed:
 
-`agentim_flutter/test.sh` builds `example/` for Linux and runs it under Xvfb against a real
-server. The Android, iOS, macOS and Windows plugin builds have not been run here; iOS and macOS
-need the XCFramework (A9). Flutter web uses `@agentimhq/client-web` instead.
+- The published package has `hook/prebuilt.json`: the library for Android (arm64-v8a,
+  armeabi-v7a, x86_64, x86; 16 KB pages), iOS (device, simulator), Linux (x64, arm64; glibc
+  2.28+), macOS (x64, arm64) and Windows (x64) is downloaded from the `sdk-v<version>` GitHub
+  release and checked against the SHA-256 recorded there. A mismatch fails the build.
+- In this repository there is no `prebuilt.json`, and the hook builds the core with cargo from
+  `../client-rust` (other targets need their cargo linker configured).
+
+`prebuilt.sh` writes `prebuilt.json` from the release files (`sdk-packages.yml`).
 
 ## Tests
 
-`test.sh` builds the shim and checks format and analysis. It then runs the conformance
-scenario (docs/12 §2.13, W1–W9) against a real `agentim`:
+`test.sh` checks format and analysis, then runs the conformance scenario (docs/12 §2.13,
+W1–W9) against a real `agentim`. `test-package.sh <library>` does the same with the package as
+published: a copy outside the repository whose hook downloads the given library from a
+`file://` URL and checks it; then a wrong SHA-256 must fail the build. `example/test.sh` builds
+a Flutter Linux app and runs it under Xvfb against a real server.
 
 ```bash
 DART=…/dart sh test.sh
+sh test-package.sh ../client-rust/target/debug/libagentim_client.so
 ```

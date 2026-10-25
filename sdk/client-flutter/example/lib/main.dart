@@ -1,13 +1,13 @@
-// A Flutter app that uses the plugin's bundled libraries (no libraryDir)
+// A Flutter app with the core from agentim_client's build hook,
 // against a real agentim: two people connect, one sends, the other gets it
 // through its view; the widget shows the conversation. With AGENTIM_SMOKE
-// set it prints the result and exits (CI, see ../test.sh).
+// set it prints the result and exits (CI, see test.sh).
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:agentim_flutter/agentim_flutter.dart';
+import 'package:agentim_client/agentim_client.dart';
 import 'package:flutter/widgets.dart';
 
 void main() => runApp(const App());

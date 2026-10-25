@@ -291,9 +291,9 @@ agentim                                    # 打开 http://127.0.0.1:8080
 | npm（浏览器、React、React Native） | `npm pack` 的内容和 `files` 一致、不含源码以外的东西 | 已有的单元和端到端测试 | trusted publishing + provenance；作用域见 D124 |
 | Unity `com.agentim.client` | 和 NuGet 同一份 C#，加各平台插件和导入设置（`.meta`），WebGL 用 `.jslib` | 包结构检查；编辑器里的测试要 Unity 许可（D123） | OpenUPM 从 Git 标签取 |
 | Android `com.agentim:client` | AAR（四种 ABI、16 KB 页）+ POM + 源码和 javadoc 包 + GPG 签名 | 模拟器上的仪器测试（后续） | Maven Central，见 D126 |
-| Flutter | `agentim_client`（Dart FFI）和 `agentim_flutter` 插件 | 已有的 Linux 应用测试 | pub.dev；插件现在构建时要本机有 Rust，发布前改成下载对应平台的预编译库并核对 SHA-256（flutter_rust_bridge 的 cargokit 也这样），见 D127 |
+| Flutter、Dart `agentim_client` | Dart FFI（`@Native`）+ 构建钩子 `hook/build.dart` + `hook/prebuilt.json`（12 个预编译库的文件名和 SHA-256：Android 四种 ABI、iOS 真机和模拟器、Linux、macOS、Windows）；钩子按目标平台下载对应的库并核对，不对就构建失败；仓库里没有 `prebuilt.json`，钩子用 cargo 编（D127） | Dart VM 上的一致性场景；按发布的样子（仓库外的副本、从 `file://` 下载）在 Linux、macOS、Windows 上跑同一场景，改错 SHA-256 构建失败；Flutter Linux 应用在 Xvfb 里对着真实服务端 | pub.dev automated publishing；预编译库挂在 `sdk-v<版本>` Release 上 |
 
-第一步（本次）先做不依赖账号和决定的部分：原生库、XCFramework（含 macOS 上的 Swift 场景和 iOS 模拟器编译）、NuGet 包和它在三种系统上的安装测试、npm 包内容检查。Unity 插件导入设置、Android 模拟器、iOS 模拟器里跑场景、Flutter 预编译库、React Native 的 podspec 和 Gradle 是第二步。
+第一步（本次）先做不依赖账号和决定的部分：原生库、XCFramework（含 macOS 上的 Swift 场景和 iOS 模拟器编译）、NuGet 包和它在三种系统上的安装测试、npm 包内容检查。第二步已做 Flutter 和 Dart 的预编译库和构建钩子；还剩 Unity 插件导入设置、Android 模拟器、iOS 模拟器里跑场景、React Native 的 podspec 和 Gradle，以及打标签时的上传。
 
 ### 2.13 测试和覆盖率
 
@@ -318,7 +318,7 @@ agentim                                    # 打开 http://127.0.0.1:8080
 | S3 | 浏览器封装：wasm、IndexedDB、加密、多标签页 | ✅ `@agentimhq/client-web`：IndexedDB（AES-GCM，密钥不可导出）、打不开时用内存；Web Locks + BroadcastChannel 一个账号一条连接，主标签页关闭后接替；Node 也能用 |
 | S4 | Swift、Kotlin | 🔧 封装写完，在 Linux 上对着真实服务端跑通一致性场景（Swift 6.2；Kotlin 通过 JNI 在 JVM 上）。Android 库（AAR）能构建：NDK r28c 编四种 ABI 的核心和 JNI 桥（16 KB 页），Kotlin 对着 `android.jar` 编译，CI 检查对齐和 JNI 入口；没在模拟器或真机上跑过（本环境没有 KVM）。XCFramework 没做（需要 macOS） |
 | S5 | C#（.NET、Unity，含 WebGL 桥） | 🔧 .NET（net8.0、netstandard2.1）跑通一致性场景；Unity 包（主线程、暂停和恢复、网络）写了但没在 Unity 里跑过；WebGL 桥：`AgentIM.jslib` 在浏览器里实现和 C ABI 同名的函数（底下是 `@agentimhq/client-web`），C# 代码各平台一样，测试按 emscripten 的方式加载它、模拟 C# 一侧，对着真实服务端跑；C# 的 WebGL 编译路径在 CI 编译 |
-| S6 | Flutter、React Native | 🔧 Dart FFI 在 Dart VM 上跑通一致性场景；Flutter 插件 `agentim_flutter`（FFI 插件，构建时用 cargo 编核心、编垫片并打进应用）：Linux 桌面应用在虚拟显示里对着真实服务端跑通，Android、iOS、macOS、Windows 的插件构建没跑过；React Native：JSI 绑定能对着 0.87.1 的头文件编译，TypeScript 部分用假绑定测试，没在设备上跑过 |
+| S6 | Flutter、React Native | 🔧 Dart FFI 在 Dart VM 上跑通一致性场景；Flutter 通过 `agentim_client` 的构建钩子拿到核心（发布的包下载核对过的预编译库，仓库里用 cargo 编）：Linux 桌面应用在虚拟显示里对着真实服务端跑通，Android、iOS 的预编译库在 CI 里构建，但没在设备或模拟器上跑过；React Native：JSI 绑定能对着 0.87.1 的头文件编译，TypeScript 部分用假绑定测试，没在设备上跑过 |
 | S7 | React 界面组件和客服窗口示例（§3） | ✅ `@agentimhq/react`：hooks 和组件（含成员列表、转人工提示），每种状态的组件测试，客服窗口在 Chromium 里对着真实服务端和真实 Agent 跑通 |
 
 **每个封装都跑的一致性场景**（W1–W9，对着真实 `agentim`）：两边连上；发送返回时消息已在列表里、之后变成已发送、对方收到、会话进列表（含表情）；编辑和撤回到达对方；被业务拒绝的发送显示失败并报告、删除后消失；在线请求返回服务端的错误码、未知命令 `bad_request`；重启后队列先从缓存显示、连上后按顺序发出且只发一次、队列清空；断网后不是已连接、离线发的消息恢复后只发一次；令牌被拒后停在 `failed`（`unauthenticated`）；关闭后命令返回 `closed`、关两次没问题。

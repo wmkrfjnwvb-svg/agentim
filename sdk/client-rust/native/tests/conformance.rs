@@ -632,4 +632,5 @@ fn the_c_abi_from_c() {
     );
     assert!(stdout.contains("connected"), "{stdout}");
     assert!(stdout.contains("sent"), "{stdout}");
+    assert!(stdout.contains("dart connected"), "{stdout}");
 }

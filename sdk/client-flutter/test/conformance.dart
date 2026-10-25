@@ -30,13 +30,21 @@ List<String> sent(Messages v) => v.list.value.where((m) => m['status'] == 'sent'
 Future<void> main() async {
   // B12: a reset replaces a view in one update, never empty in between.
   {
-    Map<String, dynamic> up(String key, int order) => {'op': 'upsert', 'message': {'key': key, 'order': order}};
+    Map<String, dynamic> up(String key, int order) => {
+      'op': 'upsert',
+      'message': {'key': key, 'order': order},
+    };
     final v = Messages.detached('c1');
-    v.debugApplyEvent({'changes': [up('a', 1), up('b', 2)]});
+    v.debugApplyEvent({
+      'changes': [up('a', 1), up('b', 2)],
+    });
     final lists = <List<String>>[];
     final sub = v.list.watch().skip(1).listen((l) => lists.add([for (final m in l) m['key'] as String]));
     await Future<void>.delayed(Duration.zero);
-    v.debugApplyEvent({'reset': true, 'changes': [up('b', 2), up('c', 3)]});
+    v.debugApplyEvent({
+      'reset': true,
+      'changes': [up('b', 2), up('c', 3)],
+    });
     await Future<void>.delayed(Duration.zero);
     await sub.cancel();
     check(lists.length == 1 && lists[0].join(',') == 'b,c', 'B12 a reset is one update ($lists)');
@@ -44,7 +52,6 @@ Future<void> main() async {
 
   final env = Platform.environment;
   final bin = env['AGENTIM_BIN']!;
-  final lib = env['AGENTIM_LIB']!;
   final dir = Directory.systemTemp.createTempSync('agentim-dart-');
   final port = 20150 + Random().nextInt(100);
   final url = 'http://127.0.0.1:$port';
@@ -64,13 +71,7 @@ Future<void> main() async {
   }
 
   AgentIMClient client(({String id, String name, String token}) p, {String? store, String? device, Future<String> Function()? token}) =>
-      AgentIMClient.create(ClientOptions(
-        url: url,
-        deviceId: device ?? '${p.name}-d',
-        storeDir: store,
-        libraryDir: lib,
-        tokenProvider: token ?? () async => p.token,
-      ));
+      AgentIMClient.create(ClientOptions(url: url, deviceId: device ?? '${p.name}-d', storeDir: store, tokenProvider: token ?? () async => p.token));
 
   Future<String> code(Future<Object?> Function() f) async {
     try {
@@ -91,7 +92,7 @@ Future<void> main() async {
         return false;
       }
     }, 30000);
-    final version = AgentIMClient.version(libraryDir: lib);
+    final version = AgentIMClient.version();
     check(version.isNotEmpty, 'version $version');
     final alice = await person('alice');
     final bob = await person('bob');
@@ -100,11 +101,14 @@ Future<void> main() async {
     await Future.wait([a.connect(), b.connect()]);
     check(await untilSync(() => a.connection.value.state == 'connected' && b.connection.value.state == 'connected'), 'W1 both connect');
 
-    final conv = ((await a.call('create_conv', {
-      'kind': 'group',
-      'title': 'dart',
-      'members': [bob.id]
-    })) as Map)['conv_id'] as String;
+    final conv =
+        ((await a.call('create_conv', {
+                  'kind': 'group',
+                  'title': 'dart',
+                  'members': [bob.id],
+                }))
+                as Map)['conv_id']
+            as String;
     final av = a.messages(conv);
     final r = await a.send(conv, 'hello from Dart 👋');
     check((r['key'] as String).startsWith('local:') && av.list.value.any((m) => m['content'] == 'hello from Dart 👋'), 'W2 a send is shown when it returns');

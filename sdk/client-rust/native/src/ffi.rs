@@ -123,6 +123,47 @@ pub extern "C" fn agentim_client_free(c: *mut Client) {
     }));
 }
 
+/// Dart (sdk/client-flutter) reads each event after the native call has
+/// returned (`NativeCallable.listener`), so it is given its own copy, which
+/// it frees with [`agentim_dart_string_free`].
+pub type DartEventCallback = extern "C" fn(json: *mut c_char);
+
+/// [`agentim_client_new`] for Dart: each event is a copy the callback owns.
+#[unsafe(no_mangle)]
+pub extern "C" fn agentim_dart_new(
+    config_json: *const c_char,
+    store_dir: *const c_char,
+    callback: DartEventCallback,
+) -> *mut Client {
+    catch_unwind(|| {
+        let cfg: Config = serde_json::from_str(str_arg(config_json)?).ok()?;
+        let dir = str_arg(store_dir).map(PathBuf::from);
+        let client = Client::start(
+            cfg,
+            dir,
+            Box::new(move |v: &Value| {
+                if let Ok(s) = CString::new(v.to_string()) {
+                    callback(s.into_raw());
+                }
+            }),
+        );
+        Some(Box::into_raw(Box::new(client)))
+    })
+    .ok()
+    .flatten()
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// Frees an event string given by [`agentim_dart_new`]'s callback.
+#[unsafe(no_mangle)]
+pub extern "C" fn agentim_dart_string_free(s: *mut c_char) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !s.is_null() {
+            drop(unsafe { CString::from_raw(s) });
+        }
+    }));
+}
+
 /// The SDK version (static string).
 #[unsafe(no_mangle)]
 pub extern "C" fn agentim_version() -> *const c_char {

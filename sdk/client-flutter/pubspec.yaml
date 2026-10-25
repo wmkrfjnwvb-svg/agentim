@@ -1,10 +1,13 @@
 name: agentim_client
-description: AgentIM client SDK for Flutter and Dart (docs/12 §2), the Rust core through Dart FFI.
+description: AgentIM client SDK for Flutter and Dart (docs/12 §2), the Rust core through Dart FFI; the build hook provides the core for each platform.
 version: 0.1.0
 publish_to: none
 
 environment:
-  sdk: ">=3.4.0 <4.0.0"
+  sdk: ">=3.10.0 <4.0.0"
 
 dependencies:
+  code_assets: 2.1.0
+  crypto: 3.0.7
   ffi: 2.2.0
+  hooks: 2.2.0

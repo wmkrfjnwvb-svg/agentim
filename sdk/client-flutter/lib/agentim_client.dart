@@ -12,6 +12,10 @@
 //   StreamBuilder(stream: client.conversations.watch(), builder: …);
 //   await client.connect();
 //   await client.send(convId, 'hello');   // in messages(convId).list when it returns
+//
+// The native core comes from this package's build hook (hook/build.dart).
+@DefaultAsset('package:agentim_client/agentim_client.dart')
+library;
 
 import 'dart:async';
 import 'dart:convert';
@@ -38,9 +42,6 @@ class ClientOptions {
   final String clientVersion;
   final Duration commandTimeout;
 
-  /// Where `agentim_client` and `agentim_dart` are (default: the app's bundled libraries).
-  final String? libraryDir;
-
   const ClientOptions({
     required this.url,
     required this.deviceId,
@@ -51,7 +52,6 @@ class ClientOptions {
     this.clientName = 'agentim-dart',
     this.clientVersion = '0.1.0',
     this.commandTimeout = const Duration(seconds: 60),
-    this.libraryDir,
   });
 }
 
@@ -72,11 +72,11 @@ class AgentIMError implements Exception {
   const AgentIMError(this.code, this.message, {this.retryable = false, this.retryAfterMs});
 
   factory AgentIMError.from(Map<String, dynamic>? e) => AgentIMError(
-        e?['code'] as String? ?? 'internal',
-        e?['message'] as String? ?? e?['code'] as String? ?? 'error',
-        retryable: e?['retryable'] as bool? ?? false,
-        retryAfterMs: (e?['retry_after_ms'] as num?)?.toInt(),
-      );
+    e?['code'] as String? ?? 'internal',
+    e?['message'] as String? ?? e?['code'] as String? ?? 'error',
+    retryable: e?['retryable'] as bool? ?? false,
+    retryAfterMs: (e?['retry_after_ms'] as num?)?.toInt(),
+  );
 
   @override
   String toString() => 'AgentIMError($code: $message)';
@@ -176,52 +176,27 @@ class Messages {
 
 typedef _EventNative = Void Function(Pointer<Utf8>);
 
-class _Lib {
-  final Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<NativeFunction<_EventNative>>) newClient;
-  final Pointer<Void> Function(Pointer<Void>) client;
-  final void Function(Pointer<Void>) free;
-  final void Function(Pointer<Utf8>) stringFree;
-  final int Function(Pointer<Void>, int, Pointer<Utf8>) command;
-  final void Function(Pointer<Void>, Pointer<Utf8>, int) token;
-  final void Function(Pointer<Void>, int, int) network;
-  final void Function(Pointer<Void>, int) foreground;
-  final Pointer<Utf8> Function() version;
-
-  _Lib(DynamicLibrary core, DynamicLibrary shim)
-      : newClient = shim.lookupFunction<Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<NativeFunction<_EventNative>>),
-            Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<NativeFunction<_EventNative>>)>('agentim_dart_new'),
-        client = shim.lookupFunction<Pointer<Void> Function(Pointer<Void>), Pointer<Void> Function(Pointer<Void>)>('agentim_dart_client'),
-        free = shim.lookupFunction<Void Function(Pointer<Void>), void Function(Pointer<Void>)>('agentim_dart_free'),
-        stringFree = shim.lookupFunction<Void Function(Pointer<Utf8>), void Function(Pointer<Utf8>)>('agentim_dart_string_free'),
-        command = core
-            .lookupFunction<Int32 Function(Pointer<Void>, Uint64, Pointer<Utf8>), int Function(Pointer<Void>, int, Pointer<Utf8>)>('agentim_client_command'),
-        token =
-            core.lookupFunction<Void Function(Pointer<Void>, Pointer<Utf8>, Int32), void Function(Pointer<Void>, Pointer<Utf8>, int)>('agentim_client_token'),
-        network = core.lookupFunction<Void Function(Pointer<Void>, Int32, Uint64), void Function(Pointer<Void>, int, int)>('agentim_client_network'),
-        foreground = core.lookupFunction<Void Function(Pointer<Void>, Int32), void Function(Pointer<Void>, int)>('agentim_client_foreground'),
-        version = core.lookupFunction<Pointer<Utf8> Function(), Pointer<Utf8> Function()>('agentim_version');
-
-  static _Lib? _loaded;
-
-  static _Lib load(String? dir) => _loaded ??= _Lib(_open('agentim_client', dir), _open('agentim_dart', dir));
-
-  static DynamicLibrary _open(String name, String? dir) {
-    // iOS links both statically into the app.
-    if (Platform.isIOS) return DynamicLibrary.process();
-    final file = Platform.isWindows
-        ? '$name.dll'
-        : Platform.isMacOS
-            ? 'lib$name.dylib'
-            : 'lib$name.so';
-    return DynamicLibrary.open(dir == null ? file : '$dir/$file');
-  }
-}
+// The C ABI (sdk/client-rust/native/include/agentim.h).
+@Native<Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<NativeFunction<_EventNative>>)>()
+external Pointer<Void> agentim_dart_new(Pointer<Utf8> config, Pointer<Utf8> storeDir, Pointer<NativeFunction<_EventNative>> callback);
+@Native<Void Function(Pointer<Utf8>)>()
+external void agentim_dart_string_free(Pointer<Utf8> json);
+@Native<Int32 Function(Pointer<Void>, Uint64, Pointer<Utf8>)>()
+external int agentim_client_command(Pointer<Void> c, int id, Pointer<Utf8> json);
+@Native<Void Function(Pointer<Void>, Pointer<Utf8>, Int32)>()
+external void agentim_client_token(Pointer<Void> c, Pointer<Utf8> token, int refused);
+@Native<Void Function(Pointer<Void>, Int32, Uint64)>()
+external void agentim_client_network(Pointer<Void> c, int online, int generation);
+@Native<Void Function(Pointer<Void>, Int32)>()
+external void agentim_client_foreground(Pointer<Void> c, int foreground);
+@Native<Void Function(Pointer<Void>)>()
+external void agentim_client_free(Pointer<Void> c);
+@Native<Pointer<Utf8> Function()>()
+external Pointer<Utf8> agentim_version();
 
 class AgentIMClient {
   final ClientOptions _o;
-  final _Lib _lib;
   late final NativeCallable<_EventNative> _callable;
-  Pointer<Void> _handle = nullptr;
   Pointer<Void> _ptr = nullptr;
   int _next = 0;
   int _generation = 0;
@@ -235,12 +210,12 @@ class AgentIMClient {
   final connection = Observed<Connection>(const Connection('closed'));
   final conversations = Observed<List<Map<String, dynamic>>>(const []);
 
-  AgentIMClient._(this._o, this._lib);
+  AgentIMClient._(this._o);
 
-  static String version({String? libraryDir}) => _Lib.load(libraryDir).version().toDartString();
+  static String version() => agentim_version().toDartString();
 
   static AgentIMClient create(ClientOptions o) {
-    final c = AgentIMClient._(o, _Lib.load(o.libraryDir));
+    final c = AgentIMClient._(o);
     c._callable = NativeCallable<_EventNative>.listener(c._onEvent);
     final cfg = jsonEncode({
       'url': o.url,
@@ -252,16 +227,15 @@ class AgentIMClient {
     }).toNativeUtf8();
     final dir = o.storeDir?.toNativeUtf8() ?? nullptr;
     try {
-      c._handle = c._lib.newClient(cfg, dir.cast(), c._callable.nativeFunction);
+      c._ptr = agentim_dart_new(cfg, dir.cast(), c._callable.nativeFunction);
     } finally {
       malloc.free(cfg);
       if (dir != nullptr) malloc.free(dir);
     }
-    if (c._handle == nullptr) {
+    if (c._ptr == nullptr) {
       c._callable.close();
       throw const AgentIMError('bad_request', 'the client could not start (check url and device_id)');
     }
-    c._ptr = c._lib.client(c._handle);
     return c;
   }
 
@@ -270,7 +244,7 @@ class AgentIMClient {
     try {
       text = json.toDartString();
     } finally {
-      _lib.stringFree(json);
+      agentim_dart_string_free(json);
     }
     if (_ptr == nullptr) return;
     final e = (jsonDecode(text) as Map).cast<String, dynamic>();
@@ -326,7 +300,7 @@ class AgentIMClient {
     }
     if (_ptr == nullptr) return;
     final t = token?.toNativeUtf8() ?? nullptr;
-    _lib.token(_ptr, t.cast(), token == null ? refused : 0);
+    agentim_client_token(_ptr, t.cast(), token == null ? refused : 0);
     if (t != nullptr) malloc.free(t);
   }
 
@@ -340,18 +314,21 @@ class AgentIMClient {
     _pending[id] = p;
     if (applyInOrder != null) _inOrder[id] = applyInOrder;
     final s = jsonEncode(cmd).toNativeUtf8();
-    final r = _lib.command(_ptr, id, s);
+    final r = agentim_client_command(_ptr, id, s);
     malloc.free(s);
     if (r != 0) {
       _pending.remove(id);
       _inOrder.remove(id);
       return Future.error(const AgentIMError('bad_request', 'not a command'));
     }
-    return p.future.timeout(_o.commandTimeout, onTimeout: () {
-      _pending.remove(id);
-      _inOrder.remove(id);
-      throw const AgentIMError('timeout', 'no answer from the client core', retryable: true);
-    });
+    return p.future.timeout(
+      _o.commandTimeout,
+      onTimeout: () {
+        _pending.remove(id);
+        _inOrder.remove(id);
+        throw const AgentIMError('timeout', 'no answer from the client core', retryable: true);
+      },
+    );
   }
 
   /// Events: operation, side, signal, reset, storage, event, read, mute (and the ones above).
@@ -363,12 +340,12 @@ class AgentIMClient {
 
   /// The platform's network: call on every change (connectivity_plus).
   void setNetwork(bool online) {
-    if (_ptr != nullptr) _lib.network(_ptr, online ? 1 : 0, ++_generation);
+    if (_ptr != nullptr) agentim_client_network(_ptr, online ? 1 : 0, ++_generation);
   }
 
   /// The app came to the foreground or went to the background (AppLifecycleListener).
   void setForeground(bool foreground) {
-    if (_ptr != nullptr) _lib.foreground(_ptr, foreground ? 1 : 0);
+    if (_ptr != nullptr) agentim_client_foreground(_ptr, foreground ? 1 : 0);
   }
 
   /// The conversation's messages, kept up to date.
@@ -392,13 +369,15 @@ class AgentIMClient {
   Future<void> logout() => command({'cmd': 'logout'});
 
   /// Returns `{client_msg_id, key}` once the message is queued and shown.
-  Future<Map<String, dynamic>> send(String convId, String text, {String? clientMsgId, String? replyTo}) async => ((await command({
-        'cmd': 'send',
-        'conv_id': convId,
-        'text': text,
-        if (clientMsgId != null) 'client_msg_id': clientMsgId,
-        if (replyTo != null) 'reply_to': replyTo,
-      })) as Map)
+  Future<Map<String, dynamic>> send(String convId, String text, {String? clientMsgId, String? replyTo}) async =>
+      ((await command({
+                'cmd': 'send',
+                'conv_id': convId,
+                'text': text,
+                if (clientMsgId != null) 'client_msg_id': clientMsgId,
+                if (replyTo != null) 'reply_to': replyTo,
+              }))
+              as Map)
           .cast<String, dynamic>();
 
   Future<void> edit(String convId, String msgId, String text) => command({'cmd': 'edit', 'conv_id': convId, 'msg_id': msgId, 'text': text});
@@ -414,9 +393,9 @@ class AgentIMClient {
   /// Stops the client; no event is handled after it returns. Waiting calls fail with `closed`.
   void dispose() {
     if (_ptr == nullptr) return;
+    final c = _ptr;
     _ptr = nullptr;
-    _lib.free(_handle);
-    _handle = nullptr;
+    agentim_client_free(c);
     // Events already queued for this isolate are freed as they arrive, then the callback goes.
     Timer(const Duration(seconds: 1), _callable.close);
     for (final p in _pending.values) {

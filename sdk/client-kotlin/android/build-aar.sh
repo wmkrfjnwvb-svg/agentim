@@ -16,19 +16,12 @@ mkdir -p libs
 fetch() { [ -f "libs/$2" ] || curl -sSfL -o "libs/$2" "https://repo1.maven.org/maven2/$1/$2"; }
 fetch org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.10.2 kotlinx-coroutines-core-jvm-1.10.2.jar
 PAGE="-Wl,-z,max-page-size=16384"
-for pair in aarch64-linux-android:arm64-v8a:aarch64-linux-android armv7-linux-androideabi:armeabi-v7a:armv7a-linux-androideabi x86_64-linux-android:x86_64:x86_64-linux-android i686-linux-android:x86:i686-linux-android; do
-  target=${pair%%:*}; rest=${pair#*:}; abi=${rest%%:*}; clang=${rest#*:}
-  cc="$NDK_BIN/$clang$API-clang"
-  t=$(echo "$target" | tr 'a-z-' 'A-Z_')
-  env "CARGO_TARGET_${t}_LINKER=$cc" "CC_$(echo "$target" | tr '-' '_')=$cc" "AR_$(echo "$target" | tr '-' '_')=$NDK_BIN/llvm-ar" \
-    "CARGO_TARGET_${t}_RUSTFLAGS=-C link-arg=$PAGE" \
-    cargo build --manifest-path "$root/sdk/client-rust/Cargo.toml" -p agentim-client --release --target "$target" --quiet
-  lib="$root/sdk/client-rust/target/$target/release/libagentim_client.so"
-  mkdir -p "$out/jni/$abi"
-  cp "$lib" "$out/jni/$abi/"
+sh "$root/sdk/client-rust/native/build-android.sh" "$out/jni"
+for pair in arm64-v8a:aarch64-linux-android armeabi-v7a:armv7a-linux-androideabi x86_64:x86_64-linux-android x86:i686-linux-android; do
+  abi=${pair%%:*}; cc="$NDK_BIN/${pair#*:}$API-clang"
   "$cc" -shared -fPIC -O2 -Wall -Wextra -Werror $PAGE -o "$out/jni/$abi/libagentim_jni.so" src/main/c/agentim_jni.c \
     -I"$root/sdk/client-rust/native/include" -L"$out/jni/$abi" -lagentim_client -llog
-  "$NDK_BIN/llvm-strip" --strip-unneeded "$out/jni/$abi/"*.so
+  "$NDK_BIN/llvm-strip" --strip-unneeded "$out/jni/$abi/libagentim_jni.so"
 done
 "${KOTLINC:-kotlinc}" -Werror -no-jdk -jvm-target 11 -cp "$ANDROID_JAR:libs/kotlinx-coroutines-core-jvm-1.10.2.jar" -d build/android-classes src/main/kotlin 2>&1 | grep -v '^warning: unable to find kotlin-stdlib' || true
 [ -f build/android-classes/com/agentim/client/AgentIMClient.class ]
