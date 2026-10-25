@@ -307,6 +307,38 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: npm, path: npm, if-no-files-found: error}
 
+  # The Flutter example app on Android with the package as published (the
+  # hook downloads and checks the Android core), run in an emulator.
+  flutter-android:
+    needs: dart
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: {name: dart-prebuilt, path: prebuilt}
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with: {distribution: temurin, java-version: 17}
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with: {flutter-version: "3.47.7", channel: stable}
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with: {workspaces: server}
+      - working-directory: server
+        run: cargo build --bin agentim
+      - name: KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: AGENTIM_BIN="$PWD/server/target/debug/agentim" sh sdk/client-flutter/example/test-android.sh prebuilt
+
   # The Unity package: a UPM tarball with every platform's core and the
   # .meta files Unity needs (checked); a test in the editor needs a Unity
   # license (docs/06 D123).

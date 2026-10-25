@@ -51,7 +51,8 @@ class _AppState extends State<App> {
   }
 
   Future<void> run() async {
-    final url = Platform.environment['AGENTIM_URL'] ?? 'http://127.0.0.1:8080';
+    // An app on a phone has no environment: --dart-define=AGENTIM_URL=...
+    final url = Platform.environment['AGENTIM_URL'] ?? const String.fromEnvironment('AGENTIM_URL', defaultValue: 'http://127.0.0.1:8080');
     var ok = true;
     void check(bool c, String what) {
       log('${c ? 'ok  ' : 'FAIL'} $what');
