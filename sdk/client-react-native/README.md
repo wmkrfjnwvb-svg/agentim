@@ -33,7 +33,9 @@ Nothing to do beyond `npm install` (React Native 0.76+, the new architecture; iO
   (arm64-v8a, armeabi-v7a, x86_64, x86; 16 KB pages) and `ios/AgentIMCore.xcframework`
   (dynamic, with its privacy manifest). `prepare-native.sh` puts them there before `npm pack`.
 - Apps get `src/react-native.ts` (the `react-native` field), which calls the module's
-  `install()` once; Node and type checking get `dist/index.js`.
+  `install()` once; Node and type checking get `dist/index.js`. It shares the views and errors
+  of `@agentimhq/client-web` through its `view` entry, which has no wasm loader (Metro cannot
+  bundle the loader's Node branch).
 
 ## Tests
 

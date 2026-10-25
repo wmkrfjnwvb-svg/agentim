@@ -1,7 +1,7 @@
 {
   "name": "@agentimhq/client-web",
   "version": "0.1.0",
-  "description": "AgentIM client SDK for browsers and Node: the Rust core (wasm) with WebSocket, an encrypted IndexedDB cache and one connection per account across tabs (docs/12 §2)",
+  "description": "AgentIM client SDK for browsers and Node: the Rust core (wasm) with WebSocket, an encrypted IndexedDB cache and one connection per account across tabs (docs/12 \u00a72)",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -16,7 +16,11 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./agentim_core.wasm": "./dist/agentim_core.wasm"
+    "./agentim_core.wasm": "./dist/agentim_core.wasm",
+    "./view": {
+      "types": "./dist/view.d.ts",
+      "default": "./dist/view.js"
+    }
   },
   "files": [
     "dist"

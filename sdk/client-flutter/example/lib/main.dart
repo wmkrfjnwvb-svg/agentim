@@ -22,7 +22,8 @@ class _AppState extends State<App> {
   final lines = <String>[];
 
   void log(String s) {
-    stdout.writeln(s);
+    // print: on Android it goes to logcat (stdout does not).
+    print(s); // ignore: avoid_print
     setState(() => lines.add(s));
   }
 
@@ -64,20 +65,20 @@ class _AppState extends State<App> {
       final tag = DateTime.now().millisecondsSinceEpoch;
       final alice = await person(url, 'flutter-a$tag');
       final bob = await person(url, 'flutter-b$tag');
-      AgentIMClient client(Map<String, dynamic> p) => AgentIMClient.create(ClientOptions(
-            url: url,
-            deviceId: '${p['user']['name']}-d',
-            tokenProvider: () async => p['token'] as String,
-          ));
+      AgentIMClient client(Map<String, dynamic> p) =>
+          AgentIMClient.create(ClientOptions(url: url, deviceId: '${p['user']['name']}-d', tokenProvider: () async => p['token'] as String));
       final a = client(alice);
       final b = client(bob);
       await Future.wait([a.connect(), b.connect()]);
       check(await until(() => a.connection.value.state == 'connected' && b.connection.value.state == 'connected'), 'both connect');
-      final conv = ((await a.call('create_conv', {
-        'kind': 'group',
-        'title': 'flutter',
-        'members': [bob['user']['id']],
-      })) as Map)['conv_id'] as String;
+      final conv =
+          ((await a.call('create_conv', {
+                    'kind': 'group',
+                    'title': 'flutter',
+                    'members': [bob['user']['id']],
+                  }))
+                  as Map)['conv_id']
+              as String;
       final bv = b.messages(conv);
       await a.send(conv, 'hello from a Flutter app 👋');
       check(await until(() => bv.list.value.any((m) => m['content'] == 'hello from a Flutter app 👋' && m['status'] == 'sent')), 'the other side gets it');
@@ -92,7 +93,7 @@ class _AppState extends State<App> {
 
   @override
   Widget build(BuildContext context) => Directionality(
-        textDirection: TextDirection.ltr,
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [for (final l in lines) Text(l)]),
-      );
+    textDirection: TextDirection.ltr,
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [for (final l in lines) Text(l)]),
+  );
 }

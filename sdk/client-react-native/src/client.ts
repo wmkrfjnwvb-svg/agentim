@@ -12,7 +12,7 @@
 //   NetInfo.addEventListener((s) => client.setNetwork(!!s.isConnected));
 //   client.connect();
 
-import { AgentIMError, Messages, Observable, TokenRefused, type Connection, type Message } from '@agentimhq/client-web';
+import { AgentIMError, Messages, Observable, TokenRefused, type Connection, type Message } from '@agentimhq/client-web/view';
 
 export { AgentIMError, Messages, Observable, TokenRefused, type Connection, type Message };
 
