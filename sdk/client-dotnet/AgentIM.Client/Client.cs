@@ -23,6 +23,8 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Conformance")]
+
 namespace AgentIM.Client
 {
     public sealed class ClientOptions
@@ -174,10 +176,13 @@ namespace AgentIM.Client
             Publish();
         }
 
-        internal void Apply(JsonArray? changes)
+        /// <summary>A `messages` event: with <paramref name="reset"/> the view is replaced
+        /// by the changes in one update, so no one sees it empty in between.</summary>
+        internal void Apply(JsonArray? changes, bool reset = false)
         {
             lock (gate)
             {
+                if (reset) byKey = new Dictionary<string, JsonObject>();
                 foreach (var c in changes ?? new JsonArray())
                 {
                     if ((string?)c?["op"] == "upsert" && c?["message"] is JsonObject m) byKey[(string)m["key"]!] = m;
@@ -344,8 +349,7 @@ namespace AgentIM.Client
                 case "messages":
                     if (views.TryGetValue((string?)e["conv_id"] ?? "", out var v))
                     {
-                        if ((bool?)e["reset"] == true) v.Reset(null, null, null);
-                        v.Apply(e["changes"]?.AsArray());
+                        v.Apply(e["changes"]?.AsArray(), (bool?)e["reset"] == true);
                     }
                     break;
             }

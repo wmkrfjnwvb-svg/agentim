@@ -122,10 +122,7 @@ export class AgentIMClient {
       }
       case 'messages': {
         const v = this.views.get(e.conv_id);
-        if (v) {
-          if (e.reset) v.reset([]);
-          v.apply(e.changes ?? []);
-        }
+        v?.applyEvent(e);
         break;
       }
     }

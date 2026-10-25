@@ -28,6 +28,20 @@ Future<bool> untilSync(bool Function() f) => until(() async => f());
 List<String> sent(Messages v) => v.list.value.where((m) => m['status'] == 'sent').map((m) => m['content'] as String).toList();
 
 Future<void> main() async {
+  // B12: a reset replaces a view in one update, never empty in between.
+  {
+    Map<String, dynamic> up(String key, int order) => {'op': 'upsert', 'message': {'key': key, 'order': order}};
+    final v = Messages.detached('c1');
+    v.debugApplyEvent({'changes': [up('a', 1), up('b', 2)]});
+    final lists = <List<String>>[];
+    final sub = v.list.watch().skip(1).listen((l) => lists.add([for (final m in l) m['key'] as String]));
+    await Future<void>.delayed(Duration.zero);
+    v.debugApplyEvent({'reset': true, 'changes': [up('b', 2), up('c', 3)]});
+    await Future<void>.delayed(Duration.zero);
+    await sub.cancel();
+    check(lists.length == 1 && lists[0].join(',') == 'b,c', 'B12 a reset is one update ($lists)');
+  }
+
   final env = Platform.environment;
   final bin = env['AGENTIM_BIN']!;
   final lib = env['AGENTIM_LIB']!;

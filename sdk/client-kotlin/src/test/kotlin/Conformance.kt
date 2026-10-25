@@ -14,6 +14,7 @@ import java.net.http.HttpResponse
 import java.nio.file.Files
 import kotlin.system.exitProcess
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
@@ -85,6 +86,18 @@ suspend fun run() = kotlinx.coroutines.coroutineScope {
         val bob = person("bob")
         val a = client(alice)
         val b = client(bob)
+        // B12: a reset replaces a view in one update, never empty in between.
+        run {
+            val up = { key: String, order: Int -> JSONObject().put("op", "upsert").put("message", JSONObject().put("key", key).put("order", order)) }
+            val v = Messages(a, "b12")
+            v.apply(JSONArray().put(up("a", 1)).put(up("b", 2)))
+            val lists = java.util.Collections.synchronizedList(mutableListOf<List<String>>())
+            val job = launch(kotlinx.coroutines.Dispatchers.Unconfined) { v.list.collect { l -> lists.add(l.map { it.getString("key") }) } }
+            lists.clear()
+            v.apply(JSONArray().put(up("b", 2)).put(up("c", 3)), reset = true)
+            job.cancel()
+            check(lists == listOf(listOf("b", "c")), "B12 a reset is one update ($lists)")
+        }
         listOf(async { a.connect() }, async { b.connect() }).forEach { it.await() }
         check(until { a.connection.value.state == "connected" && b.connection.value.state == "connected" }, "W1 both connect")
 

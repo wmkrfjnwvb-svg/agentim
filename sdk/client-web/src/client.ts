@@ -114,7 +114,13 @@ export class Messages extends Observable<Message[]> {
   }
   /** @internal */
   apply(changes: any[]) {
-    for (const c of changes) {
+    this.applyEvent({ changes });
+  }
+  /** @internal A `messages` event: with `reset` the view is replaced by
+   * the changes in one step, so no one sees it empty in between. */
+  applyEvent(e: { reset?: boolean; changes?: any[] }) {
+    if (e.reset) this.byKey.clear();
+    for (const c of e.changes ?? []) {
       if (c.op === 'upsert') this.byKey.set(c.message.key, c.message);
       else this.byKey.delete(c.key);
     }
@@ -463,10 +469,7 @@ export class AgentIMClient {
         break;
       case 'messages': {
         const v = this.views.get(e.conv_id);
-        if (v) {
-          if (e.reset) v.reset([]);
-          v.apply(e.changes ?? []);
-        }
+        v?.applyEvent(e);
         break;
       }
     }

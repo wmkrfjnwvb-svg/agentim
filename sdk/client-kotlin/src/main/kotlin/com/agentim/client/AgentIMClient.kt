@@ -98,8 +98,10 @@ class Messages internal constructor(private val client: AgentIMClient, val convI
         }
     }
 
-    internal fun apply(changes: JSONArray?) {
+    /** A `messages` event: with [reset] the view is replaced by the changes in one update, never empty in between. */
+    internal fun apply(changes: JSONArray?, reset: Boolean = false) {
         synchronized(byKey) {
+            if (reset) byKey.clear()
             changes?.objects()?.forEach { c ->
                 if (c.optString("op") == "upsert") {
                     val m = c.getJSONObject("message")
@@ -225,10 +227,7 @@ class AgentIMClient private constructor(private val o: ClientOptions) : AutoClos
                     .filter { !it.optBoolean("left") && !it.optBoolean("dissolved") }
                     .sortedByDescending { it.optJSONObject("last_message")?.optLong("created_at") ?: 0L }
             }
-            "messages" -> views[e.optString("conv_id")]?.let { v ->
-                if (e.optBoolean("reset")) v.reset(null, null, null)
-                v.apply(e.optJSONArray("changes"))
-            }
+            "messages" -> views[e.optString("conv_id")]?.apply(e.optJSONArray("changes"), e.optBoolean("reset"))
         }
         listeners[e.optString("type")]?.let { fns ->
             val list = synchronized(fns) { fns.toList() }

@@ -113,14 +113,17 @@ class Connection {
 /// One conversation's messages as shown, oldest first; each has `key`, `content`,
 /// `status` (sent, sending, failed), `state`, `sender_type`…
 class Messages {
-  final AgentIMClient _client;
+  final AgentIMClient? _client;
   final String convId;
   final list = Observed<List<Map<String, dynamic>>>(const []);
   bool hasOlder = false;
   String? olderEnd;
   final _byKey = <String, Map<String, dynamic>>{};
 
-  Messages._(this._client, this.convId);
+  Messages._(AgentIMClient this._client, this.convId);
+
+  /// A view tied to no client, for tests (with [debugApplyEvent]).
+  Messages.detached(this.convId) : _client = null;
 
   void _reset(List? messages, bool? older, String? end) {
     _byKey.clear();
@@ -131,6 +134,16 @@ class Messages {
     if (end != null) olderEnd = end;
     _publish();
   }
+
+  /// A `messages` event: with `reset` the view is replaced by the changes
+  /// in one update, so no one sees it empty in between.
+  void _applyEvent(Map e) {
+    if (e['reset'] == true) _byKey.clear();
+    _apply(e['changes'] as List?);
+  }
+
+  /// Applies a `messages` event as the client does, for tests.
+  void debugApplyEvent(Map<String, dynamic> e) => _applyEvent(e);
 
   void _apply(List? changes) {
     for (final c in changes ?? const []) {
@@ -151,14 +164,14 @@ class Messages {
 
   /// The page before the oldest shown: the cache first, then the server. False at the start.
   Future<bool> loadOlder() async {
-    final r = await _client.command({'cmd': 'load_older', 'conv_id': convId}) as Map;
+    final r = await _client!.command({'cmd': 'load_older', 'conv_id': convId}) as Map;
     hasOlder = r['has_older'] as bool? ?? false;
     olderEnd = r['older_end'] as String?;
     return hasOlder;
   }
 
   /// A page around a message (it stays loaded).
-  Future<void> jumpTo(int seq) => _client.command({'cmd': 'jump_to', 'conv_id': convId, 'seq': seq});
+  Future<void> jumpTo(int seq) => _client!.command({'cmd': 'jump_to', 'conv_id': convId, 'seq': seq});
 }
 
 typedef _EventNative = Void Function(Pointer<Utf8>);
@@ -290,10 +303,7 @@ class AgentIMClient {
         conversations._set(List.unmodifiable(list));
       case 'messages':
         final v = _views[e['conv_id']];
-        if (v != null) {
-          if (e['reset'] == true) v._reset(null, null, null);
-          v._apply(e['changes'] as List?);
-        }
+        v?._applyEvent(e);
     }
     for (final f in List.of(_listeners[e['type']] ?? const <void Function(Map<String, dynamic>)>[])) {
       try {

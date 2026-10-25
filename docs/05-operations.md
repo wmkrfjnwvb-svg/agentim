@@ -221,6 +221,7 @@ PostgreSQL 的测试库用 ICU `en-US` 排序规则建（大多数安装是按�
 **暂时无法自动测试的项**：MySQL 的持久性设置（`innodb_flush_log_at_trx_commit`、`sync_binlog`）只能全局修改，会影响同时运行的其他测试，所以只测了 PostgreSQL；MySQL 这部分靠代码审查和启动日志。
 
 - 2026-10-24 补：compose 三节点任务停掉一个节点后，Caddy 要等下一次健康检查（2 秒）才不再把请求发给它，期间 `/readyz` 可能拿到 502。Caddyfile 加了 `lb_try_duration 5s` 和 `fail_duration 10s`：连不上的节点立刻跳过、请求换一个节点（[Caddy reverse_proxy 文档](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)），滚动重启时真实客户端也不会看到 502。
+- 2026-10-25 补（B12）：各封装收到带 `reset` 的 messages 事件时先把视图清空发布一次、再应用变化发布一次，界面会闪一下空列表。现在浏览器（React Native 用同一个视图）、C#、Kotlin、Swift、Dart 都在一次更新里清空并应用；每个封装各有一条检查（浏览器 `test/messages.test.mjs`，其他在各自的一致性场景开头），浏览器、C#、Kotlin 做过变异检查（改回两次发布时失败，Kotlin 能看到中间那个空列表）。
 - 2026-10-24 补：客户端核心里，发送的答复先于消息的推送到达时，消息从视图里消失，推送到了才回来（Kotlin 的 W2 偶尔失败就是它，所有封装都受影响）。现在答复到了仍显示本地这份（状态 sent、带服务端 ID），推送到了在一个事件里换成存下的那条；`a_send_answered_before_its_message_arrives_stays_shown` 修复前失败，Kotlin 一致性场景修复前 85 次失败 6 次、修复后 60 次全过。
 - 2026-10-24 补：集群里一个节点被排空后写下 `left`，其他节点看到就立刻断开到它的连接，把还在等答复的转发一起丢了，这些请求被答成"结果未知"（`an_operator_drains_a_node_under_traffic` 偶尔失败，本地 165 次失败 2 次）。现在它立刻从路由里拿掉（不再往那儿发），连接等到在途的答复回来（最多 `FORWARD_WAIT`）再关。
 - 2026-10-24 补：令牌缓存刷新（M10）只按读到的快照删令牌，快照之后才登记的设备令牌会被误删，这台设备随后连接被拒、已连上的被断开（B10 的一个原因）。现在快照里没有的令牌再到库里查一次，确实没了才删；`race_new_devices_and_auth_refresh` 三种数据库都测，修复前每次失败。

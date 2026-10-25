@@ -4,6 +4,7 @@
 //   AGENTIM_BIN=…/agentim AGENTIM_LIB=…/target/debug dotnet run --project Conformance
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -49,6 +50,20 @@ void Check(bool ok, string what)
 {
     Console.WriteLine($"{(ok ? "ok  " : "FAIL")} {what}");
     if (!ok) failures++;
+}
+
+// B12: a reset replaces a view in one update, never empty in between.
+{
+    var v = new Messages(null!, "c1");
+    JsonObject Up(string key, double order) => new JsonObject { ["op"] = "upsert", ["message"] = new JsonObject { ["key"] = key, ["order"] = order } };
+    v.Apply(new JsonArray(Up("a", 1), Up("b", 2)));
+    var lists = new List<string>();
+    using (v.List.Subscribe(l => lists.Add(string.Join(",", l.Select(m => (string)m["key"]!)))))
+    {
+        lists.Clear();
+        v.Apply(new JsonArray(Up("b", 2), Up("c", 3)), reset: true);
+    }
+    Check(lists.Count == 1 && lists[0] == "b,c", $"B12 a reset is one update ({string.Join(" | ", lists)})");
 }
 
 async Task<bool> Until(Func<bool> f, int ms = 20000)

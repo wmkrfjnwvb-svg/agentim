@@ -139,6 +139,11 @@ public final class Messages {
         self.convId = convId
     }
 
+    /// A view tied to no client, for tests.
+    @_spi(Testing) public init(detached convId: String) {
+        self.convId = convId
+    }
+
     func reset(_ list: [Any]?, hasOlder: Bool?, olderEnd: String?) {
         byKey = [:]
         for case let m as JSONObject in list ?? [] {
@@ -150,7 +155,10 @@ public final class Messages {
         publish()
     }
 
-    func apply(_ changes: [Any]?) {
+    /// A `messages` event: with `reset` the view is replaced by the changes
+    /// in one update, so no one sees it empty in between.
+    @_spi(Testing) public func apply(_ changes: [Any]?, reset: Bool = false) {
+        if reset { byKey = [:] }
         for case let c as JSONObject in changes ?? [] {
             if c["op"] as? String == "upsert", let m = c["message"] as? JSONObject {
                 let v = Message(m)
@@ -164,7 +172,11 @@ public final class Messages {
 
     private func publish() {
         list = byKey.values.sorted { $0.order < $1.order }
+        publishes += 1
     }
+
+    /// How often the list changed, for tests.
+    @_spi(Testing) @ObservationIgnored public private(set) var publishes = 0
 
     /// The page before the oldest shown: the cache first, then the server. False at the start.
     @discardableResult
@@ -282,10 +294,7 @@ public final class AgentIMClient: @unchecked Sendable {
                 .sorted { last($0) > last($1) }
                 .map(Conversation.init)
         case "messages":
-            if let v = views[e["conv_id"] as? String ?? ""] {
-                if e["reset"] as? Bool == true { v.reset(nil, hasOlder: nil, olderEnd: nil) }
-                v.apply(e["changes"] as? [Any])
-            }
+            views[e["conv_id"] as? String ?? ""]?.apply(e["changes"] as? [Any], reset: e["reset"] as? Bool == true)
         default:
             break
         }

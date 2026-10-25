@@ -1,7 +1,7 @@
 // The wrapper conformance scenario (docs/12 §2.13, W1–W9), against a real
 // `agentim`: the same steps every platform wrapper runs. See test.sh.
 
-import AgentIM
+@_spi(Testing) import AgentIM
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
@@ -33,6 +33,16 @@ struct Person {
 
 @MainActor
 func sent(_ v: Messages) -> [String] { v.list.filter { $0.status == "sent" }.map(\.content) }
+
+// B12: a reset replaces a view in one update, never empty in between.
+do {
+    func up(_ key: String, _ order: Int) -> JSONObject { ["op": "upsert", "message": ["key": key, "order": NSNumber(value: order)] as JSONObject] }
+    let v = Messages(detached: "c1")
+    v.apply([up("a", 1), up("b", 2)])
+    let before = v.publishes
+    v.apply([up("b", 2), up("c", 3)], reset: true)
+    check(v.publishes == before + 1 && v.list.map(\.key) == ["b", "c"], "B12 a reset is one update (\(v.publishes - before) updates)")
+}
 
 let env = ProcessInfo.processInfo.environment
 let bin = env["AGENTIM_BIN"]!
