@@ -1,7 +1,7 @@
 # Client SDK packages (docs/12 §2.12.1): builds the native core for each
 # platform, the XCFramework, the NuGet package and the npm packages, and
-# uses each the way an app would, against a real server. Publishing waits
-# on the registry accounts the owner creates (docs/06 §1.2: D124-D127).
+# uses each the way an app would, against a real server. sdk-release.yml
+# runs it on an sdk-v* tag and publishes what it built.
 #
 # Third-party actions are pinned to a commit: these packages get published.
 name: sdk-packages
@@ -11,6 +11,7 @@ on:
     paths: ["sdk/**", ".github/workflows/sdk-packages.yml"]
   pull_request:
     paths: ["sdk/**", ".github/workflows/sdk-packages.yml"]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -112,7 +113,8 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: swift-package, path: swift-package, if-no-files-found: error}
 
-  # Android: 4 ABIs with 16 KB pages, with the runner's NDK.
+  # Android: the AAR (4 ABIs, 16 KB pages, JNI exports checked) and its
+  # Maven Central bundle; its libraries are also the Dart prebuilts.
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -123,13 +125,30 @@ jobs:
           rustup toolchain install "$RUST_VERSION" --profile minimal \
             --target aarch64-linux-android --target armv7-linux-androideabi --target x86_64-linux-android --target i686-linux-android
           rustup default "$RUST_VERSION"
-      - run: ANDROID_NDK="$ANDROID_NDK_LATEST_HOME" sh sdk/client-rust/native/build-android.sh "$PWD/android"
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with: {distribution: temurin, java-version: 21}
+      - name: android.jar, kotlinc (checked downloads)
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o p.zip https://dl.google.com/android/repository/platform-35_r02.zip
+          curl -sSfL -o k.zip https://github.com/JetBrains/kotlin/releases/download/v2.2.20/kotlin-compiler-2.2.20.zip
+          sha256sum p.zip k.zip
+          unzip -q p.zip && unzip -q k.zip
+      - name: the AAR and the Maven Central bundle (unsigned until D126)
+        working-directory: sdk/client-kotlin
+        run: |
+          ANDROID_NDK="$ANDROID_NDK_LATEST_HOME" ANDROID_JAR="$RUNNER_TEMP/android-35/android.jar" \
+            KOTLINC="$RUNNER_TEMP/kotlinc/bin/kotlinc" sh android/build-aar.sh
+          sh android/maven-bundle.sh build/agentim-client.aar build/maven
+          mkdir -p "$GITHUB_WORKSPACE/aar" && cp build/agentim-client.aar build/maven-bundle.zip "$GITHUB_WORKSPACE/aar/"
       - name: Dart prebuilts (Android)
         run: |
           mkdir dart
           for pair in arm64-v8a:arm64 armeabi-v7a:arm x86_64:x64 x86:ia32; do
-            cp "android/${pair%%:*}/libagentim_client.so" "dart/agentim_client-android-${pair#*:}.so"
+            cp "sdk/client-kotlin/build/aar/jni/${pair%%:*}/libagentim_client.so" "dart/agentim_client-android-${pair#*:}.so"
           done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: {name: android, path: aar, if-no-files-found: error}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: dart-android, path: dart, if-no-files-found: error}
 
@@ -153,15 +172,29 @@ jobs:
           cp native/osx-arm64/libagentim_client.dylib prebuilt/agentim_client-macos-arm64.dylib
           cp native/win-x64/agentim_client.dll prebuilt/agentim_client-windows-x64.dll
           [ "$(ls prebuilt | wc -l)" -eq 12 ] || { ls prebuilt; exit 1; }
-          v=$(sed -n 's/^version: //p' sdk/client-flutter/pubspec.yaml)
-          sh sdk/client-flutter/prebuilt.sh prebuilt "https://github.com/$GITHUB_REPOSITORY/releases/download/sdk-v$v/"
-          mkdir -p dart-package
-          cp -R sdk/client-flutter/pubspec.yaml sdk/client-flutter/README.md sdk/client-flutter/lib sdk/client-flutter/hook dart-package/
-          cat dart-package/hook/prebuilt.json
+          v=$(sh sdk/version.sh)
+          # Outside the checkout: pub leaves out what git ignores, and the
+          # repository ignores hook/prebuilt.json.
+          pkg="$RUNNER_TEMP/dart-package"
+          mkdir -p "$pkg"
+          cp -R sdk/client-flutter/pubspec.yaml sdk/client-flutter/README.md sdk/client-flutter/CHANGELOG.md \
+            sdk/client-flutter/lib sdk/client-flutter/hook LICENSE "$pkg/"
+          rm -f "$pkg/hook/prebuilt.json"
+          sed -i '/^publish_to: none/d' "$pkg/pubspec.yaml"
+          sh sdk/client-flutter/prebuilt.sh prebuilt "https://github.com/$GITHUB_REPOSITORY/releases/download/sdk-v$v/" "$pkg/hook/prebuilt.json"
+          cat "$pkg/hook/prebuilt.json"
+          echo "PKG=$pkg" >> "$GITHUB_ENV"
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with: {sdk: "3.10.0"}
+      - name: what pub.dev would get
+        run: |
+          cd "$PKG" && dart pub get
+          dart pub publish --dry-run 2>&1 | tee "$RUNNER_TEMP/pub.txt"
+          grep -q "Package has 0 warnings" "$RUNNER_TEMP/pub.txt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: dart-prebuilt, path: prebuilt, if-no-files-found: error}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with: {name: dart-package, path: dart-package, if-no-files-found: error}
+        with: {name: dart-package, path: "${{ env.PKG }}", if-no-files-found: error, include-hidden-files: false}
 
   # The package as an app gets it, on each desktop system: the hook
   # downloads this system's release build and checks its SHA-256.

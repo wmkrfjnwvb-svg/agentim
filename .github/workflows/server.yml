@@ -207,41 +207,6 @@ jobs:
         working-directory: sdk/client-flutter
         run: sh test-package.sh ../client-rust/target/debug/libagentim_client.so
 
-  client-android:
-    name: Android library (4 ABIs, 16 KB pages, JNI exports)
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: sdk/client-rust
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-      - name: NDK r28c, android-35, kotlinc
-        run: |
-          cd "$RUNNER_TEMP"
-          curl -sSfL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r28c-linux.zip && unzip -q ndk.zip
-          curl -sSfL -o p.zip https://dl.google.com/android/repository/platform-35_r02.zip && unzip -q p.zip
-          curl -sSfL -o k.zip https://github.com/JetBrains/kotlin/releases/download/v2.2.20/kotlin-compiler-2.2.20.zip && unzip -q k.zip
-      - name: build and check the AAR
-        working-directory: sdk/client-kotlin
-        run: ANDROID_NDK="$RUNNER_TEMP/android-ndk-r28c" ANDROID_JAR="$RUNNER_TEMP/android-35/android.jar" KOTLINC="$RUNNER_TEMP/kotlinc/bin/kotlinc" sh android/build-aar.sh
-      - name: the Maven Central bundle (unsigned until D126)
-        working-directory: sdk/client-kotlin
-        run: sh android/maven-bundle.sh build/agentim-client.aar build/maven
-      - uses: actions/upload-artifact@v4
-        with:
-          name: agentim-client-aar
-          path: |
-            sdk/client-kotlin/build/agentim-client.aar
-            sdk/client-kotlin/build/maven-bundle.zip
-
   client-flutter:
     name: Flutter (a Linux app with the core from the build hook, against the server)
     runs-on: ubuntu-latest
