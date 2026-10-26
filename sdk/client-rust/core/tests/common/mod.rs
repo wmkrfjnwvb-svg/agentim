@@ -40,6 +40,8 @@ pub struct Server {
     pub requests: Vec<Value>,
     /// Pushes the server drops (its queue overflowed): it sends `resync`.
     pub overflow: usize,
+    /// Member lists `list_convs` returns (none: the field is left out).
+    pub members: HashMap<String, Value>,
 }
 
 impl Server {
@@ -62,6 +64,7 @@ impl Server {
             acks_seen: vec![],
             requests: vec![],
             overflow: 0,
+            members: HashMap::new(),
         }
     }
 
@@ -173,7 +176,13 @@ impl Server {
                 let convs: Vec<Value> = self
                     .logs
                     .keys()
-                    .map(|c| json!({"conv_id": c, "kind": "group", "title": c, "last_seq": self.last(c), "unread": 0}))
+                    .map(|c| {
+                        let mut v = json!({"conv_id": c, "kind": "group", "title": c, "last_seq": self.last(c), "unread": 0});
+                        if let Some(m) = self.members.get(c) {
+                            v["members"] = m.clone();
+                        }
+                        v
+                    })
                     .collect();
                 ok(json!({"convs": convs}))
             }

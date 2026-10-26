@@ -21,7 +21,7 @@
 | 事件 | 含义 |
 |---|---|
 | `conv.created`、`conv.updated` | 会话创建、属性变化 |
-| `member.joined`、`member.left`、`member.policy` | 成员变更、Agent 策略变化 |
+| `member.joined`、`members.joined`、`member.left`、`member.policy` | 成员变更、Agent 策略变化。建群时一起加入的成员每 200 人一条 `members.joined`（`data.members` 是成员数组，顺序同成员列表：群主、管理员、成员，再按 id；D128），单人加入仍是 `member.joined` |
 | `msg.created` | 新消息。流式消息在开始时创建，`state=streaming` |
 | `msg.updated` | 编辑、流式结束、审核替换（`version+1`） |
 | `msg.recalled` | 撤回（内容清空） |
@@ -135,7 +135,7 @@ Message {
 
 | 方面 | 行为 |
 |---|---|
-| 配置 | `[[webhooks]]`：`name`、`url`、`secret`（至少 16 字节）、`events`（`msg.created` 这样的精确类型、`msg.*` 前缀或 `*`）、`max_attempts`（默认 8）、`timeout_ms`、`backoff_ms` |
+| 配置 | `[[webhooks]]`：`name`、`url`、`secret`（至少 16 字节）、`events`（`msg.created` 这样的精确类型、`msg.*` 前缀或 `*`；订阅 `member.joined` 或 `member.*` 的也收到 `members.joined`）、`max_attempts`（默认 8）、`timeout_ms`、`backoff_ms` |
 | 不丢 | 订阅的事件和事件本身在**同一个事务**里写进 `webhook_outbox`（每批一条多行 INSERT）。没提交的写入、被拒绝的请求都不会发出去 |
 | 有序 | 每个 Webhook 在每个数据库上有一个投递任务，按提交顺序一条一条发；前一条没成功不会发下一条 |
 | 至少一次 | 成功后通过写线程移动游标（`meta` 里的 `webhook:<name>`）。重启后从游标继续；接收方用 `webhook-id` 去重 |

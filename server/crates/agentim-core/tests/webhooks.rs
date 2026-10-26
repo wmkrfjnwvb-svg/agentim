@@ -195,7 +195,7 @@ async fn events_are_delivered_in_order_and_signed(db: TestDb) {
     let head = *seqs(&a.pull(&conv, 0).await).last().unwrap();
     wait_until("all events", || rx.bodies().len() as i64 >= head).await;
     let got = rx.got.lock().unwrap().clone();
-    // Exactly the log, in order: conv.created, member.joined x2, 20 messages.
+    // Exactly the log, in order: conv.created, members.joined, 20 messages.
     let s: Vec<i64> = got.iter().map(|(_, b)| seq_of(b)).collect();
     assert_eq!(s, (1..=head).collect::<Vec<_>>());
     assert_eq!(got[0].1["type"], "conv.created");
@@ -228,11 +228,13 @@ async fn events_are_delivered_in_order_and_signed(db: TestDb) {
 async fn filters_choose_the_event_types(db: TestDb) {
     let (rx, addr) = Receiver::start().await;
     let (rx2, addr2) = Receiver::start().await;
+    let (rx3, addr3) = Receiver::start().await;
     let hub = open(with(
         single(&db.url),
         vec![
             webhook(&addr, "msgs", &["msg.*"]),
             webhook(&addr2, "joins", &["member.joined", "conv.created"]),
+            webhook(&addr3, "members", &["member.*"]),
         ],
     ))
     .await;
@@ -252,8 +254,12 @@ async fn filters_choose_the_event_types(db: TestDb) {
     a.ok(json!({"op": "recall", "msg_id": id})).await;
     a.ok(json!({"op": "remove_member", "conv_id": conv, "user_id": bob.id}))
         .await;
+    // Added again on his own: a single join.
+    a.ok(json!({"op": "add_member", "conv_id": conv, "user_id": bob.id}))
+        .await;
     wait_until("msg events", || rx.bodies().len() >= 3).await;
     wait_until("join events", || rx2.bodies().len() >= 3).await;
+    wait_until("member events", || rx3.bodies().len() >= 3).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     let t = |r: &Receiver| {
         r.bodies()
@@ -262,7 +268,18 @@ async fn filters_choose_the_event_types(db: TestDb) {
             .collect::<Vec<_>>()
     };
     assert_eq!(t(&rx), ["msg.created", "msg.updated", "msg.recalled"]);
-    assert_eq!(t(&rx2), ["conv.created", "member.joined", "member.joined"]);
+    // The members at creation are one `members.joined` (D128), which goes
+    // to whoever asked for joins.
+    assert_eq!(t(&rx2), ["conv.created", "members.joined", "member.joined"]);
+    assert_eq!(
+        t(&rx3),
+        ["members.joined", "member.removed", "member.joined"]
+    );
+    let batch = &rx2.bodies()[1]["data"]["event"]["data"]["members"];
+    assert_eq!(batch.as_array().unwrap().len(), 2);
+    assert_eq!(batch[0]["user_id"], alice.id.as_str());
+    assert_eq!(batch[0]["role"], "owner");
+    assert_eq!(batch[1]["user_id"], bob.id.as_str());
     // A recalled message's content is not in the recall event.
     assert_eq!(rx.bodies()[2]["data"]["event"]["msg"]["content"], "");
 }

@@ -1,6 +1,6 @@
 # 06 进度与计划
 
-> 本文随进度原地更新，不追加历史版本（最近更新：2026-10-21）。设计细节在 01–12，本文只回答三件事：**做到哪了、还差什么、什么需要你拍板**。
+> 本文随进度原地更新，不追加历史版本（最近更新：2026-10-26）。设计细节在 01–12，本文只回答三件事：**做到哪了、还差什么、什么需要你拍板**。
 > 状态：✅ 已完成（有测试，CI 通过）　🔧 部分完成　📝 设计已写、待你确认　⏳ 未开始
 
 ## 0. 一页看全局
@@ -30,13 +30,13 @@
 | 护栏和介入 | ✅ | 内容过滤、DLP、注入标记、看门狗、熔断、耳语、接管（沉默超时自动交还，B3）、草稿审批 v1、观察 | — |
 | 集群 | ✅ | C0–C4：租约和校验、转发、交接和下线、滚动升级、数据库主从和切主、管理命令、指标和告警、Docker / Compose / Helm、多节点压测（[11](11-cluster.md)） | 数据倒退的恢复（D100） |
 | 合并 Lite 和 AgentIM | ✅ | 只有一个程序 `agentim`；握手只报 `agentim`、`AgentIM` 和版本（D105） | — |
-| **发布流程（P1）** | 🔧 | `deploy/`：Dockerfile、Compose、Helm（CI 里构建和冒烟） | 预编译程序和签名、一条命令安装、GHCR 镜像、版本和更新日志、依赖扫描（[12 §1](12-developer-experience.md)） |
-| **客户端 SDK（P2）** | 🔧 | Rust 核心（连接、同步、离线队列、缓存、历史）、原生运行层和 C ABI、浏览器（wasm、IndexedDB、多标签页）、Swift、Kotlin、C#、Dart 封装对着真实服务端跑通，React Native 的 JSI 绑定能编译（[12 §2.14](12-developer-experience.md)） | iOS、Android、Unity、Flutter 打包和模拟器测试；Unity WebGL 桥；发布（A9） |
-| **React 组件（P3）** | 🔧 | `@agentimhq/react`：hooks、客服窗口组件、主题、AI 标记、卡片、从右到左（[12 §3](12-developer-experience.md)） | 成员列表、转人工提示、截图对比；Web 演示端改用 P2 和 P3 |
+| **发布流程（P1）** | ✅ | 第一次运行、预编译程序和签名、一条命令安装、GHCR 镜像、Helm、版本和更新日志、依赖扫描（[12 §1](12-developer-experience.md)，2026-10-25） | 各注册表等你开通（§1.2） |
+| **客户端 SDK（P2）** | ✅ | Rust 核心、原生运行层和 C ABI、浏览器、Swift、Kotlin、C#（含 Unity）、Dart、React Native；各平台的包在 CI 构建，按应用的样子在三种桌面系统、Android 模拟器、iOS 模拟器里对着真实服务端跑过（[12 §2.12.1](12-developer-experience.md)，2026-10-25） | Unity 编辑器测试（要许可）、真机 |
+| **React 组件（P3）** | 🔧 | `@agentimhq/react`：hooks、会话列表、消息列表、输入框、卡片、转人工提示、成员列表、主题、AI 标记、从右到左（[12 §3](12-developer-experience.md)） | 截图对比（防样式退化）；Web 演示端改用 P2 和 P3 |
 | **开发者控制台（P4）** | ✅ | 管理 API `/admin/v1`（应用、部署两块，四种角色）、管理员账号（一次性初始化、密码 + TOTP、会话和 CSRF）、管理密钥、`agentim admin`、内置在 `agentim` 里的控制台 `/console`（[12 §4](12-developer-experience.md)） | Webhook、发送前拦截、审核时限搬进"应用设置"（现在只读） |
 | **文档站和示例（P5）** | ⏳ | 设计：[12 §5](12-developer-experience.md) | 文档站、三个示例应用、Agent 框架模板 |
 | 托管云（P6） | ⏳ | 先不做（2026-10-19） | 注册即用、免费额度、按合并后的消息计费 |
-| GDPR 和内容治理 | 🔧 | 拉黑、Agent 加入告知、AI 标记、日志不含内容、保留期 | 基础部分：导出、删除账号、举报、审核队列（A4） |
+| GDPR 和内容治理 | ✅ | 拉黑、Agent 加入告知、AI 标记、日志不含内容、保留期；导出、删除账号、举报、审核队列（A4，2026-10-20） | — |
 | CLI | ✅ | `agentim` 一个程序里有服务和本机运维命令（api-key、signing-key、admin-key、token、encryption、migrate、cluster）；`agentim admin …` 走管理 API（缩小后的 D63） | — |
 | 文件和图片 | 📝 | 方案：[02 §2.7](02-architecture.md) | 精简版（A6） |
 | 监控 | 🔧 | Prometheus 指标、集群告警规则、日志默认不含内容 | OpenTelemetry 导出、面板（以后） |
@@ -74,11 +74,11 @@
 | D121 | 客户端覆盖率：设计要求 100%，现在核心 98.4%、CI 门槛 98%，没覆盖的行和理由列在 [05 §5](05-operations.md)；各语言封装没跑覆盖率工具 | 门槛先定 98%，把"没测的边角"补上测试后提到 99%；封装的覆盖率在 A9 有 macOS、Android 机器时一起做 |
 | D123 | 客户端包：XCFramework、NuGet、npm（含 React Native 原生部分）、Dart 预编译库、AAR 和 Maven bundle、Swift 包仓库内容、Unity tarball 都已在 CI 构建并按应用的样子测过（[12 §2.12.1](12-developer-experience.md)），打 `sdk-v*` 标签由 `sdk-release.yml` 发布。AAR、Flutter、React Native 在 Android 模拟器里、React Native 在 iOS 模拟器里对着真实服务端跑场景。还缺：Unity 编辑器里的测试（要 Unity 许可）、真机 | Unity：个人版免费许可也能在 CI 里用（game-ci），需要你用 Unity 账号生成许可文件放进 Secrets，要不要做请你定；真机测试等有设备农场（如 Firebase Test Lab、BrowserStack）的账号再做 |
 | D119 | 离线推送（APNs、FCM）：手机 App 切到后台后靠系统推送收到新消息。现在服务端没有实现，计划里也没有单独一项 | 补上，放在最后，排在文件和图片之后（2026-10-20 负责人定）。A7 的设备 ID 先留好以后登记推送令牌的位置。做之前先调研 Stream、Sendbird、腾讯云 IM，再出设计 |
-| D128 | B2 的做法（大群一次拉很多人时，每个成员一条 `member.joined`，在线的人推送队列装不下就改发 resync） | 一次加多人时写**一条**事件 `members.joined`，带最多 200 个成员（字段和 `member.joined` 一样），超过 200 分成几条；只加一个人仍是 `member.joined`，老客户端不受影响。所有新成员的 `join_seq` 都是这条事件的 seq，可见范围规则不变。业内：Telegram 一次拉人的服务消息 `messageActionChatAddUser` 带一个用户列表（[文档](https://core.telegram.org/constructor/messageActionChatAddUser)）；Discord 成员列表分块发，每块最多 1000 人（[GUILD_MEMBERS_CHUNK](https://docs.discord.com/developers/events/gateway-events)）。要改的地方：服务端建群和加成员、日志回放、客户端核心（按多个成员更新、会话列表只刷新一次）、Agent SDK（Python、TS）、webhook（订阅 `member.joined` 或 `member.*` 的也收到 `members.joined`）、MCP 和开放 API 的事件说明。测试：1000 人建群时创建者只收到 5 条事件、不发 resync；混合人和 Agent；有人已经是成员时整批 `conflict` 且不留痕迹；和发消息、移出成员并发；三种数据库、集群转发后一致 |
 | D99 | 规模测试 `slow` 场景在 GitHub 的 Linux 机器上：停止读取超过空闲时间的连接，服务端已经关闭（连接数指标减少），但客户端恢复读取后既收不到剩余的帧也看不到关闭，本地和 Windows 上都能看到。消息不会丢：客户端重连后按设备位置同步，测试证明数据完整 | 测试工具现在按 SDK 的做法：一分钟没收到任何东西就自己重连并同步，单独计数。原因仍未查明（本地和 Windows 都复现不了）。C2 加了位置校验（`heads`，Agent SDK 每 30 秒一次），真实客户端即使遇到这种情况也会在 30 秒内发现并补齐。**告知你，暂不需要决定** |
 
 ### 1.2 已确认
 
+- **2026-10-26 负责人："D128 按你的建议做吧"**：建群时一起加入的成员每 200 人写一条 `members.joined`（`data.members` 是成员数组，字段和 `member.joined` 一样，顺序同成员列表），只加一个人仍是 `member.joined`；所有批次和建群在同一个事务里，新成员的 `join_seq` 是所在批次的 seq、从 seq 1 起可见。订阅 `member.joined` 或 `member.*` 的 Webhook 也收到它；MCP 文本里列出名字（最多 20 个）；客户端核心按加入和离开更新已知的成员列表。业内：Telegram `messageActionChatAddUser` 带用户列表（[文档](https://core.telegram.org/constructor/messageActionChatAddUser)），Discord 成员分块最多 1000 人（[GUILD_MEMBERS_CHUNK](https://docs.discord.com/developers/events/gateway-events)）。`add_member` 一次只加一个人，不涉及批次。
 - **2026-10-25 负责人："按你的想法修复就行"**，以下按建议定：
   - D122：删掉旧的 TypeScript SDK `sdk/client-ts`（规则和测试已在 Rust 核心里，git 历史里还在）。
   - D124：npm 作用域 `@agentim` 已被另一个也叫 AgentIM 的开源项目占用（[NoPKT/AgentIM](https://github.com/NoPKT/AgentIM)，2026-02 发布了 `@agentim/shared`），我们的包改用 `@agentimhq`（`@agentimhq/client-web`、`@agentimhq/react`、`@agentimhq/client-react-native`、`@agentimhq/server`、`@agentimhq/agent`）。产品名不改。发布前需要你在 npm 上建 `agentimhq` 组织（免费）。
@@ -147,7 +147,7 @@
 
 | # | 问题 | 处理 |
 |---|---|---|
-| B2 | 群主拉大群时创建者收到每个成员的加入事件，超出推送队列改发 resync（数据不丢） | 设计见 §1.1 D128，等你确认后做 |
+| B2 | 群主拉大群时创建者收到每个成员的加入事件，超出推送队列改发 resync（数据不丢） | ✅ 2026-10-26（D128）：1000 人建群是 `conv.created` 加 5 条 `members.joined`，创建者不再被改发 resync（`tests/membership.rs`） |
 | B10 | 规模测试 Windows 上千人大群（每晚的 scale 任务）：1000 个连接里有 3 个没连上、3 个一直在读的接收方被服务端断开、2 个没能补回全部事件；Linux 上同样的场景通过。2026-10-24 找到一个能造成“连上即被断开”的原因并已修复：每秒的令牌缓存刷新（M10）按读到的快照删令牌，快照之后才登记的新令牌也被删掉，会话打开时校验失败；慢机器上更容易撞上 | 修复后手动跑的 scale（2026-10-24，04bb72c）Windows 和 Linux 全部通过；再看几次每晚的运行，都通过就关掉 |
 | B11 | 集群故障测试 `mutation_without_the_progress_gate_a_stuck_writer_keeps_its_shards` 在 CI 的 MySQL 上失败过两次（2026-10-24）：关掉进度门后，卡住的写入方 5 秒内仍丢了分片；本地单独跑、整组跑、加负载各跑多轮都没复现。测试用的租约 3 秒、续约 0.5 秒、超时 0.5 秒很紧，负载下续约可能连续超时。同一天还见过两种集群测试偶发失败：排空节点时在途转发被丢（已修，见 05 的变更记录）；排空时一次批量提交报了没归类的数据库错误，被答成"结果未知"（本地 200 次里见过 1 次，加了日志后没再出现）。2026-10-24 第二次失败后改了测试：只有这一项用宽一些的时间（操作超时 1.5 秒、stop 3.5 秒、租约 6 秒，等 7 秒），几次续约超时不再像进度门放手；打开进度门时它仍然每次失败（6/6），所以仍能证明进度门有用 | 看之后的 CI 是否还出现；那次没归类的提交错误再出现时看日志 |
 | B9 | 对照开源 IM 发现的低危问题 | 清单见 [调研：开源 IM 踩过的坑](research/im-issues.md)；随相关模块 |
@@ -166,7 +166,7 @@
 | 3 | ✅ A5 管理 API `/admin/v1`、`agentim admin`、开发者控制台（2026-10-21） |
 | 4 | ✅ A7 客户端 SDK（2026-10-24）：服务端配合（历史、心跳、重连提示）、Rust 核心、浏览器、Swift、Kotlin、C#（Unity、.NET）、Flutter、React Native、React 组件（[12 §2.14](12-developer-experience.md) S0–S7） |
 | 5 | ✅ A9 安装和发布（P1，2026-10-25） |
-| 6 | B 类已知问题（B2、B9） |
+| 6 | B 类已知问题（B2 ✅、B9） |
 | 7 | 官网、文档站、README、示例应用；生态接入（D107）：Claude Agent SDK、Codex SDK 等 Agent 框架的接入包、npm 包 |
 | 8 | 文件和图片（等你的设计） |
 | 9 | 离线推送 APNs、FCM（D119） |

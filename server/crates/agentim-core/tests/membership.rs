@@ -35,6 +35,8 @@ backend_tests!(
     blocking_edge_cases,
     membership_actions_are_audited,
     race_add_and_remove_keep_log_and_state_consistent,
+    a_large_group_starts_with_a_few_events,
+    race_members_act_while_a_large_group_is_created,
     race_membership_changes_against_dissolve,
 );
 
@@ -46,6 +48,12 @@ fn replay_members(log: &[Value]) -> std::collections::BTreeSet<String> {
         match e["type"].as_str().unwrap_or("") {
             "member.joined" => {
                 m.insert(u);
+            }
+            // Several at once (D128).
+            "members.joined" => {
+                for j in e["data"]["members"].as_array().unwrap() {
+                    m.insert(j["user_id"].as_str().unwrap().to_string());
+                }
             }
             "member.left" | "member.removed" => {
                 m.remove(&u);
@@ -1269,5 +1277,178 @@ async fn race_membership_changes_against_dissolve(db: TestDb) {
                 "nobody keeps it listed"
             );
         }
+    }
+}
+
+/// D128: the members a group starts with are one `members.joined` per 200,
+/// not one event each, so the creator's push queue is not overrun.
+async fn a_large_group_starts_with_a_few_events(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let mut a = Conn::new(&hub, &alice);
+    // 996 people and 3 agents with alice: 1000, the most a group may have.
+    let mut people = vec![];
+    for i in 0..996 {
+        people.push(user(&hub, &format!("p{i}"), UserKind::Human, None).await);
+    }
+    for i in 0..3 {
+        people.push(user(&hub, &format!("bot{i}"), UserKind::Agent, Some(&alice)).await);
+    }
+    // Asked for in reverse, so the order kept is the server's own.
+    let refs: Vec<&User> = people.iter().rev().collect();
+    a.drain();
+    let conv = a.group(&refs).await;
+    let frames = a.drain();
+    let kinds: Vec<&str> = frames
+        .iter()
+        .filter_map(|f| f["event"]["type"].as_str())
+        .collect();
+    assert_eq!(kinds.first(), Some(&"conv.created"));
+    assert_eq!(
+        kinds.iter().filter(|k| **k == "members.joined").count(),
+        5,
+        "{kinds:?}"
+    );
+    assert!(!kinds.contains(&"member.joined"));
+    assert!(
+        frames.iter().all(|f| f["type"] != "resync"),
+        "no resync for the creator"
+    );
+    // The log: conv.created then 5 batches of at most 200, everyone once,
+    // alice first as the owner; agents only hear what is addressed to them.
+    let log = events(&a.pull(&conv, 0).await);
+    assert_eq!(log.len(), 6);
+    let mut seen = std::collections::BTreeSet::new();
+    for (i, e) in log[1..].iter().enumerate() {
+        assert_eq!(e["type"], "members.joined");
+        assert_eq!(e["seq"], 2 + i as i64);
+        let batch = e["data"]["members"].as_array().unwrap();
+        assert_eq!(batch.len(), 200);
+        for m in batch {
+            assert!(
+                seen.insert(m["user_id"].as_str().unwrap().to_string()),
+                "once each"
+            );
+            let agent = m["kind"] == "agent";
+            assert_eq!(m["trigger"], if agent { "addressed" } else { "all" }, "{m}");
+            assert_eq!(m["history_from"], 1);
+        }
+    }
+    assert_eq!(log[1]["data"]["members"][0]["user_id"], alice.id.as_str());
+    assert_eq!(log[1]["data"]["members"][0]["role"], "owner");
+    assert_eq!(seen.len(), 1000);
+    assert_eq!(replay_members(&log), listed_members(&a, &conv).await);
+    // The member list is in the log's order, on every database.
+    let logged: Vec<&Value> = log[1..]
+        .iter()
+        .flat_map(|e| e["data"]["members"].as_array().unwrap())
+        .map(|m| &m["user_id"])
+        .collect();
+    let list = convs(&a).await;
+    let listed: Vec<&Value> = list.iter().find(|v| v["conv_id"] == conv).unwrap()["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| &m["user_id"])
+        .collect();
+    assert_eq!(logged, listed);
+    // Every member sees the whole conversation, the last batch's too.
+    let last = Conn::new(&hub, &people[998]);
+    assert_eq!(seqs(&last.pull(&conv, 0).await).first(), Some(&1));
+    last.send(&conv, "hi").await;
+    // A group of one: one member.joined, as before.
+    let solo = a.group(&[]).await;
+    let log = events(&a.pull(&solo, 0).await);
+    let kinds: Vec<&str> = log.iter().map(|e| e["type"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["conv.created", "member.joined"]);
+    // One more than the limit: refused, nothing written.
+    let extra = user(&hub, "extra", UserKind::Human, None).await;
+    let mut all = refs.clone();
+    all.push(&extra);
+    let ids: Vec<&str> = all.iter().map(|u| u.id.as_str()).collect();
+    let r = a
+        .call(json!({"op": "create_conv", "kind": "group", "title": "too big", "members": ids}))
+        .await;
+    assert_eq!(code(&r), "bad_request", "{r}");
+    assert!(convs(&Conn::new(&hub, &extra)).await.is_empty());
+}
+
+/// D128 race: people act on a large group the moment it exists; the
+/// batches stay together at the start of the log (one transaction) and the
+/// log replays to the member list.
+async fn race_members_act_while_a_large_group_is_created(db: TestDb) {
+    let hub = Arc::new(open(single(&db.url)).await);
+    let owner = user(&hub, "owner", UserKind::Human, None).await;
+    let mut people = vec![];
+    for i in 0..450 {
+        people.push(user(&hub, &format!("q{i}"), UserKind::Human, None).await);
+    }
+    for round in 0..5 {
+        let ids: Vec<String> = people.iter().map(|u| u.id.clone()).collect();
+        let title = format!("round {round}");
+        let creating = {
+            let (hub, owner, title) = (hub.clone(), owner.clone(), title.clone());
+            tokio::spawn(async move {
+                let c = Conn::new(&hub, &owner);
+                c.ok(json!({"op": "create_conv", "kind": "group", "title": title, "members": ids}))
+                    .await["conv_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+        };
+        // A few members send or leave as soon as they can see it.
+        let actors: Vec<_> = people[..12]
+            .iter()
+            .enumerate()
+            .map(|(i, u)| {
+                let (hub, u, title) = (hub.clone(), u.clone(), title.clone());
+                tokio::spawn(async move {
+                    let c = Conn::new(&hub, &u);
+                    loop {
+                        let list = convs(&c).await;
+                        if let Some(v) = list.iter().find(|v| v["title"] == title.as_str()) {
+                            let conv = v["conv_id"].as_str().unwrap().to_string();
+                            if i % 3 == 0 {
+                                c.ok(json!({"op": "leave", "conv_id": conv})).await;
+                            } else {
+                                assert_eq!(c.send(&conv, "first!").await["ok"], true);
+                            }
+                            return;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+            })
+            .collect();
+        let conv = creating.await.unwrap();
+        for t in actors {
+            t.await.unwrap();
+        }
+        let o = Conn::new(&hub, &owner);
+        let log = events(&o.pull(&conv, 0).await);
+        let kinds: Vec<&str> = log.iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            &kinds[..4],
+            [
+                "conv.created",
+                "members.joined",
+                "members.joined",
+                "members.joined"
+            ],
+            "round {round}"
+        );
+        assert!(
+            kinds[4..].iter().all(|k| *k != "members.joined"),
+            "nothing between the batches"
+        );
+        assert_eq!(kinds.iter().filter(|k| **k == "member.left").count(), 4);
+        assert_eq!(kinds.iter().filter(|k| **k == "msg.created").count(), 8);
+        assert_eq!(
+            replay_members(&log),
+            listed_members(&o, &conv).await,
+            "round {round}"
+        );
+        assert_eq!(listed_members(&o, &conv).await.len(), 451 - 4);
     }
 }

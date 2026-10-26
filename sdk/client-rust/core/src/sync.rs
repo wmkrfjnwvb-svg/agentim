@@ -252,9 +252,51 @@ impl Core {
                 }
                 self.list_changed.insert(id.to_string());
             }
+            // The member list follows joins and departures; several joins
+            // at once (D128) are one change to the list.
+            "member.joined" => self.members_join(id, std::slice::from_ref(&ev["data"])),
+            "members.joined" => {
+                let joined = ev["data"]["members"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                self.members_join(id, &joined);
+            }
+            "member.left" | "member.removed" => {
+                if let Some(u) = ev["data"]["user_id"].as_str() {
+                    let c = self.conv_mut(id);
+                    if let Some(list) = c.info["members"].as_array_mut() {
+                        list.retain(|m| m["user_id"] != u);
+                        self.list_changed.insert(id.to_string());
+                    }
+                }
+            }
             _ => {}
         }
         self.emit(json!({"type": "event", "event": ev}));
+    }
+
+    /// Adds or replaces members in a known member list (one not loaded yet
+    /// comes whole with the next conversation list).
+    fn members_join(&mut self, id: &str, joined: &[Value]) {
+        let c = self.conv_mut(id);
+        let Some(list) = c.info["members"].as_array_mut() else {
+            return;
+        };
+        for j in joined {
+            let Some(u) = j["user_id"].as_str() else {
+                continue;
+            };
+            let mut m = json!({"approval": false});
+            for k in ["user_id", "name", "kind", "owner_id", "role", "trigger"] {
+                m[k] = j[k].clone();
+            }
+            match list.iter_mut().find(|x| x["user_id"] == u) {
+                Some(x) => *x = m,
+                None => list.push(m),
+            }
+        }
+        self.list_changed.insert(id.to_string());
     }
 
     pub(crate) fn on_side(&mut self, ev: &Value) {

@@ -1745,19 +1745,46 @@ impl Db<'_> {
         // A conversation an agent starts is owned by its person; the agent
         // manages it as an admin.
         let owner_id = manager.map(|m| m.id.as_str()).unwrap_or(&creator.id);
-        for u in all {
-            let role = if u.id == owner_id {
+        let role = |u: &User| {
+            if u.id == owner_id {
                 "owner"
             } else if u.id == creator.id {
                 "admin"
             } else {
                 "member"
-            };
-            // Members from the start see the whole conversation.
+            }
+        };
+        // Members from the start see the whole conversation.
+        if let [u] = all.as_slice() {
             events.push(
-                self.add_member(id, kind, u, role, &creator.id, Some(1))
+                self.add_member(id, kind, u, role(u), &creator.id, Some(1))
                     .await?,
             );
+            return Ok(events);
+        }
+        // Several at once: one `members.joined` per JOIN_BATCH (D128), so a
+        // large group is a few events rather than one per member. The order
+        // is the member list's (owner, admins, members, then by id).
+        all.sort_by_key(|u| (role_rank(role(u)), u.id.clone()));
+        for chunk in all.chunks(JOIN_BATCH) {
+            let entries: Vec<Value> = chunk
+                .iter()
+                .map(|u| member_entry(u, role(u), trigger_for(u, kind), Some(1)))
+                .collect();
+            let ev = self
+                .append_event(
+                    id,
+                    "members.joined",
+                    Some(&creator.id),
+                    None,
+                    json!({"members": entries}),
+                )
+                .await?;
+            for u in chunk {
+                self.insert_member(id, u, role(u), trigger_for(u, kind), ev.seq, 1)
+                    .await?;
+            }
+            events.push(ev);
         }
         Ok(events)
     }
@@ -1775,22 +1802,31 @@ impl Db<'_> {
         if self.member(conv_id, &u.id).await?.is_some() {
             return Err(ApiError::new("conflict", "already a member"));
         }
-        // Agents in groups only hear what is addressed to them by default.
-        let trigger = if u.kind == UserKind::Agent && conv_kind != "dm" {
-            Trigger::Addressed
-        } else {
-            Trigger::All
-        };
+        let trigger = trigger_for(u, conv_kind);
         let ev = self
             .append_event(
                 conv_id,
                 "member.joined",
                 Some(actor),
                 None,
-                json!({"user_id": u.id, "name": u.name, "kind": u.kind, "owner_id": u.owner_id, "role": role, "trigger": trigger, "history_from": history_from}),
+                member_entry(u, role, trigger, history_from),
             )
             .await?;
         let visible_from = history_from.unwrap_or(ev.seq).min(ev.seq).max(1);
+        self.insert_member(conv_id, u, role, trigger, ev.seq, visible_from)
+            .await?;
+        Ok(ev)
+    }
+
+    async fn insert_member(
+        &mut self,
+        conv_id: &str,
+        u: &User,
+        role: &str,
+        trigger: Trigger,
+        join_seq: i64,
+        visible_from: i64,
+    ) -> ApiResult<()> {
         sqlx::query(self.d.q(
             "INSERT INTO members (conv_id, user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq, visible_from, mute_mode) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'none')",
         ))
@@ -1801,11 +1837,11 @@ impl Db<'_> {
         .bind(&u.owner_id)
         .bind(role)
         .bind(trigger.as_str())
-        .bind(ev.seq)
+        .bind(join_seq)
         .bind(visible_from)
         .execute(&mut *self.c)
         .await?;
-        Ok(ev)
+        Ok(())
     }
 
     /// First seq of a conversation at or after a time (None: nothing that new).
@@ -1852,7 +1888,8 @@ impl Db<'_> {
 
     pub async fn members(&mut self, conv_id: &str) -> ApiResult<Vec<Member>> {
         let rows = sqlx::query(self.d.q(&format!(
-            "SELECT {MEMBER_COLS} FROM members WHERE conv_id = ? ORDER BY join_seq"
+            "SELECT {MEMBER_COLS} FROM members WHERE conv_id = ? ORDER BY join_seq, CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, {}",
+            self.bytewise("user_id")
         )))
         .bind(conv_id)
         .fetch_all(&mut *self.c)
@@ -4707,4 +4744,31 @@ pub fn fingerprint(rows: &[(String, Vec<Vec<Cell>>)]) -> String {
         }
     }
     hex::encode(h.finalize())
+}
+
+/// Most members one `members.joined` event lists (D128).
+pub const JOIN_BATCH: usize = 200;
+
+/// Members who joined together are listed owner, admins, members (D128).
+fn role_rank(role: &str) -> u8 {
+    match role {
+        "owner" => 0,
+        "admin" => 1,
+        _ => 2,
+    }
+}
+
+/// Agents in groups only hear what is addressed to them by default.
+fn trigger_for(u: &User, conv_kind: &str) -> Trigger {
+    if u.kind == UserKind::Agent && conv_kind != "dm" {
+        Trigger::Addressed
+    } else {
+        Trigger::All
+    }
+}
+
+/// A joining member as `member.joined` carries it (and each entry of
+/// `members.joined`).
+fn member_entry(u: &User, role: &str, trigger: Trigger, history_from: Option<i64>) -> Value {
+    json!({"user_id": u.id, "name": u.name, "kind": u.kind, "owner_id": u.owner_id, "role": role, "trigger": trigger, "history_from": history_from})
 }

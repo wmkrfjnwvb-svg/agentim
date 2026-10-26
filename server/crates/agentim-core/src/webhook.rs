@@ -34,6 +34,11 @@ pub fn valid_pattern(p: &str) -> bool {
 }
 
 pub fn matches(patterns: &[String], kind: &str) -> bool {
+    // Several joins at once (D128) are joins: `member.joined` and
+    // `member.*` subscribers get them too.
+    if kind == "members.joined" && matches(patterns, "member.joined") {
+        return true;
+    }
     patterns.iter().any(|p| {
         p == "*"
             || p == kind
@@ -382,6 +387,14 @@ mod tests {
         assert!(matches(&ps, "msg.created"));
         assert!(matches(&ps, "member.joined"));
         assert!(!matches(&ps, "member.left"));
+        // A batch of joins goes to whoever asked for joins.
+        assert!(matches(&ps, "members.joined"));
+        assert!(matches(&["member.*".to_string()], "members.joined"));
+        assert!(matches(&["members.joined".to_string()], "members.joined"));
+        assert!(!matches(
+            &["member.left".to_string(), "msg.*".to_string()],
+            "members.joined"
+        ));
         assert!(!matches(&ps, "msg"), "a prefix needs the dot");
         assert!(!matches(&ps, "msgx.created"));
         assert!(matches(&["*".to_string()], "anything"));

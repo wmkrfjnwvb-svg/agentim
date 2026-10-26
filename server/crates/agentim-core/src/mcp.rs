@@ -1498,6 +1498,24 @@ fn event_detail(data: &Value) -> String {
     if let Some(v) = data.get("values").filter(|v| v.is_object()) {
         out.push_str(&format!(" values={v}"));
     }
+    // Who joined: one (member.joined) or several at once (members.joined).
+    if let Some(n) = data.get("name").and_then(Value::as_str) {
+        out.push_str(&format!(" name={n}"));
+    }
+    if let Some(ms) = data.get("members").and_then(Value::as_array) {
+        let names: Vec<&str> = ms.iter().filter_map(|m| m["name"].as_str()).collect();
+        let shown = names
+            .iter()
+            .take(20)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = names.len().saturating_sub(20);
+        out.push_str(&format!(" members={shown}"));
+        if more > 0 {
+            out.push_str(&format!(" (+{more} more)"));
+        }
+    }
     out
 }
 

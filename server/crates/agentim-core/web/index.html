@@ -166,7 +166,7 @@ async function onFrame(f) {
     if (ev.seq === (S.lastSeq[c] || 0) + 1 || !(c in S.lastSeq)) { apply(c, ev); S.lastSeq[c] = ev.seq; ack(c); }
     else if (ev.seq > S.lastSeq[c]) await sync();
     if (S.cur && S.cur.conv_id === c) { render(); markRead(); } else bumpUnread(c, ev);
-    if (ev.type === 'member.policy' || ev.type === 'member.joined') refreshConvs();
+    if (ev.type === 'member.policy' || ev.type === 'member.joined' || ev.type === 'members.joined') refreshConvs();
     return;
   }
   if (f.type === 'side') {
@@ -287,6 +287,7 @@ function sysText(ev) {
   const d = ev.data || {};
   switch (ev.type) {
     case 'conv.created': return '会话已创建';
+    case 'members.joined': return `${d.members.slice(0, 10).map(m => m.name).join('、')}${d.members.length > 10 ? ` 等 ${d.members.length} 人` : ''} 加入了会话`;
     case 'member.joined': return d.kind === 'agent' ? `🤖 AI Agent「${d.name}」加入了会话（所有者 ${name(d.owner_id)}，读取范围 trigger=${d.trigger}）` : `${d.name} 加入了会话`;
     case 'member.policy': return `${name(d.user_id)} 策略更新：审批=${d.approval ? '开' : '关'}，trigger=${d.trigger}`;
     case 'agent.state':

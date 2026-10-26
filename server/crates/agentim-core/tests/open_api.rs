@@ -716,7 +716,7 @@ async fn conversations_as_users_and_the_system(db: TestDb) {
     assert!(
         b.drain()
             .iter()
-            .any(|f| f["event"]["type"] == "member.joined"),
+            .any(|f| f["event"]["type"] == "members.joined"),
         "pushed like a client action"
     );
     // As the system: needs an owner, who becomes the owner.

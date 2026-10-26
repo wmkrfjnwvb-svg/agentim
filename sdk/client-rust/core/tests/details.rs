@@ -164,6 +164,116 @@ fn events_that_change_what_is_shown() {
 }
 
 #[test]
+fn member_lists_follow_joins_and_departures() {
+    let mut w = World::new(1);
+    w.server.conv("c1");
+    w.server.members.insert("c1".into(), json!([{"user_id": "u_me", "name": "me", "kind": "human", "role": "owner", "approval": false}]));
+    w.server.conv("c2");
+    w.connected();
+    let members = |w: &mut World, c: &str| -> Vec<String> {
+        let list = w.ask(json!({"cmd": "conversations"})).unwrap();
+        let conv = list["conversations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["conv_id"] == c)
+            .unwrap()
+            .clone();
+        conv["members"]
+            .as_array()
+            .map(|m| {
+                m.iter()
+                    .map(|x| x["user_id"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let push = |w: &mut World, c: &str, kind: &str, data: Value| {
+        let seq = w.server.last(c) + 1;
+        let ev = json!({"conv_id": c, "seq": seq, "type": kind, "data": data});
+        w.server.logs.get_mut(c).unwrap().push(ev.clone());
+        w.server.sent.insert(c.into(), seq);
+        frame(w, json!({"type": "event", "event": ev}));
+    };
+    assert_eq!(members(&mut w, "c1"), ["u_me"]);
+    // A batch of joins (D128) is one change; one join is another.
+    let batch: Vec<Value> = (0..3).map(|i| json!({"user_id": format!("u_{i}"), "name": format!("p{i}"), "kind": "human", "role": "member", "trigger": "all"})).collect();
+    let updates = w.emitted("conversations").len();
+    push(&mut w, "c1", "members.joined", json!({"members": batch}));
+    assert_eq!(
+        w.emitted("conversations").len(),
+        updates + 1,
+        "one list update for the batch"
+    );
+    push(
+        &mut w,
+        "c1",
+        "member.joined",
+        json!({"user_id": "u_agent", "name": "bot", "kind": "agent", "role": "member", "trigger": "addressed"}),
+    );
+    assert_eq!(
+        members(&mut w, "c1"),
+        ["u_me", "u_0", "u_1", "u_2", "u_agent"]
+    );
+    // Joining again (a re-added member) replaces, never duplicates.
+    push(
+        &mut w,
+        "c1",
+        "member.joined",
+        json!({"user_id": "u_1", "name": "p1", "kind": "human", "role": "admin", "trigger": "all"}),
+    );
+    let list = w.ask(json!({"cmd": "conversations"})).unwrap();
+    let c1 = list["conversations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["conv_id"] == "c1")
+        .unwrap()
+        .clone();
+    assert_eq!(c1["members"].as_array().unwrap().len(), 5);
+    assert_eq!(c1["members"][2]["role"], "admin");
+    // Left and removed members go; an unknown one changes nothing.
+    push(&mut w, "c1", "member.left", json!({"user_id": "u_0"}));
+    push(
+        &mut w,
+        "c1",
+        "member.removed",
+        json!({"user_id": "u_agent"}),
+    );
+    push(
+        &mut w,
+        "c1",
+        "member.removed",
+        json!({"user_id": "u_nobody"}),
+    );
+    assert_eq!(members(&mut w, "c1"), ["u_me", "u_1", "u_2"]);
+    // Without a member list yet (none loaded): nothing invented; an empty
+    // batch or one without ids changes nothing either.
+    push(
+        &mut w,
+        "c2",
+        "members.joined",
+        json!({"members": [{"user_id": "u_9"}]}),
+    );
+    assert!(members(&mut w, "c2").is_empty());
+    push(&mut w, "c1", "members.joined", json!({"members": []}));
+    push(
+        &mut w,
+        "c1",
+        "members.joined",
+        json!({"members": [{"name": "no id"}]}),
+    );
+    push(&mut w, "c1", "members.joined", json!({}));
+    assert_eq!(members(&mut w, "c1"), ["u_me", "u_1", "u_2"]);
+    // Every one of these events still reaches the app as an event.
+    assert!(
+        w.emitted("event")
+            .iter()
+            .any(|e| e["event"]["type"] == "members.joined")
+    );
+}
+
+#[test]
 fn resets_and_departures_from_sync() {
     let mut w = World::new(1);
     w.server.conv("c1");

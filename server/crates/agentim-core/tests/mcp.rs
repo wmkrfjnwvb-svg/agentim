@@ -1245,9 +1245,14 @@ async fn agents_work_on_tasks(db: TestDb) {
     let text = r["content"][0]["text"].as_str().unwrap();
     assert!(
         text.contains(&format!(
-            "→ for you [{task} #5] task.updated state=submitted assignee={}",
+            "→ for you [{task} #3] task.updated state=submitted assignee={}",
             worker.id
         )),
+        "{text}"
+    );
+    // Joins at once are one line, with who joined (D128).
+    assert!(
+        text.contains(&format!("[{task} #2] members.joined members=")) && text.contains("worker"),
         "{text}"
     );
     for (who, args, want) in [
