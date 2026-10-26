@@ -111,6 +111,19 @@ describe('MessageList', () => {
     expect(flat(screen.getByTestId('bubble-b').props.style).borderBottomLeftRadius).toBe(18);
   });
 
+  it('renders dates on Hermes, which has no Intl.RelativeTimeFormat', async () => {
+    const R = (Intl as any).RelativeTimeFormat;
+    (Intl as any).RelativeTimeFormat = undefined;
+    try {
+      const { client } = fake([msg('a', 'old', { created_at: Date.parse('2026-10-25T10:00:00Z') }), msg('b', 'new', { created_at: Date.parse('2026-10-26T10:00:00Z') })]);
+      await chat(client);
+      expect(screen.getByText('Yesterday')).toBeTruthy();
+      expect(screen.getByText('Today')).toBeTruthy();
+    } finally {
+      (Intl as any).RelativeTimeFormat = R;
+    }
+  });
+
   it('shows sending, and not delivered with retry and delete', async () => {
     const { client } = fake([
       msg('local:1', 'on its way', { status: 'sending', client_msg_id: '1', sender_id: 'u_me' }),

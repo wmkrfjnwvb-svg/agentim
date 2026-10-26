@@ -13,15 +13,38 @@ export interface When {
 const GROUP_MS = 5 * 60 * 1000;
 const DAY_MS = 86_400_000;
 
-/** The calendar day of `t` in the zone, as a day number. */
+/**
+ * The calendar day of `t` in the zone, as a day number. Where `Intl` cannot
+ * split a date into parts (some JavaScript engines in apps), the device's
+ * own zone is used.
+ */
 function dayNumber(t: number, timeZone?: string): number {
-  const p = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(t);
-  const v = (k: string) => Number(p.find((x) => x.type === k)!.value);
-  return Date.UTC(v('year'), v('month') - 1, v('day')) / DAY_MS;
+  try {
+    const p = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(t);
+    const v = (k: string) => Number(p.find((x) => x.type === k)!.value);
+    const n = Date.UTC(v('year'), v('month') - 1, v('day')) / DAY_MS;
+    if (Number.isFinite(n)) return n;
+  } catch {}
+  const d = new Date(t);
+  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / DAY_MS;
 }
 
 function capitalize(s: string, locale?: string): string {
   return s ? s[0].toLocaleUpperCase(locale) + s.slice(1) : s;
+}
+
+/**
+ * "Today" or "Yesterday" in the locale. Hermes (React Native's engine)
+ * has no Intl.RelativeTimeFormat: there it is English.
+ */
+function relativeDay(daysAgo: 0 | 1, locale?: string): string {
+  const R = (Intl as any).RelativeTimeFormat;
+  if (typeof R === 'function') {
+    try {
+      return capitalize(new R(locale, { numeric: 'auto' }).format(-daysAgo, 'day'), locale);
+    } catch {}
+  }
+  return daysAgo === 0 ? 'Today' : 'Yesterday';
 }
 
 /** "2:41 PM" (or the locale's own way). */
@@ -33,9 +56,7 @@ export function formatTime(t: number, w: When = {}): string {
 export function formatDay(t: number, w: When = {}): string {
   const now = w.now ?? Date.now();
   const diff = dayNumber(now, w.timeZone) - dayNumber(t, w.timeZone);
-  if (diff === 0 || diff === 1) {
-    return capitalize(new Intl.RelativeTimeFormat(w.locale, { numeric: 'auto' }).format(-diff, 'day'), w.locale);
-  }
+  if (diff === 0 || diff === 1) return relativeDay(diff, w.locale);
   if (diff > 1 && diff < 7) return new Intl.DateTimeFormat(w.locale, { timeZone: w.timeZone, weekday: 'long' }).format(t);
   const sameYear = new Intl.DateTimeFormat('en-US', { timeZone: w.timeZone, year: 'numeric' });
   const opts: Intl.DateTimeFormatOptions = { timeZone: w.timeZone, month: 'short', day: 'numeric' };
@@ -48,7 +69,7 @@ export function formatShort(t: number, w: When = {}): string {
   const now = w.now ?? Date.now();
   const diff = dayNumber(now, w.timeZone) - dayNumber(t, w.timeZone);
   if (diff === 0) return formatTime(t, w);
-  if (diff === 1) return capitalize(new Intl.RelativeTimeFormat(w.locale, { numeric: 'auto' }).format(-1, 'day'), w.locale);
+  if (diff === 1) return relativeDay(1, w.locale);
   if (diff > 1 && diff < 7) return new Intl.DateTimeFormat(w.locale, { timeZone: w.timeZone, weekday: 'short' }).format(t);
   return new Intl.DateTimeFormat(w.locale, { timeZone: w.timeZone, year: '2-digit', month: 'numeric', day: 'numeric' }).format(t);
 }

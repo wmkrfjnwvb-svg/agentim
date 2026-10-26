@@ -93,7 +93,7 @@ function AgentCard({ conv, agent, act }: { conv: any; agent: any; act: Act }) {
   );
 }
 
-function Draft({ draft, title, name, act, onDone }: { draft: any; title: string; name: (id: string) => string; act: Act; onDone(): void }) {
+function Draft({ draft, title, name, act, onDone }: { draft: any; title: string; name: (id: string) => string; act: Act; onDone(decided?: string): void }) {
   const [text, setText] = useState(draft.content ?? '');
   return (
     <div className="draft" data-draft={draft.draft_id}>
@@ -108,8 +108,9 @@ function Draft({ draft, title, name, act, onDone }: { draft: any; title: string;
           type="button"
           className="primary"
           onClick={async () => {
-            await act('approve', { draft_id: draft.draft_id, text });
-            onDone();
+            // Gone from the list as soon as the server took it (or kept on an error).
+            const ok = (await act('approve', { draft_id: draft.draft_id, text })) !== undefined;
+            onDone(ok ? draft.draft_id : undefined);
           }}
         >
           Approve and send
@@ -117,8 +118,8 @@ function Draft({ draft, title, name, act, onDone }: { draft: any; title: string;
         <button
           type="button"
           onClick={async () => {
-            await act('reject', { draft_id: draft.draft_id });
-            onDone();
+            const ok = (await act('reject', { draft_id: draft.draft_id })) !== undefined;
+            onDone(ok ? draft.draft_id : undefined);
           }}
         >
           Discard
@@ -139,7 +140,7 @@ const TIPS: [string, string][] = [
   ['Product team', 'Aria only answers when you mention @Aria.'],
 ];
 
-export function Details({ conv, me, name, drafts, convs, act, onDrafts, onClose }: { conv: any; me: string; name: (id: string) => string; drafts: any[]; convs: any[]; act: Act; onDrafts(): void; onClose(): void }) {
+export function Details({ conv, me, name, drafts, convs, act, onDrafts, onClose }: { conv: any; me: string; name: (id: string) => string; drafts: any[]; convs: any[]; act: Act; onDrafts(decided?: string): void; onClose(): void }) {
   const mine = (conv.members ?? []).filter((m: any) => m.kind === 'agent' && m.owner_id === me);
   const titleOf = (id: string) => convs.find((c) => c.conv_id === id)?.title ?? 'a conversation';
   return (

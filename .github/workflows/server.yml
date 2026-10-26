@@ -199,7 +199,7 @@ jobs:
       - name: Kotlin (JNI bridge, JVM)
         working-directory: sdk/client-kotlin
         run: |
-          curl -sSfL -o "$RUNNER_TEMP/kotlin.zip" https://github.com/JetBrains/kotlin/releases/download/v2.2.20/kotlin-compiler-2.2.20.zip
+          curl -sSfL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/kotlin.zip" https://github.com/JetBrains/kotlin/releases/download/v2.2.20/kotlin-compiler-2.2.20.zip
           unzip -q "$RUNNER_TEMP/kotlin.zip" -d "$RUNNER_TEMP"
           KOTLINC="$RUNNER_TEMP/kotlinc/bin/kotlinc" sh test.sh
       - name: Swift

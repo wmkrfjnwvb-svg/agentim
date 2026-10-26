@@ -55,7 +55,12 @@ android)
   adb logcat -s ReactNativeJS:* > "$work/app.log" 2>&1 &
   logger=$!
   adb shell am start -n com.agentimapp/.MainActivity > /dev/null
-  await_result "$work/app.log" || { kill $logger; exit 1; }
+  await_result "$work/app.log" || {
+    kill $logger
+    echo "--- the app's log (crashes included)"
+    adb logcat -d -s ReactNative:* ReactNativeJS:* AndroidRuntime:* | tail -80
+    exit 1
+  }
   kill $logger 2>/dev/null || true
   echo "ok   two people talk through the core in the Android emulator"
   ;;

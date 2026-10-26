@@ -33,6 +33,25 @@ describe('dates', () => {
     expect(formatDay(at('2026-10-26T02:00:00Z'), { ...us, timeZone: 'America/Los_Angeles' })).toBe('Yesterday');
   });
 
+  it('works where Intl has no RelativeTimeFormat or formatToParts (Hermes in React Native)', () => {
+    const R = (Intl as any).RelativeTimeFormat;
+    const parts = Intl.DateTimeFormat.prototype.formatToParts;
+    try {
+      (Intl as any).RelativeTimeFormat = undefined;
+      expect(formatDay(at('2026-10-26T01:00:00Z'), us)).toBe('Today');
+      expect(formatDay(at('2026-10-25T12:00:00Z'), { ...us, locale: 'de-DE' })).toBe('Yesterday');
+      expect(formatShort(at('2026-10-25T12:00:00Z'), us)).toBe('Yesterday');
+      (Intl.DateTimeFormat.prototype as any).formatToParts = undefined;
+      // The device's zone then: noon is the same day in any zone the tests run in.
+      const noon = new Date(2026, 9, 26, 12).getTime();
+      expect(formatDay(noon, { locale: 'en-US', now: noon })).toBe('Today');
+      expect(layout([{ sender_id: 'a', created_at: noon }], { now: noon })[0].day).toBe('Today');
+    } finally {
+      (Intl as any).RelativeTimeFormat = R;
+      Intl.DateTimeFormat.prototype.formatToParts = parts;
+    }
+  });
+
   it('keeps the conversation list short', () => {
     expect(n(formatShort(at('2026-10-26T09:30:00Z'), us))).toBe('9:30 AM');
     expect(n(formatShort(at('2026-10-25T09:30:00Z'), us))).toBe('Yesterday');

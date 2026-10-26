@@ -131,7 +131,7 @@ await shot(bob, '06-customer-before-approval');
 await alice.click('.draft button:has-text("Approve and send")');
 await bob.waitForSelector('.aim-row[data-sender-type="agent"]', { timeout: 10000 });
 check((await text(lastAgent(bob))).includes('refund'), 'the approved reply reaches the customer');
-check((await alice.locator('.draft').count()) === 0, 'and leaves the approval list');
+check(await alice.waitForSelector('.draft', { state: 'detached', timeout: 5000 }).then(() => true, () => false), 'and leaves the approval list');
 await shot(bob, '07-customer-after-approval');
 
 await conv(bob, 'Product team');

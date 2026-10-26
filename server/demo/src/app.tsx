@@ -127,12 +127,16 @@ function Shell({ session, onSignOut }: { session: Session; onSignOut(): void }) 
   }, [convs, me]);
   const name = useCallback((id: string | undefined) => (id ? (names.get(id) ?? id.slice(0, 8)) : ''), [names]);
 
-  const refreshDrafts = useCallback(() => {
-    client
-      .call('list_drafts')
-      .then((r: any) => setDrafts(r.drafts ?? []))
-      .catch(() => {});
-  }, [client]);
+  const refreshDrafts = useCallback(
+    (decided?: string) => {
+      if (decided) setDrafts((d) => d.filter((x) => x.draft_id !== decided));
+      client
+        .call('list_drafts')
+        .then((r: any) => setDrafts(r.drafts ?? []))
+        .catch(() => {});
+    },
+    [client],
+  );
   useEffect(() => {
     if (conn.state === 'connected') refreshDrafts();
   }, [conn.state, refreshDrafts]);
