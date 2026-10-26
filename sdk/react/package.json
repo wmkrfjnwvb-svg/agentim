@@ -39,7 +39,8 @@
     "build": "tsc -p tsconfig.json",
     "test": "node scripts/tokens.mjs --check && npm run build && vitest run",
     "e2e": "npm run build && node example/build.mjs && node test/e2e.mjs",
-    "tokens": "node scripts/tokens.mjs"
+    "tokens": "node scripts/tokens.mjs",
+    "screens": "node example/build.mjs && node ../react-native-ui/example/build.mjs && node test/screens.mjs"
   },
   "devDependencies": {
     "@agentimhq/client-web": "file:../client-web",
@@ -49,6 +50,8 @@
     "@types/react-dom": "19.3.0",
     "esbuild": "0.28.2",
     "jsdom": "30.1.2",
+    "pixelmatch": "7.2.0",
+    "pngjs": "7.0.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "typescript": "5.9.3",

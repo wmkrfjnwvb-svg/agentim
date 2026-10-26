@@ -338,6 +338,37 @@ jobs:
           ok=1
           { echo "### ${{ matrix.os }} / ${{ matrix.name }}"; echo '```'; cat result.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
+  # docs/12 §3.5: the web and React Native components in fixed states
+  # against the baselines in sdk/react/test/screens, in the Playwright
+  # image so fonts and rendering are the same every run. New or differing
+  # shots (and diffs) are uploaded.
+  screens:
+    name: screenshot comparison (web and React Native components)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: mcr.microsoft.com/playwright:v1.56.1-noble
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the galleries
+        run: |
+          (cd sdk/client-web && npm ci && npx tsc -p tsconfig.json)
+          (cd sdk/react && npm ci && npm run build)
+          (cd sdk/react-native-ui && npm ci)
+      - name: compare
+        working-directory: sdk/react
+        run: |
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" playwright@1.56.1
+          PLAYWRIGHT="$RUNNER_TEMP/pw/node_modules/playwright" OUT="$PWD/screens-out" npm run screens
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screens
+          path: sdk/react/screens-out
+          if-no-files-found: ignore
+
   ui:
     name: browser smoke test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

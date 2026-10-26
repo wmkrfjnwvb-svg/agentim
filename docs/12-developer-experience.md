@@ -399,7 +399,7 @@ AAR、Flutter、React Native 都在 Android 模拟器里跑场景，React Native
 - **组件状态**：Web 用 Vitest + Testing Library；React Native 用 Jest + [React Native Testing Library](https://callstack.github.io/react-native-testing-library/)（React Native 文档推荐的组合），不需要设备。每个组件测空、加载、失败、流式中、被打断、分组和日期分隔、时间格式（固定时钟、几种语言）、从右到左、替换组件后 AI 标记仍在、每个可点元素有标签。
 - **对比度**：从 tokens 算 §3.1 的每一对，亮色暗色都要达标。
 - **端到端**：Playwright 对真实服务端跑演示端（`ci/ui_smoke.mjs`）和客服窗口；React Native 组件在现有的 Android、iOS 测试应用里渲染 `Chat`，消息由默认的气泡画出来才算通过（`test-app.sh`，CI 的模拟器）。
-- **截图对比**：Playwright 在固定的官方镜像里截（基准图和比较在同一个环境里生成，否则字体和渲染不同会误报，业内一致的做法，见 [Argos 的说明](https://argos-ci.com/blog/playwright-visual-regression-testing-ci)），固定时钟、固定数据、关掉动效；状态：会话列表、对话（分组、日期、AI、卡片、失败、流式）、亮色、暗色、从右到左、窄屏。允许每张图 0.2% 以内的像素差。基准图放在仓库里，改了样式时在 CI 上重新生成（手动触发的任务把新图作为产物上传），看过再提交。
+- **截图对比**（`sdk/react/test/screens.mjs`，CI 的 `screens` 任务）：Playwright 在固定的官方镜像（`mcr.microsoft.com/playwright:v1.56.1-noble`）里截（基准图和比较在同一个环境里生成，否则字体和渲染不同会误报，业内一致的做法，见 [Argos 的说明](https://argos-ci.com/blog/playwright-visual-regression-testing-ci)），固定时钟、时区、语言和数据，关掉动效和光标；8 张：Web 三栏的亮色、暗色、从右到左，客服窗口（宽、手机宽、断网提示），React Native 两个屏幕（会话列表、对话）的亮色、暗色（经 react-native-web）。和 Playwright `toHaveScreenshot` 的默认一样：每个像素颜色差 0.2 以内（忽略抗锯齿），不允许有一个像素不同（同一镜像里同一构建每次一样；把"已发送"的勾改个颜色只差 5 个像素也会被抓到）。基准图在 `sdk/react/test/screens`；没有基准或不一致时，新图和差异图作为产物上传，改样式时看过再把新图提交为基准。
 
 ### 3.6 分步
 
