@@ -340,7 +340,7 @@ AAR、Flutter、React Native 都在 Android 模拟器里跑场景，React Native
 
 三个包，同一套样子和规则：`@agentimhq/react`（Web 组件）、`@agentimhq/react-native-ui`（React Native 组件）、Web 演示端（`server/demo`，用前两层写成，是组件的活样例）。hooks 只有一份，在 `@agentimhq/react/hooks`（不碰 DOM），React Native 的客户端和浏览器的客户端接口相同（§2.11），两边都用它。
 
-> 状态：🔧 2026-10-26 设计定稿（负责人 2026-10-26："演示端的代码要好看，符合美国这些习惯和风格，清爽美观，现代"，"rn 的组件也是要美观和符合美国风格"）。U1（Web 组件）、U2（演示端）、U3（React Native 组件）✅；U4（截图对比）在做。没做 `usePresence`（服务端没有在线状态）。
+> 状态：🔧 2026-10-26 设计定稿（负责人 2026-10-26："演示端的代码要好看，符合美国这些习惯和风格，清爽美观，现代"，"rn 的组件也是要美观和符合美国风格"）。U1（Web 组件）、U2（演示端）、U3（React Native 组件）、U4（截图对比）✅ 2026-10-26。没做 `usePresence`（服务端没有在线状态）。
 
 ### 3.1 视觉语言
 
