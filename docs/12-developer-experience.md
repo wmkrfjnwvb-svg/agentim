@@ -336,19 +336,73 @@ AAR、Flutter、React Native 都在 Android 模拟器里跑场景，React Native
 - 一致性场景：TypeScript SDK 的 46 项没有全部改写；核心的规则测试（35 项）、细节测试（18 项）和随机模拟覆盖了规则，原生运行层 6 项、浏览器 4 + 1 项、每个封装 W1–W9 对着真实服务端。
 - 发布（npm、SwiftPM、Maven Central、NuGet、OpenUPM、pub.dev）都没做，归到 A9。
 
-## 3. P3 React 界面组件
+## 3. P3 界面组件（Web 和 React Native）和演示端
 
-包名 `@agentimhq/react`，建在 §2.11 的可订阅对象上。
+三个包，同一套样子和规则：`@agentimhq/react`（Web 组件）、`@agentimhq/react-native-ui`（React Native 组件）、Web 演示端（`server/demo`，用前两层写成，是组件的活样例）。hooks 只有一份，在 `@agentimhq/react/hooks`（不碰 DOM），React Native 的客户端和浏览器的客户端接口相同（§2.11），两边都用它。
 
-> 状态：🔧 2026-10-24 实现了第一版（`sdk/react`），和下面设计的差别：没做 `usePresence`（服务端没有在线状态）和 `useApproval`（审批用卡片和 `respond`，组件里已有）；消息列表没做真正的虚拟滚动，用 `content-visibility: auto` 让浏览器跳过屏幕外的行；截图对比没做（端到端测试会保存亮色、暗色、从右到左的截图，供人看）；Web 演示端还没改用这套组件。
+> 状态：🔧 2026-10-26 设计定稿（负责人 2026-10-26："演示端的代码要好看，符合美国这些习惯和风格，清爽美观，现代"，"rn 的组件也是要美观和符合美国风格"），按下面的分步做。第一版 Web 组件（2026-10-24）已有 hooks、组件、每种状态的测试和客服窗口端到端；没做 `usePresence`（服务端没有在线状态）。
 
-- **两层**：一层 hooks（`useConversations`、`useMessages`、`useSend`、`useTyping`、`usePresence`、`useApproval`），开发者完全自己画界面也能用；一层组件，建在 hooks 上。
-- **组件**：会话列表、消息列表（虚拟滚动；流式 AI 消息、AI 标记、卡片、来源、反馈）、输入框、审批卡片、转人工提示、成员列表、正在输入。
-- **AI 标记不可关闭**（D36、EU AI Act 第 50 条）：按 `sender_type` 显示，由消息列表画在可替换的消息组件外面，换掉消息组件也去不掉。
-- **换主题和替换组件**：样式全部用 CSS 变量，附一套默认主题（亮色、暗色）；不依赖任何 CSS 框架。每个组件可以通过 `components` 属性换成自己的实现（Stream 的做法），文档里给出完整例子。
-- **无障碍和多语言**：键盘操作、读屏标签，按 WCAG 2.1 AA（欧盟无障碍法的要求）；界面文字可以整体替换，支持从右到左的语言。
-- **Web 演示端**改用 P2 + P3 重写，作为组件的活样例。
-- **测试**：Vitest + Testing Library 测每个组件的状态（空、加载、失败、流式中、被打断）；Playwright 对真实服务端跑端到端；截图对比防止样式退化。
+### 3.1 视觉语言
+
+面向欧美用户，参照美国主流产品的习惯（iMessage、Slack、Intercom Messenger、Linear；Apple [Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/)、[Material 3](https://m3.material.io/)）：
+
+| 方面 | 做法 |
+|---|---|
+| 颜色 | 中性灰（zinc 色阶）做底，一个强调色（蓝 `#2563eb`，暗色 `#3b82f6`），AI 标记用紫；颜色只用变量（tokens），Web 和 React Native 从同一份 `tokens.json` 生成（Web 生成 `theme.css`，React Native 生成 `theme.ts`），两边一样。亮色、暗色都有，跟随系统，也能强制 |
+| 对比度 | 文字和背景至少 4.5:1、图标和边框等界面元素至少 3:1（WCAG 2.1 AA 1.4.3、1.4.11）；测试从 tokens 算每一对的对比度，不够就失败 |
+| 字体 | 系统字体（`-apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif`），不从第三方下载字体：从 Google 字体服务器加载字体会把访问者 IP 发给 Google，德国慕尼黑地方法院判过违反 GDPR（LG München I，3 O 17493/20，2022-01-20）。正文 15px（移动端 16，跟随系统字号/Dynamic Type），行高 1.45 |
+| 间距和圆角 | 4px 网格（常用 4/8/12/16/24）；气泡圆角 18px，同一人连续的消息在相邻一侧收成 6px（iMessage 的分组样子）；卡片 12px、按钮 8px |
+| 点击区域 | 移动端至少 44×44 pt（Apple HIG；Material 是 48×48 dp），Web 至少 24×24 CSS px 且相互留空（WCAG 2.2 2.5.8 AA） |
+| 消息 | 自己的消息靠右、强调色底白字；别人的靠左、浅灰底，左边是头像（名字首字母 + 按 id 算的固定颜色，有头像地址时用图片）；同一人 5 分钟内的连续消息合成一组，只在组首显示名字和头像；日期分隔条 "Today"、"Yesterday"、"Monday"、"Mar 3"；时间 "2:41 PM"。日期和时间都用 `Intl` 按用户的语言和地区格式化（默认浏览器/系统的设置，不是写死美式），相对日期用 `Intl.RelativeTimeFormat` |
+| 状态 | 发送中（淡出）、已发送（✓）、失败（红色感叹号 + "Not delivered · Retry"）；流式 AI 消息末尾一个闪烁的光标，减少动态效果（`prefers-reduced-motion` / `AccessibilityInfo.isReduceMotionEnabled`）时不闪 |
+| AI 标记 | 名字旁边一个 "AI" 小胶囊（紫底、带星形图标），读屏读 "AI agent"；由列表画在可替换的消息组件外面，换掉消息组件也去不掉（D36、EU AI Act 第 50 条） |
+| 图标 | 内嵌 SVG（Lucide 风格的 24px 线性图标，自己画的几个，不引图标字体和图标库） |
+| 文案 | 英文，句首大写（sentence case，Apple 和 Google 的写作规范都这样），短；所有文字可以整体替换（`strings`），从右到左的语言整页镜像 |
+| 动效 | 只有新消息淡入（150ms）、正在输入的三个点；不用弹跳和大幅位移 |
+| 空状态和加载 | 空列表一句话加一个操作（"No conversations yet"）；加载用骨架条，不用转圈 |
+
+### 3.2 Web 组件（`@agentimhq/react`）
+
+- **两层**：hooks（`useConnection`、`useConversations`、`useMessages`、`useSend`、`useTyping`）在 `@agentimhq/react/hooks`；组件建在 hooks 上。
+- **组件**：`ConversationList`（头像、标题、最后一条预览、时间、未读数，按最近排序，带搜索框过滤）、`MessageList`（分组、日期分隔、"New messages" 分隔线、回到底部按钮带新消息数、向上滚动加载更早的）、`Composer`（自动增高、Enter 发送、Shift+Enter 换行、输入法组字时不发、发送是图标按钮）、`Card`（按钮、表单、答过不能再答）、`MemberList`、`TypingIndicator`（三个点 + "Bob is typing…"）、`HandoffNotice`、`ConnectionBanner`、`Avatar`、`AIBadge`、`Chat`（整窗：客服窗口）。
+- **换主题和替换组件**：样式全部用 CSS 变量，不依赖 CSS 框架；`components` 属性换掉任一部分（Stream 的做法），`strings` 换文字。
+- **无障碍**：消息列表是 `role="log"`，新消息由读屏播报；所有按钮有标签；键盘能走完所有操作；焦点框清楚可见。
+- 长列表仍用 `content-visibility: auto`（浏览器跳过屏幕外的行），不引入虚拟滚动库。
+
+### 3.3 React Native 组件（`@agentimhq/react-native-ui`）
+
+和 Web 同样的组件名、属性、`strings`、`components` 替换方式和样子，用 React Native 的原生控件画：
+
+- `MessageList` 用倒置的 `FlatList`（新消息在底部、往上滚动加载更早的；Stream Chat React Native 也是倒置 FlatList，[文档](https://getstream.io/chat/docs/sdk/react-native/ui-components/message-list/)）；每行 `memo`，不在行里做重的计算。
+- `Composer` 用多行 `TextInput`，发送按钮 44×44；键盘避让交给应用（`KeyboardAvoidingView` 的写法在 README 里给出），组件不擅自包一层。
+- 主题：`AgentIMThemeProvider`（`light`、`dark` 或跟随 `useColorScheme()`），值来自同一份 tokens；可以只覆盖几个值。
+- 无障碍：每个可点的元素有 `accessibilityRole` 和 `accessibilityLabel`，AI 标记读 "AI agent"；字号跟随系统（不关 `allowFontScaling`）；从右到左跟随 `I18nManager`。
+- 依赖只有 `react`、`react-native` 和 `@agentimhq/client-react-native`（peer），不依赖 SVG 库：图标用 `View` 画或 Unicode 字符。
+
+### 3.4 Web 演示端（`server/demo`）
+
+用 `@agentimhq/react` 重写现在的 `web/index.html`（单个手写页面），React + TypeScript + Vite，和控制台（§4）一样构建后由 `build.rs` 嵌进 `agentim`，在 `/` 提供；没构建时嵌一个说明怎么构建的占位页，Rust 的构建不依赖 Node。
+
+- **布局**：左边会话列表（顶上是当前用户、连接状态），中间对话，右边详情面板（成员、Agent 控制），窄屏时面板收起、列表和对话分页显示。登录页选一个演示用户（alice、bob、carol），写明这是演示模式。
+- **演示的功能**（现有演示的全部）：流式 AI 回复和停止；DLP 替换；提示注入标成低信任；超时；两个 Agent 互相回复被护栏熔断；耳语、审批草稿（批准、拒绝、修改后批准）、接管、改 Agent 策略、代看；卡片和来源、反馈；群里 @ 才回复；调试开关显示事件详情。Agent 控制、审批、耳语这些是演示端自己的面板，用 `client.call()` 调协议，不放进组件包。
+- **演示数据和脚本 Agent 改成英文**（会话名、欢迎语、Agent 的回答），面向欧美的演示。
+- `ci/ui_smoke.mjs` 按新页面改写，检查项不少于现在。
+
+### 3.5 测试
+
+- **组件状态**：Web 用 Vitest + Testing Library；React Native 用 Jest + [React Native Testing Library](https://callstack.github.io/react-native-testing-library/)（React Native 文档推荐的组合），不需要设备。每个组件测空、加载、失败、流式中、被打断、分组和日期分隔、时间格式（固定时钟、几种语言）、从右到左、替换组件后 AI 标记仍在、每个可点元素有标签。
+- **对比度**：从 tokens 算 §3.1 的每一对，亮色暗色都要达标。
+- **端到端**：Playwright 对真实服务端跑演示端（`ci/ui_smoke.mjs`）和客服窗口；React Native 组件在现有的 Android、iOS 测试应用里渲染一个对话，确认消息显示出来（CI 的模拟器）。
+- **截图对比**：Playwright 在固定的官方镜像里截（基准图和比较在同一个环境里生成，否则字体和渲染不同会误报，业内一致的做法，见 [Argos 的说明](https://argos-ci.com/blog/playwright-visual-regression-testing-ci)），固定时钟、固定数据、关掉动效；状态：会话列表、对话（分组、日期、AI、卡片、失败、流式）、亮色、暗色、从右到左、窄屏。允许每张图 0.2% 以内的像素差。基准图放在仓库里，改了样式时在 CI 上重新生成（手动触发的任务把新图作为产物上传），看过再提交。
+
+### 3.6 分步
+
+| 步 | 内容 |
+|---|---|
+| U1 | tokens（生成 CSS 和 TS）、对比度测试；Web 组件按 §3.1、§3.2 改样子和补功能（头像、分组、日期、时间、状态、回到底部、搜索），hooks 拆到 `/hooks`；组件测试 |
+| U2 | 演示端：`server/demo`、`build.rs` 嵌入、演示数据和脚本 Agent 改英文、`ui_smoke.mjs` 改写、CI 和 Docker 镜像先构建 |
+| U3 | React Native 组件包和测试；在 Android、iOS 测试应用里渲染 |
+| U4 | 截图对比（基准图、CI 任务） |
 
 ## 4. P4 开发者控制台和管理 API（A5，✅ 2026-10-21）
 
