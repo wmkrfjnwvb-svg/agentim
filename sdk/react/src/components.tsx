@@ -467,6 +467,7 @@ export function MessageList({ convId, notices = [] }: { convId: string; notices?
   const box = useRef<HTMLDivElement>(null);
   const top = useRef<HTMLDivElement>(null);
   const flow = useRef<HTMLDivElement>(null);
+  const lastTop = useRef(0);
   const [atBottom, setAtBottom] = useState(true);
   const bottom = useRef(true);
   const seen = useRef(0);
@@ -511,7 +512,8 @@ export function MessageList({ convId, notices = [] }: { convId: string; notices?
   }, [messages]);
 
   // Rows settle their height after layout (content-visibility, streaming
-  // text, cards): stay at the bottom while it grows.
+  // text, cards), and the box itself shrinks when a banner or a taller
+  // composer appears: stay at the bottom through both.
   useEffect(() => {
     const el = box.current;
     const inner = flow.current;
@@ -521,6 +523,7 @@ export function MessageList({ convId, notices = [] }: { convId: string; notices?
       prevHeight.current = el.scrollHeight;
     });
     ro.observe(inner);
+    ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
@@ -565,7 +568,13 @@ export function MessageList({ convId, notices = [] }: { convId: string; notices?
         aria-live="polite"
         onScroll={(e) => {
           const el = e.currentTarget;
-          const at = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+          const near = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+          // Only scrolling up leaves the bottom: content growing above
+          // (rows taking their real height, scroll anchoring) also fires
+          // scroll events, and must not unpin the list.
+          const up = el.scrollTop < lastTop.current - 1;
+          lastTop.current = el.scrollTop;
+          const at = near || (bottom.current && !up);
           bottom.current = at;
           if (at) seen.current = messages.length;
           if (at !== atBottom) setAtBottom(at);

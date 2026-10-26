@@ -379,6 +379,14 @@ describe('Runs, days, unread and scrolling (docs/12 §3.1)', () => {
     const scrollTo = vi.fn(({ top: y }) => (top = y));
     (log as any).scrollTo = scrollTo;
     expect(screen.queryByText('Jump to latest')).toBeNull();
+    top = 700;
+    fireEvent.scroll(log);
+    // Rows above take their real height (200 px more) and fire a scroll
+    // event without the position going up: still pinned to the bottom.
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, get: () => 1200 });
+    fireEvent.scroll(log);
+    expect(screen.queryByText('Jump to latest')).toBeNull();
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, get: () => 1000 });
     top = 100;
     fireEvent.scroll(log);
     expect(screen.getByText('Jump to latest')).toBeTruthy();
@@ -392,6 +400,8 @@ describe('Runs, days, unread and scrolling (docs/12 §3.1)', () => {
     fireEvent.scroll(log);
     expect(screen.queryByText(/new message|Jump to latest/)).toBeNull();
     // Scrolled up again, my own message brings me back down.
+    top = 600;
+    fireEvent.scroll(log);
     top = 0;
     fireEvent.scroll(log);
     act(() => view.set([...view.get(), msg('local:z', 'from me', { sender_id: 'u_me', status: 'sending', client_msg_id: 'z' })]));
@@ -408,6 +418,8 @@ describe('Runs, days, unread and scrolling (docs/12 §3.1)', () => {
     Object.defineProperty(log, 'scrollHeight', { configurable: true, get: () => height });
     Object.defineProperty(log, 'clientHeight', { configurable: true, get: () => 300 });
     Object.defineProperty(log, 'scrollTop', { configurable: true, get: () => top, set: (v) => (top = v) });
+    top = 200;
+    fireEvent.scroll(log);
     top = 50;
     fireEvent.scroll(log);
     height = 800;
