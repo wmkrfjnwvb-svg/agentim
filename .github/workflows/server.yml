@@ -154,6 +154,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/rn" && (cd "$RUNNER_TEMP/rn" && npm pack react-native@0.87.1 --silent && tar -xzf react-native-0.87.1.tgz)
           RN="$RUNNER_TEMP/rn/package/ReactCommon"
           c++ -std=c++20 -Wall -Wextra -Werror -fsyntax-only -I"$RN/jsi" -I"$RN/callinvoker" -I../client-rust/native/include cpp/AgentIMJsi.cpp
+      - name: React Native components (every state in the React Native test renderer, shared tokens up to date)
+        working-directory: sdk/react-native-ui
+        run: |
+          npm ci
+          npm test
       - name: Unity WebGL bridge (the jslib over client-web, as emscripten loads it)
         working-directory: sdk/client-dotnet
         run: node --no-warnings --test --test-timeout=60000 --test-force-exit unity/test/*.test.mjs

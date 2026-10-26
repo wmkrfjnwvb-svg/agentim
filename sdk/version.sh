@@ -12,8 +12,9 @@ bad=0
 check() { # file, the text that must be in it
   grep -qF -- "$2" "$1" || { echo "$1: expected $2" >&2; bad=1; }
 }
-for p in client-web react client-react-native client-dotnet/unity; do check "$p/package.json" "\"version\": \"$v\""; done
+for p in client-web react client-react-native react-native-ui client-dotnet/unity; do check "$p/package.json" "\"version\": \"$v\""; done
 for p in react client-react-native; do check "$p/package.json" "\"@agentimhq/client-web\": \"${v%.*}.x\""; done
+for p in "react\": \"${v%.*}.x" "client-react-native\": \"${v%.*}.x"; do check react-native-ui/package.json "\"@agentimhq/$p\""; done
 check client-dotnet/AgentIM.Client/AgentIM.Client.csproj "<Version>$v</Version>"
 check client-flutter/pubspec.yaml "version: $v"
 check client-dotnet/AgentIM.Client/Client.cs "ClientVersion { get; set; } = \"$v\""

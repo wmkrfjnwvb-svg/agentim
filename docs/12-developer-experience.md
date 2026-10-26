@@ -340,7 +340,7 @@ AAR、Flutter、React Native 都在 Android 模拟器里跑场景，React Native
 
 三个包，同一套样子和规则：`@agentimhq/react`（Web 组件）、`@agentimhq/react-native-ui`（React Native 组件）、Web 演示端（`server/demo`，用前两层写成，是组件的活样例）。hooks 只有一份，在 `@agentimhq/react/hooks`（不碰 DOM），React Native 的客户端和浏览器的客户端接口相同（§2.11），两边都用它。
 
-> 状态：🔧 2026-10-26 设计定稿（负责人 2026-10-26："演示端的代码要好看，符合美国这些习惯和风格，清爽美观，现代"，"rn 的组件也是要美观和符合美国风格"）。U1（Web 组件）、U2（演示端）✅；U3（React Native 组件）、U4（截图对比）在做。没做 `usePresence`（服务端没有在线状态）。
+> 状态：🔧 2026-10-26 设计定稿（负责人 2026-10-26："演示端的代码要好看，符合美国这些习惯和风格，清爽美观，现代"，"rn 的组件也是要美观和符合美国风格"）。U1（Web 组件）、U2（演示端）、U3（React Native 组件）✅；U4（截图对比）在做。没做 `usePresence`（服务端没有在线状态）。
 
 ### 3.1 视觉语言
 
@@ -379,7 +379,9 @@ AAR、Flutter、React Native 都在 Android 模拟器里跑场景，React Native
 - `Composer` 用多行 `TextInput`，发送按钮 44×44；键盘避让交给应用（`KeyboardAvoidingView` 的写法在 README 里给出），组件不擅自包一层。
 - 主题：`AgentIMThemeProvider`（`light`、`dark` 或跟随 `useColorScheme()`），值来自同一份 tokens；可以只覆盖几个值。
 - 无障碍：每个可点的元素有 `accessibilityRole` 和 `accessibilityLabel`，AI 标记读 "AI agent"；字号跟随系统（不关 `allowFontScaling`）；从右到左跟随 `I18nManager`。
-- 依赖只有 `react`、`react-native` 和 `@agentimhq/client-react-native`（peer），不依赖 SVG 库：图标用 `View` 画或 Unicode 字符。
+- 依赖只有 `react`、`react-native` 和 `@agentimhq/client-react-native`（peer）以及共用 hooks 的 `@agentimhq/react`，不依赖 SVG 库：图标用 `View` 画或 Unicode 字符。
+- 和 Web 一样的：分组、日期、"New messages"、`notices`、回到最新、卡片（文字、数字、开关、选项按钮）每块只能答一次、AI 标记在可替换部分之外。React Native 自己的：长按自己的消息出现"编辑 / 删除"（iMessage、WhatsApp 的做法）；源码随包发布（`react-native` 字段指向 `src`，由 Metro 编译）。
+- 看样子：`example/` 用 react-native-web 在浏览器里画两个手机屏幕（会话列表、对话），亮色暗色，截图对比也用它。
 
 ### 3.4 Web 演示端（`server/demo`）
 
@@ -396,7 +398,7 @@ AAR、Flutter、React Native 都在 Android 模拟器里跑场景，React Native
 
 - **组件状态**：Web 用 Vitest + Testing Library；React Native 用 Jest + [React Native Testing Library](https://callstack.github.io/react-native-testing-library/)（React Native 文档推荐的组合），不需要设备。每个组件测空、加载、失败、流式中、被打断、分组和日期分隔、时间格式（固定时钟、几种语言）、从右到左、替换组件后 AI 标记仍在、每个可点元素有标签。
 - **对比度**：从 tokens 算 §3.1 的每一对，亮色暗色都要达标。
-- **端到端**：Playwright 对真实服务端跑演示端（`ci/ui_smoke.mjs`）和客服窗口；React Native 组件在现有的 Android、iOS 测试应用里渲染一个对话，确认消息显示出来（CI 的模拟器）。
+- **端到端**：Playwright 对真实服务端跑演示端（`ci/ui_smoke.mjs`）和客服窗口；React Native 组件在现有的 Android、iOS 测试应用里渲染 `Chat`，消息由默认的气泡画出来才算通过（`test-app.sh`，CI 的模拟器）。
 - **截图对比**：Playwright 在固定的官方镜像里截（基准图和比较在同一个环境里生成，否则字体和渲染不同会误报，业内一致的做法，见 [Argos 的说明](https://argos-ci.com/blog/playwright-visual-regression-testing-ci)），固定时钟、固定数据、关掉动效；状态：会话列表、对话（分组、日期、AI、卡片、失败、流式）、亮色、暗色、从右到左、窄屏。允许每张图 0.2% 以内的像素差。基准图放在仓库里，改了样式时在 CI 上重新生成（手动触发的任务把新图作为产物上传），看过再提交。
 
 ### 3.6 分步

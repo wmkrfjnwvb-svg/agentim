@@ -1,9 +1,11 @@
-// The app test-app.sh builds (docs/12 §2.12): the package as an app installs
-// it, then two people talk through the native core against a real server.
+// The app test-app.sh builds (docs/12 §2.12, §3.5): the packages as an app
+// installs them, then two people talk through the native core against a
+// real server, and the receiver's screen shows it with the components.
 // The result is logged as "AGENTIM_SMOKE ok" or "AGENTIM_SMOKE FAIL ...".
 import React, { useEffect, useState } from 'react';
-import { Text } from 'react-native';
+import { SafeAreaView, Text } from 'react-native';
 import { AgentIMClient } from '@agentimhq/client-react-native';
+import { AgentIM, Chat, defaultComponents, type MessageProps } from '@agentimhq/react-native-ui';
 
 const URL = 'http://127.0.0.1:__PORT__';
 
@@ -22,7 +24,17 @@ async function until(f: () => boolean) {
   return f();
 }
 
-async function run(): Promise<string> {
+const TEXT = 'hello from React Native 👋';
+// Set when the list draws the message with the default bubble.
+let drawn: () => void = () => {};
+function Seen(p: MessageProps) {
+  useEffect(() => {
+    if (p.message.content === TEXT) drawn();
+  }, [p.message.content]);
+  return <defaultComponents.Message {...p} />;
+}
+
+async function run(show: (c: AgentIMClient, me: string, conv: string) => void): Promise<string> {
   if (!AgentIMClient.version()) return 'no version';
   // Unique names: demo mode already has alice and bob.
   const tag = Date.now();
@@ -35,18 +47,22 @@ async function run(): Promise<string> {
   if (!(await until(() => a.connection.get().state === 'connected' && b.connection.get().state === 'connected')))
     return `not connected (${a.connection.get().state}, ${b.connection.get().state})`;
   const conv = (await a.call('create_conv', { kind: 'group', title: 'rn', members: [bob.user.id] })).conv_id;
-  await a.send(conv, 'hello from React Native 👋');
+  let onScreen = false;
+  drawn = () => (onScreen = true);
+  show(b, bob.user.id, conv);
+  await a.send(conv, TEXT);
   const bv = b.messages(conv);
-  const got = await until(() => bv.get().some((m: any) => m.content === 'hello from React Native 👋' && m.status === 'sent'));
+  const got = await until(() => bv.get().some((m: any) => m.content === TEXT && m.status === 'sent'));
+  const shown = got && (await until(() => onScreen));
   a.dispose();
-  b.dispose();
-  return got ? 'ok' : 'the other side did not get it';
+  return !got ? 'the other side did not get it' : shown ? 'ok' : 'the components did not show it';
 }
 
 export default function App() {
   const [result, setResult] = useState('running');
+  const [chat, setChat] = useState<{ client: AgentIMClient; me: string; conv: string } | null>(null);
   useEffect(() => {
-    run()
+    run((client, me, conv) => setChat({ client, me, conv }))
       .catch((e) => `error ${e?.code ?? ''} ${e?.message ?? e}`)
       .then((r) => {
         // console.error: release builds log errors only.
@@ -54,5 +70,14 @@ export default function App() {
         setResult(r);
       });
   }, []);
-  return <Text>{result}</Text>;
+  return (
+    <SafeAreaView style={{ flex: 1 }}>
+      <Text>{result}</Text>
+      {chat ? (
+        <AgentIM client={chat.client as any} me={chat.me} components={{ Message: Seen }}>
+          <Chat convId={chat.conv} title="rn" />
+        </AgentIM>
+      ) : null}
+    </SafeAreaView>
+  );
 }

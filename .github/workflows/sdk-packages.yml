@@ -295,14 +295,14 @@ jobs:
         with: {node-version: 22}
       - name: build
         run: |
-          for p in client-web react client-react-native; do
+          for p in client-web react client-react-native react-native-ui; do
             (cd "sdk/$p" && npm ci && npm run build)
           done
-      - run: node sdk/check-npm-pack.mjs sdk/client-web sdk/react sdk/client-react-native
+      - run: node sdk/check-npm-pack.mjs sdk/client-web sdk/react sdk/client-react-native sdk/react-native-ui
       - name: the tarballs
         run: |
           mkdir -p npm
-          for p in client-web react client-react-native; do (cd "sdk/$p" && npm pack --pack-destination "$GITHUB_WORKSPACE/npm"); done
+          for p in client-web react client-react-native react-native-ui; do (cd "sdk/$p" && npm pack --pack-destination "$GITHUB_WORKSPACE/npm"); done
           ls -l npm
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: npm, path: npm, if-no-files-found: error}

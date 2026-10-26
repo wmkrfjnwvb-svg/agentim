@@ -39,6 +39,14 @@ notes are taken from it.
 - First run with no arguments: the database and its master key are
   created in the current folder, and start-up says where the key is and
   to back it up.
+- UI components with one look on the web and in React Native
+  (`@agentimhq/react`, `@agentimhq/react-native-ui`), from shared design
+  tokens checked for WCAG AA contrast: runs per sender, day separators,
+  a New messages line, jump to latest, search, editing and deleting
+  your own messages, timeline notices. The demo at `/` is rebuilt on
+  them and on the browser SDK, in English.
+- A group created with many members writes one `members.joined` event
+  per 200 members instead of one `member.joined` each (D128).
 
 ### Security
 

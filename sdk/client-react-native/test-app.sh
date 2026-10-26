@@ -1,6 +1,7 @@
 #!/bin/sh
-# Builds a new React Native 0.87.1 app with the package installed from its
-# npm tarball, the way an app gets it (docs/12 §2.12):
+# Builds a new React Native 0.87.1 app with the packages installed from their
+# npm tarballs, the way an app gets them (docs/12 §2.12, §3.5): the client
+# and the UI components:
 #   android: release APK for arm64-v8a and x86_64; checks that the core and
 #            the module are in it; with EMULATOR=1 (an emulator attached to
 #            adb) runs it there against a real agentim
@@ -18,7 +19,8 @@ npx --yes @react-native-community/cli@20.2.0 init AgentIMApp --version 0.87.1 \
   --skip-install --skip-git-init --install-pods false --directory app > init.log 2>&1 || { cat init.log; exit 1; }
 cd app
 npm install --no-audit --no-fund > install.log 2>&1 || { tail -50 install.log; exit 1; }
-npm install --no-audit --no-fund "$tgz"/agentimhq-client-web-*.tgz "$tgz"/agentimhq-client-react-native-*.tgz
+npm install --no-audit --no-fund "$tgz"/agentimhq-client-web-*.tgz "$tgz"/agentimhq-client-react-native-*.tgz \
+  "$tgz"/agentimhq-react-[0-9]*.tgz "$tgz"/agentimhq-react-native-ui-*.tgz
 sed "s/__PORT__/$port/" "$here/test/app/App.tsx" > App.tsx
 start_server() {
   "$AGENTIM_BIN" --demo --db "$work/a.db" --addr 127.0.0.1:$port > "$work/server.log" 2>&1 &
