@@ -130,7 +130,7 @@ try {
 
   await box.fill('a person please');
   await box.press('Enter');
-  await waitFor('.aim-handoff >> text=The assistant handed this conversation to a person', 'a handoff is announced');
+  await waitFor('.aim-handoff >> text=You’re being connected to a person', 'a handoff is announced');
   await waitFor('.aim-handoff >> text=A person will take it from here', 'with the note');
 
   // Offline: queued and shown, sent once back.

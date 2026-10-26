@@ -16,11 +16,17 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./theme.css": "./theme.css"
+    "./hooks": {
+      "types": "./dist/headless.d.ts",
+      "default": "./dist/headless.js"
+    },
+    "./theme.css": "./theme.css",
+    "./tokens.json": "./tokens.json"
   },
   "files": [
     "dist",
-    "theme.css"
+    "theme.css",
+    "tokens.json"
   ],
   "sideEffects": [
     "*.css"
@@ -31,8 +37,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && vitest run",
-    "e2e": "npm run build && node example/build.mjs && node test/e2e.mjs"
+    "test": "node scripts/tokens.mjs --check && npm run build && vitest run",
+    "e2e": "npm run build && node example/build.mjs && node test/e2e.mjs",
+    "tokens": "node scripts/tokens.mjs"
   },
   "devDependencies": {
     "@agentimhq/client-web": "file:../client-web",

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentIM components</title>
+    <link rel="stylesheet" href="theme.css" />
+    <style>
+      html, body, #root { height: 100%; margin: 0; }
+      body { background: var(--aim-surface); font-family: var(--aim-font); color: var(--aim-fg); }
+      .app { display: grid; grid-template-columns: 320px 1fr 260px; height: 100%; background: var(--aim-bg); }
+      .side, .info { display: flex; flex-direction: column; min-height: 0; border-inline-end: 1px solid var(--aim-border); }
+      .info { border-inline-end: 0; border-inline-start: 1px solid var(--aim-border); }
+      .side-head { padding: 16px 16px 4px; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+      .info .side-head { font-size: 13px; font-weight: 600; color: var(--aim-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+      .main { min-width: 0; min-height: 0; }
+      .support { height: 100%; max-width: 400px; margin: 0 auto; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.16); }
+      @media (max-width: 900px) { .app { grid-template-columns: 1fr; } .side, .info { display: none; } }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="gallery.js"></script>
+  </body>
+</html>

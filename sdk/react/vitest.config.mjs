@@ -1,3 +1,3 @@
 export default {
-  test: { include: ['test/**/*.test.tsx'] },
+  test: { include: ['test/**/*.test.{ts,tsx}'] },
 };
