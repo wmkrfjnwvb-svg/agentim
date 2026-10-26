@@ -6,3 +6,4 @@
 /ci/node_modules
 /bench/out
 /console/dist
+/demo/dist

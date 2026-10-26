@@ -50,12 +50,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [server/console, sdk/client-web, sdk/react, sdk/client-react-native]
+        package: [server/console, server/demo, sdk/client-web, sdk/react, sdk/client-react-native]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: {node-version: 22}
-      # Build tools included: they make what ships (the console, the SDKs).
+      # Build tools included: they make what ships (the console, the demo, the SDKs).
       - working-directory: ${{ matrix.package }}
         run: npm audit --audit-level=high

@@ -2,7 +2,7 @@
 // the contrast of every token pair.
 
 import { describe, expect, it } from 'vitest';
-import { avatarColor, formatDay, formatShort, formatTime, initials, layout, unreadIndex } from '../src/format.js';
+import { avatarColor, formatDay, formatShort, formatTime, initials, interleave, layout, unreadIndex } from '../src/format.js';
 // @ts-expect-error plain JS module
 import { contrast, contrastFailures, tokens } from '../scripts/tokens.mjs';
 
@@ -77,6 +77,23 @@ describe('layout', () => {
     // More unread than loaded: from the oldest loaded one.
     expect(unreadIndex(list, 50, 'me')).toBe(0);
     expect(unreadIndex([m('b', 'me')], 2, 'me')).toBeUndefined();
+  });
+});
+
+describe('interleave', () => {
+  const m = (key: string, seq?: number) => ({ key, sender_id: 'bob', sender_type: 'human', created_seq: seq });
+  const shape = (items: any[]) => items.map((i) => (i.notice ? `(${i.notice.key})` : `${i.row.message.key}${i.row.first ? '<' : ''}${i.row.last ? '>' : ''}`)).join(' ');
+  it('puts notices between messages by seq, ends runs, and keeps local messages last', () => {
+    const rows = layout([m('a', 1), m('b', 2), m('c', 4), m('local:d')]);
+    expect(shape(interleave(rows, []))).toBe('a< b c local:d>');
+    expect(shape(interleave(rows, [{ key: 'x', seq: 3, content: '' }, { key: 'y', seq: 1.5, content: '' }, { key: 'z', seq: 50, content: '' }]))).toBe('a<> (y) b<> (x) c<> (z) local:d<>');
+    expect(shape(interleave([], [{ key: 'only', seq: 1, content: '' }]))).toBe('(only)');
+    // A new day goes above the notices that open it.
+    const dayRows = layout([{ ...m('a', 5), created_at: Date.parse('2026-10-26T10:00:00Z') }], us);
+    const items: any[] = interleave(dayRows, [{ key: 'j', seq: 2, content: '' }, { key: 'k', seq: 3, content: '' }]);
+    expect(items.map((i) => i.day ?? i.row?.day ?? '-')).toEqual(['Today', '-', '-']);
+    // The rows given are not changed.
+    expect(rows.map((r) => r.first)).toEqual([true, false, false, false]);
   });
 });
 

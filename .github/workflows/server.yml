@@ -344,14 +344,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: server
+          workspaces: |
+            server
+            sdk/client-rust
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: build the console
         run: cd console && npm ci && npm run build
+      - name: build the demo (browser SDK with its wasm core, React components, the app)
+        run: sh demo/build.sh
       - run: cargo build --release --bins
       - name: install playwright
         run: |

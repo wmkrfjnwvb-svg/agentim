@@ -130,3 +130,42 @@ export function unreadIndex(messages: { sender_id?: string; key: string }[], unr
   // More unread than loaded: from the oldest loaded one.
   return at;
 }
+
+/** A line in the timeline that is not a message: a system event, a whisper, progress. */
+export interface Notice<N = unknown> {
+  key: string;
+  /** Goes after the message with this seq (fractions sort between messages). */
+  seq: number;
+  content: N;
+  tone?: 'info' | 'warning' | 'private';
+}
+
+export type Item<M, N> = { row: Row<M>; notice?: undefined } | { notice: Notice<N>; row?: undefined; /** A day separator goes above this notice. */ day?: string };
+
+/**
+ * Notices merged into the rows by seq: a notice goes before the first
+ * message with a later seq (local messages, without one, come last) and
+ * ends the run around it.
+ */
+export function interleave<M extends Laid, N>(rows: Row<M>[], notices: Notice<N>[]): Item<M, N>[] {
+  const pending = [...notices].sort((a, b) => a.seq - b.seq);
+  const out: Item<M, N>[] = [];
+  let i = 0;
+  let prev: Row<M> | undefined;
+  for (const r of rows) {
+    const seq = typeof r.message.created_seq === 'number' ? r.message.created_seq : Infinity;
+    let split = false;
+    while (i < pending.length && pending[i].seq < seq) {
+      // The day starts above its first notice, not between it and the message.
+      out.push({ notice: pending[i++], day: split ? undefined : r.day });
+      split = true;
+    }
+    const row = split ? { ...r, first: true, day: undefined } : r;
+    if (split && prev) prev.last = true;
+    const copy = { ...row };
+    out.push({ row: copy });
+    prev = copy;
+  }
+  while (i < pending.length) out.push({ notice: pending[i++] });
+  return out;
+}

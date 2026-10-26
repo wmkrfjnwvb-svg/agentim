@@ -139,7 +139,7 @@ async fn websocket_auth_request_response_and_push() {
     let (mut a, _) = tokio_tungstenite::connect_async_with_config(
         format!(
             "ws://{addr}/ws?token={}&device=web-alice",
-            login(&addr, "alice").await
+            login(&addr, "Alice").await
         ),
         None,
         true,
@@ -149,7 +149,7 @@ async fn websocket_auth_request_response_and_push() {
     let (mut b, _) = tokio_tungstenite::connect_async_with_config(
         format!(
             "ws://{addr}/ws?token={}&device=web-bob",
-            login(&addr, "bob").await
+            login(&addr, "Bob").await
         ),
         None,
         true,
@@ -157,7 +157,7 @@ async fn websocket_auth_request_response_and_push() {
     .await
     .unwrap();
     let w = recv_until(&mut a, |f| f["type"] == "welcome").await;
-    assert_eq!(w["me"]["name"], "alice");
+    assert_eq!(w["me"]["name"], "Alice");
     // Before its first sync a device is only told to sync; after it,
     // live events are pushed.
     sync_up(&mut b, 100).await;
@@ -166,7 +166,7 @@ async fn websocket_auth_request_response_and_push() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|c| c["title"] == "产品讨论群")
+        .find(|c| c["title"] == "Product team")
         .unwrap()["conv_id"]
         .as_str()
         .unwrap()
@@ -200,7 +200,7 @@ async fn demo_agent_streams_a_reply_with_coalesced_deltas() {
     let (mut a, _) = tokio_tungstenite::connect_async_with_config(
         format!(
             "ws://{addr}/ws?token={}&device=web-alice",
-            login(&addr, "alice").await
+            login(&addr, "Alice").await
         ),
         None,
         true,
@@ -212,7 +212,7 @@ async fn demo_agent_streams_a_reply_with_coalesced_deltas() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|c| c["title"] == "Alice · Aria")
+        .find(|c| c["title"] == "Aria")
         .unwrap()["conv_id"]
         .as_str()
         .unwrap()

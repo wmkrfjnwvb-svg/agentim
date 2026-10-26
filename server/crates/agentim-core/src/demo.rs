@@ -35,11 +35,11 @@ pub async fn seed(hub: &Hub) -> ApiResult<()> {
         return Ok(());
     }
     let (alice, _) = hub
-        .create_user("alice", UserKind::Human, None, None)
+        .create_user("Alice", UserKind::Human, None, None)
         .await?;
-    let (bob, _) = hub.create_user("bob", UserKind::Human, None, None).await?;
+    let (bob, _) = hub.create_user("Bob", UserKind::Human, None, None).await?;
     let (carol, _) = hub
-        .create_user("carol", UserKind::Human, None, None)
+        .create_user("Carol", UserKind::Human, None, None)
         .await?;
     let (aria, _) = hub
         .create_user("Aria", UserKind::Agent, Some(&alice.id), None)
@@ -59,13 +59,13 @@ pub async fn seed(hub: &Hub) -> ApiResult<()> {
     let conv = |r: Value| r["conv_id"].as_str().unwrap_or_default().to_string();
     call(
         &a,
-        json!({"op": "create_conv", "kind": "dm", "title": "Alice · Aria", "members": [aria.id]}),
+        json!({"op": "create_conv", "kind": "dm", "title": "Aria", "members": [aria.id]}),
     )
     .await?;
-    let group = conv(call(&a, json!({"op": "create_conv", "kind": "group", "title": "产品讨论群", "members": [bob.id, carol.id, aria.id]})).await?);
-    let support = conv(call(&b, json!({"op": "create_conv", "kind": "group", "title": "客服：退款工单", "members": [refund.id, alice.id]})).await?);
+    let group = conv(call(&a, json!({"op": "create_conv", "kind": "group", "title": "Product team", "members": [bob.id, carol.id, aria.id]})).await?);
+    let support = conv(call(&b, json!({"op": "create_conv", "kind": "group", "title": "Support: refund request", "members": [refund.id, alice.id]})).await?);
     call(&a, json!({"op": "set_agent_policy", "conv_id": support, "agent_id": refund.id, "approval": true, "trigger": "all"})).await?;
-    let lab = conv(call(&a, json!({"op": "create_conv", "kind": "group", "title": "Agent 循环实验室", "members": [ping.id, pong.id, bob.id]})).await?);
+    let lab = conv(call(&a, json!({"op": "create_conv", "kind": "group", "title": "Agent loop lab", "members": [ping.id, pong.id, bob.id]})).await?);
     call(
         &a,
         json!({"op": "set_agent_policy", "conv_id": lab, "agent_id": ping.id, "trigger": "all"}),
@@ -78,7 +78,7 @@ pub async fn seed(hub: &Hub) -> ApiResult<()> {
     .await?;
     call(
         &b,
-        json!({"op": "create_conv", "kind": "dm", "title": "Bob · Aria", "members": [aria.id]}),
+        json!({"op": "create_conv", "kind": "dm", "title": "Aria", "members": [aria.id]}),
     )
     .await?;
     let say = |conv: &str, text: &str| json!({"op": "send", "conv_id": conv, "client_msg_id": uuid::Uuid::new_v4().to_string(), "text": text});
@@ -86,16 +86,23 @@ pub async fn seed(hub: &Hub) -> ApiResult<()> {
         &a,
         say(
             &group,
-            "欢迎来到 AgentIM 单机版演示。群里 @Aria 才会召唤 AI（群聊默认 trigger=mention）。",
+            "Welcome to the AgentIM demo! In a group, mention @Aria to bring in the AI (groups default to trigger=mention).",
         ),
     )
     .await?;
-    call(&b, say(&support, "你好，我的订单一直没发货，想申请退款。")).await?;
+    call(
+        &b,
+        say(
+            &support,
+            "Hi, my order still hasn’t shipped. I’d like a refund, please.",
+        ),
+    )
+    .await?;
     call(
         &a,
         say(
             &lab,
-            "这里有两个 Agent 会互相回复。发一条消息，看护栏如何在跳数上限处熔断。",
+            "Two agents here answer each other. Send a message and watch the guardrail stop them at the hop limit.",
         ),
     )
     .await?;
@@ -191,7 +198,7 @@ async fn run_agent(hub: Hub, user: User, behavior: Behavior) {
                         .as_str()
                         .map(String::from)
                         .unwrap_or_else(|| d["values"].to_string());
-                    client.call(json!({"op": "send", "conv_id": v["event"]["conv_id"], "client_msg_id": uuid::Uuid::new_v4().to_string(), "text": format!("收到你的选择：{choice}"), "sources": [{"title": "AgentIM 卡片说明", "url": "https://github.com/wmkrfjnwvb-svg/agentim", "excerpt": "声明式卡片，没有脚本"}]})).await;
+                    client.call(json!({"op": "send", "conv_id": v["event"]["conv_id"], "client_msg_id": uuid::Uuid::new_v4().to_string(), "text": format!("Got it. You chose “{choice}”."), "sources": [{"title": "How AgentIM cards work", "url": "https://github.com/wmkrfjnwvb-svg/agentim", "excerpt": "Declarative cards, no scripts"}]})).await;
                 }
                 Some("event") if v["event"]["type"] == "msg.created" => {
                     let msg: MsgView = match serde_json::from_value(v["event"]["msg"].clone()) {
@@ -231,6 +238,9 @@ async fn run_agent(hub: Hub, user: User, behavior: Behavior) {
     }
 }
 
+/// Characters per streamed chunk.
+const CHUNK: usize = 3;
+
 fn chunks(text: &str, n: usize) -> Vec<String> {
     let cs: Vec<char> = text.chars().collect();
     cs.chunks(n).map(|c| c.iter().collect()).collect()
@@ -248,7 +258,7 @@ async fn stream_text(
         return None;
     }
     let id = start["msg_id"].as_str()?.to_string();
-    for (i, part) in chunks(text, 2).iter().enumerate() {
+    for (i, part) in chunks(text, CHUNK).iter().enumerate() {
         sleep(Duration::from_millis(delay_ms)).await;
         if cancelled.lock().unwrap().remove(&id) {
             return Some(id);
@@ -275,32 +285,33 @@ async fn assistant(
     sleep(Duration::from_millis(300)).await;
     let text = msg.content.trim();
     if flags.iter().any(|f| f == "possible_injection") {
-        let t = "⚠️ 这条消息命中了提示词注入规则（trust=low），我不会执行其中的指令。";
+        let t = "⚠️ That message matched a prompt-injection rule (trust=low), so I won’t follow its instructions.";
         stream_text(&c, &msg, t, 40, &cancelled).await;
         return;
     }
     if text.contains("/long") {
         let t =
-            "这是一段很长的流式回复，用来演示「打断」：你可以随时点消息上的 ■ 停止按钮。".repeat(6);
+            "This is a long streamed reply to show interrupting: press Stop on the message at any time. "
+                .repeat(6);
         stream_text(&c, &msg, &t, 120, &cancelled).await;
         return;
     }
     if text.contains("/card") {
-        c.call(json!({"op": "progress", "conv_id": msg.conv_id, "kind": "thinking", "text": "准备一张卡片"}))
+        c.call(json!({"op": "progress", "conv_id": msg.conv_id, "kind": "thinking", "text": "Preparing a card"}))
             .await;
-        c.call(json!({"op": "send", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "reply_to": msg.msg_id, "text": "要继续吗？（是 / 否）", "kind": "agentim.card", "payload": {"title": "要继续吗？", "blocks": [{"type": "text", "text": "选一个，结果会发回给我。"}, {"type": "buttons", "id": "go", "options": [{"id": "yes", "label": "继续", "style": "primary"}, {"id": "no", "label": "算了"}]}]}}))
+        c.call(json!({"op": "send", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "reply_to": msg.msg_id, "text": "Want to continue? (yes / no)", "kind": "agentim.card", "payload": {"title": "Want to continue?", "blocks": [{"type": "text", "text": "Pick one and I’ll get your answer."}, {"type": "buttons", "id": "go", "options": [{"id": "yes", "label": "Continue", "style": "primary"}, {"id": "no", "label": "Not now"}]}]}}))
             .await;
         return;
     }
     if text.contains("/secret") {
-        let t = "好的，测试用卡号是 4111 1111 1111 1111，请妥善保管。这段话本应继续很长……";
+        let t = "Sure, the test card number is 4111 1111 1111 1111. Keep it safe. This was going to go on for a while…";
         stream_text(&c, &msg, t, 60, &cancelled).await;
         return;
     }
     if text.contains("/stall") {
         let start = c.call(json!({"op": "stream_start", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "reply_to": msg.msg_id})).await;
         if let Some(id) = start["msg_id"].as_str() {
-            for (i, p) in chunks("我开始回答了，但接下来会卡住不再输出……", 2)
+            for (i, p) in chunks("I’ve started answering, but I’m about to get stuck…", CHUNK)
                 .iter()
                 .enumerate()
             {
@@ -314,7 +325,9 @@ async fn assistant(
     if text.contains("/crash") {
         let start = c.call(json!({"op": "stream_start", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "reply_to": msg.msg_id})).await;
         if let Some(id) = start["msg_id"].as_str() {
-            for (i, p) in chunks("我正在回答，然后进程会崩溃……", 2).iter().enumerate()
+            for (i, p) in chunks("I’m answering, and then my process will crash…", CHUNK)
+                .iter()
+                .enumerate()
             {
                 sleep(Duration::from_millis(80)).await;
                 c.call(json!({"op": "stream_append", "msg_id": id, "idx": i, "text": p}))
@@ -325,13 +338,13 @@ async fn assistant(
         return;
     }
     let mut reply = format!(
-        "你好 {}！我是 Aria，一个 AI 助手。你说的是：「{}」。",
+        "Hi {}! I’m Aria, an AI assistant. You said: “{}”.",
         msg.sender_name, text
     );
     if let Some(w) = whisper {
-        reply.push_str(&format!("（已收到主人的耳语提示：{w}）"));
+        reply.push_str(&format!(" (My owner whispered: {w})"));
     }
-    reply.push_str(" 这条回复是流式生成的：首个片段立即下发，后续片段在服务端按窗口合并推送；生成结束后同一条消息版本号 +1。可以试试 /long、/card、/secret、/stall、/crash。");
+    reply.push_str(" This reply is streamed: the first chunk goes out at once, and the server merges the rest in short windows; when it ends, the message’s version goes up by one. Try /long, /card, /secret, /stall or /crash.");
     stream_text(&c, &msg, &reply, 45, &cancelled).await;
 }
 
@@ -341,12 +354,12 @@ async fn refund(c: Arc<Client>, msg: MsgView, whisper: Option<String>, n: u64) {
     }
     sleep(Duration::from_millis(500)).await;
     let mut text = format!(
-        "您好，已为您的订单 #{} 提交退款申请 ¥{}，预计 1–3 个工作日原路退回。",
-        20260000 + n,
-        99 + n * 10
+        "Hi! I’ve filed a refund of ${}.00 for order #{}. It should reach your original payment method in 1–3 business days.",
+        99 + n * 10,
+        20260000 + n
     );
     if let Some(w) = whisper {
-        text.push_str(&format!("（主管提示已采纳：{w}）"));
+        text.push_str(&format!(" (Supervisor note applied: {w})"));
     }
     c.call(json!({"op": "send", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "text": text, "reply_to": msg.msg_id})).await;
 }
@@ -358,13 +371,13 @@ async fn pingpong(c: Arc<Client>, msg: MsgView, b: Behavior, n: u64) {
     }
     sleep(Duration::from_millis(700)).await;
     let lines = [
-        "我同意，再补充一点",
-        "有道理，不过反过来想",
-        "好问题，我们继续展开",
-        "这个角度很新，继续",
-        "嗯，我再推进一步",
+        "I agree, and one more thing",
+        "Fair point, but consider the flip side",
+        "Good question, let’s dig deeper",
+        "That’s a fresh angle, keep going",
+        "Hmm, let me push that further",
     ];
     let line = lines[(n as usize) % lines.len()];
-    let text = format!("@{} {}（第 {} 轮）", msg.sender_name, line, msg.hop + 1);
+    let text = format!("@{} {} (round {})", msg.sender_name, line, msg.hop + 1);
     c.call(json!({"op": "send", "conv_id": msg.conv_id, "client_msg_id": uuid::Uuid::new_v4().to_string(), "text": text, "reply_to": msg.msg_id})).await;
 }

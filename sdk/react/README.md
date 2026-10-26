@@ -29,6 +29,10 @@ client.connect();
   button counts what arrived and brings you back down; sending a message always does. Messages
   show their states: sending, sent, not delivered (retry or delete), streaming, stopped,
   deleted and edited. Also cards (buttons and forms), sources, and feedback on agent messages.
+- **Timeline notices**: `<MessageList notices={[{ key, seq, content, tone }]} />` puts system events,
+  whispers or progress between the messages, by seq (`tone`: `info`, `warning`, `private`).
+- **My messages**: sent text messages can be edited in place and deleted (recalled); a streaming
+  agent reply shows Stop. The open list focuses its conversation, so streamed replies grow live.
 - **Dates and times** use `Intl` in the user's own locale and time zone. Pass `locale`,
   `timeZone` or a clock (`now`) to `<AgentIM>` to fix them.
 - **The AI mark cannot be turned off** (D36, EU AI Act art. 50). `MessageList` draws it next to

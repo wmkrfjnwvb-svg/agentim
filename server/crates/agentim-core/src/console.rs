@@ -29,6 +29,7 @@ fn mime(path: &str) -> &'static str {
         "ico" => "image/x-icon",
         "woff2" => "font/woff2",
         "json" => "application/json",
+        "wasm" => "application/wasm",
         _ => "application/octet-stream",
     }
 }
@@ -37,21 +38,21 @@ pub fn embedded() -> bool {
     !assets::FILES.is_empty()
 }
 
-fn file(path: &str) -> Option<&'static [u8]> {
-    assets::FILES
-        .iter()
-        .find(|(p, _)| *p == path)
-        .map(|(_, b)| *b)
-}
-
-fn answer(path: &str) -> Response {
-    // Hashed asset names never change; anything else is the app's page
-    // (client-side routes such as /console/users).
+/// A file of an embedded single-page app (Vite's `dist`): hashed assets
+/// are cached for good; any other path is the app's page (client-side
+/// routes such as /console/users), or `placeholder` when not built.
+pub(crate) fn serve(
+    files: &'static [(&str, &[u8])],
+    path: &str,
+    placeholder: &'static str,
+    csp: &'static str,
+) -> Response {
+    let file = |path: &str| files.iter().find(|(p, _)| *p == path).map(|(_, b)| *b);
     let (name, body, cache) = match file(path) {
         Some(b) if path.starts_with("assets/") => (path, b, "public, max-age=31536000, immutable"),
         _ => match file("index.html") {
             Some(b) => ("index.html", b, "no-store"),
-            None => ("index.html", PLACEHOLDER.as_bytes(), "no-store"),
+            None => ("index.html", placeholder.as_bytes(), "no-store"),
         },
     };
     let mut r = (StatusCode::OK, body).into_response();
@@ -60,9 +61,7 @@ fn answer(path: &str) -> Response {
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
     h.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'self'; img-src 'self' data:; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-        ),
+        HeaderValue::from_static(csp),
     );
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -75,6 +74,15 @@ fn answer(path: &str) -> Response {
         HeaderValue::from_static("no-referrer"),
     );
     r
+}
+
+fn answer(path: &str) -> Response {
+    serve(
+        assets::FILES,
+        path,
+        PLACEHOLDER,
+        "default-src 'self'; img-src 'self' data:; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    )
 }
 
 pub fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {

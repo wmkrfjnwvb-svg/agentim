@@ -32,7 +32,7 @@
 | 合并 Lite 和 AgentIM | ✅ | 只有一个程序 `agentim`；握手只报 `agentim`、`AgentIM` 和版本（D105） | — |
 | **发布流程（P1）** | ✅ | 第一次运行、预编译程序和签名、一条命令安装、GHCR 镜像、Helm、版本和更新日志、依赖扫描（[12 §1](12-developer-experience.md)，2026-10-25） | 各注册表等你开通（§1.2） |
 | **客户端 SDK（P2）** | ✅ | Rust 核心、原生运行层和 C ABI、浏览器、Swift、Kotlin、C#（含 Unity）、Dart、React Native；各平台的包在 CI 构建，按应用的样子在三种桌面系统、Android 模拟器、iOS 模拟器里对着真实服务端跑过（[12 §2.12.1](12-developer-experience.md)，2026-10-25） | Unity 编辑器测试（要许可）、真机 |
-| **界面组件和演示端（P3）** | 🔧 | 设计定稿（[12 §3](12-developer-experience.md)，2026-10-26）：美式清爽现代的视觉语言、Web 组件（`@agentimhq/react`）、React Native 组件（`@agentimhq/react-native-ui`）、用组件重写的英文演示端；第一版 Web 组件已有（hooks、各组件、主题、AI 标记、从右到左） | U1 tokens 和 Web 组件改样子、U2 演示端、U3 React Native 组件、U4 截图对比 |
+| **界面组件和演示端（P3）** | 🔧 | 美式清爽现代的视觉语言（[12 §3](12-developer-experience.md)，2026-10-26）：U1 Web 组件 ✅（tokens 和对比度检查、分组、日期、未读线、回到最新、搜索、编辑删除、时间线提示）；U2 演示端 ✅（用 P2 + P3 重写、英文、嵌进程序、25 项浏览器检查） | U3 React Native 组件、U4 截图对比 |
 | **开发者控制台（P4）** | ✅ | 管理 API `/admin/v1`（应用、部署两块，四种角色）、管理员账号（一次性初始化、密码 + TOTP、会话和 CSRF）、管理密钥、`agentim admin`、内置在 `agentim` 里的控制台 `/console`（[12 §4](12-developer-experience.md)） | Webhook、发送前拦截、审核时限搬进"应用设置"（现在只读） |
 | **文档站和示例（P5）** | ⏳ | 设计：[12 §5](12-developer-experience.md) | 文档站、三个示例应用、Agent 框架模板 |
 | 托管云（P6） | ⏳ | 先不做（2026-10-19） | 注册即用、免费额度、按合并后的消息计费 |

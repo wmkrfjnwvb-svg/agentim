@@ -33,6 +33,8 @@ function fake(messages: any[] = [], opts: { hasOlder?: boolean } = {}) {
     conversations: new Observable<any[]>([]),
     messages: vi.fn(() => view),
     send: vi.fn(async () => ({ client_msg_id: 'x', key: 'local:x' })),
+    edit: vi.fn(async () => ({})),
+    recall: vi.fn(async () => ({})),
     retry: vi.fn(async () => ({})),
     discard: vi.fn(async () => ({})),
     feedback: vi.fn(async () => ({})),
@@ -491,5 +493,110 @@ describe('Typing by name and the send button', () => {
     );
     expect(screen.getByText('Acme Support')).toBeTruthy();
     expect(screen.getByText('We typically reply in a few minutes')).toBeTruthy();
+  });
+});
+
+describe('Notices, own-message actions and answered cards', () => {
+  it('merges notices into the timeline by seq and ends runs around them', () => {
+    const { client } = fake([msg('a', 'one', { created_seq: 1 }), msg('b', 'two', { created_seq: 3 }), msg('c', 'three', { created_seq: undefined })]);
+    const notices = [
+      { key: 'late', seq: 99, content: 'after everything' },
+      { key: 'j', seq: 2, content: 'Amy joined', tone: 'info' as const },
+      { key: 'w', seq: 3.5, content: 'Whisper to Aria', tone: 'private' as const },
+    ];
+    render(
+      <AgentIM client={client as any} me="u_me">
+        <MessageList convId="c1" notices={notices} />
+      </AgentIM>,
+    );
+    const order = [...document.querySelectorAll('.aim-row, .aim-notice')].map((e) => e.textContent?.replace(/\s+/g, ' ').trim());
+    expect(order.map((t) => t?.match(/one|two|three|Amy joined|Whisper to Aria|after everything/)?.[0])).toEqual(['one', 'Amy joined', 'two', 'Whisper to Aria', 'after everything', 'three']);
+    expect(screen.getByText('Whisper to Aria').getAttribute('data-tone')).toBe('private');
+    // Bob's messages are split by the notices: each starts a run with his name.
+    expect(document.querySelectorAll('.aim-sender')).toHaveLength(3);
+  });
+
+  it('edits my sent message inline: Enter saves, Escape cancels, unchanged does nothing', async () => {
+    const { client } = fake([msg('a', 'helo', { sender_id: 'u_me' }), msg('b', 'theirs')]);
+    chat(client);
+    expect(screen.getAllByText('Edit')).toHaveLength(1);
+    fireEvent.click(screen.getByText('Edit'));
+    const box = screen.getByLabelText('Edit message') as HTMLTextAreaElement;
+    expect(box.value).toBe('helo');
+    fireEvent.keyDown(box, { key: 'Escape' });
+    expect(screen.queryByLabelText('Edit message')).toBeNull();
+    fireEvent.click(screen.getByText('Edit'));
+    fireEvent.click(screen.getByText('Save'));
+    expect(client.edit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('Edit'));
+    fireEvent.change(screen.getByLabelText('Edit message'), { target: { value: 'hello' } });
+    await act(async () => fireEvent.keyDown(screen.getByLabelText('Edit message'), { key: 'Enter' }));
+    expect(client.edit).toHaveBeenCalledWith('c1', { msgId: 'a' }, 'hello');
+    expect(screen.queryByLabelText('Edit message')).toBeNull();
+  });
+
+  it('deletes only my sent messages, and never a card, a stream or one still sending', () => {
+    const { client } = fake([
+      msg('a', 'mine', { sender_id: 'u_me' }),
+      msg('k', 'card', { sender_id: 'u_me', kind: 'agentim.card', payload: { blocks: [] } }),
+      msg('local:s', 'sending', { sender_id: 'u_me', status: 'sending', client_msg_id: 's' }),
+      msg('b', 'theirs'),
+    ]);
+    chat(client);
+    // Delete on "mine" and on my card (deletable, not editable); none on the others.
+    expect(screen.getAllByText('Edit')).toHaveLength(1);
+    const del = screen.getAllByText('Delete');
+    expect(del).toHaveLength(2);
+    fireEvent.click(del[0]);
+    expect(client.recall).toHaveBeenCalledWith('c1', { msgId: 'a' });
+  });
+
+  it('offers Stop while an agent streams, and stops it', () => {
+    const { client, view } = fake([msg('s', '', { state: 'streaming', streamed: 'Thinking', sender_type: 'agent', sender_id: 'u_bot' })]);
+    chat(client);
+    fireEvent.click(screen.getByText('Stop'));
+    expect(client.call).toHaveBeenCalledWith('stream_cancel', { msg_id: 's' });
+    act(() => view.set([msg('s', 'Thinking', { state: 'cancelled', sender_type: 'agent', sender_id: 'u_bot' })]));
+    expect(screen.queryByText('Stop')).toBeNull();
+    expect(screen.getByText('Stopped')).toBeTruthy();
+  });
+
+  it('disables a card once answered here, and my own cards', () => {
+    const payload = { blocks: [{ type: 'buttons', id: 'b', options: [{ id: 'y', label: 'Yes' }] }, { type: 'form', id: 'f', fields: [{ id: 'x', label: 'X', type: 'text' }] }] };
+    const { client } = fake([msg('k', 'card', { kind: 'agentim.card', payload, sender_type: 'agent', sender_id: 'u_bot' }), msg('m', 'my card', { kind: 'agentim.card', payload, sender_id: 'u_me' })]);
+    chat(client);
+    const yes = screen.getAllByText('Yes') as HTMLButtonElement[];
+    expect(yes.map((b) => b.disabled)).toEqual([false, true]);
+    fireEvent.click(yes[0]);
+    expect(client.respond).toHaveBeenCalledTimes(1);
+    expect((screen.getAllByText('Yes')[0] as HTMLButtonElement).disabled).toBe(true);
+    // The form is another block: still open, then done once sent.
+    const submit = screen.getAllByText('Submit') as HTMLButtonElement[];
+    expect(submit.map((b) => b.disabled)).toEqual([false, true]);
+    fireEvent.click(submit[0]);
+    expect(client.respond).toHaveBeenLastCalledWith('c1', 'k', 'f', { values: { x: '' } });
+    expect((screen.getAllByText('Submit')[0] as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('Focus', () => {
+  it('focuses the open conversation, and nothing once it closes', () => {
+    const { client } = fake([msg('a', 'x')]);
+    const focus = vi.fn(async () => ({}));
+    (client as any).focus = focus;
+    const r = render(
+      <AgentIM client={client as any}>
+        <MessageList convId="c1" />
+      </AgentIM>,
+    );
+    expect(focus).toHaveBeenLastCalledWith('c1');
+    r.rerender(
+      <AgentIM client={client as any}>
+        <MessageList convId="c2" />
+      </AgentIM>,
+    );
+    expect(focus.mock.calls.map((c: any[]) => c[0])).toEqual(['c1', null, 'c2']);
+    r.unmount();
+    expect(focus).toHaveBeenLastCalledWith(null);
   });
 });

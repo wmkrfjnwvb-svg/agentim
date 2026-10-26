@@ -340,7 +340,7 @@ AAR、Flutter、React Native 都在 Android 模拟器里跑场景，React Native
 
 三个包，同一套样子和规则：`@agentimhq/react`（Web 组件）、`@agentimhq/react-native-ui`（React Native 组件）、Web 演示端（`server/demo`，用前两层写成，是组件的活样例）。hooks 只有一份，在 `@agentimhq/react/hooks`（不碰 DOM），React Native 的客户端和浏览器的客户端接口相同（§2.11），两边都用它。
 
-> 状态：🔧 2026-10-26 设计定稿（负责人 2026-10-26："演示端的代码要好看，符合美国这些习惯和风格，清爽美观，现代"，"rn 的组件也是要美观和符合美国风格"），按下面的分步做。第一版 Web 组件（2026-10-24）已有 hooks、组件、每种状态的测试和客服窗口端到端；没做 `usePresence`（服务端没有在线状态）。
+> 状态：🔧 2026-10-26 设计定稿（负责人 2026-10-26："演示端的代码要好看，符合美国这些习惯和风格，清爽美观，现代"，"rn 的组件也是要美观和符合美国风格"）。U1（Web 组件）、U2（演示端）✅；U3（React Native 组件）、U4（截图对比）在做。没做 `usePresence`（服务端没有在线状态）。
 
 ### 3.1 视觉语言
 
@@ -364,7 +364,9 @@ AAR、Flutter、React Native 都在 Android 模拟器里跑场景，React Native
 ### 3.2 Web 组件（`@agentimhq/react`）
 
 - **两层**：hooks（`useConnection`、`useConversations`、`useMessages`、`useSend`、`useTyping`）在 `@agentimhq/react/hooks`；组件建在 hooks 上。
-- **组件**：`ConversationList`（头像、标题、最后一条预览、时间、未读数，按最近排序，带搜索框过滤）、`MessageList`（分组、日期分隔、"New messages" 分隔线、回到底部按钮带新消息数、向上滚动加载更早的）、`Composer`（自动增高、Enter 发送、Shift+Enter 换行、输入法组字时不发、发送是图标按钮）、`Card`（按钮、表单、答过不能再答）、`MemberList`、`TypingIndicator`（三个点 + "Bob is typing…"）、`HandoffNotice`、`ConnectionBanner`、`Avatar`、`AIBadge`、`Chat`（整窗：客服窗口）。
+- **组件**：`ConversationList`（头像、标题、最后一条预览、时间、未读数，按最近排序，带搜索框过滤）、`MessageList`（分组、日期分隔、"New messages" 分隔线、回到底部按钮带新消息数、向上滚动加载更早的）、`Composer`（自动增高、Enter 发送、Shift+Enter 换行、输入法组字时不发、发送是图标按钮）、`Card`（按钮、表单，每块答过就不能再答，自己发的卡片不能答）、`MemberList`、`TypingIndicator`（三个点 + "Bob is typing…"）、`HandoffNotice`、`ConnectionBanner`、`Avatar`、`AIBadge`、`Chat`（整窗：客服窗口）。
+- **时间线上的提示**：`MessageList` 的 `notices`（`{key, seq, content, tone}`）按 seq 插进消息之间（系统事件、耳语、Agent 进度），插入处断开分组，新的一天的日期在当天第一条提示之上；`interleave` 在 `/hooks` 里，React Native 共用。
+- **自己的消息**：已发送的文字消息可以就地编辑（Enter 保存、Esc 取消，内容没变不发），已发送的消息可以删除（撤回）；Agent 正在流式输出时显示"Stop"。打开的会话自动设为 focus（服务端只给 focus 的会话推流式增量）。
 - **换主题和替换组件**：样式全部用 CSS 变量，不依赖 CSS 框架；`components` 属性换掉任一部分（Stream 的做法），`strings` 换文字。
 - **无障碍**：消息列表是 `role="log"`，新消息由读屏播报；所有按钮有标签；键盘能走完所有操作；焦点框清楚可见。
 - 长列表仍用 `content-visibility: auto`（浏览器跳过屏幕外的行），不引入虚拟滚动库。
@@ -381,12 +383,14 @@ AAR、Flutter、React Native 都在 Android 模拟器里跑场景，React Native
 
 ### 3.4 Web 演示端（`server/demo`）
 
-用 `@agentimhq/react` 重写现在的 `web/index.html`（单个手写页面），React + TypeScript + Vite，和控制台（§4）一样构建后由 `build.rs` 嵌进 `agentim`，在 `/` 提供；没构建时嵌一个说明怎么构建的占位页，Rust 的构建不依赖 Node。
+用 `@agentimhq/react` 重写原来的单个手写页面（`web/index.html`，已删除），React + TypeScript + Vite，和控制台（§4）一样构建后由 `build.rs` 嵌进 `agentim`，在 `/` 提供；没构建时嵌一个说明怎么构建的占位页，Rust 的构建不依赖 Node。
 
-- **布局**：左边会话列表（顶上是当前用户、连接状态），中间对话，右边详情面板（成员、Agent 控制），窄屏时面板收起、列表和对话分页显示。登录页选一个演示用户（alice、bob、carol），写明这是演示模式。
-- **演示的功能**（现有演示的全部）：流式 AI 回复和停止；DLP 替换；提示注入标成低信任；超时；两个 Agent 互相回复被护栏熔断；耳语、审批草稿（批准、拒绝、修改后批准）、接管、改 Agent 策略、代看；卡片和来源、反馈；群里 @ 才回复；调试开关显示事件详情。Agent 控制、审批、耳语这些是演示端自己的面板，用 `client.call()` 调协议，不放进组件包。
+- **布局**：左边会话列表（顶上是当前用户、连接状态），中间对话，右边详情面板（成员、Agent 控制），窄屏时面板收起、列表和对话分页显示。登录页选一个演示用户（Alice、Bob、Carol），写明这是演示模式。
+- **演示的功能**：流式 AI 回复和停止；DLP 替换；提示注入标成低信任；超时；两个 Agent 互相回复被护栏熔断；耳语（时间线上只有自己看得到的提示）、审批草稿（改了再批准、丢弃）、接管和交回、重置护栏、改 Agent 策略（@Mentions / Addressed / All，发送前审核开关）；卡片和来源、反馈；群里 @ 才回复；编辑和删除自己的消息；"开发者视图"把消息组件换成带 seq、版本、跳数、信任和状态原因的版本（演示 `components` 的替换）。Agent 控制、审批、耳语是演示端自己的面板，用 `client.call()` 调协议，不放进组件包。原来的"代看"（所有者经自己的 Agent 看不在其中的会话）没有搬过来：会话列表已经不列这些会话（[03 §1.2](03-agents.md)），演示端没有入口。
+- **时间线上的提示**来自客户端的 `event` 和 `side` 事件，页面打开期间按会话保留（刷新后只剩消息：客户端缓存只存消息）。
 - **演示数据和脚本 Agent 改成英文**（会话名、欢迎语、Agent 的回答），面向欧美的演示。
-- `ci/ui_smoke.mjs` 按新页面改写，检查项不少于现在。
+- `ci/ui_smoke.mjs` 按新页面改写（25 项，原来 14 项），Linux 和 Windows 上跑。
+- **构建**：`server/demo/build.sh`（先构建浏览器 SDK 和 wasm 核心、React 组件，再构建演示端；`WASM=<文件>` 用别处编好的核心）。CI 的浏览器测试、发布流程（`demo` 任务）和 Docker 镜像（Rust 阶段编 wasm，Node 阶段构建）都先构建它。页面的 CSP 只多放开 `'wasm-unsafe-eval'`（编译核心），`.wasm` 按 `application/wasm` 提供。
 
 ### 3.5 测试
 

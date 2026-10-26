@@ -10,6 +10,7 @@ pub mod console;
 pub mod crypto;
 pub mod db;
 pub mod demo;
+pub mod demo_web;
 pub mod failpoint;
 pub mod guard;
 pub mod hub;

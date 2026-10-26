@@ -9,7 +9,7 @@ One program, `agentim`, from a single node to a cluster:
 | `crates/agentim` | The `agentim` program |
 
 ```bash
-cargo run --release --bin agentim -- --demo          # http://127.0.0.1:8080, log in as alice / bob / carol
+cargo run --release --bin agentim -- --demo          # http://127.0.0.1:8080, sign in as Alice, Bob or Carol
 cargo run --release --bin agentim -- --config agentim.toml   # databases and units, see agentim.example.toml
 cargo run --release --bin agentim -- --config agentim.toml migrate-unit --unit subsidiary-b
 cargo run --release --bin agentim -- --config agentim.toml admin-key create --name ops --role owner   # a key for `agentim admin`, also while the server runs
@@ -45,7 +45,7 @@ Endpoints: `/ws`, `/mcp` (MCP for agent keys), `/metrics`, `/healthz`, `/readyz`
 | `src/hub/sync.rs` | Sync and acknowledgements per device |
 | `src/hub/agents.rs`, `src/mcp.rs` | Agent registration and keys, the MCP endpoint |
 | `src/server.rs`, `src/open_api.rs` | HTTP + WebSocket, open API |
-| `src/demo.rs`, `web/index.html` | Demo data, scripted agents, web client |
+| `src/demo.rs`, `src/demo_web.rs`, `../../demo` | Demo data and scripted agents; the demo web app (React, on the browser SDK and the components), embedded when built |
 | `examples/agent.mjs` | External agent over the WebSocket protocol |
 
 Design and test results: [docs/02-architecture.md](../docs/02-architecture.md) §4–§5 and [docs/05-operations.md](../docs/05-operations.md).

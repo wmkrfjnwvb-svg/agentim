@@ -563,7 +563,7 @@ pub async fn run_with(cluster: Option<ClusterSupport>) {
         Err(e) => tracing::warn!(error = e.message, "console setup link unavailable"),
     }
     if args.demo {
-        println!("Demo mode: open the URL above and log in as alice, bob or carol.");
+        println!("Demo mode: open the URL above and sign in as Alice, Bob or Carol.");
     }
     // Client addresses feed the open API's address rules.
     match tls {

@@ -65,3 +65,8 @@ export const Link = () => (
     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
   </Svg>
 );
+export const Stop = () => (
+  <Svg size={12}>
+    <rect x="6" y="6" width="12" height="12" rx="2" />
+  </Svg>
+);

@@ -6,7 +6,8 @@ import { createContext, createElement, useCallback, useContext, useEffect, useMe
 import type { AgentIMClient, Connection, Message } from '@agentimhq/client-web';
 
 /** What the hooks need from a client: `AgentIMClient`, or a fake in tests. */
-export type Client = Pick<AgentIMClient, 'connection' | 'conversations' | 'messages' | 'send' | 'retry' | 'discard' | 'feedback' | 'respond' | 'read' | 'call' | 'on'>;
+export type Client = Pick<AgentIMClient, 'connection' | 'conversations' | 'messages' | 'send' | 'edit' | 'recall' | 'retry' | 'discard' | 'feedback' | 'respond' | 'read' | 'call' | 'on'> &
+  Partial<Pick<AgentIMClient, 'focus'>>;
 
 interface Readable<T> {
   get(): T;

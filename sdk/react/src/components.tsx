@@ -8,8 +8,8 @@ import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useMem
 import type { Message } from '@agentimhq/client-web';
 import { AgentIMProvider, useClient, useConnection, useConversations, useMessages, useSend, useTyping, type Client } from './hooks.js';
 import { defaultStrings, type Strings } from './strings.js';
-import { avatarColor, formatShort, formatTime, initials, layout, unreadIndex, type When } from './format.js';
-import { Alert, ArrowDown, ArrowUp, Check, Link, Search, Sparkle, ThumbDown, ThumbUp } from './icons.js';
+import { avatarColor, formatShort, formatTime, initials, interleave, layout, unreadIndex, type Notice, type When } from './format.js';
+import { Alert, ArrowDown, ArrowUp, Check, Link, Search, Sparkle, Stop, ThumbDown, ThumbUp } from './icons.js';
 
 export { defaultStrings, type Strings };
 
@@ -29,6 +29,12 @@ export interface MessageProps {
   onDiscard(): void;
   onFeedback(rating: 'up' | 'down'): void;
   onRespond(blockId: string, r: { action?: string; values?: Record<string, unknown> }): void;
+  /** Set when I may edit this message (mine, sent, plain text). */
+  onEdit?(text: string): void;
+  /** Set when I may delete it for everyone (mine, sent). */
+  onRecall?(): void;
+  /** Set while an agent's reply streams: interrupt it. */
+  onStop?(): void;
 }
 
 export interface ConversationItemProps {
@@ -205,8 +211,15 @@ export function ConversationList({ selected, onSelect, search = true }: { select
   );
 }
 
-function Card({ m, strings, onRespond }: { m: Message; strings: Strings; onRespond: MessageProps['onRespond'] }) {
+function Card({ m, mine, strings, onRespond }: { m: Message; mine: boolean; strings: Strings; onRespond: MessageProps['onRespond'] }) {
   const p = m.payload ?? {};
+  // A block answered here, or my own card: that block is done.
+  const [answered, setAnswered] = useState<ReadonlySet<string>>(new Set());
+  const done = (id: string) => mine || answered.has(id);
+  const answer: MessageProps['onRespond'] = (b, r) => {
+    setAnswered((a) => new Set(a).add(b));
+    onRespond(b, r);
+  };
   return (
     <div className="aim-card">
       {p.title ? (
@@ -225,20 +238,20 @@ function Card({ m, strings, onRespond }: { m: Message; strings: Strings; onRespo
           return (
             <div key={b.id} className="aim-card-buttons">
               {(b.options ?? []).map((x: any) => (
-                <button key={x.id} type="button" data-style={x.style} onClick={() => onRespond(b.id, { action: x.id })}>
+                <button key={x.id} type="button" data-style={x.style} disabled={done(b.id)} onClick={() => answer(b.id, { action: x.id })}>
                   {x.label}
                 </button>
               ))}
             </div>
           );
-        if (b.type === 'form') return <CardForm key={b.id} block={b} strings={strings} onRespond={onRespond} />;
+        if (b.type === 'form') return <CardForm key={b.id} block={b} strings={strings} done={done(b.id)} onRespond={answer} />;
         return null;
       })}
     </div>
   );
 }
 
-function CardForm({ block, strings, onRespond }: { block: any; strings: Strings; onRespond: MessageProps['onRespond'] }) {
+function CardForm({ block, strings, done, onRespond }: { block: any; strings: Strings; done: boolean; onRespond: MessageProps['onRespond'] }) {
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const values: Record<string, unknown> = {};
@@ -267,14 +280,50 @@ function CardForm({ block, strings, onRespond }: { block: any; strings: Strings;
           )}
         </label>
       ))}
-      <button type="submit" data-style="primary">
+      <button type="submit" data-style="primary" disabled={done}>
         {block.submit ?? strings.submit}
       </button>
     </form>
   );
 }
 
-function DefaultMessage({ message: m, mine, first, last, time, strings, onRetry, onDiscard, onFeedback, onRespond }: MessageProps) {
+function EditBox({ text, strings, onSave, onCancel }: { text: string; strings: Strings; onSave(t: string): void; onCancel(): void }) {
+  const [value, setValue] = useState(text);
+  const save = () => {
+    const t = value.trim();
+    if (t && t !== text) onSave(t);
+    else onCancel();
+  };
+  return (
+    <div className="aim-edit">
+      <textarea
+        autoFocus
+        aria-label={strings.editing}
+        dir="auto"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel();
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            save();
+          }
+        }}
+      />
+      <div className="aim-edit-buttons">
+        <button type="button" onClick={onCancel}>
+          {strings.cancel}
+        </button>
+        <button type="button" data-style="primary" onClick={save} disabled={!value.trim()}>
+          {strings.save}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DefaultMessage({ message: m, mine, first, last, time, strings, onRetry, onDiscard, onFeedback, onRespond, onEdit, onRecall, onStop }: MessageProps) {
+  const [editing, setEditing] = useState(false);
   if (m.state === 'recalled')
     return (
       <div className="aim-bubble aim-recalled" data-mine={mine || undefined}>
@@ -289,11 +338,24 @@ function DefaultMessage({ message: m, mine, first, last, time, strings, onRetry,
   const edited = m.state === 'committed' && m.version > 1;
   const notes = [streaming && strings.streaming, m.state === 'cancelled' && strings.cancelled, m.state === 'failed' && strings.streamFailed, edited && strings.edited].filter(Boolean);
   const feedback = m.sender_type === 'agent' && !mine && !streaming && m.status === 'sent';
+  const actions = !!(onEdit || onRecall || onStop);
+  if (editing && onEdit)
+    return (
+      <EditBox
+        text={m.content}
+        strings={strings}
+        onCancel={() => setEditing(false)}
+        onSave={(t) => {
+          setEditing(false);
+          onEdit(t);
+        }}
+      />
+    );
   return (
     <>
-      <div className="aim-bubble" data-mine={mine || undefined} data-first={first || undefined} data-last={last || undefined} data-failed={failed || undefined} data-sending={m.status === 'sending' || undefined} aria-busy={streaming || undefined}>
+      <div className="aim-bubble" data-state={m.state} data-mine={mine || undefined} data-first={first || undefined} data-last={last || undefined} data-failed={failed || undefined} data-sending={m.status === 'sending' || undefined} aria-busy={streaming || undefined}>
         {m.kind === 'agentim.card' ? (
-          <Card m={m} strings={strings} onRespond={onRespond} />
+          <Card m={m} mine={mine} strings={strings} onRespond={onRespond} />
         ) : (
           <div className="aim-text" dir="auto">
             {text}
@@ -316,8 +378,8 @@ function DefaultMessage({ message: m, mine, first, last, time, strings, onRetry,
           </div>
         ) : null}
       </div>
-      {last || failed || m.status === 'sending' || notes.length || feedback ? (
-        <div className="aim-meta" data-mine={mine || undefined} data-float={(!last && !failed && m.status !== 'sending' && !notes.length) || undefined}>
+      {last || failed || m.status === 'sending' || notes.length || feedback || actions ? (
+        <div className="aim-meta" data-mine={mine || undefined} data-float={(!last && !failed && m.status !== 'sending' && !notes.length && !onStop) || undefined}>
           {notes.map((n) => (
             <span key={n as string}>{n}</span>
           ))}
@@ -339,6 +401,26 @@ function DefaultMessage({ message: m, mine, first, last, time, strings, onRetry,
               <button type="button" onClick={onDiscard}>
                 {strings.discard}
               </button>
+            </span>
+          ) : null}
+          {onStop ? (
+            <button type="button" className="aim-stop" onClick={onStop}>
+              <Stop />
+              {strings.stop}
+            </button>
+          ) : null}
+          {onEdit || onRecall ? (
+            <span className="aim-actions">
+              {onEdit ? (
+                <button type="button" onClick={() => setEditing(true)}>
+                  {strings.edit}
+                </button>
+              ) : null}
+              {onRecall ? (
+                <button type="button" onClick={onRecall}>
+                  {strings.discard}
+                </button>
+              ) : null}
             </span>
           ) : null}
           {feedback ? (
@@ -377,7 +459,7 @@ function reducedMotion(): boolean {
  * "New messages" where the unread ones started; scrolled to the newest,
  * keeps its place when older ones load, and offers a way back down.
  */
-export function MessageList({ convId }: { convId: string }) {
+export function MessageList({ convId, notices = [] }: { convId: string; notices?: Notice<ReactNode>[] }) {
   const client = useClient();
   const { strings, components, me, when } = useUi();
   const { messages, hasOlder, olderEnd, loadingOlder, loadOlder } = useMessages(convId);
@@ -400,7 +482,7 @@ export function MessageList({ convId }: { convId: string }) {
   }
   const unreadFrom = divider.current.key ? messages.findIndex((m) => m.key === divider.current.key) : -1;
   const w = when();
-  const rows = layout(messages, w, unreadFrom >= 0 ? unreadFrom : undefined);
+  const items = interleave(layout(messages, w, unreadFrom >= 0 ? unreadFrom : undefined), notices);
   const isMine = (m: Message) => m.sender_id === me || m.key.startsWith('local:');
 
   useLayoutEffect(() => {
@@ -453,6 +535,13 @@ export function MessageList({ convId }: { convId: string }) {
     return () => io.disconnect();
   }, [hasOlder, loadingOlder, loadOlder]);
 
+  // The open conversation is the focused one: its streamed replies grow live.
+  useEffect(() => {
+    const focus = (c: string | null) => void client.focus?.(c).catch(() => {});
+    focus(convId);
+    return () => focus(null);
+  }, [client, convId]);
+
   useEffect(() => {
     const last = messages.at(-1);
     if (last?.created_seq) client.read(convId, last.created_seq).catch(() => {});
@@ -496,8 +585,24 @@ export function MessageList({ convId }: { convId: string }) {
         </div>
         {!messages.length ? <components.Empty text={strings.empty} hint={strings.emptyHint} /> : null}
         <div ref={flow} className="aim-flow">
-        {rows.map(({ message: m, day, unread, first, last }) => {
+        {items.map((it) => {
+          if (it.notice)
+            return (
+              <Fragment key={`n:${it.notice.key}`}>
+                {it.day ? (
+                  <div className="aim-day" role="separator" aria-label={it.day}>
+                    <span>{it.day}</span>
+                  </div>
+                ) : null}
+                <div className="aim-notice" data-tone={it.notice.tone} role="note">
+                  {it.notice.content}
+                </div>
+              </Fragment>
+            );
+          const { message: m, day, unread, first, last } = it.row;
           const mine = isMine(m);
+          const sent = mine && m.status === 'sent' && m.msg_id && !m.key.startsWith('local:');
+          const target = { msgId: m.msg_id };
           const agent = m.sender_type === 'agent';
           return (
             <Fragment key={m.key}>
@@ -533,6 +638,9 @@ export function MessageList({ convId }: { convId: string }) {
                     onDiscard={() => m.client_msg_id && void client.discard(convId, m.client_msg_id)}
                     onFeedback={(r) => void client.feedback(convId, m.msg_id, r).catch(() => {})}
                     onRespond={(b, r) => void client.respond(convId, m.msg_id, b, r).catch(() => {})}
+                    onEdit={sent && m.state === 'committed' && (m.kind ?? 'text') === 'text' ? (t) => void client.edit(convId, target, t).catch(() => {}) : undefined}
+                    onRecall={sent && m.state !== 'streaming' ? () => void client.recall(convId, target).catch(() => {}) : undefined}
+                    onStop={m.state === 'streaming' && agent ? () => void client.call('stream_cancel', { msg_id: m.msg_id }).catch(() => {}) : undefined}
                   />
                 </div>
               </div>

@@ -12,11 +12,28 @@ RUN npm ci
 COPY server/console/ ./
 RUN npm run build
 
+# The demo (docs/12 §3.4) runs the client core in the browser: build it
+# for wasm here, then the demo on the browser SDK and the components.
+FROM rust:1-bookworm AS wasm
+WORKDIR /src
+COPY sdk/client-rust/ sdk/client-rust/
+RUN rustup target add wasm32-unknown-unknown \
+ && cd sdk/client-rust && cargo build --locked -p agentim-client-wasm --target wasm32-unknown-unknown --release
+
+FROM node:22-bookworm-slim AS demo
+WORKDIR /src
+COPY sdk/client-web/ sdk/client-web/
+COPY sdk/react/ sdk/react/
+COPY server/demo/ server/demo/
+COPY --from=wasm /src/sdk/client-rust/target/wasm32-unknown-unknown/release/agentim_client_wasm.wasm /tmp/core.wasm
+RUN WASM=/tmp/core.wasm sh server/demo/build.sh
+
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY server/ server/
-# The console is embedded in the binary (docs/12 §4).
+# The console and the demo are embedded in the binary (docs/12 §4, §3.4).
 COPY --from=console /src/server/console/dist server/console/dist
+COPY --from=demo /src/server/demo/dist server/demo/dist
 RUN cd server && cargo build --release -p agentim \
  && cp target/release/agentim /usr/local/bin/
 

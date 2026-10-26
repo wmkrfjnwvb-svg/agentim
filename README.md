@@ -13,7 +13,7 @@ irm https://github.com/wmkrfjnwvb-svg/agentim/releases/latest/download/install.p
 docker run -p 8080:8080 -v agentim:/var/lib/agentim ghcr.io/wmkrfjnwvb-svg/agentim --db /var/lib/agentim/agentim.db
 
 agentim          # in an empty folder: creates agentim.db and its master key, prints the address and the console setup link
-agentim --demo   # or try it: open http://127.0.0.1:8080 and log in as alice, bob or carol
+agentim --demo   # or try it: open http://127.0.0.1:8080 and sign in as Alice, Bob or Carol
 ```
 
 The install scripts put `agentim` in `~/.agentim/bin` without root and stop if the download's SHA-256 does not match. Every release file is signed with Sigstore and has a build provenance attestation (`gh attestation verify <file> --repo wmkrfjnwvb-svg/agentim`); see [docs/12 §1](docs/12-developer-experience.md). The first release is v0.1.0; until it is out, build from source:

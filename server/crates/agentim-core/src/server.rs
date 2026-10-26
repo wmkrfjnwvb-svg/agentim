@@ -7,7 +7,7 @@ use axum::{
         ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code},
     },
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use futures_util::{SinkExt, StreamExt};
@@ -31,7 +31,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::open_api::routes(state.clone()))
         .merge(crate::admin_api::routes(state.clone()))
         .merge(crate::console::routes())
-        .route("/", get(index))
+        .merge(crate::demo_web::routes())
         .route("/ws", get(ws))
         .route("/api/login", post(login))
         .route("/api/dev/users", post(dev_create_user))
@@ -88,10 +88,6 @@ fn origin_refused() -> Response {
         Json(json!({"error": {"code": "forbidden", "message": "origin not allowed"}})),
     )
         .into_response()
-}
-
-async fn index() -> Html<&'static str> {
-    Html(include_str!("../web/index.html"))
 }
 
 #[derive(Deserialize)]
