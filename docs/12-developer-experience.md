@@ -439,7 +439,7 @@ AAR、Flutter、React Native 都在 Android 模拟器里跑场景，React Native
 
 ## 5. P5 文档站和示例应用
 
-**文档站和官网首页**（设计，待确认，2026-10-27）
+**文档站和官网首页**（2026-10-27 负责人确认，D135、D136）
 
 负责人的要求（2026-10-27）：做文档和网站首页；文档要详细解释 SDK 和 API，每个 API、每个 SDK 的每个功能都要解释。
 
@@ -447,8 +447,10 @@ AAR、Flutter、React Native 都在 Android 模拟器里跑场景，React Native
 
 **技术**：一个静态站，Astro Starlight（`@astrojs/starlight` 0.42.6、`astro` 7.3.8，都是 2026-10-08 发布），放在仓库的 `site/`，CI 构建，发布到 GitHub Pages，每个版本一份（`/docs/v0.1/`、`/docs/latest/`）。首页也在这个站里（Astro 自己写的页面），和文档共用设计 token（`sdk/react/tokens.json`），深浅色都有。站上**不放统计、不放第三方脚本、不用 Cookie**，所以也不需要 Cookie 横幅（GDPR、ePrivacy）；字体打包进站里，不从 Google Fonts 拉。文档用英文写（用户大多在海外）；`docs/` 里的中文设计文档不上站。
 
-**首页**（美式 SaaS 落地页的结构，清爽，大留白）
-1. 顶栏：Logo、Docs、API、SDKs、Pricing（先不放，托管云以后）、GitHub 星数、"Get started"。
+**Logo**：我们自己画（SVG）。两个圆角对话气泡叠在一起，一个代表人、一个代表 Agent，用主色 `#2563EB` 和一个浅色；字标是 "AgentIM"，用站里的无衬线字体加粗。要求：深浅色背景都能看清；缩到 16 像素当网站图标时也认得出；只用一两种颜色。
+
+**首页**（美式 SaaS 落地页的结构，清爽，大留白；手机 390、平板 820、电脑 1440 三种宽度都有截图测试）
+1. 顶栏：Logo、Docs、API、SDKs、Dashboard（管理平台，就是控制台：`https://<你的服务器>/console`，首页上说明怎么打开）、GitHub 星数、"Get started"。手机和平板上收进菜单按钮。
 2. 首屏：一句话 "Open-source chat for people and AI agents"，一行说明（自托管的 IM 服务端加各平台 SDK 和 UI 组件，AI 消息、审批、护栏都是内置的），两个按钮（"Get started"、"View on GitHub"），右边是用我们自己的 React 组件渲染的真实聊天窗口（同截图测试里的样例数据，Agent 流式回复的动画在 `prefers-reduced-motion` 时关掉）。
 3. 一条命令装好：`curl … | sh` 和 `docker run …` 两个标签页，可以复制。
 4. 功能格（六格，每格一个图标、一句标题、两行说明、一个"Learn more"）：流式 AI 消息和 Stop；人工审批和请人决定；护栏（循环熔断、内容过滤、注入标记）；MCP 和 Agent SDK；不丢、有序、集群；合规（GDPR 导出删除、EU AI Act 的 AI 标记、DSA 举报）。
