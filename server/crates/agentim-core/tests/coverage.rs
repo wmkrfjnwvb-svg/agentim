@@ -34,6 +34,7 @@ backend_tests!(
     user_and_conversation_listing_edges,
     account_and_stats_ops_are_gone,
     side_channel_paging_and_read_errors,
+    pages_report_more_only_when_something_follows,
     race_servers_starting_together_on_an_empty_database,
 );
 
@@ -94,6 +95,11 @@ async fn one_failing_command_does_not_spoil_its_batch(db: TestDb) {
             acked.push(format!("t{i}"));
         } else {
             assert_eq!(code(&r), "storage", "{r}");
+            // The database's own message stays in the log (B9).
+            assert_eq!(
+                r["error"]["message"], "the request could not be completed; retry",
+                "{r}"
+            );
             failed.push(i);
         }
     }
@@ -813,6 +819,44 @@ async fn side_channel_paging_and_read_errors(db: TestDb) {
     );
     a.ok(json!({"op": "read", "conv_id": conv, "seq": -5}))
         .await; // harmless no-op
+}
+
+/// B9: a page that ends exactly at the last event says there is no more.
+async fn pages_report_more_only_when_something_follows(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[]).await;
+    for i in 0..3 {
+        a.send(&conv, &format!("{i}")).await;
+    }
+    let all = a.pull(&conv, 0).await;
+    let n = all["events"].as_array().unwrap().len() as i64;
+    let page = |limit: i64| json!({"op": "pull", "conv_id": conv, "after_seq": 0, "limit": limit});
+    let exact = a.ok(page(n)).await;
+    assert_eq!(
+        (
+            exact["events"].as_array().unwrap().len() as i64,
+            &exact["has_more"]
+        ),
+        (n, &json!(false))
+    );
+    let short = a.ok(page(n - 1)).await;
+    assert_eq!(
+        (
+            short["events"].as_array().unwrap().len() as i64,
+            &short["has_more"]
+        ),
+        (n - 1, &json!(true))
+    );
+    let last = a
+        .ok(json!({"op": "pull", "conv_id": conv, "after_seq": short["upto_seq"], "limit": 1}))
+        .await;
+    assert_eq!(last["has_more"], false);
+    assert_eq!(
+        a.ok(json!({"op": "pull_side", "conv_id": conv})).await["has_more"],
+        false
+    );
 }
 
 /// PostgreSQL only: the setting can be changed for one database without

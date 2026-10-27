@@ -982,6 +982,20 @@ impl ApiError {
     }
 
     /// The `error` object of a response frame.
+    /// What a client is told: internal failures (the database's own
+    /// message names tables and constraints) only say to retry; they are
+    /// logged in full where they happen.
+    pub fn public(&self) -> ApiError {
+        match self.code {
+            "storage" | "internal" => ApiError {
+                code: self.code,
+                message: "the request could not be completed; retry".into(),
+                retry_after_ms: self.retry_after_ms,
+            },
+            _ => self.clone(),
+        }
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         let mut v = serde_json::json!({"code": self.code, "message": self.message});
         if let Some(ms) = self.retry_after_ms {

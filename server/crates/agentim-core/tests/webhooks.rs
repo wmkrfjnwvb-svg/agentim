@@ -35,7 +35,7 @@ backend_tests!(
     before_send_skips_retries_and_non_members,
 );
 
-const SECRET: &str = "whsec_test_secret_0123456789";
+const SECRET: &str = "whsec_dGVzdC1zZWNyZXQtMDEyMzQ1Njc4OWFi";
 
 #[derive(Clone, Default)]
 struct Receiver {

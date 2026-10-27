@@ -619,7 +619,10 @@ impl Default for OpenApiConfig {
 pub struct WebhookConfig {
     pub name: String,
     pub url: String,
-    /// HMAC key for the `webhook-signature` header (at least 16 bytes).
+    /// HMAC key for the `webhook-signature` header: a Standard Webhooks
+    /// secret (`whsec_` + base64, the key being the decoded bytes, as the
+    /// official verification libraries expect), or any text; at least 16
+    /// bytes of key either way.
     pub secret: String,
     /// Event types to deliver: exact (`msg.created`), a prefix (`msg.*`) or `*`.
     #[serde(default = "all_events")]
@@ -1043,11 +1046,20 @@ impl Config {
             if !http(&w.url) {
                 return Err(format!("webhooks.{}: url must be http(s)", w.name));
             }
-            if w.secret.len() < 16 {
-                return Err(format!(
-                    "webhooks.{}: secret must be at least 16 bytes",
-                    w.name
-                ));
+            match crate::webhook::key_of(&w.secret) {
+                None => {
+                    return Err(format!(
+                        "webhooks.{}: a secret starting with whsec_ must be base64 after it",
+                        w.name
+                    ));
+                }
+                Some(k) if k.len() < 16 => {
+                    return Err(format!(
+                        "webhooks.{}: secret must be at least 16 bytes",
+                        w.name
+                    ));
+                }
+                Some(_) => {}
             }
             if w.events.is_empty() || w.events.iter().any(|e| !crate::webhook::valid_pattern(e)) {
                 return Err(format!(
@@ -1066,8 +1078,16 @@ impl Config {
             if !http(&b.url) {
                 return Err("before_send.url must be http(s)".into());
             }
-            if b.secret.len() < 16 {
-                return Err("before_send.secret must be at least 16 bytes".into());
+            match crate::webhook::key_of(&b.secret) {
+                None => {
+                    return Err(
+                        "before_send.secret starting with whsec_ must be base64 after it".into(),
+                    );
+                }
+                Some(k) if k.len() < 16 => {
+                    return Err("before_send.secret must be at least 16 bytes".into());
+                }
+                Some(_) => {}
             }
             if b.timeout_ms == 0 {
                 return Err("before_send.timeout_ms must be > 0".into());
@@ -1353,6 +1373,9 @@ mod tests {
             (format!("{good}{good}"), "duplicate name"),
             (hook("crm", "ftp://x/h", "0123456789abcdef", ""), "url must be http(s)"),
             (hook("crm", "https://x/h", "short", ""), "secret must be at least 16 bytes"),
+            // whsec_ secrets count their decoded bytes (12 here) and must be base64.
+            (hook("crm", "https://x/h", "whsec_AAAAAAAAAAAAAAAA", ""), "secret must be at least 16 bytes"),
+            (hook("crm", "https://x/h", "whsec_not base64 at all!", ""), "must be base64 after it"),
             (hook("crm", "https://x/h", "0123456789abcdef", "events = []"), "events must be"),
             (hook("crm", "https://x/h", "0123456789abcdef", "events = [\"msg.*.x\"]"), "events must be"),
             (hook("crm", "https://x/h", "0123456789abcdef", "max_attempts = 0"), "max_attempts"),

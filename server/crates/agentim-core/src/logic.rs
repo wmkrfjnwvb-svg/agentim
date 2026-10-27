@@ -2538,22 +2538,18 @@ impl Ctx<'_, '_> {
     }
 
     /// Members named after an `@`. At each `@` the longest matching name
-    /// wins, so `@bobby` mentions bobby and not bob.
+    /// wins, so `@bobby` mentions bobby and not bob. As in Mattermost, an
+    /// `@` counts only at the start or after a character that is not part
+    /// of a word (`x@bob.io` is an address), and the name must end there
+    /// (`@bobcat` is not bob).
     async fn mentions(&mut self, conv_id: &str, text: &str) -> ApiResult<Vec<String>> {
         let members = self.members(conv_id).await?;
-        let mut out: Vec<String> = vec![];
-        for (i, _) in text.match_indices('@') {
-            let rest = &text[i + 1..];
-            if let Some(m) = members
+        Ok(mentions_in(
+            text,
+            members
                 .iter()
-                .filter(|m| !m.name.is_empty() && rest.starts_with(m.name.as_str()))
-                .max_by_key(|m| m.name.len())
-                && !out.contains(&m.user_id)
-            {
-                out.push(m.user_id.clone());
-            }
-        }
-        Ok(out)
+                .map(|m| (m.user_id.as_str(), m.name.as_str())),
+        ))
     }
 
     /// Causation and hop are computed by the server; agent-supplied values
@@ -3901,14 +3897,22 @@ impl Ctx<'_, '_> {
             };
         match &target {
             Target::Main => {
-                // A completed stream wakes the agents it is for (D43).
+                // A completed stream wakes the agents it is for (D43), and
+                // whom it mentions, who are told as for an edit (D87).
                 let data = if state == "complete" {
+                    let mentions = self.mentions(&conv_id, &buf).await?;
+                    self.db.set_mentions(msg_id, &mentions).await?;
                     let (w, capped) = self
-                        .wake_set(&conv_id, &sender.id, reply_to.as_deref(), &[], None)
+                        .wake_set(&conv_id, &sender.id, reply_to.as_deref(), &mentions, None)
                         .await?;
                     let mut d = json!({"wake": w});
                     if capped > 0 {
                         d["wake_capped"] = json!(capped);
+                    }
+                    let named: Vec<&String> =
+                        mentions.iter().filter(|m| **m != sender.id).collect();
+                    if !named.is_empty() {
+                        d["mentions_added"] = json!(named);
                     }
                     d
                 } else {
@@ -4467,5 +4471,77 @@ fn not_silenced(m: &Member) -> ApiResult<()> {
             format!("silenced in this conversation until {u} (ms since 1970)"),
         )),
         _ => Ok(()),
+    }
+}
+
+/// `@name` mentions in `text` among `(user_id, name)` members: see
+/// `Logic::mentions`.
+pub(crate) fn mentions_in<'a>(
+    text: &str,
+    members: impl Iterator<Item = (&'a str, &'a str)> + Clone,
+) -> Vec<String> {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out: Vec<String> = vec![];
+    for (i, _) in text.match_indices('@') {
+        if text[..i].chars().next_back().is_some_and(word) {
+            continue;
+        }
+        let rest = &text[i + 1..];
+        if let Some((id, _)) = members
+            .clone()
+            .filter(|(_, name)| {
+                !name.is_empty()
+                    && rest.starts_with(*name)
+                    && !rest[name.len()..].chars().next().is_some_and(word)
+            })
+            .max_by_key(|(_, name)| name.len())
+            && !out.iter().any(|o| o == id)
+        {
+            out.push(id.to_string());
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::mentions_in;
+
+    fn m(text: &str) -> Vec<String> {
+        let members = [
+            ("u_bob", "bob"),
+            ("u_bobby", "bobby"),
+            ("u_sb", "Support Bot"),
+            ("u_li", "李雷"),
+        ];
+        mentions_in(text, members.iter().copied())
+    }
+
+    #[test]
+    fn a_mention_is_a_whole_name_after_a_non_word_character() {
+        assert_eq!(m("@bob hi"), ["u_bob"]);
+        assert_eq!(m("hi @bob"), ["u_bob"]);
+        assert_eq!(m("(@bob)"), ["u_bob"]);
+        assert_eq!(m("@bob, @bob!"), ["u_bob"], "once each");
+        assert_eq!(m("@bob."), ["u_bob"]);
+        assert_eq!(m("@bobby"), ["u_bobby"], "the longest name wins");
+        assert_eq!(
+            m("@bobcat"),
+            Vec::<String>::new(),
+            "not a member's whole name"
+        );
+        assert_eq!(m("@bob_x"), Vec::<String>::new());
+        assert_eq!(m("mail x@bob.io"), Vec::<String>::new(), "an address");
+        assert_eq!(m("@Support Bot help"), ["u_sb"], "names with spaces");
+        assert_eq!(
+            m("你好@李雷"),
+            Vec::<String>::new(),
+            "after a letter, also in Chinese"
+        );
+        assert_eq!(m("你好 @李雷"), ["u_li"]);
+        assert_eq!(m("@李雷，你好"), ["u_li"]);
+        assert_eq!(m("@ bob"), Vec::<String>::new());
+        assert_eq!(m("@"), Vec::<String>::new());
+        assert_eq!(m(""), Vec::<String>::new());
     }
 }

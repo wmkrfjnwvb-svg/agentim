@@ -209,11 +209,14 @@ impl Hub {
             return Err(err("bad_request", "too long"));
         }
         let a = self.admin_by("name", name).await?;
-        let c = match &a {
+        let mut c = match &a {
             Some(a) => self.credentials(&a.id).await?,
             None => Default::default(),
         };
         let now = now_ms();
+        if a.is_none() {
+            c.locked_until = self.ghost_login(name, now, false);
+        }
         if let Some(until) = c.locked_until
             && until > now
         {
@@ -234,8 +237,11 @@ impl Hub {
             .hash_job(move || crate::auth::verify_password(&pw, &hash))
             .await?;
         let (Some(a), true, true) = (a, ok, c.password_hash.is_some()) else {
-            if let Some(a) = self.admin_by("name", name).await? {
-                self.login_failed(&a.id).await?;
+            match self.admin_by("name", name).await? {
+                Some(a) => self.login_failed(&a.id).await?,
+                None => {
+                    self.ghost_login(name, now, true);
+                }
             }
             return Err(invalid());
         };
@@ -262,6 +268,35 @@ impl Hub {
             .await
             .map_err(|e| if e.code == "conflict" { invalid() } else { e })?;
         self.admin_session_for(&a).await
+    }
+
+    /// A name that is no admin, counted like one (`CredChange::Failed`):
+    /// with `fail`, one more failure; returns when it is locked until.
+    fn ghost_login(&self, name: &str, now: i64, fail: bool) -> Option<i64> {
+        const MAX_NAMES: usize = 10_000;
+        let a = &self.inner.cfg.auth;
+        let mut g = self.inner.ghost_logins.lock().unwrap();
+        if fail {
+            if g.len() >= MAX_NAMES && !g.contains_key(name) {
+                // Forget what is no longer locked, else the oldest lock.
+                g.retain(|_, (_, until)| *until > now);
+                if g.len() >= MAX_NAMES
+                    && let Some(k) = g
+                        .iter()
+                        .min_by_key(|(_, (_, u))| *u)
+                        .map(|(k, _)| k.clone())
+                {
+                    g.remove(&k);
+                }
+            }
+            let e = g.entry(name.to_string()).or_insert((0, 0));
+            e.0 += 1;
+            if e.0 >= a.max_failures {
+                e.1 = now + a.lock_minutes * 60_000;
+                e.0 = 0;
+            }
+        }
+        g.get(name).map(|(_, until)| *until).filter(|u| *u > 0)
     }
 
     async fn admin_session_for(&self, a: &AdminRow) -> ApiResult<(Admin, String)> {
@@ -358,6 +393,8 @@ impl Hub {
             .hash_job(move || crate::auth::verify_password(&cur, &h))
             .await?
         {
+            // Counted like a failed login: a session is not a free guess (B9).
+            self.login_failed(&a.id).await?;
             return Err(err("forbidden", "the current password is wrong"));
         }
         self.store_admin_password(&row, new).await?;
@@ -400,8 +437,10 @@ impl Hub {
         let Some(s) = c.totp_secret else {
             return Err(err("conflict", "two-factor login is off"));
         };
-        let step = crate::auth::totp_check(&s, code, now_ms() / 1000)
-            .ok_or_else(|| err("bad_request", "wrong code"))?;
+        let Some(step) = crate::auth::totp_check(&s, code, now_ms() / 1000) else {
+            self.login_failed(&a.id).await?;
+            return Err(err("bad_request", "wrong code"));
+        };
         self.cred(
             &a.id,
             CredChange::Succeeded {

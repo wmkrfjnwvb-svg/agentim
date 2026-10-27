@@ -50,9 +50,20 @@ pub fn matches(patterns: &[String], kind: &str) -> bool {
     })
 }
 
+/// The HMAC key of a secret. A Standard Webhooks secret (`whsec_` and
+/// base64) is the decoded bytes, as the official libraries take it; any
+/// other secret is its own bytes. None: `whsec_` without valid base64.
+pub fn key_of(secret: &str) -> Option<Vec<u8>> {
+    match secret.strip_prefix("whsec_") {
+        Some(b64) => base64::engine::general_purpose::STANDARD.decode(b64).ok(),
+        None => Some(secret.as_bytes().to_vec()),
+    }
+}
+
 /// Standard Webhooks signature: `v1,` + base64(HMAC-SHA256(id.timestamp.body)).
 pub fn sign(secret: &str, id: &str, ts: i64, body: &str) -> String {
-    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).expect("any key");
+    let key = key_of(secret).unwrap_or_else(|| secret.as_bytes().to_vec());
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(&key).expect("any key");
     mac.update(format!("{id}.{ts}.{body}").as_bytes());
     format!(
         "v1,{}",
@@ -401,8 +412,27 @@ mod tests {
     }
 
     #[test]
+    fn a_whsec_secret_signs_as_the_official_library_does() {
+        // standardwebhooks 1.1.1 (npm), new Webhook(secret).sign(id, date, body):
+        // the key is the base64 after `whsec_` (B9).
+        assert_eq!(
+            sign(
+                "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw",
+                "msg_p5jXN8AQM9LWM0D4loKWxJek",
+                1_614_265_330,
+                r#"{"test": 2432232314}"#
+            ),
+            "v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE="
+        );
+        assert_eq!(key_of("whsec_AAEC"), Some(vec![0, 1, 2]));
+        assert_eq!(key_of("whsec_not base64!"), None);
+        assert_eq!(key_of("plain-secret").unwrap(), b"plain-secret");
+    }
+
+    #[test]
     fn signature_follows_standard_webhooks() {
-        // Test vector computed independently (HMAC-SHA256, base64).
+        // A secret without the whsec_ prefix: its bytes are the key
+        // (HMAC-SHA256, base64), computed independently.
         let s = sign(
             "whsec_test_secret_123",
             "msg_1",

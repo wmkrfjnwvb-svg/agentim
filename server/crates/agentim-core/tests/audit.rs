@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use sqlx::Connection;
 
 backend_tests!(
+    streamed_replies_mention_like_messages,
     deactivating_an_owner_stops_their_agents,
     deactivated_people_cannot_be_added,
     an_own_agent_sees_no_more_than_its_adder,
@@ -938,6 +939,63 @@ async fn edits_recompute_mentions(db: TestDb) {
     a.ok(json!({"op": "edit", "msg_id": m, "text": "hi @carol and @bot!"}))
         .await;
     assert!(c.drain().iter().all(|f| f["notify"] != true));
+}
+
+/// A streamed reply's mentions count when it completes (B9): they notify
+/// people, wake agents, and count as unread mentions; an address or a
+/// longer word is not a mention.
+async fn streamed_replies_mention_like_messages(db: TestDb) {
+    let hub = open(single(&db.url)).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let carol = user(&hub, "carol", UserKind::Human, None).await;
+    let dave = user(&hub, "dave", UserKind::Human, None).await;
+    let bot = user(&hub, "bot", UserKind::Agent, Some(&alice)).await;
+    let helper = user(&hub, "helper", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&hub, &alice);
+    let conv = a.group(&[&carol, &dave, &bot, &helper]).await;
+    let g = Conn::new(&hub, &bot);
+    let mut c = Conn::new(&hub, &carol);
+    let mut d = Conn::new(&hub, &dave);
+    let mut h = Conn::new(&hub, &helper);
+    // Told about mentions only, so a mention is what notifies them.
+    for x in [&c, &d] {
+        x.ok(json!({"op": "set_mute", "conv_id": conv, "mode": "mentions"}))
+            .await;
+    }
+    for x in [&mut c, &mut d, &mut h] {
+        x.drain();
+    }
+    let s = g
+        .ok(json!({"op": "stream_start", "conv_id": conv, "client_msg_id": "s1"}))
+        .await["msg_id"]
+        .clone();
+    g.ok(json!({"op": "stream_append", "msg_id": s, "idx": 0, "text": "thanks @carol, mail x@dave.io, "}))
+        .await;
+    g.ok(json!({"op": "stream_append", "msg_id": s, "idx": 1, "text": "@helper please check, not @daves"}))
+        .await;
+    // Nobody is told while it streams.
+    assert!(c.drain().iter().all(|f| f["notify"] != true));
+    g.ok(json!({"op": "stream_end", "msg_id": s})).await;
+    let cf = c.drain();
+    assert!(
+        cf.iter()
+            .any(|f| f["event"]["type"] == "msg.updated" && f["notify"] == true),
+        "{cf:?}"
+    );
+    assert_eq!(c.ok(json!({"op": "unread"})).await["mentions"], 1);
+    assert!(
+        d.drain().iter().all(|f| f["notify"] != true),
+        "an address or a longer word is not dave"
+    );
+    assert_eq!(d.ok(json!({"op": "unread"})).await["mentions"], 0);
+    let hf = h.drain();
+    assert!(
+        hf.iter()
+            .any(|f| f["event"]["type"] == "msg.updated" && f["wake"] == true),
+        "the mentioned agent is woken: {hf:?}"
+    );
+    let m = msg_by_id(&a.pull(&conv, 0).await, s.as_str().unwrap()).unwrap();
+    assert_eq!(m["mentions"], json!([carol.id, helper.id]));
 }
 
 /// D88: an edit based on an older version is refused, leaving no trace.

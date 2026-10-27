@@ -366,11 +366,14 @@ fn tool_result(out: ApiResult<(String, Value)>) -> Value {
             "structuredContent": data,
             "isError": false,
         }),
-        Err(e) => json!({
-            "content": [{"type": "text", "text": format!("{}: {}", e.code, e.message)}],
-            "structuredContent": {"error": {"code": e.code, "message": e.message}},
-            "isError": true,
-        }),
+        Err(e) => {
+            let e = e.public();
+            json!({
+                "content": [{"type": "text", "text": format!("{}: {}", e.code, e.message)}],
+                "structuredContent": {"error": {"code": e.code, "message": e.message}},
+                "isError": true,
+            })
+        }
     }
 }
 
@@ -1649,4 +1652,22 @@ fn render_updates(convs: &[Value], more: bool) -> String {
         out.push_str("More updates are waiting: call get_updates again.");
     }
     out.trim_end().to_string()
+}
+
+#[cfg(test)]
+mod error_tests {
+    use crate::model::ApiError;
+
+    #[test]
+    fn internal_failures_are_not_explained_and_others_are() {
+        let r = super::tool_result(Err(ApiError::new(
+            "storage",
+            "UNIQUE constraint failed: messages.client_msg_id",
+        )));
+        assert!(!r.to_string().contains("UNIQUE"), "{r}");
+        assert_eq!(r["structuredContent"]["error"]["code"], "storage");
+        assert_eq!(r["isError"], true);
+        let r = super::tool_result(Err(ApiError::new("forbidden", "not a member")));
+        assert_eq!(r["structuredContent"]["error"]["message"], "not a member");
+    }
 }

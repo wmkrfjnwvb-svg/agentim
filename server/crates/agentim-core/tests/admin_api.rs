@@ -21,6 +21,7 @@ backend_tests!(
     setup_once_and_only_from_this_machine,
     sessions_need_csrf_and_the_same_origin,
     logins_lock_and_need_the_second_factor,
+    guesses_in_a_session_count_as_failed_logins,
     every_route_checks_the_role,
     admin_keys_and_sessions_survive_a_restart,
     the_app_area_follows_the_business_rules,
@@ -486,6 +487,21 @@ async fn logins_lock_and_need_the_second_factor(db: TestDb) {
     assert_eq!(
         (r.status, r.body["code"].as_str().unwrap()),
         (429, "rate_limited")
+    );
+    // A name that is no admin locks after as many failures: answers do
+    // not tell names apart (B9).
+    for _ in 0..2 {
+        assert_eq!(ad.login("nobody", PW, None).await.status, 401);
+    }
+    let r = ad.login("nobody", PW, None).await;
+    assert_eq!(
+        (r.status, r.body["code"].as_str().unwrap()),
+        (429, "rate_limited")
+    );
+    assert_eq!(
+        ad.login("someone-else", PW, None).await.status,
+        401,
+        "per name"
     );
     // The existing session goes on; the lock is not in the audit log.
     assert_eq!(
@@ -1884,4 +1900,32 @@ async fn futures_join(tasks: Vec<tokio::task::JoinHandle<u16>>) -> Vec<u16> {
         out.push(t.await.unwrap());
     }
     out
+}
+
+/// B9: a wrong current password or two-factor code given in a session
+/// counts like a failed login, so a stolen session cannot guess freely.
+async fn guesses_in_a_session_count_as_failed_logins(db: TestDb) {
+    let mut cfg = single(&db.url);
+    cfg.auth.max_failures = 3;
+    let hub = open(cfg).await;
+    let ad = Admin::start(&hub).await;
+    let owner = ad.owner().await;
+    for _ in 0..2 {
+        let r = ad
+            .call(
+                &owner,
+                "POST",
+                "/admin/v1/me/password",
+                Some(json!({"current": "a wrong guess!", "new": "another long one"})),
+            )
+            .await;
+        assert_eq!(r.status, 403);
+    }
+    // The third failure, here at the login, locks.
+    assert_eq!(ad.login("root", "wrong password!", None).await.status, 401);
+    let r = ad.login("root", PW, None).await;
+    assert_eq!(
+        (r.status, r.body["code"].as_str().unwrap()),
+        (429, "rate_limited")
+    );
 }

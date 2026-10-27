@@ -621,6 +621,10 @@ async fn removal_and_dissolution_reach_offline_devices(db: TestDb) {
         "up to the removal, nothing after: {got:?}"
     );
     assert_eq!(x["left"], true);
+    assert_eq!(
+        x["last_seq"], removed,
+        "how the conversation went on after leaving is not shown (B9)"
+    );
     assert!(
         r["convs"]
             .as_array()

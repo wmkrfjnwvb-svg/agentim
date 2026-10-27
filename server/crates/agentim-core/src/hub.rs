@@ -61,6 +61,10 @@ struct Inner {
     keys_reloaded: Mutex<Option<Instant>>,
     /// Last lookup of a token unknown to memory (at most one per second).
     tokens_looked_up: Mutex<Option<Instant>>,
+    /// Failed console logins under names that are no admin: counted and
+    /// locked like real ones, so a name's existence does not show (B9).
+    /// Name → (failures, locked until ms).
+    pub(crate) ghost_logins: Mutex<HashMap<String, (i64, i64)>>,
     /// Device row → the signing key it last connected with (`issued_by`).
     issuers: Mutex<HashMap<String, String>>,
     /// Last reload of the signing keys for an unknown key id.
@@ -276,6 +280,7 @@ impl Hub {
                 api_keys: Default::default(),
                 keys_reloaded: Mutex::new(None),
                 tokens_looked_up: Mutex::new(None),
+                ghost_logins: Mutex::new(HashMap::new()),
                 issuers: Mutex::default(),
                 keys_looked_up: Mutex::new(None),
                 setup: Mutex::new(None),
@@ -2042,7 +2047,7 @@ impl Hub {
                 v
             }
             Err(e) => {
-                json!({"type": "res", "rid": env.rid, "ok": false, "error": e.to_json()})
+                json!({"type": "res", "rid": env.rid, "ok": false, "error": e.public().to_json()})
             }
         }
     }
@@ -2825,9 +2830,12 @@ impl Hub {
         let (events, upto, has_more) = self
             .read(shard, move |db| {
                 Box::pin(async move {
-                    let events = db.pull(&conv_s, after, limit).await?;
+                    // One more than asked: a full page is "more" only when
+                    // something follows it.
+                    let mut events = db.pull(&conv_s, after, limit + 1).await?;
+                    let has_more = events.len() as i64 > limit;
+                    events.truncate(limit as usize);
                     let upto = events.last().map(|e| e.seq).unwrap_or(after);
-                    let has_more = events.len() as i64 == limit;
                     let mut out = vec![];
                     for e in events {
                         if let Some(v) = history::agent_view(db, &sh, &reader, e).await? {
@@ -2861,10 +2869,12 @@ impl Hub {
         const PAGE: i64 = 1000;
         let page = self
             .read(shard, move |db| {
-                Box::pin(async move { db.pull_side(&c, after, PAGE).await })
+                Box::pin(async move { db.pull_side(&c, after, PAGE + 1).await })
             })
             .await?;
-        let has_more = page.len() as i64 == PAGE;
+        let mut page = page;
+        let has_more = page.len() as i64 > PAGE;
+        page.truncate(PAGE as usize);
         let upto = page.last().map_or(after, |s| s.side_seq);
         let list: Vec<SideEvent> = page
             .into_iter()

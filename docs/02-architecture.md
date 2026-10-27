@@ -135,7 +135,7 @@ Message {
 
 | 方面 | 行为 |
 |---|---|
-| 配置 | `[[webhooks]]`：`name`、`url`、`secret`（至少 16 字节）、`events`（`msg.created` 这样的精确类型、`msg.*` 前缀或 `*`；订阅 `member.joined` 或 `member.*` 的也收到 `members.joined`）、`max_attempts`（默认 8）、`timeout_ms`、`backoff_ms` |
+| 配置 | `[[webhooks]]`：`name`、`url`、`secret`（推荐 Standard Webhooks 的格式 `whsec_` 加 base64，HMAC 密钥是解码后的字节，和官方验签库一致；也可以是任意文本，用它本身的字节；密钥至少 16 字节）、`events`（`msg.created` 这样的精确类型、`msg.*` 前缀或 `*`；订阅 `member.joined` 或 `member.*` 的也收到 `members.joined`）、`max_attempts`（默认 8）、`timeout_ms`、`backoff_ms` |
 | 不丢 | 订阅的事件和事件本身在**同一个事务**里写进 `webhook_outbox`（每批一条多行 INSERT）。没提交的写入、被拒绝的请求都不会发出去 |
 | 有序 | 每个 Webhook 在每个数据库上有一个投递任务，按提交顺序一条一条发；前一条没成功不会发下一条 |
 | 至少一次 | 成功后通过写线程移动游标（`meta` 里的 `webhook:<name>`）。重启后从游标继续；接收方用 `webhook-id` 去重 |

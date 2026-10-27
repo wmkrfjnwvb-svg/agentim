@@ -332,7 +332,9 @@ impl Hub {
                 "side_events": side,
                 "upto": upto,
                 "side_upto": side_upto,
-                "last_seq": st.last_seq,
+                // Someone who left sees the conversation up to leaving,
+                // not how it went on.
+                "last_seq": head,
                 "has_more": has_more,
             });
             if let Some(from) = reset {
