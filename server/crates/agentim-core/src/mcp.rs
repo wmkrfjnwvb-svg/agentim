@@ -109,7 +109,9 @@ pub async fn endpoint(
     } else {
         hub.authenticate_or_load_from(token, caller).await
     }) else {
-        hub.auth_failed(caller);
+        if !token.is_empty() {
+            hub.auth_failed(caller);
+        }
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer")],

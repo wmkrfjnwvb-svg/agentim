@@ -1650,4 +1650,12 @@ async fn failed_authentications_block_one_address(db: TestDb) {
         "and the open API"
     );
     assert_eq!(get(api.key.clone(), "10.0.0.2").await.0, 200);
+    // Requests without any credential are not guesses: never blocked.
+    for _ in 0..MAX_FAILURES * 2 {
+        let (s, _, _) = api
+            .raw("GET", "/v1/users/alice", None, None, &from("10.0.0.4"))
+            .await;
+        assert_eq!(s, 401);
+    }
+    assert_eq!(get(api.key.clone(), "10.0.0.4").await.0, 200);
 }

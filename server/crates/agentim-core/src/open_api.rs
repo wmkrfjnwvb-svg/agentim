@@ -295,11 +295,14 @@ async fn guard_inner(st: AppState, req: Request, next: Next) -> Result<Response,
     if let Err(wait) = hub.auth_blocked(caller) {
         return Err(auth_blocked_response(wait));
     }
+    // Only a key that was given and is wrong counts as a failure (a
+    // request without one is not a guess).
+    let given = secret.is_some();
     let key = match secret {
         Some(s) => hub.api_key_from(&s, caller).await,
         None => None,
     };
-    if key.is_none() {
+    if key.is_none() && given {
         hub.auth_failed(caller);
     }
     let key = key.ok_or_else(|| {

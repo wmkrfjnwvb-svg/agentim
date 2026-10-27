@@ -303,10 +303,8 @@ async fn ws(
     }
     let token = match ws_token(&headers, q.token.as_deref()) {
         Ok(Some(t)) => t,
-        Ok(None) => {
-            st.hub.auth_failed(caller);
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
+        // No credential at all is not a guess: not counted.
+        Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
         Err(m) => {
             return (
                 StatusCode::BAD_REQUEST,
