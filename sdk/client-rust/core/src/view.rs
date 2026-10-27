@@ -200,7 +200,7 @@ impl Core {
             .convs
             .keys()
             .map(|id| self.summary(id))
-            .filter(|v| v["left"] != true && v["dissolved"] != true)
+            // Conversations this person left stay, read-only, with `ended`.
             .collect();
         list.sort_by_key(|v| {
             std::cmp::Reverse(v["last_message"]["created_at"].as_i64().unwrap_or(0))

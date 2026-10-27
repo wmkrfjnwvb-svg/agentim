@@ -439,11 +439,42 @@ AAR、Flutter、React Native 都在 Android 模拟器里跑场景，React Native
 
 ## 5. P5 文档站和示例应用
 
-**文档站**：静态站（Astro Starlight），发布在 GitHub Pages，跟版本走。
-- 快速开始：Next.js、React Native（Expo）、Node 后端（签发令牌、接 Webhook）。
-- API 参考：从 `/v1/openapi.json` 生成；管理 API 同样生成。
-- SDK 参考：从 TypeScript 源码生成（TypeDoc）。
-- 概念：会话和 seq、同步、Agent 成员、审批和请人决定、集群部署。
+**文档站和官网首页**（设计，待确认，2026-10-27）
+
+负责人的要求（2026-10-27）：做文档和网站首页；文档要详细解释 SDK 和 API，每个 API、每个 SDK 的每个功能都要解释。
+
+**业内对照**：Stream、Sendbird、Ably 的文档都是"按平台分的 SDK 指南 + 按功能分的概念页 + 生成的 REST 参考"三块，每个方法有说明、参数、返回值、错误和示例。Stripe 的 API 参考每个接口一页，左边说明、右边代码。我们照这个结构做。
+
+**技术**：一个静态站，Astro Starlight（`@astrojs/starlight` 0.42.6、`astro` 7.3.8，都是 2026-10-08 发布），放在仓库的 `site/`，CI 构建，发布到 GitHub Pages，每个版本一份（`/docs/v0.1/`、`/docs/latest/`）。首页也在这个站里（Astro 自己写的页面），和文档共用设计 token（`sdk/react/tokens.json`），深浅色都有。站上**不放统计、不放第三方脚本、不用 Cookie**，所以也不需要 Cookie 横幅（GDPR、ePrivacy）；字体打包进站里，不从 Google Fonts 拉。文档用英文写（用户大多在海外）；`docs/` 里的中文设计文档不上站。
+
+**首页**（美式 SaaS 落地页的结构，清爽，大留白）
+1. 顶栏：Logo、Docs、API、SDKs、Pricing（先不放，托管云以后）、GitHub 星数、"Get started"。
+2. 首屏：一句话 "Open-source chat for people and AI agents"，一行说明（自托管的 IM 服务端加各平台 SDK 和 UI 组件，AI 消息、审批、护栏都是内置的），两个按钮（"Get started"、"View on GitHub"），右边是用我们自己的 React 组件渲染的真实聊天窗口（同截图测试里的样例数据，Agent 流式回复的动画在 `prefers-reduced-motion` 时关掉）。
+3. 一条命令装好：`curl … | sh` 和 `docker run …` 两个标签页，可以复制。
+4. 功能格（六格，每格一个图标、一句标题、两行说明、一个"Learn more"）：流式 AI 消息和 Stop；人工审批和请人决定；护栏（循环熔断、内容过滤、注入标记）；MCP 和 Agent SDK；不丢、有序、集群；合规（GDPR 导出删除、EU AI Act 的 AI 标记、DSA 举报）。
+5. 代码对比：左边"签一个令牌 + 三行接入 React 组件"，右边"十行写一个 Agent"（Node 和 Python 切换）。
+6. 平台：Web、React、React Native、iOS、Android、Flutter、Unity、.NET、Node、Python、Go 的标志一排（用文字标志和简单图形，不用各家商标图案）。
+7. 和托管服务对比的一张简表（自托管、开源许可、AI 原生功能、按什么计费），数据写明日期和来源。
+8. 页脚：文档、GitHub、更新日志、安全报告方式、许可证、隐私说明。
+
+**文档站的结构**
+
+| 部分 | 内容 |
+|---|---|
+| Get started | 5 分钟跑起来（装服务端、建签名密钥、签令牌、React 组件发出第一条消息）；分平台的快速开始：Next.js、React Native（Expo）、iOS、Android、Flutter、Unity、Node 后端（签令牌、接 Webhook） |
+| Concepts | 会话和 seq、同步和离线、设备和登录、消息类型（文本、卡片、文件和图片、自定义）、流式消息、Agent 成员和接收方式、审批和请人决定、护栏、耳语和接管、权限、拉黑和举报、保留期和删除、协议版本 |
+| Guides | AI 客服窗口、人和 Agent 的群聊、多 Agent 协作、把 Claude Agent SDK / OpenAI Agents SDK / LangGraph 接进来、自定义消息、发送前拦截、Webhook 验签、迁移 Agent、上线前清单 |
+| Client SDKs | 每个平台一组页面：安装、初始化、连接状态、会话列表、消息、发送和重试、编辑和撤回、流式和 Stop、卡片和回答、已读和未读、正在输入、文件和图片、离线缓存、错误码、线程模型、平台注意事项。平台：Web（`@agentimhq/client-web`）、React 组件、React Native 和它的组件、Swift、Kotlin、C# / Unity、Flutter |
+| Agent SDKs | Node、Python：连接、收消息和唤醒、回复、流式、进度、卡片、请人决定、检查点、上下文和历史、转人工、错误和重试 |
+| Server SDKs | Node、Python、Go：开放 API 的每个方法 |
+| API reference | 开放 API `/v1`（从 `openapi.json` 生成，每个接口一页：说明、权限范围、参数、请求和响应示例、错误码、限流、幂等）；客户端协议（WebSocket 的每个 `op`、每种推送帧、每种事件）；MCP 工具；Webhook 事件和验签；管理 API `/admin/v1` |
+| Operations | 安装、配置文件的每一项、TLS 和代理、数据库（SQLite、PostgreSQL、MySQL）、文件存储（本机、S3）、静态加密和换密钥、集群、监控指标和告警、备份和升级、压测数据 |
+| Security & compliance | 威胁模型、令牌和密钥、GDPR（导出、删除、保留）、EU AI Act 第 50 条、DSA 举报和审核、App Store 的用户生成内容规则（举报、拉黑、过滤） |
+
+**"每个功能都有解释"怎么保证**：每个 SDK 的每个公开方法、每个开放 API 接口、每个 WebSocket `op`、每个 MCP 工具、每个配置项都要有一节：做什么、参数（类型、范围、默认值）、返回什么、可能的错误码和原因、一个能直接运行的例子。CI 里加一个检查脚本：从源码里列出所有公开的东西（TypeScript 用 TypeDoc 的 JSON 输出、`openapi.json` 的路径、服务端的 `op` 和 MCP 工具列表、`config.rs` 的字段、Swift / Kotlin / C# / Dart / Python / Go 的公开符号），和文档里的条目对比，少了一个就失败。例子代码在 CI 里对着真实服务端编译、运行（和现在的 SDK 测试一样）。
+
+**测试**：构建不报错、站内链接全通（`starlight-links-validator`）；上面的完整性检查；例子代码能跑；首页和几个文档页的截图测试（和组件一样，深浅色、手机宽度）；Lighthouse 的可访问性分数不低于 95。
+
 
 **三个示例应用**（放在仓库的 `examples/`，每个一条命令跑起来：`docker compose up` 或 `npm run dev`）
 

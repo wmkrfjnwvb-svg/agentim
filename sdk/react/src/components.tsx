@@ -8,7 +8,7 @@ import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useMem
 import type { Message } from '@agentimhq/client-web';
 import { AgentIMProvider, useClient, useConnection, useConversations, useMessages, useSend, useTyping, type Client } from './hooks.js';
 import { defaultStrings, type Strings } from './strings.js';
-import { avatarColor, formatShort, formatTime, initials, interleave, layout, unreadIndex, type Notice, type When } from './format.js';
+import { avatarColor, ended, formatShort, formatTime, initials, interleave, layout, unreadIndex, type Notice, type When } from './format.js';
 import { Alert, ArrowDown, ArrowUp, Check, Link, Search, Sparkle, Stop, ThumbDown, ThumbUp } from './icons.js';
 
 export { defaultStrings, type Strings };
@@ -483,7 +483,10 @@ export function MessageList({ convId, notices = [] }: { convId: string; notices?
   }
   const unreadFrom = divider.current.key ? messages.findIndex((m) => m.key === divider.current.key) : -1;
   const w = when();
-  const items = interleave(layout(messages, w, unreadFrom >= 0 ? unreadFrom : undefined), notices);
+  // No longer in it: the last line says so (after everything else).
+  const end = ended(conv, me);
+  const all = end ? [...notices, { key: 'ended', seq: Number.MAX_SAFE_INTEGER, content: strings.ended(end.reason, end.by), tone: 'info' as const }] : notices;
+  const items = interleave(layout(messages, w, unreadFrom >= 0 ? unreadFrom : undefined), all);
   const isMine = (m: Message) => m.sender_id === me || m.key.startsWith('local:');
 
   useLayoutEffect(() => {
@@ -692,8 +695,12 @@ const MAX_COMPOSER_PX = 160;
 export function Composer({ convId }: { convId: string }) {
   const { send } = useSend(convId);
   const { notify } = useTyping(convId);
-  const { strings } = useUi();
+  const { strings, me } = useUi();
   const [text, setText] = useState('');
+  const end = ended(
+    useConversations().find((c) => c.conv_id === convId),
+    me,
+  );
   const area = useRef<HTMLTextAreaElement>(null);
   // Grows with the text, up to a limit, then scrolls.
   useLayoutEffect(() => {
@@ -714,6 +721,12 @@ export function Composer({ convId }: { convId: string }) {
       submit();
     }
   };
+  if (end)
+    return (
+      <div className="aim-composer aim-composer-ended" role="status">
+        {strings.endedComposer(end.reason)}
+      </div>
+    );
   return (
     <form
       className="aim-composer"

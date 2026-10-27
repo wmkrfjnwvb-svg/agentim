@@ -27,7 +27,7 @@ class WebSocket:
         self.closed = False
 
     @classmethod
-    async def connect(cls, url, timeout=10):
+    async def connect(cls, url, timeout=10, headers=None):
         u = urlsplit(url)
         secure = u.scheme == "wss"
         port = u.port or (443 if secure else 80)
@@ -42,7 +42,9 @@ class WebSocket:
             (
                 f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\n"
                 f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
-                "Sec-WebSocket-Version: 13\r\n\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                + "".join(f"{k}: {v}\r\n" for k, v in (headers or {}).items())
+                + "\r\n"
             ).encode()
         )
         await writer.drain()

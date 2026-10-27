@@ -1588,10 +1588,14 @@ impl Ctx<'_, '_> {
             }
             Op::CreateApiKey(k) => {
                 self.db.insert_api_key(&k).await?;
+                self.out.push(Out::ApiKeys);
                 Ok(json!({}))
             }
             Op::RevokeApiKey { key_id } => {
                 let n = self.db.revoke_api_key(&key_id).await?;
+                if n > 0 {
+                    self.out.push(Out::ApiKeys);
+                }
                 Ok(json!({"revoked": n}))
             }
             Op::IdemPut {

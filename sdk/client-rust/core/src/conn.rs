@@ -120,11 +120,7 @@ impl Core {
         } else {
             base.to_string()
         };
-        let mut url = format!(
-            "{base}/ws?token={}&device={}",
-            enc(self.token.as_deref().unwrap_or("")),
-            enc(&self.cfg.device_id)
-        );
+        let mut url = format!("{base}/ws?device={}", enc(&self.cfg.device_id));
         if let Some(n) = self.cfg.device_name.as_deref().and_then(label) {
             url.push_str(&format!("&device_name={}", enc(n)));
         }
@@ -134,7 +130,8 @@ impl Core {
         self.phase = Phase::Opening;
         self.opening_deadline = Some(self.now + CONNECT_TIMEOUT_MS);
         self.goaway_wait = None;
-        self.out.push(Effect::Connect { url });
+        let token = self.token.clone().unwrap_or_default();
+        self.out.push(Effect::Connect { url, token });
     }
 
     pub(crate) fn on_connect_failed(

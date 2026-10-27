@@ -73,5 +73,7 @@ pub const WEBHOOK_DELIVERIES: &str = "agentim_webhook_deliveries_total";
 pub const WEBHOOK_DROPPED: &str = "agentim_webhook_dropped_total";
 pub const BEFORE_SEND: &str = "agentim_before_send_total";
 pub const LOGIN_FAILURES: &str = "agentim_login_failures_total";
+/// Addresses refused for a while after too many failed authentications (D130).
+pub const AUTH_BLOCKED: &str = "agentim_auth_blocked_total";
 pub const STORAGE_HEALTHY: &str = "agentim_storage_healthy";
 pub const MIGRATIONS: &str = "agentim_conversation_migrations_total";

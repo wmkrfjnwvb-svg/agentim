@@ -12,7 +12,7 @@
 //! `{"storage_failed": "full" | "corrupt" | "unavailable"}`,
 //! `"storage_recovered"`, `{"persisted": id}`.
 //!
-//! Effects: `{"need_token": true}`, `{"connect": url}`, `{"send": text}`,
+//! Effects: `{"need_token": true}`, `{"connect": {url, token}}`, `{"send": text}`,
 //! `{"close": {"code", "reason"}}`, `{"persist": batch}`,
 //! `{"load_page": {"req", "conv_id", "before_seq", "limit"}}`,
 //! `{"wipe_store": true}`, `{"emit": event}`,
@@ -71,7 +71,7 @@ pub fn input_from_json(v: &Value) -> Option<Input> {
 pub fn effect_to_json(e: &Effect) -> Value {
     match e {
         Effect::NeedToken => json!({"need_token": true}),
-        Effect::Connect { url } => json!({"connect": url}),
+        Effect::Connect { url, token } => json!({"connect": {"url": url, "token": token}}),
         Effect::Send(t) => json!({"send": t}),
         Effect::Close { code, reason } => json!({"close": {"code": code, "reason": reason}}),
         Effect::Persist(b) => json!({"persist": b}),
@@ -131,6 +131,7 @@ mod tests {
             Effect::NeedToken,
             Effect::Connect {
                 url: "wss://x".into(),
+                token: "t".into(),
             },
             Effect::Send("{}".into()),
             Effect::Close {

@@ -60,7 +60,7 @@
 | | `POST /v1/agents/{id}:stop`（`reason`）、`:resume` | 急停（立即断开，不能再说话，会话里留下记录）和恢复；重复时 409 | ✅ |
 | | `POST /v1/agents/{id}:transfer`（`owner`、`rotate_keys`） | 团队 Agent 换负责人（同一单元）；个人助理不能转交 | ✅ |
 | | `DELETE /v1/agents/{id}` | 销毁：退出所有会话、密钥失效、ID 不再使用（[03 §4.4](03-agents.md)） | ✅ |
-| | `GET /v1/agents/{id}/export?with_conversations=`、`POST /v1/agents:import`（`package`、`owner`、`name`） | 搬到另一个服务器（[03 §7.3](03-agents.md)）：导出不含密钥；导入建新 Agent 并给出第一把密钥 | ✅ |
+| | `GET /v1/agents/{id}/export?with_conversations=`、`POST /v1/agents:import`（`package`、`owner`、`name`、`allow_unverified`） | 搬到另一个服务器（[03 §7.3](03-agents.md)）：导出不含密钥，部署有签名密钥时带签名；导入建新 Agent 并给出第一把密钥，返回 `verified`；本部署验证不了来源的包要带 `allow_unverified: true` | ✅ |
 | 用户 | `PUT /v1/users/{id}`、`GET`、`PATCH` | 创建或更新、读取、修改资料（昵称、头像、自定义字段）。`kind: agent` 加 `owner` 建 Agent，`team: true` 是团队 Agent；新 Agent 的第一把密钥在返回里（只显示一次）。返回里的 `owner` 是开发者的用户 ID。`PATCH` 的 `permissions` 设这个人在客户端能做什么（`create_groups`、`create_direct`、`add_members`、`find_users`、`create_agents`、`edit_minutes`、`recall_minutes`），某一项为 `null` 或整个为 `null` 回到应用默认值；资料里返回算好的 `permissions` 和 `permission_overrides`（[13 §4.1](13-roles-and-entry-points.md)） | ✅ |
 | | `GET /v1/users/{id}/devices`、`DELETE …/devices/{device}` | 某人的设备（Agent 是它的密钥）；下线一台：人在这台设备上已签发的令牌作废，Agent 的那把密钥被吊销（`users:read` / `tokens:revoke`） | ✅ |
 | | `POST /v1/users:batch` | 一次最多 100 个，逐个返回结果 | ✅ |

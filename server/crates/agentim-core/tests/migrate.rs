@@ -17,6 +17,7 @@ backend_tests!(
     import_refusals_create_nothing,
     big_conversations_are_archived_in_chunks,
     race_one_import_per_name,
+    packages_are_signed_and_unverifiable_ones_need_consent,
 );
 
 fn code(v: &Value) -> &str {
@@ -123,7 +124,7 @@ async fn a_package_moves_an_agent_to_another_server(db: TestDb) {
     let db2 = another(&db).await;
     let hub2 = open(single(&db2.url)).await;
     let carol = user(&hub2, "carol", UserKind::Human, None).await;
-    let r = hub2.import_agent(&carol, &pkg, None).await.unwrap();
+    let r = hub2.import_agent(&carol, &pkg, None, true).await.unwrap();
     assert_eq!(r["agent"]["name"], "bot");
     assert_eq!(r["agent"]["owner_id"], json!(carol.id));
     assert_eq!(r["imported"]["state"], 2);
@@ -183,12 +184,12 @@ async fn a_package_moves_an_agent_to_another_server(db: TestDb) {
     assert_eq!(plan(&again), plan(&pkg));
     // A new name on import; the original stays importable once.
     let r = hub2
-        .import_agent(&carol, &pkg, Some("bot-copy"))
+        .import_agent(&carol, &pkg, Some("bot-copy"), true)
         .await
         .unwrap();
     assert_eq!(r["agent"]["name"], "bot-copy");
     assert_eq!(
-        hub2.import_agent(&carol, &pkg, None)
+        hub2.import_agent(&carol, &pkg, None, true)
             .await
             .unwrap_err()
             .code,
@@ -259,7 +260,10 @@ async fn import_refusals_create_nothing(db: TestDb) {
     ];
     for (p, name, want) in cases {
         assert_eq!(
-            hub2.import_agent(&carol, &p, name).await.unwrap_err().code,
+            hub2.import_agent(&carol, &p, name, true)
+                .await
+                .unwrap_err()
+                .code,
             want,
             "{name:?}"
         );
@@ -271,7 +275,7 @@ async fn import_refusals_create_nothing(db: TestDb) {
     let lean = hub.export_agent(&alice, &bot.id, false).await.unwrap();
     hub2.create_agent(&carol, "first").await.unwrap();
     assert_eq!(
-        hub2.import_agent(&carol, &lean, None)
+        hub2.import_agent(&carol, &lean, None, true)
             .await
             .unwrap_err()
             .code,
@@ -279,7 +283,7 @@ async fn import_refusals_create_nothing(db: TestDb) {
     );
     let first = hub2.user_by_name("first").unwrap();
     assert_eq!(
-        hub2.import_agent(&first, &lean, None)
+        hub2.import_agent(&first, &lean, None, true)
             .await
             .unwrap_err()
             .code,
@@ -308,7 +312,7 @@ async fn big_conversations_are_archived_in_chunks(db: TestDb) {
     let db2 = another(&db).await;
     let hub2 = open(single(&db2.url)).await;
     let carol = user(&hub2, "carol", UserKind::Human, None).await;
-    let r = hub2.import_agent(&carol, &pkg, None).await.unwrap();
+    let r = hub2.import_agent(&carol, &pkg, None, true).await.unwrap();
     let (moved, _) = hub2
         .authenticate_device(r["key"].as_str().unwrap())
         .unwrap();
@@ -348,7 +352,7 @@ async fn race_one_import_per_name(db: TestDb) {
         for _ in 0..4 {
             let (h, c, p, n) = (hub2.clone(), carol.clone(), pkg.clone(), name.clone());
             tasks.push(tokio::spawn(async move {
-                h.import_agent(&c, &p, Some(&n)).await
+                h.import_agent(&c, &p, Some(&n), true).await
             }));
         }
         let mut ok = 0;
@@ -367,4 +371,117 @@ async fn race_one_import_per_name(db: TestDb) {
             .len();
         assert_eq!(n, 3, "round {round}: plan, cfg/model, summaries");
     }
+}
+
+/// D131: with a signing key the package is signed (HMAC-SHA256 over its
+/// hash); the same deployment imports it as verified. A package changed and
+/// re-hashed is refused; one this deployment cannot verify (unsigned, from
+/// another deployment, or its key revoked) needs `allow_unverified`.
+async fn packages_are_signed_and_unverifiable_ones_need_consent(db: TestDb) {
+    let (hub, alice, _bob, bot, _key, _group, _dm) = source(&db).await;
+    // No signing key yet: unsigned.
+    let unsigned = hub.export_agent(&alice, &bot.id, false).await.unwrap();
+    assert!(unsigned.get("signature").is_none());
+    let kid = hub.create_signing_key("app").await.unwrap()["kid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let pkg = hub.export_agent(&alice, &bot.id, false).await.unwrap();
+    assert_eq!(pkg["signature"]["alg"], "HMAC-SHA256");
+    assert_eq!(pkg["signature"]["kid"], json!(kid));
+    // A newer key signs from now on.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let kid2 = hub.create_signing_key("app2").await.unwrap()["kid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let pkg2 = hub.export_agent(&alice, &bot.id, false).await.unwrap();
+    assert_eq!(pkg2["signature"]["kid"], json!(kid2));
+    // Refusals first, so the name stays free: they create nothing.
+    let mut forged = pkg.clone();
+    forged["state"][0]["value"] = json!("evil");
+    let rehash = |p: &mut Value| {
+        let mut bare = p.clone();
+        let o = bare.as_object_mut().unwrap();
+        o.remove("sha256");
+        o.remove("signature");
+        let d = ring::digest::digest(&ring::digest::SHA256, bare.to_string().as_bytes());
+        p["sha256"] = json!(
+            d.as_ref()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+    };
+    rehash(&mut forged);
+    let mut bad_sig = pkg.clone();
+    bad_sig["signature"]["value"] = json!("AAAA");
+    let mut bad_alg = pkg.clone();
+    bad_alg["signature"]["alg"] = json!("none");
+    for (p, allow, want) in [
+        (&forged, true, "bad_request"),
+        (&bad_sig, true, "bad_request"),
+        (&bad_alg, true, "bad_request"),
+        (&unsigned, false, "forbidden"),
+    ] {
+        let e = hub
+            .import_agent(&alice, p, Some("copy"), allow)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, want, "{}", e.message);
+    }
+    assert_eq!(
+        audits(&hub, "agent.imported").await,
+        0,
+        "refusals leave no trace"
+    );
+    assert!(hub.user_by_name("copy").is_none());
+    // Verified without consent; the audit records it.
+    let r = hub
+        .import_agent(&alice, &pkg, Some("copy"), false)
+        .await
+        .unwrap();
+    assert_eq!(r["verified"], true);
+    let log = hub.audit_log(1000).await.unwrap();
+    let imported = log
+        .iter()
+        .find(|a| a["action"] == "agent.imported")
+        .unwrap();
+    assert_eq!(imported["detail"]["verified"], true, "{imported}");
+    // Unsigned, with consent: imported, marked unverified.
+    let r = hub
+        .import_agent(&alice, &unsigned, Some("copy2"), true)
+        .await
+        .unwrap();
+    assert_eq!(r["verified"], false);
+    // Another deployment does not have the key: unverifiable.
+    let db2 = another(&db).await;
+    let hub2 = open(single(&db2.url)).await;
+    let carol = user(&hub2, "carol", UserKind::Human, None).await;
+    assert_eq!(
+        hub2.import_agent(&carol, &pkg, None, false)
+            .await
+            .unwrap_err()
+            .code,
+        "forbidden"
+    );
+    assert_eq!(
+        hub2.import_agent(&carol, &pkg, None, true).await.unwrap()["verified"],
+        false
+    );
+    // A revoked key no longer vouches for what it signed.
+    hub.revoke_signing_key(&kid).await.unwrap();
+    assert_eq!(
+        hub.import_agent(&alice, &pkg, Some("copy3"), false)
+            .await
+            .unwrap_err()
+            .code,
+        "forbidden"
+    );
+    assert_eq!(
+        hub.import_agent(&alice, &pkg2, Some("copy3"), false)
+            .await
+            .unwrap()["verified"],
+        true
+    );
 }

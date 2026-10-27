@@ -32,7 +32,10 @@ export class Connection {
   /** `device`: a person's device id (agents connect with a key and none). */
   constructor(url, token, onPush, { device } = {}) {
     const base = url.replace(/^http/, 'ws').replace(/\/$/, '');
-    this.wsUrl = `${base}/ws?token=${encodeURIComponent(token)}${device ? `&device=${encodeURIComponent(device)}` : ''}`;
+    // The token goes in the bearer subprotocol, never the address (proxies
+    // log it); the built-in WebSocket, as browsers, cannot set Authorization.
+    this.wsUrl = `${base}/ws${device ? `?device=${encodeURIComponent(device)}` : ''}`;
+    this.protocols = ['agentim', `agentim.bearer.${Buffer.from(token).toString('base64url')}`];
     this.onPush = onPush;
     this.pending = new Map();
     this.rid = 0;
@@ -43,7 +46,7 @@ export class Connection {
 
   open() {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.wsUrl);
+      const ws = new WebSocket(this.wsUrl, this.protocols);
       this.ws = ws;
       let opened = false;
       this.closed = new Promise((done) => {

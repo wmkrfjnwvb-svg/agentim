@@ -322,7 +322,15 @@ fn resets_and_departures_from_sync() {
         .iter()
         .map(|c| c["conv_id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, ["c1"], "c2 was left");
+    // c2 stays, read-only, saying it ended (L4).
+    assert_eq!(ids.len(), 2, "c2 stays in the list");
+    let c2 = list["conversations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["conv_id"] == "c2")
+        .unwrap();
+    assert_eq!(c2["ended"]["reason"], "left");
     let d = w.core.debug_state();
     assert_eq!(
         d["convs"][0]["last_seq"].as_i64().unwrap(),
@@ -926,4 +934,109 @@ fn pushes_for_unknown_or_old_positions_and_two_conversations() {
     assert_eq!(w.sent_ops("sync"), syncs + 1);
     frame(&mut w, json!({"type": "event", "event": {"conv_id": "c1"}}));
     w.assert_converged();
+}
+
+fn conv_of(w: &mut World, id: &str) -> Value {
+    w.ask(json!({"cmd": "conversations"})).unwrap()["conversations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["conv_id"] == id)
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// L4: a conversation this person left, was removed from or saw dissolved
+/// stays in the list with its history and says how it ended; sending to it
+/// is refused at once (nothing queued, nothing sent), as the server would.
+/// Added back, it is a conversation like any other.
+#[test]
+fn ended_conversations_stay_read_only_until_added_back() {
+    let mut w = World::new(1);
+    w.server.conv("c1");
+    w.server.conv("c2");
+    w.server.conv("c3");
+    w.other_says("c1", "hello");
+    w.connected();
+    w.cmd(json!({"cmd": "messages", "conv_id": "c1"}));
+    let push = |w: &mut World, c: &str, kind: &str, data: Value| {
+        let seq = w.server.last(c) + 1;
+        let ev = json!({"conv_id": c, "seq": seq, "type": kind, "actor_id": "u_bob", "data": data, "created_at": 1234});
+        w.server.logs.get_mut(c).unwrap().push(ev.clone());
+        w.server.sent.insert(c.into(), seq);
+        frame(w, json!({"type": "event", "event": ev}));
+    };
+    assert!(conv_of(&mut w, "c1")["ended"].is_null());
+    // Someone else leaving changes nothing for me.
+    push(&mut w, "c1", "member.left", json!({"user_id": "u_carol"}));
+    assert!(conv_of(&mut w, "c1")["ended"].is_null());
+    push(
+        &mut w,
+        "c1",
+        "member.removed",
+        json!({"user_id": ME, "by": "u_bob", "reason": "spam"}),
+    );
+    let c1 = conv_of(&mut w, "c1");
+    assert_eq!(
+        c1["ended"],
+        json!({"reason": "removed", "by": "u_bob", "note": "spam", "at": 1234})
+    );
+    // The history is still there.
+    let msgs = w.ask(json!({"cmd": "messages", "conv_id": "c1"})).unwrap();
+    assert!(msgs.to_string().contains("hello"));
+    let sends = w.sent_ops("send");
+    let e = w
+        .ask(json!({"cmd": "send", "conv_id": "c1", "text": "hi"}))
+        .unwrap_err();
+    assert_eq!(e.code, "forbidden");
+    w.run(1000);
+    assert_eq!(w.sent_ops("send"), sends, "nothing went out");
+    assert_eq!(conv_of(&mut w, "c1")["sending"], 0, "nothing queued");
+    // Leaving myself, and a dissolved conversation (not_found, as the server).
+    push(
+        &mut w,
+        "c2",
+        "member.left",
+        json!({"user_id": ME, "by": ME}),
+    );
+    assert_eq!(conv_of(&mut w, "c2")["ended"]["reason"], "left");
+    push(&mut w, "c3", "conv.dissolved", json!({"by": "u_bob"}));
+    assert_eq!(conv_of(&mut w, "c3")["ended"]["by"], "u_bob");
+    let e = w
+        .ask(json!({"cmd": "send", "conv_id": "c3", "text": "hi"}))
+        .unwrap_err();
+    assert_eq!(e.code, "not_found");
+    // Survives a restart of the app, offline (from the cache alone).
+    w.run(1000);
+    w.restart(2);
+    assert_eq!(conv_of(&mut w, "c1")["ended"]["reason"], "removed");
+    assert_eq!(
+        w.ask(json!({"cmd": "send", "conv_id": "c1", "text": "hi"}))
+            .unwrap_err()
+            .code,
+        "forbidden"
+    );
+    w.connected();
+    // Added back: a member again, sending works.
+    push(
+        &mut w,
+        "c1",
+        "member.joined",
+        json!({"user_id": ME, "name": "alice", "kind": "human", "role": "member", "trigger": "all"}),
+    );
+    assert!(conv_of(&mut w, "c1")["ended"].is_null());
+    assert!(
+        w.ask(json!({"cmd": "send", "conv_id": "c1", "text": "back"}))
+            .is_ok()
+    );
+    w.run(1000);
+    assert_eq!(w.sent_ops("send"), sends + 1);
+    // So does a batch of joins naming me.
+    push(
+        &mut w,
+        "c2",
+        "members.joined",
+        json!({"members": [{"user_id": ME}]}),
+    );
+    assert!(conv_of(&mut w, "c2")["ended"].is_null());
 }

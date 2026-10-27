@@ -106,8 +106,9 @@ export class AgentIM {
   exportAgent(agentId, { withConversations = false } = {}) {
     return this.request("GET", `/v1/agents/${enc(agentId)}/export?with_conversations=${withConversations}`);
   }
-  importAgent({ package: pkg, owner, name }) {
-    return this.request("POST", "/v1/agents:import", { package: pkg, owner, name });
+  /** `allowUnverified`: accept a package this deployment cannot verify (unsigned or from another deployment). */
+  importAgent({ package: pkg, owner, name, allowUnverified = false }) {
+    return this.request("POST", "/v1/agents:import", { package: pkg, owner, name, allow_unverified: allowUnverified });
   }
 
   // ---- devices

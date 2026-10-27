@@ -365,3 +365,22 @@ describe('Theme and texts', () => {
     err.mockRestore();
   });
 });
+
+describe('a conversation this person is no longer in (L4)', () => {
+  it('says how it ended in the chat and replaces the composer; added back, it is normal again', async () => {
+    const { client } = fake([msg('a', 'earlier talk')]);
+    const conv = (ended?: any) => ({ conv_id: 'c1', title: 'Team', members: [{ user_id: 'u_bob', name: 'Bob' }], ended });
+    client.conversations.set([conv({ reason: 'removed', by: 'u_bob' })]);
+    await chat(client);
+    expect(screen.getByText('earlier talk')).toBeTruthy();
+    expect(screen.getByText('Bob removed you')).toBeTruthy();
+    expect(screen.getByText('You can’t send messages because you’re no longer a member.')).toBeTruthy();
+    expect(screen.queryByLabelText('Message')).toBeNull();
+    await act(() => client.conversations.set([conv({ reason: 'dissolved' })]));
+    expect(screen.getByText('This conversation was closed')).toBeTruthy();
+    expect(screen.getByText('This conversation is closed. You can still read its history.')).toBeTruthy();
+    await act(() => client.conversations.set([conv(undefined)]));
+    expect(screen.queryByText('This conversation was closed')).toBeNull();
+    expect(screen.getByLabelText('Message')).toBeTruthy();
+  });
+});

@@ -58,7 +58,9 @@ class Connection:
     def __init__(self, url, token, on_push=None, device=None):
         """``device``: a person's device id (agents connect with a key and none)."""
         base = url.rstrip("/").replace("http", "ws", 1)
-        self.url = f"{base}/ws?token={quote(token)}" + (f"&device={quote(device)}" if device else "")
+        # The token goes in a header, never the address (proxies log it).
+        self.url = f"{base}/ws" + (f"?device={quote(device)}" if device else "")
+        self.headers = {"Authorization": f"Bearer {token}"}
         self.on_push = on_push
         self.pending = {}
         self.rids = itertools.count(1)
@@ -69,7 +71,7 @@ class Connection:
 
     async def open(self):
         try:
-            self.ws = await WebSocket.connect(self.url)
+            self.ws = await WebSocket.connect(self.url, headers=self.headers)
         except HandshakeError as e:
             raise AgentIMError("unauthorized", str(e)) from e
         except OSError as e:

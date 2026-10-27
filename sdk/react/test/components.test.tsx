@@ -226,6 +226,37 @@ describe('Composer', () => {
   });
 });
 
+describe('a conversation this person is no longer in (L4)', () => {
+  it('says how it ended in the chat and replaces the composer; added back, it is normal again', () => {
+    const { client } = fake([msg('a', 'earlier talk')]);
+    const conv = (ended?: any) => ({ conv_id: 'c1', title: 'Team', members: [{ user_id: 'u_bob', name: 'Bob' }], ended });
+    client.conversations.set([conv({ reason: 'removed', by: 'u_bob' })]);
+    chat(client);
+    expect(screen.getByText('earlier talk')).toBeTruthy();
+    expect(screen.getByRole('note').textContent).toBe('Bob removed you');
+    expect(screen.getByRole('status').textContent).toBe('You can’t send messages because you’re no longer a member.');
+    expect(screen.queryByLabelText('Message')).toBeNull();
+    // The other ways it ends.
+    for (const [ended, line] of [
+      [{ reason: 'left', by: 'u_me' }, 'You left this conversation'],
+      [{ reason: 'removed', by: 'u_me' }, 'You left this conversation'],
+      [{ reason: 'removed', by: 'u_gone' }, 'You were removed from this conversation'],
+      [{ reason: 'dissolved', by: 'u_bob' }, 'Bob closed this conversation'],
+      [{ reason: 'dissolved' }, 'This conversation was closed'],
+    ] as const) {
+      act(() => client.conversations.set([conv(ended)]));
+      expect(screen.getByRole('note').textContent).toBe(line);
+    }
+    expect(screen.getByRole('status').textContent).toBe('This conversation is closed. You can still read its history.');
+    // The notice comes after the last message.
+    const flow = document.querySelector('.aim-flow')!;
+    expect(flow.lastElementChild!.className).toBe('aim-notice');
+    act(() => client.conversations.set([conv(undefined)]));
+    expect(screen.queryByRole('note')).toBeNull();
+    expect(screen.getByLabelText('Message')).toBeTruthy();
+  });
+});
+
 describe('TypingIndicator and ConnectionBanner', () => {
   it('shows who types, for a while', () => {
     vi.useFakeTimers();

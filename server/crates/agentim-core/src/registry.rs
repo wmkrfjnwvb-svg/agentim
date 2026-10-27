@@ -91,6 +91,9 @@ pub enum Out {
         device_id: String,
         at: i64,
     },
+    /// Open API keys were created or revoked: other nodes reload them now
+    /// (a revoked key must not keep working there until the next poll; D130).
+    ApiKeys,
     /// A signing key was revoked: tokens signed with it are refused.
     KeyRevoked {
         kid: String,
@@ -601,6 +604,7 @@ impl Registry {
                 | Out::Invalidate
                 | Out::Cutoff { .. }
                 | Out::KeyRevoked { .. }
+                | Out::ApiKeys
                 | Out::Perms { .. }
                 | Out::AllowDefaults { .. } => {}
                 Out::Tokens { kick, .. } => {

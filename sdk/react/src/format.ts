@@ -190,3 +190,24 @@ export function interleave<M extends Laid, N>(rows: Row<M>[], notices: Notice<N>
   while (i < pending.length) out.push({ notice: pending[i++] });
   return out;
 }
+
+/** How this person's part in a conversation ended, from the client core. */
+export interface Ended {
+  reason: 'left' | 'removed' | 'dissolved';
+  /** The name of who removed them or closed it (not when it was themselves). */
+  by?: string;
+}
+
+/**
+ * Whether this person left, was removed from or saw the conversation
+ * closed: it stays readable, and nothing can be sent (L4).
+ */
+export function ended(conv: { ended?: any; members?: any[] } | undefined, me?: string): Ended | undefined {
+  const e = conv?.ended;
+  if (!e || typeof e !== 'object') return undefined;
+  const reason = e.reason === 'removed' || e.reason === 'dissolved' ? e.reason : 'left';
+  const by = e.by && e.by !== me ? conv?.members?.find((m) => m.user_id === e.by)?.name : undefined;
+  // Removing oneself is leaving.
+  if (reason === 'removed' && e.by && e.by === me) return { reason: 'left' };
+  return by ? { reason, by } : { reason };
+}

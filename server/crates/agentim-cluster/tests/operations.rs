@@ -29,6 +29,7 @@ cluster_tests!(
     commands_this_version_does_not_know_are_unsupported,
     heads_from_any_node_show_where_conversations_stand,
     mutation_without_the_cache_poll_a_cut_off_node_keeps_a_revoked_token,
+    api_keys_created_or_revoked_on_one_node_change_at_once_on_the_others,
 );
 
 /// At least 8 conversations, some of them held by node `k` (shards are
@@ -413,4 +414,32 @@ async fn mutation_without_the_cache_poll_a_cut_off_node_keeps_a_revoked_token(db
     );
     nodes[0].1.heal();
     nodes[1].1.heal();
+}
+
+/// D130: other nodes hear of new and revoked open API keys at once, not at
+/// their 10 s poll (a revoked key must stop working everywhere).
+async fn api_keys_created_or_revoked_on_one_node_change_at_once_on_the_others(db: TestDb) {
+    let nodes = cluster(&db, 2).await;
+    let (secret, row) = nodes[0]
+        .0
+        .create_api_key("crm", &["messages:write".to_string()], None, None)
+        .await
+        .unwrap();
+    // Node 1 knows it without looking it up: no lookup budget left for it.
+    let ip = Some(std::net::IpAddr::from([10, 9, 9, 9]));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !nodes[1].0.api_keys().iter().any(|k| k.key_id == row.key_id) {
+        assert!(Instant::now() < deadline, "the new key reached node 1");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(nodes[1].0.api_key_from(&secret, ip).await.is_some());
+    nodes[0].0.revoke_api_key(&row.key_id).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while nodes[1].0.api_key_from(&secret, ip).await.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "the revocation reached node 1 well before its 10 s poll"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

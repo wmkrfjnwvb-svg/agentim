@@ -34,11 +34,11 @@
 | **客户端 SDK（P2）** | ✅ | Rust 核心、原生运行层和 C ABI、浏览器、Swift、Kotlin、C#（含 Unity）、Dart、React Native；各平台的包在 CI 构建，按应用的样子在三种桌面系统、Android 模拟器、iOS 模拟器里对着真实服务端跑过（[12 §2.12.1](12-developer-experience.md)，2026-10-25） | Unity 编辑器测试（要许可）、真机 |
 | **界面组件和演示端（P3）** | ✅ | 美式清爽现代的视觉语言（[12 §3](12-developer-experience.md)，2026-10-26）：U1 Web 组件 ✅（tokens 和对比度检查、分组、日期、未读线、回到最新、搜索、编辑删除、时间线提示）；U2 演示端 ✅（用 P2 + P3 重写、英文、嵌进程序、25 项浏览器检查）；U3 React Native 组件 ✅（`@agentimhq/react-native-ui`，同一套 tokens 和规则，19 项组件测试，测试应用里渲染）；U4 截图对比 ✅（8 张，CI 的 Playwright 镜像里比较） | 真机 |
 | **开发者控制台（P4）** | ✅ | 管理 API `/admin/v1`（应用、部署两块，四种角色）、管理员账号（一次性初始化、密码 + TOTP、会话和 CSRF）、管理密钥、`agentim admin`、内置在 `agentim` 里的控制台 `/console`（[12 §4](12-developer-experience.md)） | Webhook、发送前拦截、审核时限搬进"应用设置"（现在只读） |
-| **文档站和示例（P5）** | ⏳ | 设计：[12 §5](12-developer-experience.md) | 文档站、三个示例应用、Agent 框架模板 |
+| **文档站和示例（P5）** | 📝 | 设计已写，待确认 D135、D136：[12 §5](12-developer-experience.md) | 首页、英文文档（每个 API 和 SDK 方法）、三个示例应用、Agent 框架模板 |
 | 托管云（P6） | ⏳ | 先不做（2026-10-19） | 注册即用、免费额度、按合并后的消息计费 |
 | GDPR 和内容治理 | ✅ | 拉黑、Agent 加入告知、AI 标记、日志不含内容、保留期；导出、删除账号、举报、审核队列（A4，2026-10-20） | — |
 | CLI | ✅ | `agentim` 一个程序里有服务和本机运维命令（api-key、signing-key、admin-key、token、encryption、migrate、cluster）；`agentim admin …` 走管理 API（缩小后的 D63） | — |
-| 文件和图片 | 📝 | 方案：[02 §2.7](02-architecture.md) | 精简版（A6） |
+| 文件和图片 | 📝 | 设计已写，待确认 D132–D134：[02 §2.7](02-architecture.md) | 本机或 S3、缩略图和预览图、文件图标 |
 | 监控 | 🔧 | Prometheus 指标、集群告警规则、日志默认不含内容 | OpenTelemetry 导出、面板（以后） |
 | 性能 | 🔧 | 单机和多节点数据在 README | 写入优化 A–D（目标每节点 1 万条/秒） |
 | 生态 | 🔧 | MCP 服务、Agent SDK | ChatKit 桥、Vercel Chat SDK、Agno、AG-UI（以后） |
@@ -64,7 +64,20 @@
 | D102 | 托管云 | **先不做**（2026-10-19）。到时的建议：按合并后的消息计费，Agent 不按月活计费；免费额度和价格和设计伙伴聊过再定 |
 
 
-**B. 文件和图片**：排在第 8 步。负责人定的方向（2026-10-20）：不自己造存储，接业内标准，存储有两种可选：**本机文件夹**（单机、SQLite 用户的默认），或者 **S3 兼容的对象存储**（AWS S3，以及提供 S3 兼容接口的 MinIO、R2、阿里云 OSS、腾讯云 COS 等）；**文件过期由部署者设置**。业内对照：Mattermost 也是本机目录或 S3 兼容存储，文件保留期和消息保留期分开设；Rocket.Chat 推荐 S3，本机目录只适合单实例，存进数据库（GridFS）不推荐；OpenIM 用预签名地址让 SDK 直接传到对象存储，不经过 IM 服务器。所以原来"默认存进数据库"（D72）作废，[02 §2.7](02-architecture.md) 到第 8 步时按这个方向重写，D27–D30 同样作废。
+**B. 文件和图片**：负责人定的方向（2026-10-20、2026-10-27）：存储选本机文件夹或 S3 兼容的对象存储，部署者设置；图片在聊天里显示小缩略图，点开看预览图，"查看原图"下载原图；文件显示类型图标。设计写在 [02 §2.7](02-architecture.md)，请确认下面几项：
+
+| # | 事项 | 我的建议 |
+|---|---|---|
+| D132 | 文件和图片的整体设计（[02 §2.7](02-architecture.md)） | 按设计做：上传先经过服务端（能检查权限、类型、大小，生成缩略图、去掉 GPS），下载时 S3 直接给预签名地址（开了静态加密时由服务端解密输出）；超过 100 MiB 的大文件直传 S3 以后再做 |
+| D133 | 缩略图和预览图的尺寸、格式 | 缩略图长边 480 像素、预览图长边 1920 像素（Mattermost 的预览图也是宽 1920）；PNG 出 PNG，其余出 JPEG（质量 82）。WebP 体积小一些，但 Rust 里有损 WebP 编码要带 C 库 libwebp，先不用 |
+| D134 | 默认的限制和保留 | 单个文件 100 MiB（和 Mattermost 一样），每人每天 1 GiB，文件默认不过期（部署者设 `files.retention_days`），默认去掉 EXIF 和 GPS |
+
+**文档站和首页**（设计 [12 §5](12-developer-experience.md)）
+
+| # | 事项 | 我的建议 |
+|---|---|---|
+| D135 | 文档站和首页的结构、技术 | Astro Starlight 一个站：首页加英文文档，GitHub Pages 发布，CI 检查每个 API 和 SDK 方法都有说明；不放统计和 Cookie |
+| D136 | 域名和品牌 | 错误码链接里已经用了 `agentim.dev`，需要你确认是否注册了它（或者换成你的域名）；没有 Logo 的话我先做一个简单的文字标志，你之后可以换 |
 
 **C. 其他**
 
@@ -75,12 +88,14 @@
 | D123 | 客户端包：XCFramework、NuGet、npm（含 React Native 原生部分）、Dart 预编译库、AAR 和 Maven bundle、Swift 包仓库内容、Unity tarball 都已在 CI 构建并按应用的样子测过（[12 §2.12.1](12-developer-experience.md)），打 `sdk-v*` 标签由 `sdk-release.yml` 发布。AAR、Flutter、React Native 在 Android 模拟器里、React Native 在 iOS 模拟器里对着真实服务端跑场景。还缺：Unity 编辑器里的测试（要 Unity 许可）、真机 | Unity：个人版免费许可也能在 CI 里用（game-ci），需要你用 Unity 账号生成许可文件放进 Secrets，要不要做请你定；真机测试等有设备农场（如 Firebase Test Lab、BrowserStack）的账号再做 |
 | D119 | 离线推送（APNs、FCM）：手机 App 切到后台后靠系统推送收到新消息。现在服务端没有实现，计划里也没有单独一项 | 补上，放在最后，排在文件和图片之后（2026-10-20 负责人定）。A7 的设备 ID 先留好以后登记推送令牌的位置。做之前先调研 Stream、Sendbird、腾讯云 IM，再出设计 |
 | D99 | 规模测试 `slow` 场景在 GitHub 的 Linux 机器上：停止读取超过空闲时间的连接，服务端已经关闭（连接数指标减少），但客户端恢复读取后既收不到剩余的帧也看不到关闭，本地和 Windows 上都能看到。消息不会丢：客户端重连后按设备位置同步，测试证明数据完整 | 测试工具现在按 SDK 的做法：一分钟没收到任何东西就自己重连并同步，单独计数。原因仍未查明（本地和 Windows 都复现不了）。C2 加了位置校验（`heads`，Agent SDK 每 30 秒一次），真实客户端即使遇到这种情况也会在 30 秒内发现并补齐。**告知你，暂不需要决定** |
-| D129 | B9 L8：客户端令牌放在 `/ws?token=` 里，代理和负载均衡的访问日志会记下它（浏览器的 WebSocket 不能带 `Authorization` 头；服务端已经接受这个头） | 原生运行层（Swift、Kotlin、C#、Dart、React Native、Node）改用 `Authorization` 头；浏览器先用令牌 `POST /api/ws-ticket` 换一张 30 秒、只能用一次的票，再连 `/ws?ticket=…`（Slack 的 `rtm.connect` 就是这样：返回的地址 30 秒内有效、只能用一次，[文档](https://docs.slack.dev/reference/methods/rtm.connect)）。另一种是 Kubernetes 的做法，把令牌放进 `Sec-WebSocket-Protocol`（[`k8s.io/apiserver` websocket](https://godocs.io/k8s.io/apiserver/pkg/authentication/request/websocket)），不需要多一次请求，但要求令牌编码进子协议名，代理也可能记录这个头，所以建议用票。要改客户端核心、各平台运行层和服务端，`token=` 保留一个版本兼容 |
-| D130 | B9 L11：内存里没有的令牌每秒最多查一次数据库，有人持续发随机令牌时，另一个进程（本机命令、另一个节点）刚建的密钥一直加载不进来 | 两层：① 新建、吊销令牌和密钥时通知所有节点（已有的设置变更通知通道），本机命令也改走管理 API，这样正常情况下用不着"查不到再查库"；② 认证失败按来源 IP 限速（每 IP 每分钟 30 次失败后拒绝 5 分钟），一个来源占不满全局的查询额度。分布式的随机令牌洪水属于 DDoS，交给前面的负载均衡和 WAF |
-| D131 | B9 L9：Agent 导出包只有内容的 SHA-256，docs/09 设计的是服务端签名（防止导出后被改了再导入） | 用部署的签名密钥（JWT 用的那套，HMAC）签导出包，导入时同一部署验证签名；跨部署导入时只能核对哈希，界面明确提示"来源无法验证"。如果要跨部署可验证，需要改成非对称签名（Ed25519），属于 D118 的扩展，建议等有真实需求再做 |
 
 ### 1.2 已确认
 
+- **2026-10-27 负责人："这几项都按你的想法来"**，已做完：
+  - D129："放到头吧"。令牌放进 `Authorization` 头；浏览器的 WebSocket 不能设这个头，放进子协议 `agentim.bearer.<base64url>`（Kubernetes 的做法）。`?token=` 再接受一个版本。
+  - D130：负责人问"为什么有未知令牌"。来源有四种：乱猜的、过期或吊销的、配置错的，以及别的进程或节点刚建、这个节点还没加载的。前三种一律 401，只有第四种需要查库。做法：密钥变化立刻通知所有节点；同一来源 1 分钟失败 30 次拒绝 5 分钟；查库每个来源每秒一次、合计每秒 20 次。
+  - D131："都要权限"。导出和导入照旧要开放 API 的权限（`agents:read`、`agents:write`）；导出包用部署的签名密钥签名，本部署验证不了来源的包，导入时还要明确带 `allow_unverified`。
+  - L4：离开、被移出、解散的会话不删，聊天里显示系统提示，不能再发。
 - **2026-10-26 负责人："D128 按你的建议做吧"**：建群时一起加入的成员每 200 人写一条 `members.joined`（`data.members` 是成员数组，字段和 `member.joined` 一样，顺序同成员列表），只加一个人仍是 `member.joined`；所有批次和建群在同一个事务里，新成员的 `join_seq` 是所在批次的 seq、从 seq 1 起可见。订阅 `member.joined` 或 `member.*` 的 Webhook 也收到它；MCP 文本里列出名字（最多 20 个）；客户端核心按加入和离开更新已知的成员列表。业内：Telegram `messageActionChatAddUser` 带用户列表（[文档](https://core.telegram.org/constructor/messageActionChatAddUser)），Discord 成员分块最多 1000 人（[GUILD_MEMBERS_CHUNK](https://docs.discord.com/developers/events/gateway-events)）。`add_member` 一次只加一个人，不涉及批次。
 - **2026-10-25 负责人："按你的想法修复就行"**，以下按建议定：
   - D122：删掉旧的 TypeScript SDK `sdk/client-ts`（规则和测试已在 Rust 核心里，git 历史里还在）。
@@ -142,7 +157,7 @@
 |---|---|---|---|
 | A4 | 合规的基础部分：用户导出自己的数据、删除账号、基础保留期、举报、基础审核队列 | — | ✅ 2026-10-20（[04 §4.2](04-security-compliance.md)） |
 | A5 | `agentim admin` 和管理 API（缩小后的 D63），和开发者控制台一起 | D63 | ✅ 2026-10-21（[12 §4](12-developer-experience.md)） |
-| A6 | 文件和图片 | 你的设计 | ⏸ 先不做 |
+| A6 | 文件和图片 | 你的设计 | 📝 设计已写（[02 §2.7](02-architecture.md)），待确认 D132–D134 |
 | A7 | 客户端 SDK（P2） | D104 | ✅ 2026-10-24，本环境能做的部分（[12 §2.14](12-developer-experience.md)）；平台打包和模拟器归 A9 |
 | A9 | 安装和发布（P1） | — | ✅ 2026-10-25（[12 §1、§2.12.1](12-developer-experience.md)）：第一次运行、服务端发布流程（程序、签名、镜像、Chart）、安装脚本、依赖扫描、CHANGELOG、README 快速开始；客户端各包（D123）在 CI 构建、签名，并按应用的样子测过：NuGet 三种系统、Dart 三种系统、XCFramework 和 Swift 场景、AAR / Flutter / React Native 在 Android 模拟器、React Native 在 iOS 模拟器。打 `sdk-v*` 标签发布。各注册表要你先开通（见 §1.2 和 `sdk-release.yml`） |
 
@@ -153,7 +168,7 @@
 | B2 | 群主拉大群时创建者收到每个成员的加入事件，超出推送队列改发 resync（数据不丢） | ✅ 2026-10-26（D128）：1000 人建群是 `conv.created` 加 5 条 `members.joined`，创建者不再被改发 resync（`tests/membership.rs`） |
 | B10 | 规模测试 Windows 上千人大群（每晚的 scale 任务）：1000 个连接里有 3 个没连上、3 个一直在读的接收方被服务端断开、2 个没能补回全部事件；Linux 上同样的场景通过。2026-10-24 找到一个能造成“连上即被断开”的原因并已修复：每秒的令牌缓存刷新（M10）按读到的快照删令牌，快照之后才登记的新令牌也被删掉，会话打开时校验失败；慢机器上更容易撞上 | 修复后手动跑的 scale（2026-10-24，04bb72c）Windows 和 Linux 全部通过；再看几次每晚的运行，都通过就关掉 |
 | B11 | 集群故障测试 `mutation_without_the_progress_gate_a_stuck_writer_keeps_its_shards` 在 CI 的 MySQL 上失败过两次（2026-10-24）：关掉进度门后，卡住的写入方 5 秒内仍丢了分片；本地单独跑、整组跑、加负载各跑多轮都没复现。测试用的租约 3 秒、续约 0.5 秒、超时 0.5 秒很紧，负载下续约可能连续超时。同一天还见过两种集群测试偶发失败：排空节点时在途转发被丢（已修，见 05 的变更记录）；排空时一次批量提交报了没归类的数据库错误，被答成"结果未知"（本地 200 次里见过 1 次，加了日志后没再出现）。2026-10-24 第二次失败后改了测试：只有这一项用宽一些的时间（操作超时 1.5 秒、stop 3.5 秒、租约 6 秒，等 7 秒），几次续约超时不再像进度门放手；打开进度门时它仍然每次失败（6/6），所以仍能证明进度门有用 | 看之后的 CI 是否还出现；那次没归类的提交错误再出现时看日志 |
-| B9 | 对照开源 IM 发现的低危问题 | 🔧 2026-10-27 逐条对照现在的代码（[调研：开源 IM 踩过的坑](research/im-issues.md) §低）：L1 @ 词边界和流式回复的 @、L2 整页误报、L3 离开后看到的最新序号、L6 管理员登录的名字枚举、L7 会话里猜密码不计数、L10 数据库原始报错、L12 Webhook 密钥和官方库兼容已修；L5、L13 早已解决；L4 客户端对账待做；L8、L9、L11 见 §1.1 D129–D131；L14 性能随写入优化 |
+| B9 | 对照开源 IM 发现的低危问题 | 🔧 2026-10-27 逐条对照现在的代码（[调研：开源 IM 踩过的坑](research/im-issues.md) §低）：L1 @ 词边界和流式回复的 @、L2 整页误报、L3 离开后看到的最新序号、L6 管理员登录的名字枚举、L7 会话里猜密码不计数、L10 数据库原始报错、L12 Webhook 密钥和官方库兼容已修；L5、L13 早已解决；L4、L8（D129）、L9（D131）、L11（D130）2026-10-27 已做；L14 性能随写入优化 |
 
 **C. 之后**
 

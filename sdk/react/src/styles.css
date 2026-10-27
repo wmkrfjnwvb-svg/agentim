@@ -210,6 +210,11 @@
 
 /* Composer */
 .aim-composer { padding: var(--aim-space-2) var(--aim-space-4) var(--aim-space-4); background: var(--aim-bg); }
+.aim-composer-ended {
+  margin: 0 var(--aim-space-4) var(--aim-space-4); padding: var(--aim-space-3) var(--aim-space-4);
+  border-radius: var(--aim-radius-card); background: var(--aim-surface);
+  color: var(--aim-muted); font-size: var(--aim-font-size-small); text-align: center;
+}
 .aim-composer-box {
   display: flex; align-items: flex-end; gap: var(--aim-space-2);
   padding: 6px 6px 6px var(--aim-space-4); border-radius: 22px;

@@ -78,7 +78,12 @@ fn decode_header(v: &str) -> Option<String> {
     }
 }
 
-pub async fn endpoint(State(st): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn endpoint(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    body: Bytes,
+) -> Response {
     let hub = &st.hub;
     if !hub.config().mcp.enabled {
         return StatusCode::NOT_FOUND.into_response();
@@ -92,14 +97,19 @@ pub async fn endpoint(State(st): State<AppState>, headers: HeaderMap, body: Byte
             None,
         );
     }
+    let caller = crate::open_api::client_ip_of(hub, &headers, &ext);
+    if let Err(wait) = hub.auth_blocked(caller) {
+        return crate::open_api::auth_blocked_response(wait);
+    }
     let token = header_str(&headers, "authorization")
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
     let Some((user, device)) = (if token.is_empty() {
         None
     } else {
-        hub.authenticate_or_load(token).await
+        hub.authenticate_or_load_from(token, caller).await
     }) else {
+        hub.auth_failed(caller);
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer")],

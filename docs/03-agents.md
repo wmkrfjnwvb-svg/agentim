@@ -53,7 +53,7 @@ Agent 运行在 IM 外部，IM 只能强制它经手的东西：Agent 的消息�
 | 转交（团队 Agent） | 开放 API `POST /v1/agents/{id}:transfer {owner, rotate_keys}`、控制台或 `agentim admin agent-transfer ID --owner NEW [--rotate-keys]`：新负责人须是同一单元在职的人，不超过名额；`--rotate-keys` 吊销全部密钥。写审计 `agent.transferred` |
 | 吊销、列表 | `revoke_agent_key {agent_id, device_id}`、`list_agents`（名字、密钥列表、最后在线时间，不含密钥） |
 | 权限 | 只有负责人能管理自己的 Agent：别人的 `forbidden`，不存在 `not_found`，名字被占用或超过上限 `conflict`，参数不对 `bad_request`；Agent 不能创建 Agent（`forbidden`） |
-| 运行时用 CLI 建的 Agent | 服务端遇到内存里没有的令牌时去库里查一次（全局每秒最多一次），查到就载入；集群里别的节点签发的令牌也靠这一步。CLI 建的 Agent 在第一次连接之前就能被拉进会话 |
+| 运行时用 CLI 建的 Agent | 服务端遇到内存里没有的令牌时去库里查一次（每个来源地址每秒最多一次、合计每秒最多 20 次，[04 §1](04-security-compliance.md)），查到就载入；集群里别的节点签发的令牌会立刻通知过来，用不着这一步。CLI 建的 Agent 在第一次连接之前就能被拉进会话 |
 
 ### 2.2 Agent 开会话
 
@@ -268,8 +268,8 @@ stream_start ──▶ streaming（分配 conv_seq，事件 msg.created）
 ### 7.3 换环境、导出、导入
 
 - **同一服务器换环境**：`agent_key {revoke_others: true}` 签发新密钥、同一次写入吊销旧的。新密钥是新设备，按新设备规则同步最近的消息；完整上下文用 `context` / `history`，状态用 `state_get`，版本号接得上。
-- **导出** 开放 API `GET /v1/agents/{id}/export[?with_conversations=true]`（`agents:read`，带会话还要 `messages:read`）：开发者的后端在负责人同意后调用。JSON 包（`agentim.agent/1`）：来源服务器和时间、Agent 的 ID 和名字、负责人、检查点（每个键的当前版本）、摘要（带会话标题）；带会话时加上它看得到的消息（带原 seq、发送者名字和类型），**只包含负责人自己也是成员的会话**（D46）。末尾是整个包的 SHA-256。密钥、令牌、授权永不导出；已销毁的 Agent 不能导出。写审计。
-- **导入** 开放 API `POST /v1/agents:import`（`agents:write`，带 `owner`，可选新名字）：先全部检查再创建：格式、哈希（被改过 `bad_request`）、名字规则、键和值的限制、键数上限（`rate_limited`）；名字已占用、名额已满 `conflict`。检查点原样写入（版本从 1 开始），摘要写成只读的 `archive/summaries/N`，会话写成 `archive/conv/<原会话 ID>/meta` 和按 900KB 分块的 `archive/conv/<原会话 ID>/N`；不推送、不算未读，Agent 不成为任何会话的成员。中途失败时把刚建的 Agent 销毁。返回新密钥（只显示一次）。写审计。
+- **导出** 开放 API `GET /v1/agents/{id}/export[?with_conversations=true]`（`agents:read`，带会话还要 `messages:read`）：开发者的后端在负责人同意后调用。JSON 包（`agentim.agent/1`）：来源服务器和时间、Agent 的 ID 和名字、负责人、检查点（每个键的当前版本）、摘要（带会话标题）；带会话时加上它看得到的消息（带原 seq、发送者名字和类型），**只包含负责人自己也是成员的会话**（D46）。末尾是整个包的 SHA-256，部署有签名密钥时再加 `signature`（`HMAC-SHA256`，用最新的那把签名密钥签"格式 + 哈希"，带 `kid`；D131）。密钥、令牌、授权永不导出；已销毁的 Agent 不能导出。写审计。
+- **导入** 开放 API `POST /v1/agents:import`（`agents:write`，带 `owner`，可选新名字和 `allow_unverified`）：先全部检查再创建：格式、哈希（被改过 `bad_request`）、来源（D131：本部署的签名密钥签的算"已验证"；签名对不上，也就是改了内容又重算了哈希，`bad_request`；没签名、别的部署签的、签它的密钥已吊销，都"无法验证"，不带 `allow_unverified: true` 时 `forbidden`，带了就导入并标为未验证，返回和审计里都有 `verified`）、名字规则、键和值的限制、键数上限（`rate_limited`）；名字已占用、名额已满 `conflict`。检查点原样写入（版本从 1 开始），摘要写成只读的 `archive/summaries/N`，会话写成 `archive/conv/<原会话 ID>/meta` 和按 900KB 分块的 `archive/conv/<原会话 ID>/N`；不推送、不算未读，Agent 不成为任何会话的成员。中途失败时把刚建的 Agent 销毁。返回新密钥（只显示一次）。写审计。
 - 入口只有 CLI，导入可以在服务端运行时做。
 
 ## 8. 任务频道

@@ -30,9 +30,12 @@ fn connects_with_a_token_hello_list_and_sync() {
     assert_eq!(w.token_calls, 1);
     let url = &w.connects[0];
     assert!(
-        url.starts_with("wss://im.example/ws?token=tok1&device=dev1&device_name=Phone"),
+        url.starts_with("wss://im.example/ws?device=dev1&device_name=Phone"),
         "{url}"
     );
+    // The token travels beside the URL (a header), never in it (D129).
+    assert!(!url.contains("tok1"), "{url}");
+    assert_eq!(w.connect_tokens, ["tok1"]);
     let ops: Vec<&str> = w
         .server
         .requests
@@ -120,6 +123,9 @@ fn an_unauthorized_token_is_replaced_once_at_once() {
     w.run(200);
     assert_eq!(w.state(), "connected");
     assert_eq!(w.token_calls, 2, "one new token");
+    // The retry carries the new token, not the refused one.
+    let t = &w.connect_tokens;
+    assert_eq!(t[t.len() - 2..], ["tok1".to_string(), "tok2".to_string()]);
     // A fresh token refused too: backoff, not a loop of token calls.
     w.cut(1006, "");
     w.plan.push_back(Outcome::Refuse(401, None));

@@ -167,10 +167,18 @@ fn net_contains((net, bits): (IpAddr, u8), ip: IpAddr) -> bool {
 /// `X-Forwarded-For` entry the outermost trusted proxy added (M9: the
 /// first entry is whatever the client sent).
 fn client_ip(hub: &Hub, req: &Request) -> Option<IpAddr> {
+    client_ip_of(hub, req.headers(), req.extensions())
+}
+
+/// `client_ip` from a request's parts (handlers that extract them).
+pub(crate) fn client_ip_of(
+    hub: &Hub,
+    headers: &axum::http::HeaderMap,
+    ext: &axum::http::Extensions,
+) -> Option<IpAddr> {
     let cfg = hub.open_api_config();
     if cfg.behind_proxy {
-        let hops: Vec<&str> = req
-            .headers()
+        let hops: Vec<&str> = headers
             .get_all("x-forwarded-for")
             .iter()
             .filter_map(|v| v.to_str().ok())
@@ -182,17 +190,34 @@ fn client_ip(hub: &Hub, req: &Request) -> Option<IpAddr> {
             .checked_sub(cfg.proxy_hops.max(1))
             .and_then(|i| hops[i].parse().ok());
     }
-    peer_ip(req)
+    peer_of(ext)
+}
+
+/// 429 for an address refused after too many failed authentications.
+pub(crate) fn auth_blocked_response(wait_ms: i64) -> Response {
+    let mut r = Problem::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate_limited",
+        "too many failed authentications from this address; wait and retry",
+    )
+    .into_response();
+    r.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from((wait_ms.max(0) as u64).div_ceil(1000).max(1)),
+    );
+    r
 }
 
 /// The TCP peer, from either kind of connect info.
 pub(crate) fn peer_ip(req: &Request) -> Option<IpAddr> {
-    req.extensions()
-        .get::<ConnectInfo<SocketAddr>>()
+    peer_of(req.extensions())
+}
+
+fn peer_of(ext: &axum::http::Extensions) -> Option<IpAddr> {
+    ext.get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0.ip())
         .or_else(|| {
-            req.extensions()
-                .get::<ConnectInfo<crate::tls::PeerAddr>>()
+            ext.get::<ConnectInfo<crate::tls::PeerAddr>>()
                 .map(|c| c.0.0.ip())
         })
 }
@@ -265,10 +290,18 @@ async fn guard_inner(st: AppState, req: Request, next: Next) -> Result<Response,
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|s| s.trim().to_string())
         .filter(|s| s.starts_with("ak_"));
+    // Too many failed keys from this address: refused for a while (D130).
+    let caller = client_ip(hub, &req);
+    if let Err(wait) = hub.auth_blocked(caller) {
+        return Err(auth_blocked_response(wait));
+    }
     let key = match secret {
-        Some(s) => hub.api_key(&s).await,
+        Some(s) => hub.api_key_from(&s, caller).await,
         None => None,
     };
+    if key.is_none() {
+        hub.auth_failed(caller);
+    }
     let key = key.ok_or_else(|| {
         let mut r = Problem::new(
             StatusCode::UNAUTHORIZED,
@@ -958,6 +991,9 @@ struct ImportAgentReq {
     package: Value,
     owner: String,
     name: Option<String>,
+    /// Accept a package whose source this deployment cannot verify.
+    #[serde(default)]
+    allow_unverified: bool,
 }
 
 /// Creates an agent from a package; its first key is shown once.
@@ -970,7 +1006,12 @@ async fn import_agent(State(st): State<AppState>, Extension(k): K, b: Bytes) -> 
     }
     let v = st
         .hub
-        .import_agent(&owner, &req.package, req.name.as_deref())
+        .import_agent(
+            &owner,
+            &req.package,
+            req.name.as_deref(),
+            req.allow_unverified,
+        )
         .await?;
     st.hub
         .audit_api(
@@ -978,7 +1019,7 @@ async fn import_agent(State(st): State<AppState>, Extension(k): K, b: Bytes) -> 
             SYSTEM_ID,
             "agents.import",
             v["agent"]["name"].as_str(),
-            json!({"owner": req.owner}),
+            json!({"owner": req.owner, "verified": v["verified"]}),
         )
         .await;
     let mut out = v.clone();

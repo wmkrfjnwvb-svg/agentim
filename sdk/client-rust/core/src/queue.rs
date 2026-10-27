@@ -185,6 +185,19 @@ impl Core {
         if text.is_empty() && msg_kind.is_none() {
             return Err(ClientError::new("bad_request", "text is required"));
         }
+        // No longer a member: refused here, as the server would (L4).
+        if let Some(e) = self.convs.get(&conv).map(|c| &c.info["ended"])
+            && !e.is_null()
+        {
+            return Err(if e["reason"] == "dissolved" {
+                ClientError::new("not_found", "this conversation was dissolved")
+            } else {
+                ClientError::new(
+                    "forbidden",
+                    "you are no longer a member of this conversation",
+                )
+            });
+        }
         let cm = match cmd["client_msg_id"].as_str() {
             Some(c) if !c.is_empty() => c.to_string(),
             _ => self.rng.id(self.now),

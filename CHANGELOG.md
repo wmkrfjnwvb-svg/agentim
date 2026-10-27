@@ -47,6 +47,23 @@ notes are taken from it.
   them and on the browser SDK, in English.
 - A group created with many members writes one `members.joined` event
   per 200 members instead of one `member.joined` each (D128).
+- Conversations you left, were removed from or saw closed stay in the
+  list and readable; the chat says how it ended and the composer gives
+  way to a note. Sending to them is refused at once (L4).
+- Agent export packages are signed with the deployment's signing key;
+  importing one the deployment cannot verify needs `allow_unverified`
+  (D131).
+
+### Changed
+
+- The client token travels in a header, not the `/ws` address: native
+  clients and agents send `Authorization: Bearer`, browsers the
+  `agentim.bearer.<base64url>` subprotocol. `?token=` still works for
+  one version (D129). Agent connection settings now give
+  `websocket_headers`.
+- `whsec_` webhook secrets are base64-decoded, as in Standard Webhooks.
+- Mentions need word boundaries; streamed replies mention when they
+  complete.
 
 ### Security
 
@@ -57,3 +74,8 @@ notes are taken from it.
   every change, weekly and before each release.
 - The generated master key file must be readable by its owner only;
   otherwise the server does not start.
+- An address with 30 failed authentications in a minute is refused for
+  5 minutes; lookups of unknown credentials are limited per address,
+  and new or revoked keys reach every node at once (D130).
+- Storage and internal errors reach clients as a generic message;
+  unknown console logins are locked like real ones.

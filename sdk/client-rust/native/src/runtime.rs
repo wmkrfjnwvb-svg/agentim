@@ -172,13 +172,13 @@ async fn run(
             for e in fx {
                 match e {
                     Effect::NeedToken => emit(json!({"type": "need_token"})),
-                    Effect::Connect { url } => {
+                    Effect::Connect { url, token } => {
                         conn += 1;
                         let (c, tx, tls) = (conn, tx.clone(), tls.clone());
                         if let Some((_, mut s)) = sink.take() {
                             let _ = s.close().await;
                         }
-                        tokio::spawn(async move { connect(c, url, tls, tx).await });
+                        tokio::spawn(async move { connect(c, url, token, tls, tx).await });
                     }
                     Effect::Send(text) => {
                         if let Some((_, s)) = sink.as_mut()
@@ -306,17 +306,34 @@ async fn run(
 async fn connect(
     c: u64,
     url: String,
+    token: String,
     tls: Arc<rustls::ClientConfig>,
     tx: mpsc::UnboundedSender<In>,
 ) {
+    use tungstenite::client::IntoClientRequest;
     let cfg = tungstenite::protocol::WebSocketConfig::default().max_message_size(Some(16 << 20));
-    let r = tokio_tungstenite::connect_async_tls_with_config(
-        url.as_str(),
-        Some(cfg),
-        true,
-        Some(tokio_tungstenite::Connector::Rustls(tls)),
-    )
-    .await;
+    // The token in a header, never in the URL (D129).
+    let req = url.as_str().into_client_request().and_then(|mut r| {
+        let v = format!("Bearer {token}").parse().map_err(
+            |e: tungstenite::http::header::InvalidHeaderValue| {
+                tungstenite::Error::HttpFormat(e.into())
+            },
+        )?;
+        r.headers_mut().insert("authorization", v);
+        Ok(r)
+    });
+    let r = match req {
+        Ok(req) => {
+            tokio_tungstenite::connect_async_tls_with_config(
+                req,
+                Some(cfg),
+                true,
+                Some(tokio_tungstenite::Connector::Rustls(tls)),
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    };
     let ws = match r {
         Ok((ws, _)) => ws,
         Err(tungstenite::Error::Http(resp)) => {

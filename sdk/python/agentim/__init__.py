@@ -135,8 +135,14 @@ class AgentIM:
         flag = "true" if with_conversations else "false"
         return self.request("GET", f"/v1/agents/{_q(agent_id)}/export?with_conversations={flag}")
 
-    def import_agent(self, package, owner, name=None):
-        return self.request("POST", "/v1/agents:import", {"package": package, "owner": owner, "name": name})
+    def import_agent(self, package, owner, name=None, allow_unverified=False):
+        """``allow_unverified``: accept a package this deployment cannot verify
+        (unsigned, or from another deployment)."""
+        return self.request(
+            "POST",
+            "/v1/agents:import",
+            {"package": package, "owner": owner, "name": name, "allow_unverified": allow_unverified},
+        )
 
     # ---- devices
     def list_devices(self, user_id):

@@ -78,10 +78,12 @@ async fn a_person_creates_an_agent_with_a_working_key(db: TestDb) {
     // Ready-to-paste settings from server.public_url.
     let c = &r["connect"];
     assert_eq!(c["mcp_url"], "https://im.example.com/mcp");
+    assert_eq!(c["websocket_url"], "wss://im.example.com/ws");
     assert_eq!(
-        c["websocket_url"],
-        format!("wss://im.example.com/ws?token={key}")
+        c["websocket_headers"]["Authorization"],
+        format!("Bearer {key}")
     );
+    assert!(!c["websocket_url"].as_str().unwrap().contains(key));
     assert_eq!(
         c["mcp_config"]["mcpServers"]["agentim"]["headers"]["Authorization"],
         format!("Bearer {key}")

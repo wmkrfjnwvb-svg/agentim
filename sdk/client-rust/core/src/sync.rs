@@ -78,6 +78,11 @@ impl Core {
                 if entry[flag] == true {
                     let c = self.conv_mut(&id);
                     c.info[flag] = json!(true);
+                    // Usually the departure event came just before and said
+                    // how; otherwise only that it ended.
+                    if c.info["ended"].is_null() {
+                        c.info["ended"] = json!({"reason": flag});
+                    }
                     c.dirty = true;
                     self.list_changed.insert(id.clone());
                 }
@@ -262,8 +267,33 @@ impl Core {
                     .unwrap_or_default();
                 self.members_join(id, &joined);
             }
+            // The conversation stays, read-only, saying why (L4).
+            "conv.dissolved" => {
+                let by = ev["data"]["by"].clone();
+                let by = if by.is_null() {
+                    ev["actor_id"].clone()
+                } else {
+                    by
+                };
+                self.ended(
+                    id,
+                    json!({"reason": "dissolved", "by": by, "at": ev["created_at"]}),
+                );
+            }
             "member.left" | "member.removed" => {
                 if let Some(u) = ev["data"]["user_id"].as_str() {
+                    if u == mine {
+                        let reason = if ev["type"] == "member.left" {
+                            "left"
+                        } else {
+                            "removed"
+                        };
+                        let d = &ev["data"];
+                        self.ended(
+                            id,
+                            json!({"reason": reason, "by": d["by"], "note": d["reason"], "at": ev["created_at"]}),
+                        );
+                    }
                     let c = self.conv_mut(id);
                     if let Some(list) = c.info["members"].as_array_mut() {
                         list.retain(|m| m["user_id"] != u);
@@ -276,9 +306,29 @@ impl Core {
         self.emit(json!({"type": "event", "event": ev}));
     }
 
+    /// This person is no longer in the conversation: it stays in the list
+    /// and its history stays readable, but nothing can be sent (L4).
+    fn ended(&mut self, id: &str, how: Value) {
+        let c = self.conv_mut(id);
+        c.info["ended"] = how;
+        c.dirty = true;
+        self.list_changed.insert(id.to_string());
+    }
+
     /// Adds or replaces members in a known member list (one not loaded yet
     /// comes whole with the next conversation list).
     fn members_join(&mut self, id: &str, joined: &[Value]) {
+        // Added back after leaving: a member again.
+        let mine = self.me["id"].clone();
+        if joined.iter().any(|j| j["user_id"] == mine) {
+            let c = self.conv_mut(id);
+            if let Some(o) = c.info.as_object_mut()
+                && (o.remove("ended").is_some() | o.remove("left").is_some())
+            {
+                c.dirty = true;
+                self.list_changed.insert(id.to_string());
+            }
+        }
         let c = self.conv_mut(id);
         let Some(list) = c.info["members"].as_array_mut() else {
             return;

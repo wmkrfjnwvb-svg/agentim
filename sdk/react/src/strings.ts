@@ -53,6 +53,22 @@ export const defaultStrings = {
   roles: { owner: 'Owner', admin: 'Admin', member: '' } as Record<string, string>,
   handedOff: 'You’re being connected to a person',
   handedBack: 'The assistant is back',
+  /** The line in the chat once this person is no longer in it (`by`: who did it, when known). */
+  ended: (reason: string, by?: string) =>
+    reason === 'removed'
+      ? by
+        ? `${by} removed you`
+        : 'You were removed from this conversation'
+      : reason === 'dissolved'
+        ? by
+          ? `${by} closed this conversation`
+          : 'This conversation was closed'
+        : 'You left this conversation',
+  /** In place of the composer. */
+  endedComposer: (reason: string) =>
+    reason === 'dissolved'
+      ? 'This conversation is closed. You can still read its history.'
+      : 'You can’t send messages because you’re no longer a member.',
 };
 
 export type Strings = typeof defaultStrings;

@@ -135,9 +135,13 @@ pub enum Input {
 pub enum Effect {
     /// Ask the app's token provider; answer with `Input::Token`.
     NeedToken,
-    /// Open a WebSocket to this URL (token included).
+    /// Open a WebSocket to this URL with this token: native runtimes send
+    /// `Authorization: Bearer <token>`, browsers the subprotocols
+    /// `agentim, agentim.bearer.<base64url(token)>` (never in the URL: proxy
+    /// access logs keep URLs; D129).
     Connect {
         url: String,
+        token: String,
     },
     Send(String),
     Close {

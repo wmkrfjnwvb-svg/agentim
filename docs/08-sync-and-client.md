@@ -40,6 +40,7 @@
 - 只下发**当前令牌所属用户现在是成员**的会话；不能指定会话 ID 去拉别人的会话。
 - 被移出、退出：这台设备同步到移出事件为止，`left` 报告到设备的位置越过移出事件为止，之后什么都不再下发；重新加入时清除。
 - 解散：对每台设备只报告一次 `dissolved: true`（控制库里记下这台设备已知道）。
+- 客户端（L4）：离开、被移出、解散的会话**留在列表里**，历史照常能看，摘要里多一个 `ended`（`reason`：`left` / `removed` / `dissolved`，`by` 是谁做的，`note` 是移出原因，`at`）；再往里发消息在本地就拒绝（`forbidden`，解散是 `not_found`，和服务端一致），不进发送队列。组件在聊天最后一行显示"Bob removed you"这类系统提示，输入框换成"You can’t send messages because you’re no longer a member."（WhatsApp 的说法）；被拉回来（`member.joined` / `members.joined` 里有自己）就恢复正常。重启后从缓存读出来也一样。
 - 被移出又拉回、设备落在移出前：先补发移出前那段，再从新的可见起点继续，中间那段不发（D92）。
 - 设备被下线（令牌吊销）：这台设备的同步位置全部删除。
 - 开放 API 保留按 seq 读历史，需要 `messages:read`，写审计，受限流。

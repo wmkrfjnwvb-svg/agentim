@@ -15,7 +15,8 @@ const addr = process.env.AGENTIM ?? '127.0.0.1:8080';
 const token = process.env.AGENT_TOKEN;
 if (!token) throw new Error('AGENT_TOKEN is required');
 
-const ws = new WebSocket(`ws://${addr}/ws?token=${token}`);
+// The key in the bearer subprotocol, never in the address (docs/02 §2.5).
+const ws = new WebSocket(`ws://${addr}/ws`, ['agentim', `agentim.bearer.${Buffer.from(token).toString('base64url')}`]);
 let rid = 0;
 const pending = new Map();
 const cancelled = new Set();

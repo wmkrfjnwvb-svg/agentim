@@ -823,3 +823,81 @@ async fn over_the_websocket() {
         assert_eq!(closed_with(ws).await.as_deref(), Some("logged_out"));
     }
 }
+
+/// Handshake with these `Sec-WebSocket-Protocol` offers: the status and
+/// the protocol the server answered with.
+async fn offer(url: &str, protocols: &str) -> (u16, Option<String>) {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = url.into_client_request().unwrap();
+    req.headers_mut()
+        .insert("sec-websocket-protocol", protocols.parse().unwrap());
+    match tokio_tungstenite::connect_async(req).await {
+        Ok((_, r)) => (
+            101,
+            r.headers()
+                .get("sec-websocket-protocol")
+                .map(|v| v.to_str().unwrap().to_string()),
+        ),
+        Err(tokio_tungstenite::tungstenite::Error::Http(r)) => (r.status().as_u16(), None),
+        // A protocol was offered but none came back: the client refuses.
+        Err(tokio_tungstenite::tungstenite::Error::Protocol(_)) => (101, None),
+        Err(e) => panic!("{e}"),
+    }
+}
+
+/// D129: the token travels in a header, never the address. Browsers offer
+/// `agentim, agentim.bearer.<base64url(token)>` and get `agentim` back.
+#[tokio::test]
+async fn the_token_travels_in_a_header() {
+    use base64::Engine;
+    let b64 = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s);
+    let (addr, hub, _dir) = start().await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let t = client_token(&hub, &alice).await;
+    let url = format!("ws://{addr}/ws?device=web-1");
+    let bearer = format!("agentim, agentim.bearer.{}", b64(&t));
+    assert_eq!(offer(&url, &bearer).await, (101, Some("agentim".into())));
+    // The order of the offer does not matter.
+    let reversed = format!("agentim.bearer.{}, agentim", b64(&t));
+    assert_eq!(offer(&url, &reversed).await.0, 101);
+    // An agent's key the same way, and as Authorization.
+    let (_, k) = hub
+        .create_user("bot", UserKind::Agent, Some(&alice.id), None)
+        .await
+        .unwrap();
+    let k = k.unwrap();
+    let bare = format!("ws://{addr}/ws");
+    assert_eq!(
+        offer(&bare, &format!("agentim, agentim.bearer.{}", b64(&k)))
+            .await
+            .0,
+        101
+    );
+    assert_eq!(status(&bare, Some(&k)).await, 101);
+    // Authorization wins over the subprotocol and the address.
+    assert_eq!(status(&format!("{bare}?token=wrong"), Some(&k)).await, 101);
+    // Refusals: a wrong token is 401; a malformed offer is 400.
+    let wrong = format!("agentim, agentim.bearer.{}", b64("a.b.c"));
+    assert_eq!(offer(&url, &wrong).await.0, 401);
+    assert_eq!(
+        offer(&url, &format!("agentim.bearer.{}", b64(&t))).await.0,
+        400,
+        "without agentim"
+    );
+    assert_eq!(
+        offer(&url, "agentim, agentim.bearer.%%%").await.0,
+        400,
+        "not base64url"
+    );
+    assert_eq!(
+        offer(&url, "agentim, agentim.bearer.").await.0,
+        400,
+        "empty"
+    );
+    assert_eq!(offer(&url, "agentim").await.0, 401, "no token at all");
+    // Other offers are ignored; the deprecated ?token= still works.
+    assert_eq!(
+        status(&format!("ws://{addr}/ws?device=web-2&token={t}"), None).await,
+        101
+    );
+}

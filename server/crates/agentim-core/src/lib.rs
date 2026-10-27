@@ -3,6 +3,7 @@
 pub mod admin_api;
 pub mod admin_cli;
 pub mod auth;
+pub mod auth_limit;
 pub mod cli;
 pub mod cluster;
 pub mod config;

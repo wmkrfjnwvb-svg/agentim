@@ -23,13 +23,35 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// The hash covers the package without its `sha256` field.
+/// The hash covers the package without its `sha256` and `signature`.
 fn digest(pkg: &Value) -> String {
     let mut p = pkg.clone();
     if let Some(o) = p.as_object_mut() {
         o.remove("sha256");
+        o.remove("signature");
     }
     sha256_hex(p.to_string().as_bytes())
+}
+
+/// HMAC-SHA256 of the package hash under a signing key (D131): a package
+/// changed after export cannot be re-hashed to pass on this deployment.
+fn sign(secret: &str, sha256: &str) -> String {
+    use base64::Engine;
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_bytes());
+    let tag = ring::hmac::sign(&key, format!("{FORMAT}\n{sha256}").as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(tag.as_ref())
+}
+
+/// How a package's signature checks out on this deployment.
+#[derive(PartialEq)]
+enum Origin {
+    /// Signed with one of this deployment's live signing keys.
+    Verified,
+    /// Unsigned, or signed with a key this deployment does not have
+    /// (another deployment's, or one since revoked).
+    Unverifiable,
+    /// Signed with a key of this deployment, but not this content.
+    Forged,
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
@@ -169,7 +191,22 @@ impl Hub {
             "summaries": summaries,
             "conversations": if with_conversations { json!(conversations) } else { Value::Null },
         });
-        pkg["sha256"] = json!(digest(&pkg));
+        let sha = digest(&pkg);
+        // The newest live signing key signs (none yet: unsigned).
+        let newest = self
+            .inner
+            .sh
+            .signing
+            .read()
+            .unwrap()
+            .iter()
+            .max_by_key(|(kid, (_, at))| (*at, (*kid).clone()))
+            .map(|(kid, (s, _))| (kid.clone(), s.clone()));
+        if let Some((kid, secret)) = newest {
+            pkg["signature"] =
+                json!({"alg": "HMAC-SHA256", "kid": kid, "value": sign(&secret, &sha)});
+        }
+        pkg["sha256"] = json!(sha);
         self.audit_user(
             me,
             "agent.exported",
@@ -180,21 +217,64 @@ impl Hub {
         Ok(pkg)
     }
 
+    fn origin(&self, pkg: &Value, sha: &str) -> Origin {
+        let sig = &pkg["signature"];
+        let (Some(kid), Some(value)) = (sig["kid"].as_str(), sig["value"].as_str()) else {
+            return Origin::Unverifiable;
+        };
+        let keys = self.inner.sh.signing.read().unwrap();
+        match keys.get(kid) {
+            None => Origin::Unverifiable,
+            Some((secret, _)) => {
+                use base64::Engine;
+                let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_bytes());
+                let tag = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(value)
+                    .unwrap_or_default();
+                // ring compares in constant time.
+                if sig["alg"] == "HMAC-SHA256"
+                    && ring::hmac::verify(&key, format!("{FORMAT}\n{sha}").as_bytes(), &tag).is_ok()
+                {
+                    Origin::Verified
+                } else {
+                    Origin::Forged
+                }
+            }
+        }
+    }
+
     /// Imports a package as a new agent of `me`: checkpoints as they were
     /// (version 1), summaries and conversation content as read-only
-    /// `archive/` checkpoints. Returns the new agent's key.
+    /// `archive/` checkpoints. Returns the new agent's key. A package this
+    /// deployment cannot verify (unsigned, or from another deployment) is
+    /// refused unless the caller says so with `allow_unverified` (D131).
     pub async fn import_agent(
         &self,
         me: &User,
         pkg: &Value,
         name: Option<&str>,
+        allow_unverified: bool,
     ) -> ApiResult<Value> {
         if pkg["format"] != FORMAT {
             return Err(bad(format!("not an agent package ({FORMAT})")));
         }
-        if pkg["sha256"].as_str() != Some(digest(pkg).as_str()) {
+        let sha = digest(pkg);
+        if pkg["sha256"].as_str() != Some(sha.as_str()) {
             return Err(bad("the package was changed: its sha256 does not match"));
         }
+        let verified = match self.origin(pkg, &sha) {
+            Origin::Verified => true,
+            Origin::Forged => {
+                return Err(bad("the package was changed: its signature does not match"));
+            }
+            Origin::Unverifiable if allow_unverified => false,
+            Origin::Unverifiable => {
+                return Err(err(
+                    "forbidden",
+                    "the package's source cannot be verified (unsigned, or signed by another deployment); import it with allow_unverified to accept it anyway",
+                ));
+            }
+        };
         let name = match name {
             Some(n) => n.to_string(),
             None => pkg["agent"]["name"]
@@ -298,10 +378,11 @@ impl Hub {
             me,
             "agent.imported",
             &agent_id,
-            json!({"from": pkg["agent"]["id"], "keys": writes.len()}),
+            json!({"from": pkg["agent"]["id"], "keys": writes.len(), "verified": verified}),
         )
         .await;
         let mut out = made;
+        out["verified"] = json!(verified);
         out["imported"] = json!({
             "state": pkg["state"].as_array().map_or(0, Vec::len),
             "summaries": summaries.len(),

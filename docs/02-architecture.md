@@ -96,7 +96,7 @@ Message {
 
 | 环节 | 行为 |
 |---|---|
-| 连接 | `GET /ws?token=…&v=2,1` 可选带上客户端支持的协议版本（最多 16 个）；没有共同版本时在升级前返回 HTTP 400 `unsupported_protocol`，格式错误返回 400 `bad_request`，两者都附带服务端支持的 `protocols` |
+| 连接 | `GET /ws?v=2,1`，令牌放在请求头里、不放地址里（地址会被代理和负载均衡的访问日志记下，D129）：原生客户端和 Agent 用 `Authorization: Bearer <令牌>`；浏览器的 WebSocket 不能设这个头，改为提供子协议 `agentim, agentim.bearer.<令牌的 base64url>`，服务端回 `agentim`（Kubernetes 的做法，[`k8s.io/apiserver` websocket](https://godocs.io/k8s.io/apiserver/pkg/authentication/request/websocket)）；只给了 bearer 子协议没给 `agentim`、或者不是 base64url，返回 400。三者都有时 `Authorization` 优先。旧的 `?token=` 还接受一个版本，然后删除。可选带上客户端支持的协议版本（最多 16 个）；没有共同版本时在升级前返回 HTTP 400 `unsupported_protocol`，格式错误返回 400 `bad_request`，两者都附带服务端支持的 `protocols` |
 | `welcome` | `protocol`（选定版本）、`protocols`、`server {name, version}`、`features`、`limits {message_bytes, frame_bytes}`、`me` |
 | `hello` | 可选 `protocol: [..]`、`client {name, version, platform}`、`features: [..]`；回复同样的服务端信息加上 `me`、`users`、`my_agents`。不带这些字段的老客户端照常工作（得到当前版本）。重复 `hello` 以最后一次为准；被拒绝的 `hello` 不改变连接的状态 |
 | 最低版本 | 配置 `[clients.min_versions]`（如 `agentim-js = "1.2.0"`，启动时校验格式）；低于最低版本返回 `client_too_old`（带升级说明），随后以关闭码 1008 断开。配置了最低版本的客户端必须带可比较的版本号，否则 `bad_request`；没配置的客户端名不检查 |
@@ -152,29 +152,52 @@ Message {
 
 **扩展也守住核心保证**：自定义消息走同一条写入路径（单写者、组提交），同样不丢、有序；内容大小和信号频率都有上限；扩展类型的版本放在类型的内容里（例如 `schema_version`），兼容规则和 §2.5 相同。
 
-### 2.7 文件和图片（计划，D27–D30、D72）
+### 2.7 文件和图片（设计，待确认，2026-10-27）
 
-先上传、再发消息引用；文件绑定到会话，下载按会话成员权限判断。
+负责人定的方向（2026-10-20、2026-10-27）：接业内标准的存储，部署者选**本机文件夹**或 **S3 兼容的对象存储**；图片发出后在聊天里显示一张很小的缩略图，点开看较大的预览图，再点"查看原图"下载原图；普通文件显示类型图标。原来的 D27–D30、D72（内容存进数据库）作废。
+
+**业内对照**
+- Mattermost：存储选 `local`（默认 `./data/`）或 `amazons3`（桶、前缀、区域、终端地址、密钥或 IAM 角色、只用 HTTPS、签名 v4），改了要重启；单个文件默认最大 100 MiB；图片上传时生成 120×100 的缩略图、宽 1920 的预览图和 16×16 的迷你图，PNG 出 PNG、其余出 JPEG（质量 90），先按 EXIF 方向转正；超过最大分辨率的图片拒绝；SVG 不生成；路径 `日期/teams/…/channels/…/users/…/文件ID/文件名`，缩略图和预览图放在原图旁边（[设置文档](https://docs.mattermost.com/administration-guide/configure/environment-configuration-settings.html)、[`server/channels/app/file.go`](https://github.com/mattermost/mattermost/blob/master/server/channels/app/file.go)）。他们解释预览图缩小是为了省流量、加载快，原图要下载才看得到（[论坛](https://forum.mattermost.com/t/show-pictures-in-original-size/4996)）。
+- Slack：文件对象带 `thumb_64` 到 `thumb_1024` 八档缩略图（原图够大才有大的），`url_private` 和 `url_private_download`（强制下载）都要带令牌才能取（[文件对象](https://docs.slack.dev/reference/objects/file-object)）。
+- S3 预签名地址：服务端签一个短时有效的地址，客户端直接传到对象存储或从那里下载，不经过 IM 服务器，存储的密钥不给客户端（[MinIO 文档](https://docs.min.io/community/minio-object-store/integrations/presigned-put-upload-via-browser.html)）。
+- 没找到：OpenIM 上传设计的官方文档（之前记的"SDK 直传对象存储"出自它的源码，这次没有再核对）。
 
 | 方面 | 做法 |
 |---|---|
-| 流程 | ① `POST /api/files?conv_id=…`（客户端令牌）或开放 API `POST /v1/files`（以某个用户的身份）流式上传，返回 `file_id`；② 发送 `kind = "file"` 或 `"image"` 的消息，payload 里带 `file_id`，服务端补上名字、大小、类型、宽高、缩略图信息，降级文本是 `[文件] 名字`。只有能在这个会话发言的人能上传 |
-| 一个文件一条消息 | 文件只能被一条消息引用。两条消息同时引用同一个文件，只有一条成功（`conflict`） |
-| 存放位置 | 元数据（`files` 表）放在会话所在的库；内容默认按块存进同一个数据库（集群不需要额外组件，D72），文件多的部署可以换成 S3 兼容存储（`object_store`）。专属库可以配专属存储，和 §5.4 一致 |
-| 加密 | 静态加密开启时文件内容也加密：会话的 DEK，按 64 KiB 分块 AES-256-GCM，每块的 AAD 是（文件 ID、块序号、是否最后一块），块不能被调换、截断或拼接。下载时边解密边输出，支持 `Range` |
-| 不丢 | 内容完整写入之后，才通过写线程提交 `files` 记录；记录提交了内容一定在。没提交记录的残留由后台清理 |
-| 删除 | 撤回消息、解散会话、删除账号时，`files` 记录和"待删除"任务在同一个事务里提交，内容由后台删除（失败重试，重启后继续）。解散会话已经删除 DEK，残留的密文也解不开 |
-| 未使用的上传 | 24 小时内没有被消息引用就删除（D28）。清理和"发消息引用它"同时发生时只有一个成功 |
-| 下载权限 | 上传者本人，或者引用它的消息对你可见。每次请求都判断：被移出会话后立刻不能下载 |
-| 下载链接 | `file_url {file_id}` 检查权限后返回 5 分钟内有效、绑定用户和文件的 HMAC 签名链接（浏览器的 `<img>` 不能带令牌） |
-| 类型判断 | 按文件头判断，不信客户端声明。只有 JPEG、PNG、WebP、GIF 算图片；其余一律当普通文件，下载时 `Content-Disposition: attachment`、`X-Content-Type-Options: nosniff`、`Content-Security-Policy: sandbox` |
-| 缩略图 | 图片生成两档（长边 320 和 1280 像素，WebP），同样加密存放。解码前先读尺寸，超过 4000 万像素或解码失败就不生成（防解压炸弹），文件照常可下载。在写线程之外生成 |
-| 位置信息 | 默认无损去掉 EXIF / XMP（含 GPS）（D29），可按部署关闭 |
-| 限制 | 单个文件默认 100 MB（D28，可配置）；每人每天上传总量、Agent 上传频率有上限；文件名最长 255 字节，去掉路径和控制字符；先只支持一次请求流式传完，tus 断点续传以后（D27） |
-| 其他 | Agent 上传的文件标记 `ai_generated: true`（EU AI Act 第 50 条）；会话迁移到另一个库时 `files` 记录、DEK 和内容随会话走，复制完成后才切换 |
-| 病毒扫描 | 可选的扫描钩子（和发送前拦截一样的 HTTP 回调，可接 ClamAV）；没有扫描结果前文件不能被引用；扫描出错时默认拒绝，可配置为放行（D30） |
+| 存储配置 | `[files] storage = "local"`（默认，`dir = "./data/files"`）或 `"s3"`（`bucket`、`region`、`endpoint`、`prefix`、`path_style`；密钥用环境变量 `AGENTIM_S3_ACCESS_KEY_ID` / `AGENTIM_S3_SECRET_ACCESS_KEY` 或机器角色）。用 `object_store` 库（Apache Arrow 项目，同时支持本机文件夹和 S3，0.14.2，2026-09-15 发布）。集群里多个节点必须用 S3，或者 `local` 加上 `shared = true`（大家挂同一个网络盘），否则启动时报错。启动时写一个探测对象再删掉，存储不可用就报错 |
+| 存放路径 | `{prefix}/{conv_id}/{file_id}/original`、`…/thumb`、`…/preview`。`file_id` 是随机 ID，不含文件名（文件名只在数据库里），文件名里的怪字符不会进路径 |
+| 上传 | `POST /api/files?conv_id=…`（客户端令牌放在 `Authorization` 头），开放 API `POST /v1/files`（`files:write`，以某个用户的身份），Agent 用 MCP 的 `upload_file` 或 Agent SDK 的 `uploadFile`。请求体就是文件内容，`Content-Type` 和 `X-File-Name` 只当参考。服务端流式写进存储，同时算 SHA-256。只有能在这个会话发言的人能上传（被移出、被拉黑、已解散、草稿模式的 Agent 都和发消息一样拒绝）。返回 `{file_id, name, size, mime, kind, width?, height?}` |
+| 类型判断 | 看文件头，不信客户端声明。只有 JPEG、PNG、WebP、GIF 算图片（`kind: "image"`）；其余都是 `kind: "file"`，下载时带 `Content-Disposition: attachment`、`X-Content-Type-Options: nosniff`、`Content-Security-Policy: sandbox`。SVG 当普通文件（里面可以有脚本）。iPhone 的 HEIC 由客户端转成 JPEG 再传（iOS 选图时可以直接要 JPEG），服务端不解 HEIC |
+| 缩略图和预览图 | 上传时生成，和原图一起放在存储里：**缩略图**长边 480 像素（聊天里约 240 点宽，2 倍屏上清楚），**预览图**长边 1920 像素（点开后看的，和 Mattermost 一样）。原图比这小就不生成，直接用原图。PNG 出 PNG（保留透明），其余出 JPEG（质量 82），先按 EXIF 方向转正。动图 GIF 的缩略图取第一帧，预览就是原图。在专门的线程池里做（不占写线程，同时最多 CPU 核数个）；超过 4000 万像素或解不开就不生成，文件照常能发，显示成普通文件的样子。另外记下宽高和主色：客户端在图片下载完之前按比例留出位置、填上主色，界面不跳动 |
+| 位置信息 | 默认去掉原图里的 EXIF、XMP（含 GPS）。只删这些数据块、不重新编码，画质不变（JPEG 的 APP1、PNG 的 `eXIf`/`iTXt`、WebP 的 `EXIF`/`XMP`）；方向信息先用掉再删。部署可以关掉（`files.strip_metadata = false`） |
+| 发消息 | 先上传，再发 `kind = "image"` 或 `"file"` 的消息，payload 里带 `file_id`（可以加 `caption`），服务端补上名字、大小、类型、宽高、主色、有没有缩略图；降级文本是 `[Image]` / `[File] 名字`。一个文件只能被一条消息引用，两条消息抢同一个文件只有一条成功（`conflict`）；别人的文件、别的会话的文件 `forbidden`，不存在或过期 `not_found` |
+| 下载 | `file_url {file_id, variant: "thumb" | "preview" | "original"}`（客户端协议、开放 API、MCP 都有）每次都检查权限：上传者本人，或者引用它的消息你看得见；被移出后立刻不能再取。返回 5 分钟有效的地址：本机存储是服务端自己的 `/files/{file_id}/{variant}?exp=…&sig=…`（HMAC，绑定用户、文件和档位，支持 `Range`）；S3 且没开静态加密时直接给 S3 的预签名地址（流量不经过服务端，`response-content-disposition` 带上文件名）；开了静态加密时也走服务端（边解密边输出）。文件内容不会变，响应带 `Cache-Control: private, max-age=31536000, immutable`，客户端可以一直缓存 |
+| 静态加密 | 开启时文件、缩略图、预览图都加密后再存：用会话的 DEK，按 64 KiB 分块 AES-256-GCM，每块的 AAD 是（文件 ID、档位、块序号、是否最后一块），块不能被调换、截断或拼接。解散会话删掉 DEK 后，存储里剩下的也解不开 |
+| 不丢 | 内容完整写进存储之后，才通过写线程提交 `files` 记录；记录提交了，内容一定在。提交前失败留下的残留由后台清理（按存储里的对象和记录对账） |
+| 删除 | 撤回消息、解散会话、删除账号、过了保留期：`files` 记录和"待删除"任务在同一个事务里提交，内容（三个档位）由后台删除，失败重试，重启后继续 |
+| 过期 | 24 小时内没被消息引用的上传会删掉。部署者设文件保留期（`files.retention_days`，默认不过期，和消息保留期分开，和 Mattermost 一样）。文件过期后消息还在，显示"文件已过期" |
+| 限制 | 单个文件默认最多 100 MiB（`files.max_bytes`），每人每天的上传总量（`files.daily_bytes_per_user`，默认 1 GiB）和 Agent 每分钟的上传次数有上限，超出 `rate_limited`；空文件 `bad_request`；文件名最长 255 字节，去掉路径和控制字符。前面有代理时要一起调大它的请求体上限（例如 Nginx 的 `client_max_body_size`） |
+| 其他 | Agent 上传的文件标记 `ai_generated: true`（EU AI Act 第 50 条）。会话迁到另一个库时，`files` 记录和 DEK 随会话走（存储是共用的，内容不用搬）。可选的扫描钩子（和发送前拦截一样的 HTTP 回调，可以接 ClamAV）：开了之后扫描通过前不能被引用，扫描出错默认拒绝 |
+| 以后 | 超过 100 MiB 的大文件让客户端用 S3 预签名地址直传（分片上传，断点续传）；视频的封面和时长 |
 
-**测试要覆盖的逻辑节点**：上传（权限、大小上限、空文件、未知会话、被拉黑、已解散）；发消息引用（别人的文件、别的会话的文件、已被引用、已过期、扫描未通过）；拉取、推送、侧信道、草稿（批准后才可见）、编辑（不能改附件）、撤回（下载立刻失败）；下载（成员、非成员、被移出、加入前的消息、签名过期、签名被改、Range 边界）；解散（加密销毁）；重启（未完成的删除继续）；多库迁移；审计；开放 API 上传；静态加密开和关；数据库和 S3（CI 里用 MinIO）。并发：两条消息抢同一个文件、清理和引用、撤回和下载、解散和上传，多轮后检查"只有一个成功、存储里没有孤儿"。
+**客户端 SDK**：`send_file {conv_id, file, caption?}` 先显示一条本地消息（状态"上传中"，带进度），上传完成再发消息；上传失败和发送失败一样标记失败，可以重试或删掉。原生平台记下文件路径，重启后继续；浏览器把要传的文件放进 IndexedDB（单个超过 50 MiB 的不放，刷新后要重新选）。缩略图和预览图按 `file_id` 缓存。客户端核心不做网络请求，上传和下载由各平台的运行层做：核心发出 `upload` 效果，运行层回报进度和结果。
+
+**界面（Web 和 React Native 组件）**
+- 图片：聊天里显示缩略图，最大 240×320 点，按比例，圆角，加载前是主色的占位。点开后全屏看预览图（加载时先显示放大的缩略图），右上角有"View original"（取原图：浏览器在新标签打开，手机上保存或分享）、"Download"和关闭（Esc、点背景、手机上下滑）。连发的多张排成网格。
+- 文件：一张卡片。左边是按类型的图标（PDF、文档、表格、演示、压缩包、音频、视频、代码、其他），用 Slack 和 Google Drive 那种按类型配色的风格，图标是我们自己画的 SVG，不用第三方图标库；中间是文件名（太长时省略中间、保留扩展名）和大小（`2.4 MB`）；右边是下载按钮。
+- 发送：输入框左边有回形针按钮，网页上还能拖进来、粘贴截图；发之前可以写说明；上传时显示进度环，可以取消。
+
+**测试要覆盖的逻辑节点**：
+- 上传：权限（成员、非成员、被移出、被拉黑、已解散、草稿模式的 Agent）；大小（上限、正好上限、空文件、每日总量）；未知会话；类型（真图片、改了扩展名的、SVG、坏图片、超大分辨率、动图、带 EXIF 和 GPS 的）。
+- 缩略图和预览图：尺寸、方向转正、比原图小才生成、PNG 透明保留。
+- 发消息引用：别人的、别的会话的、已被引用、已过期、扫描未通过、两条消息抢一个文件。
+- 读的路径：拉取、推送、侧信道、草稿（批准后才可见）、编辑（不能改附件）、撤回（下载地址立刻失效）。
+- 下载：成员、非成员、被移出、加入前的消息、签名过期、签名被改、换档位、`Range` 边界、S3 预签名地址。
+- 生命周期：解散（加密销毁）、删除账号、保留期、重启（没做完的删除继续）、多库迁移、审计。
+- 入口和配置：开放 API 和 MCP 上传；静态加密开和关；本机存储和 S3（CI 里用 MinIO）；集群启动检查；三种数据库。
+- 并发：两条消息抢同一个文件、清理和引用、撤回和下载、解散和上传。多轮后检查只有一个成功、存储里没有孤儿。
+- 客户端：离线时选的文件、上传中断网、重启后继续、上传失败重试。
+- 界面：截图测试加上图片、文件卡片和预览层。
 
 ## 3. 可靠性与顺序
 

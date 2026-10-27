@@ -63,7 +63,8 @@ export class AgentIM {
   transferAgent(agentId: string, opts: { owner: string; rotateKeys?: boolean }): Promise<Agent>;
   destroyAgent(agentId: string): Promise<{ id: string; destroyed: boolean; conversations: number }>;
   exportAgent(agentId: string, opts?: { withConversations?: boolean }): Promise<any>;
-  importAgent(opts: { package: any; owner: string; name?: string }): Promise<{ agent: Agent; key: string; device_id: string; connect: any }>;
+  /** `allowUnverified`: accept a package this deployment cannot verify (unsigned, or from another deployment). */
+  importAgent(opts: { package: any; owner: string; name?: string; allowUnverified?: boolean }): Promise<{ agent: Agent; key: string; device_id: string; connect: any; verified: boolean }>;
   listDevices(userId: string): Promise<{ devices: any[] }>;
   logoutDevice(userId: string, deviceId: string): Promise<{ revoked: number }>;
   deleteUser(userId: string): Promise<any>;

@@ -28,6 +28,7 @@ backend_tests!(
     rate_limits_per_key,
     errors_are_problem_details,
     input_limits,
+    failed_authentications_block_one_address,
 );
 
 struct Api {
@@ -1585,4 +1586,68 @@ async fn input_limits(db: TestDb) {
         )
         .await;
     assert_eq!((s, code(&v)), (404, "not_found".into()));
+}
+
+/// D130: an address that keeps sending unknown credentials is refused for
+/// a while (also with a good key), on the open API and `/ws` alike; other
+/// addresses carry on. Behind a proxy the address is the proxy's entry.
+async fn failed_authentications_block_one_address(db: TestDb) {
+    use agentim_core::auth_limit::{BLOCK_MS, MAX_FAILURES};
+    let mut cfg = single(&db.url);
+    cfg.open_api.behind_proxy = true;
+    let api = Api::with(cfg).await;
+    api.user("alice").await;
+    let from = |ip: &'static str| [("x-forwarded-for", ip)];
+    let get = |key: String, ip: &'static str| {
+        let api = &api;
+        async move {
+            api.raw("GET", "/v1/users/alice", Some(&key), None, &from(ip))
+                .await
+        }
+    };
+    for i in 0..MAX_FAILURES {
+        let (s, _, _) = get(format!("ak_wrong{i}"), "10.0.0.1").await;
+        assert_eq!(s, 401, "failure {i} is still a plain refusal");
+    }
+    let (s, h, v) = get(api.key.clone(), "10.0.0.1").await;
+    assert_eq!(s, 429, "{v}");
+    assert_eq!(v["code"], "rate_limited");
+    let wait: i64 = h["retry-after"].to_str().unwrap().parse().unwrap();
+    assert!(
+        wait > BLOCK_MS / 1000 - 5 && wait <= BLOCK_MS / 1000,
+        "{wait}"
+    );
+    // Another address is not affected, with a good key or a bad one.
+    assert_eq!(get(api.key.clone(), "10.0.0.2").await.0, 200);
+    assert_eq!(get("ak_nope".into(), "10.0.0.2").await.0, 401);
+    // The WebSocket shares the count: the blocked address is refused there
+    // before its credential is even looked at.
+    let ws = |ip: &'static str, token: &str| {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut req = format!("{}/ws", api.base.replace("http", "ws"))
+            .into_client_request()
+            .unwrap();
+        req.headers_mut()
+            .insert("x-forwarded-for", ip.parse().unwrap());
+        req.headers_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+        async move {
+            match tokio_tungstenite::connect_async(req).await {
+                Ok(_) => 101,
+                Err(tokio_tungstenite::tungstenite::Error::Http(r)) => r.status().as_u16(),
+                Err(e) => panic!("{e}"),
+            }
+        }
+    };
+    assert_eq!(ws("10.0.0.1", "atk_whatever").await, 429);
+    for _ in 0..MAX_FAILURES - 1 {
+        assert_eq!(ws("10.0.0.3", "atk_wrong").await, 401);
+    }
+    assert_eq!(ws("10.0.0.3", "atk_wrong").await, 401);
+    assert_eq!(
+        get(api.key.clone(), "10.0.0.3").await.0,
+        429,
+        "and the open API"
+    );
+    assert_eq!(get(api.key.clone(), "10.0.0.2").await.0, 200);
 }

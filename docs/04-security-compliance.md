@@ -14,6 +14,8 @@
 | 设备 | 人的设备 ID 由 App 选定并保存（连接时 `device=`，1–64 个 `A-Z a-z 0-9 _ -`），服务端第一次见到时登记（名称、平台、最近使用时间），欢迎帧里带服务端的 `device_id`；30 天不用就忘掉（`auth.token_idle_days`，下次连接算新设备）。Agent 的每把密钥是一台设备。`list_devices`、`logout_device` 让单台设备下线并立即断开 | ✅ |
 | 新设备登录通知 | 新设备登录时，该用户已在线的设备收到 `device.added`，可一键下线 | ✅ |
 | 多端已读同步 | 一台设备标记已读后，同一用户的其他在线设备收到 `read`，未读数立即一致（[08 §2.6](08-sync-and-client.md)） | ✅ |
+| 令牌不进地址 | 连 `/ws` 时令牌放在 `Authorization: Bearer` 头里，浏览器放在子协议 `agentim.bearer.<base64url>` 里，不放在 URL 里（代理和负载均衡的访问日志会记下 URL，D129，[02 §2.5](02-architecture.md)）；`?token=` 还接受一个版本 | ✅ |
+| 认证失败按来源限制 | 同一个来源地址（直连的对端；`open_api.behind_proxy` 时取最外层可信代理加的 `X-Forwarded-For`）1 分钟内认证失败 30 次后拒绝 5 分钟（`rate_limited`，带 `Retry-After`），`/ws`、`/mcp`、开放 API 共用这个计数，指标 `agentim_auth_blocked_total`（D130）。GitLab 的默认是 1 分钟 10 次封 1 小时（[文档](https://docs.gitlab.com/rate_limits/abuse_bans/)），我们放宽，因为公司网络和移动运营商常常很多人共用一个地址。内存里没有的令牌或密钥去库里查之前：每个来源每秒最多一次，全部来源合计每秒最多 20 次，一个来源乱发令牌占不满别人的额度；新建、吊销的 Agent 密钥、签名密钥、开放 API 密钥都立刻通知集群里的其他节点，正常情况下用不着查库。很多地址一起来的随机令牌属于 DDoS，交给前面的负载均衡和 WAF | ✅ |
 | Origin 校验 | 浏览器访问 `/ws`、`/mcp` 和演示接口时，`Origin` 必须是本站或 `server.allowed_origins` 里的地址，防止跨站 WebSocket 劫持；App、SDK、Agent 不带 `Origin`，不受影响 | ✅ |
 | 内置 TLS | `[server.tls] cert/key`（PEM）后直接提供 HTTPS 和 WSS（rustls + ring）；握手在接受循环之外进行、10 秒超时；也可以放在 TLS 反向代理之后（`open_api.behind_proxy`；客户端地址取 `X-Forwarded-For` 从右数第 `proxy_hops` 项，客户端自己写的前几项不算） | ✅ |
 | 演示登录 | 只在 `--demo` 下可用：演示自己有签名密钥，`/api/login` 返回签好的令牌；`--demo` 只监听本机地址（否则启动报错，除非加 `--demo-public`）；`/api/dev/users` 也校验 Origin | ✅ |

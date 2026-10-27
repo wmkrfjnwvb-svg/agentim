@@ -239,9 +239,11 @@ func (c *Client) ExportAgent(ctx context.Context, agentID string, withConversati
 	return out, c.Do(ctx, "GET", "/v1/agents/"+q(agentID)+"/export?with_conversations="+strconv.FormatBool(withConversations), nil, &out)
 }
 
-func (c *Client) ImportAgent(ctx context.Context, pkg M, owner, name string) (M, error) {
+// ImportAgent creates an agent from a package. allowUnverified accepts a
+// package this deployment cannot verify (unsigned, or from another deployment).
+func (c *Client) ImportAgent(ctx context.Context, pkg M, owner, name string, allowUnverified bool) (M, error) {
 	var out M
-	body := M{"package": pkg, "owner": owner}
+	body := M{"package": pkg, "owner": owner, "allow_unverified": allowUnverified}
 	if name != "" {
 		body["name"] = name
 	}

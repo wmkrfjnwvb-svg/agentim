@@ -178,11 +178,25 @@ impl Hub {
         device_name: Option<&str>,
         platform: Option<&str>,
     ) -> Result<Login, ApiError> {
+        self.authenticate_client_from(token, device, device_name, platform, None)
+            .await
+    }
+
+    /// `authenticate_client` for a caller at `ip` (lookups of unknown keys
+    /// are limited per address, D130).
+    pub async fn authenticate_client_from(
+        &self,
+        token: &str,
+        device: Option<&str>,
+        device_name: Option<&str>,
+        platform: Option<&str>,
+        ip: Option<std::net::IpAddr>,
+    ) -> Result<Login, ApiError> {
         let refused = |why: &str| err("unauthorized", why.to_string());
         if !crate::auth::looks_like_jwt(token) {
             // Agent keys. People only log in with signed tokens.
             let (user, device_id) = self
-                .authenticate_or_load(token)
+                .authenticate_or_load_from(token, ip)
                 .await
                 .ok_or_else(|| refused("unknown key"))?;
             if user.kind != UserKind::Agent {
@@ -209,7 +223,7 @@ impl Hub {
         // A key created by another process or node a moment ago: read the
         // keys again (at most once a second, so made-up key ids cannot
         // load the database).
-        if claims == Err(crate::auth::JwtError::UnknownKey) && self.may_reload_keys() {
+        if claims == Err(crate::auth::JwtError::UnknownKey) && self.may_look_up(ip) {
             self.load_signing().await?;
             claims = verify();
         }
@@ -352,15 +366,6 @@ impl Hub {
                     && !self.cut_off(&l.user.id, &l.device_id, *iat)
             }
         }
-    }
-
-    fn may_reload_keys(&self) -> bool {
-        let mut at = self.inner.keys_looked_up.lock().unwrap();
-        if at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
-            return false;
-        }
-        *at = Some(std::time::Instant::now());
-        true
     }
 
     fn last_issuer(&self, hash: &str) -> Option<String> {

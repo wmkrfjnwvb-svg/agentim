@@ -429,6 +429,8 @@ pub struct World {
     n: u64,
     pub latency: i64,
     pub connects: Vec<String>,
+    /// The token each connect carried (beside the URL, never in it).
+    pub connect_tokens: Vec<String>,
     pub plan: VecDeque<Outcome>,
     pub tokens: VecDeque<Result<String, bool>>,
     pub token_calls: usize,
@@ -471,6 +473,7 @@ impl World {
             n: 0,
             latency: 20,
             connects: vec![],
+            connect_tokens: vec![],
             plan: VecDeque::new(),
             tokens: VecDeque::new(),
             token_calls: 0,
@@ -565,8 +568,9 @@ impl World {
                         .unwrap_or(Ok(format!("tok{}", self.token_calls)));
                     self.later(self.latency, Delivery::Input(Input::Token(t)));
                 }
-                Effect::Connect { url } => {
+                Effect::Connect { url, token } => {
                     self.connects.push(url);
+                    self.connect_tokens.push(token);
                     match self.plan.pop_front().unwrap_or(Outcome::Accept) {
                         Outcome::Accept => {
                             self.conn += 1;

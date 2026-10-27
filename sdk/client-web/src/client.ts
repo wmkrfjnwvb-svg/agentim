@@ -144,7 +144,7 @@ class Engine {
         (err) => this.feed({ token_error: { refused: err instanceof TokenRefused } }),
       );
     } else if ('connect' in e) {
-      this.open(e.connect);
+      this.open(e.connect.url, e.connect.token);
     } else if ('send' in e) {
       try {
         this.ws?.send(e.send);
@@ -184,11 +184,13 @@ class Engine {
     }
   }
 
-  private open(url: string) {
+  private open(url: string, token: string) {
     const WS = this.o.WebSocket ?? globalThis.WebSocket;
     let ws: WebSocket;
     try {
-      ws = new WS(url);
+      // Browsers cannot set Authorization on a WebSocket: the token goes in
+      // a subprotocol, never in the URL (proxy logs keep URLs; D129).
+      ws = new WS(url, ['agentim', `agentim.bearer.${base64url(token)}`]);
     } catch (err) {
       this.feed({ connect_failed: { detail: String(err) } });
       return;
@@ -508,4 +510,11 @@ export class AgentIMClient {
   debugState() {
     return this.command({ cmd: 'debug_state' });
   }
+}
+
+/** UTF-8, base64url without padding (the subprotocol's alphabet). */
+function base64url(s: string): string {
+  let bin = '';
+  for (const b of new TextEncoder().encode(s)) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }

@@ -203,8 +203,9 @@ async fn readyz(State(st): State<AppState>) -> Response {
 
 #[derive(Deserialize)]
 struct WsQuery {
-    /// A person's signed client token or an agent's key; native clients
-    /// may send it as `Authorization: Bearer` instead (browsers cannot).
+    /// Deprecated (D129): the token in the address ends up in proxy access
+    /// logs. Native clients send `Authorization: Bearer`, browsers the
+    /// `agentim.bearer.` subprotocol (see `ws_token`). Kept for one version.
     #[serde(default)]
     token: Option<String>,
     /// The id the app chose for this device (people; docs/13 §4.2).
@@ -217,6 +218,45 @@ struct WsQuery {
     /// Protocol versions the client speaks, comma separated (`v=2,1`).
     #[serde(default)]
     v: Option<String>,
+}
+
+/// The subprotocol a WebSocket client offers; the server answers with it.
+const WS_SUBPROTOCOL: &str = "agentim";
+/// Browsers cannot set `Authorization` on a WebSocket, so they offer
+/// `agentim, agentim.bearer.<base64url(token)>` (as Kubernetes does with
+/// `base64url.bearer.authorization.k8s.io.`; D129).
+const WS_BEARER: &str = "agentim.bearer.";
+
+/// The client's credential: `Authorization: Bearer`, then the bearer
+/// subprotocol, then (deprecated) `?token=`. `Err` is a malformed offer.
+fn ws_token(headers: &HeaderMap, query: Option<&str>) -> Result<Option<String>, &'static str> {
+    if let Some(t) = bearer(headers) {
+        return Ok(Some(t));
+    }
+    let offered: Vec<&str> = headers
+        .get_all("sec-websocket-protocol")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .collect();
+    if let Some(enc) = offered.iter().find_map(|p| p.strip_prefix(WS_BEARER)) {
+        // Without `agentim` the server could not answer with a protocol
+        // the client offered, and browsers drop such a connection.
+        if !offered.contains(&WS_SUBPROTOCOL) {
+            return Err("offer the agentim subprotocol with the bearer one");
+        }
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(enc)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .filter(|t| !t.is_empty());
+        return raw
+            .map(Some)
+            .ok_or("the bearer subprotocol must be base64url of the token");
+    }
+    Ok(query.map(String::from))
 }
 
 /// `v=2,1` -> the version both sides speak; errors are answered before the
@@ -251,21 +291,38 @@ async fn ws(
     State(st): State<AppState>,
     Query(q): Query<WsQuery>,
     headers: HeaderMap,
+    ext: axum::http::Extensions,
     upgrade: WebSocketUpgrade,
 ) -> Response {
     if !origin_allowed(&st, &headers) {
         return origin_refused();
     }
-    let Some(token) = q.token.clone().or_else(|| bearer(&headers)) else {
-        return StatusCode::UNAUTHORIZED.into_response();
+    let caller = crate::open_api::client_ip_of(&st.hub, &headers, &ext);
+    if let Err(wait) = st.hub.auth_blocked(caller) {
+        return crate::open_api::auth_blocked_response(wait);
+    }
+    let token = match ws_token(&headers, q.token.as_deref()) {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            st.hub.auth_failed(caller);
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        Err(m) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": {"code": "bad_request", "message": m}})),
+            )
+                .into_response();
+        }
     };
     let login = match st
         .hub
-        .authenticate_client(
+        .authenticate_client_from(
             &token,
             q.device.as_deref(),
             q.device_name.as_deref(),
             q.platform.as_deref(),
+            caller,
         )
         .await
     {
@@ -278,6 +335,7 @@ async fn ws(
                 .into_response();
         }
         Err(e) if e.code == "unauthorized" => {
+            st.hub.auth_failed(caller);
             tracing::debug!(reason = e.message, "client token refused");
             return StatusCode::UNAUTHORIZED.into_response();
         }
@@ -317,6 +375,7 @@ async fn ws(
     // connection) cost ~140 KB per idle connection; frames are small and every
     // push is flushed on its own, so small buffers lose nothing.
     upgrade
+        .protocols([WS_SUBPROTOCOL])
         .read_buffer_size(4 * 1024)
         .write_buffer_size(0)
         .max_message_size(1 << 20)

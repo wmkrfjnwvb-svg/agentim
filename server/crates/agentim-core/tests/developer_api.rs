@@ -429,7 +429,7 @@ async fn agents_move_by_export_and_import(db: TestDb) {
         .await;
     assert!(full.to_string().contains("remember the tea"));
     assert!(!full.to_string().contains("atk_"), "never keys");
-    // Import under a new name for bob: a new agent with its checkpoints.
+    // Unsigned (no signing key yet): refused without consent (D131).
     let (s, v) = api
         .call(
             "POST",
@@ -437,7 +437,31 @@ async fn agents_move_by_export_and_import(db: TestDb) {
             Some(json!({"package": full, "owner": "bob", "name": "bot2"})),
         )
         .await;
+    assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+    assert!(api.hub.user_by_name("bot2").is_none());
+    // Import under a new name for bob: a new agent with its checkpoints.
+    let (s, v) = api
+        .call(
+            "POST",
+            "/v1/agents:import",
+            Some(
+                json!({"package": full, "owner": "bob", "name": "bot2", "allow_unverified": true}),
+            ),
+        )
+        .await;
     assert_eq!(s, 201, "{v}");
+    assert_eq!(v["verified"], false);
+    // Signed by this deployment: verified, no consent needed.
+    api.hub.create_signing_key("app").await.unwrap();
+    let signed = api.ok("GET", "/v1/agents/bot/export", None).await;
+    let (s, v2) = api
+        .call(
+            "POST",
+            "/v1/agents:import",
+            Some(json!({"package": signed, "owner": "bob", "name": "bot4"})),
+        )
+        .await;
+    assert_eq!((s, &v2["verified"]), (201, &json!(true)), "{v2}");
     assert_eq!(
         (&v["agent"]["id"], &v["agent"]["owner"]),
         (&json!("bot2"), &json!("bob"))
@@ -466,15 +490,15 @@ async fn agents_move_by_export_and_import(db: TestDb) {
             "bad_request",
         ),
         (
-            json!({"package": full, "owner": "nobody", "name": "bot3"}),
+            json!({"package": full, "owner": "nobody", "name": "bot3", "allow_unverified": true}),
             "not_found",
         ),
         (
-            json!({"package": full, "owner": "bot", "name": "bot3"}),
+            json!({"package": full, "owner": "bot", "name": "bot3", "allow_unverified": true}),
             "bad_request",
         ),
         (
-            json!({"package": full, "owner": "bob", "name": "bot2"}),
+            json!({"package": full, "owner": "bob", "name": "bot2", "allow_unverified": true}),
             "conflict",
         ),
         (json!({"owner": "bob"}), "bad_request"),

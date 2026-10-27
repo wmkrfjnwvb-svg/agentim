@@ -256,7 +256,7 @@ impl Hub {
     }
 
     /// Ready-to-paste settings for a key: the MCP endpoint (with a config
-    /// block MCP clients accept) and the WebSocket address. `base` overrides
+    /// block MCP clients accept) and the WebSocket address and header. `base` overrides
     /// `server.public_url`; without either the addresses are relative.
     pub fn connect_settings(&self, key: &str, base: Option<&str>) -> Value {
         let base = base
@@ -280,7 +280,9 @@ impl Hub {
                 "url": mcp,
                 "headers": {"Authorization": auth},
             }}},
-            "websocket_url": format!("{ws}/ws?token={key}"),
+            // The key goes in a header, never the address (D129).
+            "websocket_url": format!("{ws}/ws"),
+            "websocket_headers": {"Authorization": auth},
         })
     }
 

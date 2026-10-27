@@ -10,6 +10,7 @@ import {
   AgentIMProvider,
   avatarColor,
   defaultStrings,
+  ended,
   formatShort,
   formatTime,
   initials,
@@ -583,8 +584,14 @@ export function MessageList({ convId, notices = [] }: { convId: string; notices?
     divider.current.key = i === undefined ? '' : messages[i].key;
   }
   const unreadFrom = divider.current.key ? messages.findIndex((m) => m.key === divider.current.key) : -1;
+  // No longer in it: the last line says so (L4).
+  const end = ended(conv, me);
+  const endText = end ? strings.ended(end.reason, end.by) : undefined;
   // Inverted: the newest first.
-  const items = useMemo(() => interleave(layout(messages, when(), unreadFrom >= 0 ? unreadFrom : undefined), notices).reverse(), [messages, notices, unreadFrom, when]);
+  const items = useMemo(() => {
+    const all = endText ? [...notices, { key: 'ended', seq: Number.MAX_SAFE_INTEGER, content: endText, tone: 'info' as const }] : notices;
+    return interleave(layout(messages, when(), unreadFrom >= 0 ? unreadFrom : undefined), all).reverse();
+  }, [messages, notices, unreadFrom, when, endText]);
   const isMine = (m: Message) => m.sender_id === me || m.key.startsWith('local:');
 
   useEffect(() => {
@@ -686,8 +693,12 @@ export function Composer({ convId }: { convId: string }) {
   const { notify } = useTyping(convId);
   const s = useStyles();
   const t = useTheme();
-  const { strings } = useUi();
+  const { strings, me } = useUi();
   const [text, setText] = useState('');
+  const end = ended(
+    useConversations().find((c) => c.conv_id === convId),
+    me,
+  );
   const can = !!text.trim();
   const submit = () => {
     const v = text.trim();
@@ -695,6 +706,14 @@ export function Composer({ convId }: { convId: string }) {
     setText('');
     void send(v);
   };
+  if (end)
+    return (
+      <View style={s.composer} accessibilityRole="text" accessibilityLiveRegion="polite">
+        <View style={s.composerEnded}>
+          <Text style={s.noticeText}>{strings.endedComposer(end.reason)}</Text>
+        </View>
+      </View>
+    );
   return (
     <View style={s.composer}>
       <View style={s.composerBox}>
@@ -903,6 +922,7 @@ function makeStyles(t: Theme) {
     typing: { minHeight: 22, paddingHorizontal: 16, justifyContent: 'center', backgroundColor: c.bg },
     typingText: { fontSize: f.sizeSmall - 1, color: c.muted },
     composer: { paddingHorizontal: 12, paddingTop: 6, paddingBottom: 10, backgroundColor: c.bg },
+    composerEnded: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: t.radius.card, backgroundColor: c.surface },
     composerBox: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingLeft: 16, paddingRight: 4, paddingVertical: 4, borderRadius: 24, borderWidth: 1, borderColor: c.controlBorder, backgroundColor: c.bg },
     composerInput: { flex: 1, minHeight: 36, paddingTop: 8, paddingBottom: 8, fontSize: f.size, color: c.fg },
     send: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: c.accent },

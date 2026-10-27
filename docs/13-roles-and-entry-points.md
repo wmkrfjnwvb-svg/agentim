@@ -181,7 +181,7 @@ IM 没有账号体系，不存最终用户的密码。用户 ID 只来自开发�
 **用户和设备**：
 
 - **第一次见到的用户 ID 自动创建**（Stream 的客户端连接也会建用户）：有效令牌本身就是开发者的担保。已删除的 ID（[04 §4.2](04-security-compliance.md)）、已停用的用户、Agent 的 ID 都拒绝；`system` 是保留字（开放 API 的 `"as": "system"`），任何地方都不能用作用户 ID。资料由开发者用 `PUT`/`PATCH /v1/users/{id}` 补上。
-- **设备**：令牌里不带设备。App 第一次运行时生成一个设备 ID 存在本地，连接时带上（`/ws?token=…&device=…`，可以加 `device_name`、`platform`；原生客户端也可以用 `Authorization: Bearer` 传令牌），服务端第一次见到时登记这台设备，欢迎帧里返回服务端的 `device_id`。按设备记同步位置（[08 §2](08-sync-and-client.md)）、`list_devices`、新设备通知都不变；30 天不用就忘掉（`auth.token_idle_days`）。现在没有每人的设备上限。
+- **设备**：令牌里不带设备。App 第一次运行时生成一个设备 ID 存在本地，连接时带上（`/ws?device=…`，可以加 `device_name`、`platform`；令牌放在 `Authorization: Bearer` 头里，浏览器放在 `agentim.bearer.` 子协议里，见 [02 §2.5](02-architecture.md)），服务端第一次见到时登记这台设备，欢迎帧里返回服务端的 `device_id`。按设备记同步位置（[08 §2](08-sync-and-client.md)）、`list_devices`、新设备通知都不变；30 天不用就忘掉（`auth.token_idle_days`）。现在没有每人的设备上限。
 - **下线一台设备**（`logout_device`、开放 API）：断开它、删掉它的同步位置，并记下时刻：这台设备上签发时间不晚于这一秒的令牌都被拒绝。App 需要向开发者后端要一个新令牌才能再连上，那时它是一台新设备。令牌本身不是按设备签的，所以拿到令牌的人仍可以换一个设备 ID 连上，直到令牌过期；真正怀疑泄露时用"让这个人在所有设备上退出"。业内同样如此：Stream 只能按用户吊销（`revoke_tokens_issued_before`）；Firebase 的 `revokeRefreshTokens` 也只按用户，文档里"设备丢失"的例子同样是整个用户退出；腾讯云 IM、声网 Chat 能把某台设备踢下线，但那是断开连接，不是让令牌失效。补救办法是令牌有效期短，靠 `tokenProvider` 自动续签。
 - **让一个人在所有设备上退出**：`DELETE /v1/users/{id}/tokens`（权限 `tokens:revoke`），记下吊销时刻，`iat` 不晚于这一秒的令牌一律失效，已连接的立即断开。
 - **令牌过期不断开已连接的连接**：只在连接时检查，和 Stream、Sendbird 一样；断线重连时 SDK 用 `tokenProvider` 拿新令牌。

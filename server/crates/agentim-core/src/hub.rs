@@ -57,18 +57,15 @@ struct Inner {
     http: reqwest::Client,
     /// Open API keys by hash.
     api_keys: std::sync::RwLock<HashMap<String, crate::db::ApiKeyRow>>,
-    /// Unknown keys reload from the database at most once a second.
-    keys_reloaded: Mutex<Option<Instant>>,
-    /// Last lookup of a token unknown to memory (at most one per second).
-    tokens_looked_up: Mutex<Option<Instant>>,
+    /// Failed authentications and lookups of unknown credentials, by
+    /// source address (D130).
+    pub(crate) auth_limit: crate::auth_limit::AuthLimit,
     /// Failed console logins under names that are no admin: counted and
     /// locked like real ones, so a name's existence does not show (B9).
     /// Name → (failures, locked until ms).
     pub(crate) ghost_logins: Mutex<HashMap<String, (i64, i64)>>,
     /// Device row → the signing key it last connected with (`issued_by`).
     issuers: Mutex<HashMap<String, String>>,
-    /// Last reload of the signing keys for an unknown key id.
-    keys_looked_up: Mutex<Option<Instant>>,
     /// The console's one-time setup token (its hash) while there is no admin.
     setup: Mutex<Option<String>>,
     /// The cluster crate's status and drain, for the admin API.
@@ -278,11 +275,9 @@ impl Hub {
                 deliverers,
                 http,
                 api_keys: Default::default(),
-                keys_reloaded: Mutex::new(None),
-                tokens_looked_up: Mutex::new(None),
+                auth_limit: Default::default(),
                 ghost_logins: Mutex::new(HashMap::new()),
                 issuers: Mutex::default(),
-                keys_looked_up: Mutex::new(None),
                 setup: Mutex::new(None),
                 cluster_query: Default::default(),
                 mcp_buckets: Mutex::default(),
@@ -338,6 +333,17 @@ impl Hub {
     pub fn deliver_published(&self, outs: Vec<crate::registry::Out>) {
         let sh = &self.inner.sh;
         sh.apply_tokens(&outs);
+        if outs
+            .iter()
+            .any(|o| matches!(o, crate::registry::Out::ApiKeys))
+        {
+            let hub = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = hub.reload_api_keys().await {
+                    tracing::warn!(error = e.message, "API key reload failed");
+                }
+            });
+        }
         if outs
             .iter()
             .any(|o| matches!(o, crate::registry::Out::Invalidate))
@@ -1302,17 +1308,23 @@ impl Hub {
     /// A valid (not revoked, not expired) key. Keys created by another
     /// process (the `api-key` command) are found in the database.
     pub async fn api_key(&self, secret: &str) -> Option<crate::db::ApiKeyRow> {
+        self.api_key_from(secret, None).await
+    }
+
+    /// `api_key` for a caller at `ip`: an unknown key is looked up in the
+    /// database at most once a second per address (D130).
+    pub async fn api_key_from(
+        &self,
+        secret: &str,
+        ip: Option<std::net::IpAddr>,
+    ) -> Option<crate::db::ApiKeyRow> {
         let hash = crate::auth::hash(secret);
         let cached = self.inner.api_keys.read().unwrap().get(&hash).cloned();
         let k = match cached {
             Some(k) => k,
             None => {
-                {
-                    let mut at = self.inner.keys_reloaded.lock().unwrap();
-                    if at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
-                        return None;
-                    }
-                    *at = Some(Instant::now());
+                if !self.may_look_up(ip) {
+                    return None;
                 }
                 self.reload_api_keys().await.ok()?;
                 self.inner.api_keys.read().unwrap().get(&hash).cloned()?
@@ -1644,18 +1656,22 @@ impl Hub {
 
     /// Like `authenticate_device`, and a token unknown to memory is looked
     /// up in the database: issued by another process (the `agent` command)
-    /// or another node. At most one lookup per second, so made-up tokens
-    /// cannot load the database.
+    /// or another node. Lookups are limited per source address, so
+    /// made-up tokens cannot load the database (D130).
     pub async fn authenticate_or_load(&self, token: &str) -> Option<(User, String)> {
+        self.authenticate_or_load_from(token, None).await
+    }
+
+    pub async fn authenticate_or_load_from(
+        &self,
+        token: &str,
+        ip: Option<std::net::IpAddr>,
+    ) -> Option<(User, String)> {
         if let Some(found) = self.authenticate_device(token) {
             return Some(found);
         }
-        {
-            let mut at = self.inner.tokens_looked_up.lock().unwrap();
-            if at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
-                return None;
-            }
-            *at = Some(Instant::now());
+        if !self.may_look_up(ip) {
+            return None;
         }
         let v = self
             .control()
@@ -1675,6 +1691,29 @@ impl Hub {
             .entry(user.id.clone())
             .or_insert(user);
         self.authenticate_device(token)
+    }
+
+    /// Whether a caller at `ip` may look an unknown credential up now.
+    pub(crate) fn may_look_up(&self, ip: Option<std::net::IpAddr>) -> bool {
+        self.inner
+            .auth_limit
+            .may_look_up(crate::auth_limit::key(ip), now_ms())
+    }
+
+    /// `Err(wait_ms)` while `ip` is refused for failed authentications.
+    pub fn auth_blocked(&self, ip: Option<std::net::IpAddr>) -> Result<(), i64> {
+        self.inner
+            .auth_limit
+            .check(crate::auth_limit::key(ip), now_ms())
+    }
+
+    /// Counts a refused credential from `ip`.
+    pub fn auth_failed(&self, ip: Option<std::net::IpAddr>) {
+        let ip = crate::auth_limit::key(ip);
+        if let Some(wait) = self.inner.auth_limit.failed(ip, now_ms()) {
+            metrics::counter!(crate::metrics::AUTH_BLOCKED).increment(1);
+            tracing::warn!(%ip, wait_ms = wait, "too many failed authentications; address refused for a while");
+        }
     }
 
     /// Issues a client token for a new device. `ttl_ms` None = no expiry.
