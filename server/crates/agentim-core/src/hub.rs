@@ -1323,7 +1323,7 @@ impl Hub {
         let k = match cached {
             Some(k) => k,
             None => {
-                if !self.may_look_up(ip) {
+                if !self.may_look_up(ip, crate::auth_limit::Lookup::ApiKey) {
                     return None;
                 }
                 self.reload_api_keys().await.ok()?;
@@ -1670,7 +1670,7 @@ impl Hub {
         if let Some(found) = self.authenticate_device(token) {
             return Some(found);
         }
-        if !self.may_look_up(ip) {
+        if !self.may_look_up(ip, crate::auth_limit::Lookup::Token) {
             return None;
         }
         let v = self
@@ -1694,10 +1694,14 @@ impl Hub {
     }
 
     /// Whether a caller at `ip` may look an unknown credential up now.
-    pub(crate) fn may_look_up(&self, ip: Option<std::net::IpAddr>) -> bool {
+    pub(crate) fn may_look_up(
+        &self,
+        ip: Option<std::net::IpAddr>,
+        what: crate::auth_limit::Lookup,
+    ) -> bool {
         self.inner
             .auth_limit
-            .may_look_up(crate::auth_limit::key(ip), now_ms())
+            .may_look_up(crate::auth_limit::key(ip), what, now_ms())
     }
 
     /// `Err(wait_ms)` while `ip` is refused for failed authentications.
@@ -1707,8 +1711,14 @@ impl Hub {
             .check(crate::auth_limit::key(ip), now_ms())
     }
 
-    /// Counts a refused credential from `ip`.
+    /// Counts a refused credential from `ip`. This machine is never
+    /// blocked (local tools, health checks, a proxy on the same host that
+    /// is not declared with `open_api.behind_proxy`), as in GitLab's example
+    /// configuration (`ip_whitelist ["127.0.0.1"]`).
     pub fn auth_failed(&self, ip: Option<std::net::IpAddr>) {
+        if ip.is_some_and(|ip| ip.is_loopback()) {
+            return;
+        }
         let ip = crate::auth_limit::key(ip);
         if let Some(wait) = self.inner.auth_limit.failed(ip, now_ms()) {
             metrics::counter!(crate::metrics::AUTH_BLOCKED).increment(1);

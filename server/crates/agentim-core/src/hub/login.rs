@@ -223,7 +223,9 @@ impl Hub {
         // A key created by another process or node a moment ago: read the
         // keys again (at most once a second, so made-up key ids cannot
         // load the database).
-        if claims == Err(crate::auth::JwtError::UnknownKey) && self.may_look_up(ip) {
+        if claims == Err(crate::auth::JwtError::UnknownKey)
+            && self.may_look_up(ip, crate::auth_limit::Lookup::SigningKey)
+        {
             self.load_signing().await?;
             claims = verify();
         }

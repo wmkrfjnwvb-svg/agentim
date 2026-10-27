@@ -1658,4 +1658,11 @@ async fn failed_authentications_block_one_address(db: TestDb) {
         assert_eq!(s, 401);
     }
     assert_eq!(get(api.key.clone(), "10.0.0.4").await.0, 200);
+    // This machine is never blocked (local tools and tests).
+    for i in 0..MAX_FAILURES * 2 {
+        let (s, _, _) = get(format!("ak_wrong{i}"), "127.0.0.1").await;
+        assert_eq!(s, 401);
+    }
+    assert_eq!(get(api.key.clone(), "127.0.0.1").await.0, 200);
+    assert_eq!(get(api.key.clone(), "::1").await.0, 200);
 }
