@@ -48,6 +48,8 @@ pub struct Server {
     pub part_size: u64,
     pub parts_per_answer: u32,
     pub upload_ttl_ms: i64,
+    /// PUT addresses of an S3 store (absolute) instead of the server's own.
+    pub s3: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +94,7 @@ impl Server {
             part_size: 10,
             parts_per_answer: 3,
             upload_ttl_ms: 3_600_000,
+            s3: false,
         }
     }
 
@@ -100,12 +103,17 @@ impl Server {
         let total = u.total(self.part_size);
         let last = (from + self.parts_per_answer - 1).min(total);
         let exp = self.now + self.upload_ttl_ms;
+        let base = if self.s3 {
+            "https://s3.example/files/u"
+        } else {
+            "/files/u"
+        };
         let parts: Vec<Value> = (from..=last)
-            .map(|n| json!({"n": n.to_string(), "url": format!("/files/u/{file}/{n}?exp={exp}"), "headers": {}}))
+            .map(|n| json!({"n": n.to_string(), "url": format!("{base}/{file}/{n}?exp={exp}"), "headers": {"content-length": "x"}}))
             .collect();
         let mut v = json!({"file_id": file, "part_size": self.part_size, "parts_total": total, "parts": parts, "expires_at": exp, "direct": false});
         if thumb && u.thumb_size > 0 {
-            v["thumb"] = json!({"n": "thumb", "url": format!("/files/u/{file}/thumb?exp={exp}"), "headers": {}});
+            v["thumb"] = json!({"n": "thumb", "url": format!("{base}/{file}/thumb?exp={exp}"), "headers": {}});
         }
         v
     }
@@ -891,8 +899,13 @@ impl World {
                     len,
                     ..
                 } => {
+                    let host = if self.server.s3 {
+                        "https://s3.example/"
+                    } else {
+                        "https://im.example/"
+                    };
                     assert!(
-                        url.starts_with("https://im.example/files/u/"),
+                        url.starts_with(&format!("{host}files/u/")),
                         "absolute: {url}"
                     );
                     self.puts.push((file_id.clone(), key.clone()));

@@ -606,3 +606,55 @@ fn files_and_texts_survive_faults_and_restarts() {
         w.assert_converged();
     }
 }
+
+#[test]
+fn an_s3_store_gets_its_own_addresses_and_trouble_is_retried() {
+    let mut w = World::new(18);
+    w.server.conv("c1");
+    w.server.s3 = true;
+    w.connected();
+    // The server busy once: upload_start is asked again later.
+    w.server
+        .reject
+        .entry("upload_start".into())
+        .or_default()
+        .push_back(json!({"code": "unavailable", "message": "busy"}));
+    w.ask(image("c1", "i1", 25)).unwrap();
+    w.run(30_000);
+    assert_eq!(count(&w, "upload_start"), 2);
+    // The signed headers are passed on as they are.
+    let put = w
+        .effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::Put { headers, key, .. } if key == "1" => Some(headers.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(put.get("content-length").map(String::as_str), Some("x"));
+    assert_eq!(stored(&w, "c1"), [("image".into(), "[Image]".into())]);
+}
+
+#[test]
+fn an_upload_found_complete_when_asking_for_addresses_is_completed() {
+    let mut w = World::new(19);
+    w.server.conv("c1");
+    w.server.parts_per_answer = 1;
+    w.connected();
+    w.put_ms = 200;
+    w.ask(file("c1", "f1", 25)).unwrap();
+    while w.server.objects.is_empty() {
+        w.run(10);
+    }
+    // Meanwhile it was completed (an answer lost): the next upload_parts
+    // says conflict, and upload_complete gives the file.
+    let fid = w.server.uploads.keys().next().unwrap().clone();
+    for n in 1..=3 {
+        w.server.objects.insert(format!("{fid}/{n}"), 10);
+    }
+    w.server.uploads.get_mut(&fid).unwrap().ready = true;
+    w.run(30_000);
+    assert!(w.server.requests.iter().any(|r| r["op"] == "upload_parts"));
+    assert_eq!(count(&w, "upload_start"), 1);
+    assert_eq!(stored(&w, "c1"), [("file".into(), "[File] f1.pdf".into())]);
+}
