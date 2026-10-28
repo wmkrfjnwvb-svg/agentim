@@ -630,6 +630,16 @@ pub fn routes(state: AppState) -> Router<AppState> {
             post(send_message).get(history),
         )
         .route("/v1/conversations/{id}/read", post(mark_read))
+        .route("/v1/conversations/{id}/uploads", post(upload_start))
+        .route(
+            "/v1/conversations/{id}/uploads/{file}",
+            get(upload_parts).post(upload_action),
+        )
+        .route("/v1/conversations/{id}/files/{file}", get(file_url))
+        .route(
+            "/v1/conversations/{id}/files",
+            post(ingest_file).layer(axum::extract::DefaultBodyLimit::max(crate::hub::INGEST_MAX)),
+        )
         .route("/v1/messages:batch-send", post(batch_send))
         .route(
             "/v1/messages/{id}",
@@ -683,6 +693,11 @@ pub const ROUTES: &[&str] = &[
     "POST /v1/conversations/{id}/messages",
     "GET /v1/conversations/{id}/messages",
     "POST /v1/conversations/{id}/read",
+    "POST /v1/conversations/{id}/uploads",
+    "GET /v1/conversations/{id}/uploads/{file}",
+    "POST /v1/conversations/{id}/uploads/{file}:complete",
+    "GET /v1/conversations/{id}/files/{file}",
+    "POST /v1/conversations/{id}/files",
     "POST /v1/messages:batch-send",
     "PATCH /v1/messages/{id}",
     "POST /v1/messages/{id}:recall",
@@ -2164,6 +2179,205 @@ async fn mark_read(
         )
         .await?;
     ok(json!({}))
+}
+
+// ---- files (docs/02-architecture.md §2.7)
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UploadReq {
+    #[serde(rename = "as")]
+    who: Option<String>,
+    name: String,
+    size: u64,
+    mime: Option<String>,
+    thumb_size: Option<u64>,
+}
+
+/// Starts an upload as a member (or the system): where to PUT the parts.
+async fn upload_start(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path(id): Path<String>,
+    b: Bytes,
+) -> R {
+    need(&k, "messages:write")?;
+    let req: UploadReq = body(&b)?;
+    let who = actor(&st.hub, req.who.as_deref())?;
+    let v = st
+        .hub
+        .act_as(
+            &who,
+            ClientMsg::UploadStart {
+                conv_id: id,
+                name: req.name,
+                size: req.size,
+                mime: req.mime,
+                thumb_size: req.thumb_size,
+            },
+        )
+        .await?;
+    created(v)
+}
+
+#[derive(Deserialize)]
+struct PartsQuery {
+    #[serde(rename = "as")]
+    who: Option<String>,
+    from: Option<u32>,
+}
+
+async fn upload_parts(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path((id, file)): Path<(String, String)>,
+    Query(q): Query<PartsQuery>,
+) -> R {
+    need(&k, "messages:write")?;
+    let who = actor(&st.hub, q.who.as_deref())?;
+    let v = st
+        .hub
+        .act_as(
+            &who,
+            ClientMsg::UploadParts {
+                conv_id: id,
+                file_id: file,
+                from: q.from,
+            },
+        )
+        .await?;
+    ok(v)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct CompleteReq {
+    #[serde(rename = "as")]
+    who: Option<String>,
+    #[serde(default)]
+    parts: Vec<crate::model::PartTag>,
+}
+
+/// `…/uploads/{file}:complete`: checks the upload; the file is usable.
+async fn upload_action(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path((id, seg)): Path<(String, String)>,
+    b: Bytes,
+) -> R {
+    need(&k, "messages:write")?;
+    let Some(file) = seg.strip_suffix(":complete") else {
+        return Err(Problem::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown action",
+        ));
+    };
+    let req: CompleteReq = if b.is_empty() {
+        CompleteReq::default()
+    } else {
+        body(&b)?
+    };
+    let who = actor(&st.hub, req.who.as_deref())?;
+    let v = st
+        .hub
+        .act_as(
+            &who,
+            ClientMsg::UploadComplete {
+                conv_id: id.clone(),
+                file_id: file.to_string(),
+                parts: req.parts,
+            },
+        )
+        .await?;
+    st.hub
+        .audit_api(
+            &k.key_id,
+            &who.id,
+            "files.upload",
+            Some(file),
+            json!({"conv_id": id, "size": v["size"]}),
+        )
+        .await;
+    ok(v)
+}
+
+#[derive(Deserialize)]
+struct IngestQuery {
+    #[serde(rename = "as")]
+    who: Option<String>,
+    name: String,
+    mime: Option<String>,
+}
+
+/// A whole file in the body (at most 64 MiB): EXIF and GPS removed, a
+/// thumbnail made, stored; then it can be sent.
+async fn ingest_file(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path(id): Path<String>,
+    Query(q): Query<IngestQuery>,
+    b: Bytes,
+) -> R {
+    need(&k, "messages:write")?;
+    let who = actor(&st.hub, q.who.as_deref())?;
+    let v = st
+        .hub
+        .ingest_file(&who, &id, &q.name, q.mime, b.to_vec())
+        .await?;
+    st.hub
+        .audit_api(
+            &k.key_id,
+            &who.id,
+            "files.upload",
+            v["file_id"].as_str(),
+            json!({"conv_id": id, "size": v["size"]}),
+        )
+        .await;
+    created(v)
+}
+
+#[derive(Deserialize)]
+struct FileQuery {
+    #[serde(rename = "as")]
+    who: Option<String>,
+    variant: Option<String>,
+}
+
+/// A short-lived address of a file (as a member, or the system).
+async fn file_url(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path((id, file)): Path<(String, String)>,
+    Query(q): Query<FileQuery>,
+) -> R {
+    need(&k, "messages:read")?;
+    let who = match q.who.as_deref() {
+        None => st.hub.system_user(),
+        w => actor(&st.hub, w)?,
+    };
+    let v = st
+        .hub
+        .act_as(
+            &who,
+            ClientMsg::FileUrl {
+                conv_id: id.clone(),
+                file_id: file.clone(),
+                variant: q.variant,
+            },
+        )
+        .await?;
+    // Reading content is audited.
+    st.hub
+        .audit_api(
+            &k.key_id,
+            &who.id,
+            "files.read",
+            Some(&file),
+            json!({"conv_id": id}),
+        )
+        .await;
+    ok(v)
 }
 
 #[cfg(test)]

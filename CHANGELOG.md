@@ -47,6 +47,14 @@ notes are taken from it.
   them and on the browser SDK, in English.
 - A group created with many members writes one `members.joined` event
   per 200 members instead of one `member.joined` each (D128).
+- Files and images: stored in a local folder or an S3 compatible bucket
+  (clients upload there directly, in 16 MiB parts, up to 4 GiB by
+  default); thumbnails of 320 px; completion checks size and type (only
+  JPEG, PNG, GIF and WebP are images); one message per file; members
+  read through short-lived links; recall, dissolve, account deletion and
+  retention delete files. Agents and backends can send whole files of
+  up to 64 MiB (`POST /api/files`, MCP `send_file`, the open API), with
+  EXIF and GPS removed and a thumbnail made by the server.
 - Conversations you left, were removed from or saw closed stay in the
   list and readable; the chat says how it ended and the composer gives
   way to a note. Sending to them is refused at once (L4).

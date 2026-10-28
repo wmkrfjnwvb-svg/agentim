@@ -30,6 +30,85 @@ pub fn routes() -> Router<AppState> {
             "/files/d/{conv}/{file}/{variant}",
             get(download).options(preflight),
         )
+        .route("/api/files", axum::routing::post(agent_upload))
+}
+
+#[derive(Deserialize)]
+struct AgentUploadQ {
+    conv_id: String,
+    name: String,
+    mime: Option<String>,
+}
+
+/// An agent sends a whole file (at most 64 MiB) with its key in the
+/// `Authorization` header: stored like any upload (EXIF and GPS removed,
+/// thumbnail made). The answer's `file_id` goes into a `file` or `image`
+/// message.
+async fn agent_upload(
+    State(st): State<AppState>,
+    Query(q): Query<AgentUploadQ>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    body: Body,
+) -> Response {
+    let hub = &st.hub;
+    let json = |status: StatusCode, v: serde_json::Value| (status, axum::Json(v)).into_response();
+    let caller = crate::open_api::client_ip_of(hub, &headers, &ext);
+    if let Err(wait) = hub.auth_blocked(caller) {
+        return crate::open_api::auth_blocked_response(wait);
+    }
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    let Some((me, _)) = (if token.is_empty() {
+        None
+    } else {
+        hub.authenticate_or_load_from(token, caller).await
+    }) else {
+        if !token.is_empty() {
+            hub.auth_failed(caller);
+        }
+        return json(
+            StatusCode::UNAUTHORIZED,
+            serde_json::json!({"error": {"code": "unauthorized", "message": "an agent key is required (Authorization: Bearer <key>)"}}),
+        );
+    };
+    if me.kind != crate::model::UserKind::Agent {
+        return json(
+            StatusCode::FORBIDDEN,
+            serde_json::json!({"error": {"code": "forbidden", "message": "this is for agents; apps upload in parts (upload_start)"}}),
+        );
+    }
+    // Read only now, after the key: strangers cannot make the server
+    // buffer large bodies.
+    let data = match axum::body::to_bytes(body, crate::hub::INGEST_MAX).await {
+        Ok(b) => b.to_vec(),
+        Err(_) => {
+            return json(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                serde_json::json!({"error": {"code": "bad_request", "message": "at most 64 MiB in one request; upload in parts (upload_start)"}}),
+            );
+        }
+    };
+    match hub
+        .ingest_file(&me, &q.conv_id, &q.name, q.mime, data)
+        .await
+    {
+        Ok(v) => json(StatusCode::CREATED, v),
+        Err(e) => {
+            let status = match e.code {
+                "bad_request" => StatusCode::BAD_REQUEST,
+                "forbidden" | "blocked" => StatusCode::FORBIDDEN,
+                "not_found" => StatusCode::NOT_FOUND,
+                "conflict" => StatusCode::CONFLICT,
+                "rate_limited" => StatusCode::TOO_MANY_REQUESTS,
+                _ => StatusCode::SERVICE_UNAVAILABLE,
+            };
+            json(status, serde_json::json!({"error": e.public().to_json()}))
+        }
+    }
 }
 
 fn cors(mut r: Response) -> Response {

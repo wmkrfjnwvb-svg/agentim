@@ -28,6 +28,8 @@ backend_tests!(
     files_survive_a_restart,
     race_messages_for_one_file,
     race_sweeps_against_sends,
+    the_open_api_uploads_and_reads_files,
+    whole_files_lose_their_location_and_get_a_thumbnail,
 );
 
 struct Srv {
@@ -951,4 +953,265 @@ async fn race_sweeps_against_sends(db: TestDb) {
     }
     assert_eq!(sent + swept, 20);
     eprintln!("sent {sent}, swept {swept}");
+}
+
+/// A developer's backend uploads as a member or the system, sends the file
+/// and reads it back (audited); scopes and actions are checked.
+async fn the_open_api_uploads_and_reads_files(db: TestDb) {
+    let srv = boot(&db).await;
+    let hub = &srv.hub;
+    let alice = user(hub, "alice", UserKind::Human, None).await;
+    let a = Conn::new(hub, &alice);
+    let conv = a.group(&[]).await;
+    let all = ["messages:write", "messages:read"].map(String::from);
+    let (key, _) = hub.create_api_key("files", &all, None, None).await.unwrap();
+    let (read_only, _) = hub
+        .create_api_key("r", &["messages:read".to_string()], None, None)
+        .await
+        .unwrap();
+    let call = |method: &str, path: String, key: &str, body: Option<Value>| {
+        let mut r = srv
+            .http
+            .request(method.parse().unwrap(), format!("{}{path}", srv.base))
+            .header("authorization", format!("Bearer {key}"));
+        if let Some(b) = body {
+            r = r
+                .header("content-type", "application/json")
+                .body(b.to_string());
+        }
+        async move {
+            let resp = r.send().await.unwrap();
+            let st = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            (
+                st,
+                serde_json::from_str::<Value>(&text).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let data = png(40, 30);
+    let (st, s) = call(
+        "POST",
+        format!("/v1/conversations/{conv}/uploads"),
+        &key,
+        Some(json!({"as": alice.name, "name": "p.png", "size": data.len()})),
+    )
+    .await;
+    assert_eq!(st, 201, "{s}");
+    let fid = s["file_id"].as_str().unwrap().to_string();
+    let (st, more) = call(
+        "GET",
+        format!(
+            "/v1/conversations/{conv}/uploads/{fid}?as={}&from=1",
+            alice.name
+        ),
+        &key,
+        None,
+    )
+    .await;
+    assert_eq!((st, more["parts"].as_array().map(Vec::len)), (200, Some(1)));
+    let (_, etag) = srv.put(&s["parts"][0], data.clone()).await;
+    let (st, f) = call(
+        "POST",
+        format!("/v1/conversations/{conv}/uploads/{fid}:complete"),
+        &key,
+        Some(json!({"as": alice.name, "parts": [{"n": 1, "etag": etag}]})),
+    )
+    .await;
+    assert_eq!((st, f["kind"].as_str()), (200, Some("image")), "{f}");
+    let (st, m) = call(
+        "POST",
+        format!("/v1/conversations/{conv}/messages"),
+        &key,
+        Some(json!({"as": alice.name, "text": "[Image]", "kind": "image", "payload": {"file_id": fid}})),
+    )
+    .await;
+    assert_eq!(st, 201, "{m}");
+    // The system reads any file; it is audited.
+    let (st, u) = call(
+        "GET",
+        format!("/v1/conversations/{conv}/files/{fid}?variant=original"),
+        &read_only,
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{u}");
+    assert_eq!(srv.get(u["url"].as_str().unwrap(), None).await.2, data);
+    let log = hub.audit_log(100).await.unwrap();
+    assert!(log.iter().any(|e| e["action"] == "api.files.read"));
+    assert!(log.iter().any(|e| e["action"] == "api.files.upload"));
+    // Scopes, unknown actions, unknown files.
+    let (st, _) = call(
+        "POST",
+        format!("/v1/conversations/{conv}/uploads"),
+        &read_only,
+        Some(json!({"as": alice.name, "name": "x", "size": 1})),
+    )
+    .await;
+    assert_eq!(st, 403);
+    let (st, _) = call(
+        "POST",
+        format!("/v1/conversations/{conv}/uploads/{fid}:explode"),
+        &key,
+        Some(json!({"as": alice.name})),
+    )
+    .await;
+    assert_eq!(st, 404);
+    let (st, e) = call(
+        "GET",
+        format!("/v1/conversations/{conv}/files/f_nope"),
+        &key,
+        None,
+    )
+    .await;
+    assert_eq!((st, e["code"].as_str()), (404, Some("not_found")));
+    let (st, _) = call(
+        "POST",
+        format!("/v1/conversations/{conv}/uploads"),
+        &key,
+        Some(json!({"name": "x", "size": 1})),
+    )
+    .await;
+    assert_eq!(st, 400, "as is required");
+}
+
+/// A JPEG with EXIF (a GPS position and orientation 6) inserted after SOI.
+fn jpeg_with_gps(w: u32, h: u32) -> Vec<u8> {
+    let plain = jpeg(w, h);
+    let mut tiff = b"MM\0\x2a\0\0\0\x08".to_vec();
+    tiff.extend_from_slice(&2u16.to_be_bytes());
+    for (tag, ty, val) in [(0x8825u16, 4u16, 99u32), (0x0112, 3, 6 << 16)] {
+        tiff.extend_from_slice(&tag.to_be_bytes());
+        tiff.extend_from_slice(&ty.to_be_bytes());
+        tiff.extend_from_slice(&1u32.to_be_bytes());
+        tiff.extend_from_slice(&val.to_be_bytes());
+    }
+    tiff.extend_from_slice(&0u32.to_be_bytes());
+    tiff.extend_from_slice(b"GPSLatitude 37.7749");
+    let mut seg = vec![0xFF, 0xE1];
+    seg.extend_from_slice(&((2 + 6 + tiff.len()) as u16).to_be_bytes());
+    seg.extend_from_slice(b"Exif\0\0");
+    seg.extend_from_slice(&tiff);
+    let mut out = plain[..2].to_vec();
+    out.extend(seg);
+    out.extend_from_slice(&plain[2..]);
+    out
+}
+
+/// Agents (`/api/files`) and backends (`POST /v1/conversations/{id}/files`)
+/// send whole files: the position goes, the orientation stays, a thumbnail
+/// is made; people cannot use the agent door; the body is refused before
+/// it is read without a key.
+async fn whole_files_lose_their_location_and_get_a_thumbnail(db: TestDb) {
+    let srv = boot(&db).await;
+    let hub = &srv.hub;
+    let alice = user(hub, "alice", UserKind::Human, None).await;
+    let a = Conn::new(hub, &alice);
+    let made = hub.create_agent(&alice, "bot").await.unwrap();
+    let key = made["key"].as_str().unwrap().to_string();
+    let bot = hub.user_by_name("bot").unwrap();
+    let conv = a.group(&[&bot]).await;
+    let photo = jpeg_with_gps(800, 600);
+    assert!(photo.windows(11).any(|w| w == b"GPSLatitude"));
+    let post = |key: &str, q: String, body: Vec<u8>| {
+        let r = srv
+            .http
+            .post(format!("{}/api/files?{q}", srv.base))
+            .header("authorization", format!("Bearer {key}"))
+            .body(body);
+        async move {
+            let resp = r.send().await.unwrap();
+            let st = resp.status().as_u16();
+            (
+                st,
+                serde_json::from_str::<Value>(&resp.text().await.unwrap()).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let (st, f) = post(
+        &key,
+        format!("conv_id={conv}&name=photo.jpg"),
+        photo.clone(),
+    )
+    .await;
+    assert_eq!(st, 201, "{f}");
+    assert_eq!(
+        (
+            f["kind"].as_str(),
+            f["thumb"].as_bool(),
+            f["ai_generated"].as_bool()
+        ),
+        (Some("image"), Some(true), Some(true))
+    );
+    let fid = f["file_id"].as_str().unwrap().to_string();
+    let g = Conn::new(hub, &bot);
+    send_file(&g, &conv, "image", &fid, None).await;
+    let u = url(&a, &conv, &fid, "original").await;
+    let (_, _, stored) = srv.get(u["url"].as_str().unwrap(), None).await;
+    assert!(
+        !stored.windows(11).any(|w| w == b"GPSLatitude"),
+        "no position stored"
+    );
+    assert_eq!(
+        agentim_core::media::orientation(&stored),
+        Some(6),
+        "still the right way up"
+    );
+    assert_eq!(
+        stored.len(),
+        photo.len() - (photo.len() - jpeg(800, 600).len()) + 36,
+        "only the EXIF block changed"
+    );
+    let t = url(&a, &conv, &fid, "thumb").await;
+    let (_, _, th) = srv.get(t["url"].as_str().unwrap(), None).await;
+    // Turned upright: 600x800 shown, fit into 320.
+    assert_eq!(agentim_core::filestore::image_size(&th), Some((240, 320)));
+    // A person's token, no key, a wrong key: refused.
+    let tok = client_token(hub, &alice).await;
+    assert_eq!(
+        post(&tok, format!("conv_id={conv}&name=x"), vec![1])
+            .await
+            .0,
+        401
+    );
+    assert_eq!(
+        post("", format!("conv_id={conv}&name=x"), vec![1]).await.0,
+        401
+    );
+    assert_eq!(
+        post("atk_wrong", format!("conv_id={conv}&name=x"), vec![1])
+            .await
+            .0,
+        401
+    );
+    // Too large for one request: refused.
+    let (st, _) = post(
+        &key,
+        format!("conv_id={conv}&name=big"),
+        vec![0; (64 << 20) + 1],
+    )
+    .await;
+    assert_eq!(st, 413);
+    // A backend through the open API.
+    let (api, _) = hub
+        .create_api_key("b", &["messages:write".to_string()], None, None)
+        .await
+        .unwrap();
+    let r = srv
+        .http
+        .post(format!(
+            "{}/v1/conversations/{conv}/files?as=alice&name=scan.jpg",
+            srv.base
+        ))
+        .header("authorization", format!("Bearer {api}"))
+        .body(photo)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 201);
+    let v: Value = serde_json::from_str(&r.text().await.unwrap()).unwrap();
+    assert_eq!(
+        (v["kind"].as_str(), v["ai_generated"].as_bool()),
+        (Some("image"), Some(false))
+    );
 }

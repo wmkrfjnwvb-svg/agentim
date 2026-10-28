@@ -40,7 +40,10 @@ pub fn router(state: AppState) -> Router {
             "/mcp",
             post(crate::mcp::endpoint)
                 .get(|| async { StatusCode::METHOD_NOT_ALLOWED })
-                .delete(|| async { StatusCode::METHOD_NOT_ALLOWED }),
+                .delete(|| async { StatusCode::METHOD_NOT_ALLOWED })
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    crate::mcp::MCP_BODY_MAX,
+                )),
         )
         .route("/metrics", get(metrics))
         .route("/healthz", get(|| async { "ok" }))

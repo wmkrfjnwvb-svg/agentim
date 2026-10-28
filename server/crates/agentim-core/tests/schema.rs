@@ -328,3 +328,13 @@ async fn an_incompatible_or_corrupt_version_is_refused(db: TestDb) {
     .await;
     drop(open(single(&db.url)).await);
 }
+
+/// The metadata stripper exists twice (client core, server); they must not drift.
+#[test]
+fn media_code_is_the_same_in_the_client_core() {
+    assert_eq!(
+        include_str!("../src/media.rs"),
+        include_str!("../../../../sdk/client-rust/core/src/media.rs"),
+        "copy sdk/client-rust/core/src/media.rs to server/crates/agentim-core/src/media.rs"
+    );
+}

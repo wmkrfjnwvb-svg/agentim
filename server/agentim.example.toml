@@ -155,3 +155,24 @@ commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
 # enabled = true
 # rate_per_second = 5         # tool calls per agent key
 # burst = 20
+
+# Files and images (docs/02-architecture.md §2.7).
+# [files]
+# storage = "local"           # "local" (through this server) or "s3" (clients upload to the bucket)
+# dir = "./data/files"        # local: the folder; behind a proxy allow request bodies of 16 MiB
+# shared = false              # local in a cluster: every node mounts the same folder
+# max_bytes = 4294967296      # largest file (4 GiB)
+# daily_bytes_per_user = 0    # 0 = no daily limit
+# max_open_per_user = 10      # uploads one person may have open at once
+# retention_days = 0          # 0 = files are kept
+# allow_metadata = false      # whether apps may keep EXIF and GPS in images
+#
+# [files.s3]                  # keys: AGENTIM_S3_ACCESS_KEY_ID, AGENTIM_S3_SECRET_ACCESS_KEY
+# endpoint = "https://s3.us-east-1.amazonaws.com"   # or MinIO, R2, OSS, COS...
+# bucket = "my-app-files"
+# region = "us-east-1"
+# prefix = "agentim"
+# path_style = false          # true for MinIO and most self-hosted stores
+# The bucket needs CORS for browsers (PUT and GET from your app's origins,
+# exposing ETag), and should abort incomplete multipart uploads after a day;
+# turn on its server-side encryption (SSE-S3 or SSE-KMS). See docs/05 §1.4.

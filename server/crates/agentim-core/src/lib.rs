@@ -19,6 +19,7 @@ pub mod guard;
 pub mod hub;
 pub mod logic;
 pub mod mcp;
+pub mod media;
 pub mod metrics;
 pub mod model;
 pub mod open_api;

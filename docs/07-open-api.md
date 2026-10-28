@@ -61,6 +61,9 @@
 | | `POST /v1/agents/{id}:transfer`（`owner`、`rotate_keys`） | 团队 Agent 换负责人（同一单元）；个人助理不能转交 | ✅ |
 | | `DELETE /v1/agents/{id}` | 销毁：退出所有会话、密钥失效、ID 不再使用（[03 §4.4](03-agents.md)） | ✅ |
 | | `GET /v1/agents/{id}/export?with_conversations=`、`POST /v1/agents:import`（`package`、`owner`、`name`、`allow_unverified`） | 搬到另一个服务器（[03 §7.3](03-agents.md)）：导出不含密钥，部署有签名密钥时带签名；导入建新 Agent 并给出第一把密钥，返回 `verified`；本部署验证不了来源的包要带 `allow_unverified: true` | ✅ |
+| | `POST /v1/conversations/{id}/uploads`（`as`、`name`、`size`、`mime`、`thumb_size`）、`GET …/uploads/{file}?as=&from=`、`POST …/uploads/{file}:complete`（`as`、`parts`） | 以成员（或 `system`）的身份分片上传文件（[02 §2.7](02-architecture.md)），`messages:write`；完成时检查大小、类型和缩略图，写审计 | ✅ |
+| | `POST /v1/conversations/{id}/files?as=&name=&mime=`（请求体就是文件，最多 64 MiB） | 整个文件一次传：服务端去掉 EXIF 和 GPS、生成缩略图，`messages:write` | ✅ |
+| | `GET /v1/conversations/{id}/files/{file}?as=&variant=` | 5 分钟有效的读取地址，`messages:read`；不带 `as` 以 `system` 读，写审计 | ✅ |
 | 用户 | `PUT /v1/users/{id}`、`GET`、`PATCH` | 创建或更新、读取、修改资料（昵称、头像、自定义字段）。`kind: agent` 加 `owner` 建 Agent，`team: true` 是团队 Agent；新 Agent 的第一把密钥在返回里（只显示一次）。返回里的 `owner` 是开发者的用户 ID。`PATCH` 的 `permissions` 设这个人在客户端能做什么（`create_groups`、`create_direct`、`add_members`、`find_users`、`create_agents`、`edit_minutes`、`recall_minutes`），某一项为 `null` 或整个为 `null` 回到应用默认值；资料里返回算好的 `permissions` 和 `permission_overrides`（[13 §4.1](13-roles-and-entry-points.md)） | ✅ |
 | | `GET /v1/users/{id}/devices`、`DELETE …/devices/{device}` | 某人的设备（Agent 是它的密钥）；下线一台：人在这台设备上已签发的令牌作废，Agent 的那把密钥被吊销（`users:read` / `tokens:revoke`） | ✅ |
 | | `POST /v1/users:batch` | 一次最多 100 个，逐个返回结果 | ✅ |

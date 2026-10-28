@@ -152,7 +152,7 @@ Message {
 
 **扩展也守住核心保证**：自定义消息走同一条写入路径（单写者、组提交），同样不丢、有序；内容大小和信号频率都有上限；扩展类型的版本放在类型的内容里（例如 `schema_version`），兼容规则和 §2.5 相同。
 
-### 2.7 文件和图片（2026-10-27 负责人确认，D132–D134）
+### 2.7 文件和图片（2026-10-27 负责人确认，D132–D134；2026-10-28 服务端已做）
 
 负责人定的方向：
 - 部署者选**本机文件夹**或 **S3 兼容的对象存储**。用 S3 时客户端直接传到 S3，用本机文件夹时经过服务端。
@@ -187,23 +187,32 @@ Message {
    - 然后通过写线程提交 `files` 记录，返回 `{file_id, name, size, mime, kind, width?, height?, thumb}`。
 
    大小对不上、类型和声明的图片不符、缩略图不合格，都 `bad_request` 并删掉已经传上去的内容。
+**整个文件一次传上来**（Agent、MCP、开发者的后端）：
+- 入口：
+  - Agent 用 `POST /api/files?conv_id=…&name=…`，密钥放在 `Authorization` 头里；
+  - MCP 用 `send_file`，内容是 base64，最多 16 MiB，传完直接发出；
+  - 后端用开放 API 的 `POST /v1/conversations/{id}/files?as=…&name=…`。
+- 每个请求最多 64 MiB。更大的文件走上面的分片流程。
+- 服务端先去掉 EXIF 和 GPS，再生成缩略图，然后存起来，和上面一样检查。
+- `/api/files` 先校验密钥再读请求体：没有密钥的人不能让服务端缓存大请求。
+
 4. 发 `kind = "image"` 或 `"file"` 的消息，payload 带 `file_id`（可以加 `caption`）。服务端补上名字、大小、类型、宽高、有没有缩略图；降级文本是 `[Image]` / `[File] 名字`。
    - 一个文件只能被一条消息引用，两条消息抢同一个文件只有一条成功（`conflict`）。
    - 别人的、别的会话的文件 `forbidden`；没完成、不存在、过期的 `not_found`。
 
 | 方面 | 做法 |
 |---|---|
-| 存储配置 | `[files] storage = "local"`（默认，`dir = "./data/files"`）或 `"s3"`。S3 要配：`bucket`、`region`、`endpoint`（MinIO、R2、阿里云 OSS、腾讯云 COS 这些兼容 S3 的服务都填自己的地址）、`prefix`、`path_style`；密钥用环境变量 `AGENTIM_S3_ACCESS_KEY_ID` / `AGENTIM_S3_SECRET_ACCESS_KEY`。签名用 `rusty-s3`（纯 Rust、只负责签名不发请求，0.10.2，2026-08-01），请求由服务端已有的 HTTP 客户端发。集群里多个节点必须用 S3，或者 `local` 加 `shared = true`（大家挂同一个网络盘），否则启动报错。启动时写一个探测对象再删掉，存储不可用就报错 |
+| 存储配置 | `[files] storage = "local"`（默认，`dir = "./data/files"`）或 `"s3"`。S3 要配：`bucket`、`region`、`endpoint`（MinIO、R2、阿里云 OSS、腾讯云 COS 这些兼容 S3 的服务都填自己的地址）、`prefix`、`path_style`；密钥用环境变量 `AGENTIM_S3_ACCESS_KEY_ID` / `AGENTIM_S3_SECRET_ACCESS_KEY`。签名用 `rusty-s3`（纯 Rust、只负责签名不发请求，0.10.2，2026-08-01），请求由服务端已有的 HTTP 客户端发。集群里多个节点必须用 S3，或者 `local` 加 `shared = true`（大家挂同一个网络盘）；都没有时照常运行，但上传返回 `conflict` 并说明要怎么配，启动时也打一条警告（不让已有的集群因为升级起不来）。用 S3 时启动先写一个探测对象再删掉，桶不可用就报错；本机文件夹在第一次写入时才建 |
 | 存放路径 | `{prefix}/{conv_id}/{file_id}/original` 和 `…/thumb`。`file_id` 是随机 ID，文件名只在数据库里，不进路径 |
 | 类型 | 只有 JPEG、PNG、WebP、GIF 算图片（`kind: "image"`），其余都是 `kind: "file"`。普通文件下载时带 `Content-Disposition: attachment`。本机存储由服务端输出，还带 `X-Content-Type-Options: nosniff` 和 `Content-Security-Policy: sandbox`；S3 的预签名地址里用 `response-content-disposition` 和 `response-content-type` 指定这两项。SVG 当普通文件（里面可以有脚本）。iPhone 的 HEIC 由客户端转成 JPEG 再传 |
 | 缩略图 | **客户端生成**：长边 320 像素（聊天里约 160–240 点宽），先按 EXIF 方向转正。不透明的出 JPEG（质量 75），透明的出 PNG，一般 15–40 KB。原图长边不到 320 就不传缩略图，直接用原图。生成的位置：浏览器用 `createImageBitmap` 和 `OffscreenCanvas`；其他平台都在共用的 Rust 原生运行层里用 `image` 库（0.25.10，2026-03-10），Swift、Kotlin、C#、Dart、React Native 都不用自己写。图片解不开或超过 4000 万像素，就不生成缩略图，当成普通文件发。另外记下原图的宽高，客户端下载前按比例留出位置，界面不跳动 |
 | 位置信息 | 客户端上传前默认去掉原图里的 EXIF 和 XMP（含 GPS）：JPEG 的 APP1、PNG 的 `eXIf`/`iTXt`、WebP 的 `EXIF`/`XMP`。只删这些数据块、不重新编码，画质不变；方向信息先用掉再删。这段放在 Rust 核心里，所有平台共用。应用可以关掉（`send_file {keep_metadata: true}`），部署可以禁止关掉（`files.allow_metadata = false`，默认禁止）。服务端 SDK 和 Agent SDK 上传时也做同样的处理 |
 | 下载 | `file_url {file_id, variant: "thumb" | "original"}`（客户端协议、开放 API、MCP 都有）每次都检查权限：上传者本人，或者引用它的消息你看得见；被移出后立刻不能再取。返回 5 分钟有效的地址：S3 是预签名 GET，流量不经过服务端；本机是服务端的 `/files/{file_id}/{variant}?exp=…&sig=…`，支持 `Range`。文件内容不会变，客户端按 `file_id` 一直缓存 |
-| 静态加密 | 本机存储：开启静态加密时，服务端写入时加密。用会话的 DEK，按 64 KiB 分块 AES-256-GCM，AAD 是（文件 ID、档位、块序号、是否最后一块）。解散会话删掉 DEK 后就解不开。S3 存储：内容不经过服务端，用桶的服务端加密（SSE-S3 或 SSE-KMS，文档里写清楚怎么开）；解散会话和删除文件时删掉对象 |
+| 静态加密 | S3：内容不经过服务端，用桶的服务端加密（SSE-S3 或 SSE-KMS）；解散会话、删除文件时删掉对象。本机文件夹：**还没做**应用层加密，先用磁盘加密（LUKS、BitLocker、云盘加密）。计划的做法：用会话的 DEK 按 64 KiB 分块 AES-256-GCM，AAD 是（文件 ID、档位、块序号、是否最后一块）；排在 [06 §2](06-plan.md) |
 | 不丢 | 内容完整传上去、`upload_complete` 检查过，才提交 `files` 记录：记录提交了，内容一定在。没完成的上传 24 小时后清理：S3 上中止分片上传；文档建议桶加上"中止未完成的分片上传"的生命周期规则兜底 |
-| 删除 | 撤回消息、解散会话、删除账号、过了保留期：`files` 记录和"待删除"任务在同一个事务里提交，原图和缩略图由后台删除，失败重试，重启后继续 |
+| 删除 | 以下情况文件会被扔掉：撤回消息、拒绝草稿、解散会话、删除账号（删他上传的）、消息过了保留期、文件过了保留期、草稿随 Agent 离开而消失。`files` 记录删除和 `file_trash` 记录在同一个事务里提交。原图和缩略图由后台删除，失败按 1 秒起翻倍、最长 1 小时重试，重启后继续 |
 | 过期 | 完成后 24 小时内没被消息引用的文件会删掉。部署者设文件保留期（`files.retention_days`，默认不过期，和消息保留期分开）。过期后消息还在，显示"File expired" |
-| 限制 | 单个文件默认最多 4 GiB（`files.max_bytes`，可以改大）。每人每天的上传总量默认不限（`files.daily_bytes_per_user` 可以设）。同时进行中的上传每人最多 10 个，超出 `rate_limited`。前面有代理时，用本机存储要调大它的请求体上限（例如 Nginx 的 `client_max_body_size`，按片大小 16 MiB 就够） |
+| 限制 | 单个文件默认最多 4 GiB（`files.max_bytes`，可以改大）。每人每天的上传总量默认不限（`files.daily_bytes_per_user` 可以设）。同时进行中的上传每人最多 10 个（`files.max_open_per_user`），超出 `rate_limited`。前面有代理时，用本机存储要调大它的请求体上限（例如 Nginx 的 `client_max_body_size`，按片大小 16 MiB 就够） |
 | 其他 | Agent 上传的文件标记 `ai_generated: true`（EU AI Act 第 50 条）。会话迁到另一个库时，`files` 记录和 DEK 跟着会话走，存储是共用的，内容不用搬 |
 | 以后 | 可选的病毒扫描钩子（接 ClamAV，扫描通过前不能引用）；视频的封面和时长 |
 

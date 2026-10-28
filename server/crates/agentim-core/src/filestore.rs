@@ -640,6 +640,51 @@ impl Store {
         }
     }
 
+    /// Writes a whole object from the server (files it received itself).
+    pub async fn put_object(
+        &self,
+        conv: &str,
+        file: &str,
+        variant: &str,
+        body: Vec<u8>,
+        mime: &str,
+    ) -> ApiResult<()> {
+        match &self.backend {
+            Backend::Local { dir } => {
+                let base = dir.join(conv).join(file);
+                tokio::fs::create_dir_all(&base).await.map_err(storage)?;
+                let tmp = base.join(format!("{variant}.tmp"));
+                tokio::fs::write(&tmp, &body).await.map_err(storage)?;
+                tokio::fs::rename(&tmp, base.join(variant))
+                    .await
+                    .map_err(storage)?;
+                Ok(())
+            }
+            Backend::S3 {
+                bucket,
+                creds,
+                prefix,
+                http,
+            } => {
+                let k = key(prefix, conv, file, variant);
+                let url = bucket
+                    .put_object(Some(creds), &k)
+                    .sign(Duration::from_secs(300));
+                let r = http
+                    .put(url.as_str())
+                    .header("content-type", mime)
+                    .body(body)
+                    .send()
+                    .await
+                    .map_err(storage)?;
+                if !r.status().is_success() {
+                    return Err(storage(format!("put: {}", r.status())));
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Local folder: where a part (or the thumbnail) goes.
     pub fn local_path(&self, conv: &str, file: &str, part: &str) -> Option<PathBuf> {
         let Backend::Local { dir } = &self.backend else {
@@ -842,5 +887,85 @@ mod tests {
                 .unwrap()
                 .ends_with("c_1/f_1/parts/3")
         );
+    }
+}
+
+/// Largest image (pixels) a thumbnail is made of; bigger ones are files
+/// without a thumbnail (decompression bombs).
+pub const THUMB_MAX_PIXELS: u64 = 40_000_000;
+
+/// A thumbnail of an image: at most 320 px on its longest side, the right
+/// way up; PNG when it has transparency, JPEG (quality 75) otherwise. None
+/// for anything that is not an image, too large, or no larger than that.
+pub fn make_thumbnail(b: &[u8]) -> Option<(Vec<u8>, &'static str)> {
+    use image::{DynamicImage, ImageEncoder};
+    let (w, h) = image_size(b)?;
+    if w as u64 * h as u64 > THUMB_MAX_PIXELS || w.max(h) <= THUMB_SIDE {
+        return None;
+    }
+    let img = image::load_from_memory(b).ok()?;
+    let img = match crate::media::orientation(b).unwrap_or(1) {
+        2 => img.fliph(),
+        3 => img.rotate180(),
+        4 => img.flipv(),
+        5 => img.rotate90().fliph(),
+        6 => img.rotate90(),
+        7 => img.rotate270().fliph(),
+        8 => img.rotate270(),
+        _ => img,
+    };
+    let t = img.thumbnail(THUMB_SIDE, THUMB_SIDE);
+    let mut out = vec![];
+    if t.color().has_alpha() {
+        t.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .ok()?;
+        Some((out, "image/png"))
+    } else {
+        let rgb = DynamicImage::ImageRgb8(t.to_rgb8());
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 75)
+            .write_image(
+                rgb.as_bytes(),
+                rgb.width(),
+                rgb.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+            .ok()?;
+        Some((out, "image/jpeg"))
+    }
+}
+
+#[cfg(test)]
+mod thumb_tests {
+    use super::*;
+
+    fn encode(img: image::DynamicImage, f: image::ImageFormat) -> Vec<u8> {
+        let mut out = vec![];
+        img.write_to(&mut std::io::Cursor::new(&mut out), f)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn thumbnails_fit_320_and_keep_transparency() {
+        let photo = encode(
+            image::DynamicImage::ImageRgb8(image::RgbImage::new(1200, 800)),
+            image::ImageFormat::Jpeg,
+        );
+        let (t, m) = make_thumbnail(&photo).unwrap();
+        assert_eq!(m, "image/jpeg");
+        assert_eq!(image_size(&t), Some((320, 213)));
+        let logo = encode(
+            image::DynamicImage::ImageRgba8(image::RgbaImage::new(400, 1000)),
+            image::ImageFormat::Png,
+        );
+        let (t, m) = make_thumbnail(&logo).unwrap();
+        assert_eq!((m, image_size(&t)), ("image/png", Some((128, 320))));
+        // Small enough already, or not an image: none.
+        let small = encode(
+            image::DynamicImage::ImageRgb8(image::RgbImage::new(320, 100)),
+            image::ImageFormat::Png,
+        );
+        assert!(make_thumbnail(&small).is_none());
+        assert!(make_thumbnail(b"%PDF").is_none());
     }
 }

@@ -16,6 +16,8 @@ const HEAD_BYTES: u64 = 256 << 10;
 /// Objects deleted per database per round, and the longest wait between tries.
 const TRASH_BATCH: i64 = 50;
 const TRASH_BACKOFF_MAX_MS: i64 = 3_600_000;
+/// Largest file the server takes in one request (agents, MCP, backends).
+pub const INGEST_MAX: usize = 64 << 20;
 
 impl Hub {
     /// At start: the key of the server's own file addresses (shared by
@@ -32,6 +34,11 @@ impl Hub {
             .decode(v["key"].as_str().unwrap_or_default())
             .map_err(|_| err("internal", "files_url_key is not base64"))?;
         self.inner.sh.files.set_url_key(key);
+        if !self.inner.sh.files_cfg.usable(self.clustered()) {
+            tracing::warn!(
+                "files are off: a cluster needs files.storage = \"s3\" or a shared folder (files.shared = true)"
+            );
+        }
         if self.inner.sh.files.direct() {
             self.inner
                 .sh
@@ -255,6 +262,61 @@ impl Hub {
             }
         }
         Ok(deleted)
+    }
+
+    /// A whole file the server received itself (agents, MCP, a backend):
+    /// its EXIF and GPS removed, a thumbnail made, stored and checked like
+    /// any upload. At most `INGEST_MAX` bytes.
+    pub async fn ingest_file(
+        &self,
+        me: &User,
+        conv_id: &str,
+        name: &str,
+        mime: Option<String>,
+        data: Vec<u8>,
+    ) -> ApiResult<Value> {
+        if data.len() > INGEST_MAX {
+            return Err(err(
+                "bad_request",
+                format!("send files over {INGEST_MAX} bytes in parts (upload_start)"),
+            ));
+        }
+        let data = crate::media::strip_metadata(&data).unwrap_or(data);
+        let thumb = fs::make_thumbnail(&data);
+        let started = self
+            .upload_start(
+                me,
+                conv_id,
+                name,
+                data.len() as u64,
+                mime.clone(),
+                thumb.as_ref().map(|t| t.0.len() as u64),
+            )
+            .await?;
+        let file_id = started["file_id"].as_str().unwrap_or_default().to_string();
+        let st = self.inner.sh.files.clone();
+        let m = fs::clean_mime(mime.as_deref());
+        let stored = async {
+            st.put_object(conv_id, &file_id, "original", data, &m)
+                .await?;
+            if let Some((t, tm)) = thumb {
+                st.put_object(conv_id, &file_id, "thumb", t, tm).await?;
+            }
+            Ok::<_, ApiError>(())
+        }
+        .await;
+        if let Err(e) = stored {
+            let shard = self.conv_shard(conv_id)?;
+            shard
+                .call(Op::FileDiscard {
+                    conv_id: conv_id.to_string(),
+                    file_id: file_id.clone(),
+                })
+                .await?;
+            return Err(e);
+        }
+        // The server wrote the whole object: S3 multipart is not used here.
+        self.upload_complete(me, conv_id, &file_id, &[]).await
     }
 
     /// For the operator: where files go.

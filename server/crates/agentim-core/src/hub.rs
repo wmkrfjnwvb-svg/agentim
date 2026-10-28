@@ -32,6 +32,7 @@ pub mod admin;
 mod developer;
 mod export;
 mod files;
+pub use files::INGEST_MAX;
 mod history;
 mod lifecycle;
 pub mod login;

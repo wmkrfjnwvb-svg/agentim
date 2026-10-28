@@ -2889,6 +2889,649 @@
           }
         }
       }
+    },
+    "/v1/conversations/{id}/uploads": {
+      "post": {
+        "summary": "Start uploading a file (docs/02 §2.7): addresses to PUT its parts and thumbnail to",
+        "x-scope": "messages:write",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conversation id"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Retries with the same key return the first result for 24 hours"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "file_id": {
+                      "type": "string"
+                    },
+                    "part_size": {
+                      "type": "integer"
+                    },
+                    "parts_total": {
+                      "type": "integer"
+                    },
+                    "parts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "n": {
+                            "type": "string",
+                            "description": "Part number from 1, or thumb"
+                          },
+                          "url": {
+                            "type": "string",
+                            "description": "Address to PUT to (relative: on this server)"
+                          },
+                          "headers": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "description": "Headers to send with exactly these values"
+                          }
+                        }
+                      }
+                    },
+                    "thumb": {
+                      "type": "object",
+                      "properties": {
+                        "n": {
+                          "type": "string",
+                          "description": "Part number from 1, or thumb"
+                        },
+                        "url": {
+                          "type": "string",
+                          "description": "Address to PUT to (relative: on this server)"
+                        },
+                        "headers": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "description": "Headers to send with exactly these values"
+                        }
+                      }
+                    },
+                    "expires_at": {
+                      "type": "integer",
+                      "description": "ms since 1970"
+                    },
+                    "direct": {
+                      "type": "boolean",
+                      "description": "true: the addresses are the S3 store's"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "as",
+                  "name",
+                  "size"
+                ],
+                "properties": {
+                  "as": {
+                    "type": "string",
+                    "description": "A user id, or \"system\""
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "File name (no path; at most 255 bytes)"
+                  },
+                  "size": {
+                    "type": "integer",
+                    "description": "Bytes; at most files.max_bytes"
+                  },
+                  "mime": {
+                    "type": "string",
+                    "description": "Declared type of a non-image file"
+                  },
+                  "thumb_size": {
+                    "type": "integer",
+                    "description": "Bytes of the thumbnail (images; JPEG or PNG, at most 320 px)"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{id}/uploads/{file}": {
+      "get": {
+        "summary": "More part addresses of an open upload",
+        "x-scope": "messages:write",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conversation id"
+          },
+          {
+            "name": "file",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "File id"
+          },
+          {
+            "name": "as",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A user id, or \"system\""
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "First part number"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "file_id": {
+                      "type": "string"
+                    },
+                    "part_size": {
+                      "type": "integer"
+                    },
+                    "parts_total": {
+                      "type": "integer"
+                    },
+                    "parts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "n": {
+                            "type": "string",
+                            "description": "Part number from 1, or thumb"
+                          },
+                          "url": {
+                            "type": "string",
+                            "description": "Address to PUT to (relative: on this server)"
+                          },
+                          "headers": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "description": "Headers to send with exactly these values"
+                          }
+                        }
+                      }
+                    },
+                    "thumb": {
+                      "type": "object",
+                      "properties": {
+                        "n": {
+                          "type": "string",
+                          "description": "Part number from 1, or thumb"
+                        },
+                        "url": {
+                          "type": "string",
+                          "description": "Address to PUT to (relative: on this server)"
+                        },
+                        "headers": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "description": "Headers to send with exactly these values"
+                        }
+                      }
+                    },
+                    "expires_at": {
+                      "type": "integer",
+                      "description": "ms since 1970"
+                    },
+                    "direct": {
+                      "type": "boolean",
+                      "description": "true: the addresses are the S3 store's"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{id}/uploads/{file}:complete": {
+      "post": {
+        "summary": "Complete an upload: checks size, type and thumbnail; the file can be sent",
+        "x-scope": "messages:write",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conversation id"
+          },
+          {
+            "name": "file",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "File id"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Retries with the same key return the first result for 24 hours"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "file_id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": "integer"
+                    },
+                    "mime": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "image",
+                        "file"
+                      ]
+                    },
+                    "width": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "height": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "thumb": {
+                      "type": "boolean"
+                    },
+                    "ai_generated": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "as"
+                ],
+                "properties": {
+                  "as": {
+                    "type": "string",
+                    "description": "A user id, or \"system\""
+                  },
+                  "parts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "n"
+                      ],
+                      "properties": {
+                        "n": {
+                          "type": "integer"
+                        },
+                        "etag": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "description": "Each part and the ETag the store answered (S3)"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{id}/files/{file}": {
+      "get": {
+        "summary": "A short-lived address to read a file (audited)",
+        "x-scope": "messages:read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conversation id"
+          },
+          {
+            "name": "file",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "File id"
+          },
+          {
+            "name": "as",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A member to read as (default: the system)"
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "thumb or original"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string"
+                    },
+                    "variant": {
+                      "type": "string"
+                    },
+                    "expires_at": {
+                      "type": "integer"
+                    },
+                    "file": {
+                      "type": "object",
+                      "properties": {
+                        "file_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "size": {
+                          "type": "integer"
+                        },
+                        "mime": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "image",
+                            "file"
+                          ]
+                        },
+                        "width": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "height": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "thumb": {
+                          "type": "boolean"
+                        },
+                        "ai_generated": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{id}/files": {
+      "post": {
+        "summary": "Upload a whole file (at most 64 MiB): EXIF and GPS removed, a thumbnail made; then send it",
+        "x-scope": "messages:write",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conversation id"
+          },
+          {
+            "name": "as",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A user id, or \"system\""
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "File name"
+          },
+          {
+            "name": "mime",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Declared type of a non-image file"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "file_id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": "integer"
+                    },
+                    "mime": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "image",
+                        "file"
+                      ]
+                    },
+                    "width": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "height": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "thumb": {
+                      "type": "boolean"
+                    },
+                    "ai_generated": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

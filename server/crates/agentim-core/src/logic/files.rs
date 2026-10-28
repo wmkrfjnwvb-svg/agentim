@@ -91,6 +91,12 @@ impl Ctx<'_, '_> {
     ) -> ApiResult<Value> {
         self.may_post(conv_id, me).await?;
         let cfg = &self.sh.files_cfg;
+        if !cfg.usable(self.sh.cluster.get().is_some()) {
+            return Err(err(
+                "conflict",
+                "files are off in this cluster: set files.storage = \"s3\" or a shared folder (files.shared)",
+            ));
+        }
         if size == 0 {
             return Err(err("bad_request", "the file is empty"));
         }

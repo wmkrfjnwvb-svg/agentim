@@ -30,6 +30,7 @@ cluster_tests!(
     heads_from_any_node_show_where_conversations_stand,
     mutation_without_the_cache_poll_a_cut_off_node_keeps_a_revoked_token,
     api_keys_created_or_revoked_on_one_node_change_at_once_on_the_others,
+    files_need_a_shared_store_in_a_cluster,
 );
 
 /// At least 8 conversations, some of them held by node `k` (shards are
@@ -442,4 +443,18 @@ async fn api_keys_created_or_revoked_on_one_node_change_at_once_on_the_others(db
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// A cluster on one node's own folder would lose files on the others: it
+/// runs, and uploads are refused until S3 or a shared folder is set.
+async fn files_need_a_shared_store_in_a_cluster(db: TestDb) {
+    let nodes = cluster(&db, 2).await;
+    let alice = user(&nodes[0].0, "alice", UserKind::Human, None).await;
+    let a = Conn::new(&nodes[0].0, &alice);
+    let conv = a.group(&[]).await;
+    let r = a
+        .call(json!({"op": "upload_start", "conv_id": conv, "name": "x", "size": 3}))
+        .await;
+    assert_eq!(r["error"]["code"], "conflict", "{r}");
+    assert!(r["error"]["message"].as_str().unwrap().contains("s3"));
 }

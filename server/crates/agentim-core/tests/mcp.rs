@@ -33,6 +33,7 @@ backend_tests!(
     stopped_and_destroyed_agents_are_refused,
     agents_use_cards_progress_sources_and_handoff,
     a_lost_answer_comes_again,
+    agents_send_and_read_files,
 );
 
 const V: &str = "2026-07-28";
@@ -1785,4 +1786,100 @@ async fn a_lost_answer_comes_again(db: TestDb) {
     drop(a);
     let hub2 = open(single(&db.url)).await;
     let _ = hub2;
+}
+
+/// `send_file` stores a file (EXIF removed, thumbnail made) and sends it;
+/// `file_url` gives a link; refusals follow the business rules.
+async fn agents_send_and_read_files(db: TestDb) {
+    use base64::Engine;
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = single(&db.url);
+    cfg.files.dir = dir.path().to_string_lossy().into_owned();
+    let m = serve(cfg).await;
+    let (alice, _helper, key, conv) = setup(&m).await;
+    let mut png = vec![];
+    image::RgbImage::new(640, 480)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let v = m
+        .ok(
+            &key,
+            "send_file",
+            json!({"conv_id": conv, "name": "chart.png", "data": b64(&png), "caption": "Q3"}),
+        )
+        .await;
+    assert!(v["msg_id"].is_string(), "{v}");
+    assert_eq!(
+        (v["file"]["kind"].as_str(), v["file"]["thumb"].as_bool()),
+        (Some("image"), Some(true))
+    );
+    assert_eq!(v["file"]["ai_generated"], true);
+    let fid = v["file"]["file_id"].as_str().unwrap().to_string();
+    let u = m
+        .ok(
+            &key,
+            "file_url",
+            json!({"conv_id": conv, "file_id": fid, "variant": "thumb"}),
+        )
+        .await;
+    assert_eq!(u["variant"], "thumb");
+    // The person sees an image message with the file.
+    let log = Conn::new(&m.hub, &alice).pull(&conv, 0).await;
+    let msg = log["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["event"]["msg"]["kind"] == "image")
+        .unwrap()["event"]["msg"]
+        .clone();
+    assert_eq!(
+        (
+            msg["payload"]["caption"].as_str(),
+            msg["payload"]["file_id"].as_str()
+        ),
+        (Some("Q3"), Some(fid.as_str()))
+    );
+    // A plain file; bad input; not a member.
+    let v = m
+        .ok(&key, "send_file", json!({"conv_id": conv, "name": "notes.txt", "data": b64(b"hello"), "mime": "text/plain"}))
+        .await;
+    assert_eq!(v["file"]["kind"], "file");
+    assert_eq!(
+        m.tool_err(
+            &key,
+            "send_file",
+            json!({"conv_id": conv, "name": "x", "data": "%%%"})
+        )
+        .await,
+        "bad_request"
+    );
+    assert_eq!(
+        m.tool_err(
+            &key,
+            "send_file",
+            json!({"conv_id": conv, "name": "x", "data": b64(b"")})
+        )
+        .await,
+        "bad_request"
+    );
+    let other = Conn::new(&m.hub, &alice).group(&[]).await;
+    assert_eq!(
+        m.tool_err(
+            &key,
+            "send_file",
+            json!({"conv_id": other, "name": "x", "data": b64(b"x")})
+        )
+        .await,
+        "forbidden"
+    );
+    assert_eq!(
+        m.tool_err(
+            &key,
+            "file_url",
+            json!({"conv_id": conv, "file_id": "f_nope"})
+        )
+        .await,
+        "not_found"
+    );
 }

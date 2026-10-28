@@ -57,12 +57,21 @@ jobs:
     env:
       AGENTIM_TEST_PG: postgres://postgres:agentim@127.0.0.1:5432
       AGENTIM_TEST_MYSQL: mysql://root:agentim@127.0.0.1:3306
+      AGENTIM_TEST_S3: http://127.0.0.1:5055
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: server
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: an S3 compatible store for the file tests (moto)
+        run: |
+          pip install "moto[server]==5.1.0"
+          nohup moto_server -p 5055 > moto.log 2>&1 &
+          for i in $(seq 1 50); do curl -fs -X PUT http://127.0.0.1:5055/agentim-test && break; sleep 0.2; done
       - name: same acceptance suite against every backend, plus mixed-backend units
         # Every file with three-database tests, found here so a new or renamed one is never left out.
         run: |

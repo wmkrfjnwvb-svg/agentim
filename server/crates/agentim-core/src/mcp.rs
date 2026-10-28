@@ -421,8 +421,15 @@ pub const TOOLS: &[&str] = &[
     "state_delete",
     "handoff",
     "send_card",
+    "send_file",
+    "file_url",
     "progress",
 ];
+
+/// Largest file `send_file` takes (base64 makes the request a third larger).
+const MCP_FILE_MAX: usize = 16 << 20;
+/// Largest MCP request (a file of `MCP_FILE_MAX` in base64, and JSON).
+pub const MCP_BODY_MAX: usize = 24 << 20;
 
 fn tools() -> Value {
     let id = |d: &str| json!({"type": "string", "minLength": 1, "description": d});
@@ -854,6 +861,41 @@ fn tools() -> Value {
                 "additionalProperties": false,
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "send_file",
+            "title": "Send a file or image",
+            "description": "Sends a file to a conversation: `data` is its content in base64 (at most 16 MiB). Images (JPEG, PNG, GIF, WebP) are shown as images with a thumbnail; anything else as a file to download. Location data (EXIF, GPS) is removed. `caption` is optional text under it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "name": {"type": "string", "minLength": 1, "maxLength": 255, "description": "File name, e.g. chart.png."},
+                    "data": {"type": "string", "minLength": 1, "description": "The content, base64."},
+                    "mime": {"type": "string", "description": "Type of a non-image file, e.g. application/pdf (optional)."},
+                    "caption": {"type": "string", "maxLength": 4096, "description": "Text shown with it (optional)."},
+                    "reply_to": id("The message this answers (optional)."),
+                },
+                "required": ["conv_id", "name", "data"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "file_url",
+            "title": "Read a file",
+            "description": "A link (valid 5 minutes) to a file or image someone sent: `file_id` is in the message's payload. `variant` is original (default) or thumb.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "file_id": id("The file."),
+                    "variant": {"type": "string", "enum": ["original", "thumb"]},
+                },
+                "required": ["conv_id", "file_id"],
+                "additionalProperties": false,
+            },
+            "annotations": ro,
         },
         {
             "name": "progress",
@@ -1494,6 +1536,69 @@ async fn call_tool(
             }
             let v = run(m).await?;
             Ok(("Shown.".into(), v))
+        }
+        "send_file" => {
+            only(
+                args,
+                &["conv_id", "name", "data", "mime", "caption", "reply_to"],
+            )?;
+            use base64::Engine;
+            let conv = need(args, "conv_id")?;
+            let name = need(args, "name")?;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(need(args, "data")?.trim())
+                .map_err(|_| ApiError::new("bad_request", "data must be base64"))?;
+            if data.len() > MCP_FILE_MAX {
+                return Err(ApiError::new(
+                    "bad_request",
+                    "at most 16 MiB through MCP; larger files go to POST /api/files",
+                ));
+            }
+            let mime = arg_str(args, "mime", false)?;
+            let f = hub.ingest_file(&user, &conv, &name, mime, data).await?;
+            let kind = if f["kind"] == "image" {
+                "image"
+            } else {
+                "file"
+            };
+            let mut payload = json!({"file_id": f["file_id"]});
+            if let Some(c) = arg_str(args, "caption", false)? {
+                payload["caption"] = json!(c);
+            }
+            let text = if kind == "image" {
+                "[Image]".to_string()
+            } else {
+                format!("[File] {}", f["name"].as_str().unwrap_or(""))
+            };
+            let mut m = json!({"op": "send", "conv_id": conv, "text": text, "kind": kind, "payload": payload, "client_msg_id": format!("mcp-{}", uuid::Uuid::new_v4().simple())});
+            if let Some(r) = arg_str(args, "reply_to", false)? {
+                m["reply_to"] = json!(r);
+            }
+            let mut v = run(m).await?;
+            v["file"] = f;
+            let text = match v["draft_id"].as_str() {
+                Some(d) => format!("Waiting for your owner's approval (draft {d})."),
+                None => format!("Sent as {}.", v["msg_id"].as_str().unwrap_or("")),
+            };
+            Ok((text, v))
+        }
+        "file_url" => {
+            only(args, &["conv_id", "file_id", "variant"])?;
+            let mut m = json!({"op": "file_url", "conv_id": need(args, "conv_id")?, "file_id": need(args, "file_id")?});
+            if let Some(x) = arg_str(args, "variant", false)? {
+                m["variant"] = json!(x);
+            }
+            let mut v = run(m).await?;
+            // The local folder's links are on this server: make them whole.
+            if let Some(u) = v["url"].as_str().filter(|u| u.starts_with('/'))
+                && let Some(base) = hub.config().server.public_url.as_deref()
+            {
+                v["url"] = json!(format!("{}{u}", base.trim_end_matches('/')));
+            }
+            Ok((
+                format!("{} (valid 5 minutes)", v["url"].as_str().unwrap_or("")),
+                v,
+            ))
         }
         _ => Err(ApiError::new("bad_request", "unknown tool")),
     }

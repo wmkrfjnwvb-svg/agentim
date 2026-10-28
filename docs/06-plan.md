@@ -149,7 +149,7 @@
 |---|---|---|---|
 | A4 | 合规的基础部分：用户导出自己的数据、删除账号、基础保留期、举报、基础审核队列 | — | ✅ 2026-10-20（[04 §4.2](04-security-compliance.md)） |
 | A5 | `agentim admin` 和管理 API（缩小后的 D63），和开发者控制台一起 | D63 | ✅ 2026-10-21（[12 §4](12-developer-experience.md)） |
-| A6 | 文件和图片 | 你的设计 | 🔧 设计已确认（[02 §2.7](02-architecture.md)），开发中 |
+| A6 | 文件和图片 | 你的设计 | 🔧 设计已确认（[02 §2.7](02-architecture.md)）。服务端 2026-10-28 做完：本机或 S3、分片直传、检查、一条消息一个文件、读权限、丢弃和后台删除、开放 API、Agent 和 MCP 整传。还剩：客户端 SDK 的 `send_file`（缩略图、去 GPS）、界面组件、本机存储的应用层加密 |
 | A7 | 客户端 SDK（P2） | D104 | ✅ 2026-10-24，本环境能做的部分（[12 §2.14](12-developer-experience.md)）；平台打包和模拟器归 A9 |
 | A9 | 安装和发布（P1） | — | ✅ 2026-10-25（[12 §1、§2.12.1](12-developer-experience.md)）：第一次运行、服务端发布流程（程序、签名、镜像、Chart）、安装脚本、依赖扫描、CHANGELOG、README 快速开始；客户端各包（D123）在 CI 构建、签名，并按应用的样子测过：NuGet 三种系统、Dart 三种系统、XCFramework 和 Swift 场景、AAR / Flutter / React Native 在 Android 模拟器、React Native 在 iOS 模拟器。打 `sdk-v*` 标签发布。各注册表要你先开通（见 §1.2 和 `sdk-release.yml`） |
 

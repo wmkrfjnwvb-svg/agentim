@@ -126,14 +126,18 @@ pub struct S3Config {
 }
 
 impl FilesConfig {
-    pub fn check(&self, clustered: bool) -> Result<(), String> {
+    /// Whether files work here: a cluster needs S3 or a shared folder (one
+    /// node's folder is not the others'). Without, it runs and refuses
+    /// uploads.
+    pub fn usable(&self, clustered: bool) -> bool {
+        self.storage == "s3" || !clustered || self.shared
+    }
+
+    pub fn check(&self, _clustered: bool) -> Result<(), String> {
         match self.storage.as_str() {
             "local" => {
                 if self.dir.is_empty() {
                     return Err("files.dir is empty".into());
-                }
-                if clustered && !self.shared {
-                    return Err("a cluster needs files.storage = \"s3\", or a local folder all nodes share (files.shared = true)".into());
                 }
             }
             "s3" => {

@@ -16,6 +16,7 @@
 mod conn;
 mod error;
 mod history;
+pub mod media;
 mod queue;
 mod rng;
 mod sync;
