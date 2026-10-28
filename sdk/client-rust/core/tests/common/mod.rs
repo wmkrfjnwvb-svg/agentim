@@ -42,6 +42,28 @@ pub struct Server {
     pub overflow: usize,
     /// Member lists `list_convs` returns (none: the field is left out).
     pub members: HashMap<String, Value>,
+    /// Uploads by file_id, and the stored objects (`file_id/key` → bytes).
+    pub uploads: BTreeMap<String, FakeUpload>,
+    pub objects: BTreeMap<String, u64>,
+    pub part_size: u64,
+    pub parts_per_answer: u32,
+    pub upload_ttl_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FakeUpload {
+    pub conv: String,
+    pub name: String,
+    pub size: u64,
+    pub thumb_size: u64,
+    pub ready: bool,
+    pub taken: bool,
+}
+
+impl FakeUpload {
+    pub fn total(&self, part: u64) -> u32 {
+        self.size.div_ceil(part).max(1) as u32
+    }
 }
 
 impl Server {
@@ -65,7 +87,55 @@ impl Server {
             requests: vec![],
             overflow: 0,
             members: HashMap::new(),
+            uploads: BTreeMap::new(),
+            objects: BTreeMap::new(),
+            part_size: 10,
+            parts_per_answer: 3,
+            upload_ttl_ms: 3_600_000,
         }
+    }
+
+    fn targets(&self, file: &str, from: u32, thumb: bool) -> Value {
+        let u = &self.uploads[file];
+        let total = u.total(self.part_size);
+        let last = (from + self.parts_per_answer - 1).min(total);
+        let exp = self.now + self.upload_ttl_ms;
+        let parts: Vec<Value> = (from..=last)
+            .map(|n| json!({"n": n.to_string(), "url": format!("/files/u/{file}/{n}?exp={exp}"), "headers": {}}))
+            .collect();
+        let mut v = json!({"file_id": file, "part_size": self.part_size, "parts_total": total, "parts": parts, "expires_at": exp, "direct": false});
+        if thumb && u.thumb_size > 0 {
+            v["thumb"] = json!({"n": "thumb", "url": format!("/files/u/{file}/thumb?exp={exp}"), "headers": {}});
+        }
+        v
+    }
+
+    /// A PUT to the fake store: the HTTP status.
+    pub fn put(&mut self, url: &str, len: u64) -> u16 {
+        let path = url.split("/files/u/").nth(1).unwrap_or("");
+        let (path, q) = path.split_once('?').unwrap_or((path, ""));
+        let (file, key) = path.split_once('/').unwrap_or((path, ""));
+        let exp: i64 = q.trim_start_matches("exp=").parse().unwrap_or(0);
+        if exp < self.now {
+            return 403;
+        }
+        let Some(u) = self.uploads.get(file) else {
+            return 404;
+        };
+        if u.ready {
+            return 404;
+        }
+        let want = if key == "thumb" {
+            u.thumb_size
+        } else {
+            let n: u64 = key.parse().unwrap();
+            self.part_size.min(u.size - (n - 1) * self.part_size)
+        };
+        if len != want {
+            return 400;
+        }
+        self.objects.insert(format!("{file}/{key}"), len);
+        200
     }
 
     pub fn conv(&mut self, id: &str) {
@@ -248,8 +318,23 @@ impl Server {
                 } else if let Some(id) = self.cms.get(&cm) {
                     let m = &self.cur[id];
                     ok(json!({"msg_id": id, "seq": m["created_seq"], "duplicate": true}))
+                } else if let Some(fid) = r["payload"]["file_id"].as_str()
+                    && !self
+                        .uploads
+                        .get(fid)
+                        .is_some_and(|u| u.ready && !u.taken && u.conv == conv)
+                {
+                    fail(json!({"code": "not_found", "message": "the upload is not complete"}))
                 } else {
-                    let m = self.new_msg(&conv, ME, r["text"].as_str().unwrap_or(""), Some(&cm));
+                    let mut m =
+                        self.new_msg(&conv, ME, r["text"].as_str().unwrap_or(""), Some(&cm));
+                    if let Some(k) = r["kind"].as_str() {
+                        m["kind"] = json!(k);
+                    }
+                    if let Some(fid) = r["payload"]["file_id"].as_str() {
+                        self.uploads.get_mut(fid).unwrap().taken = true;
+                        m["payload"] = r["payload"].clone();
+                    }
                     let id = m["msg_id"].as_str().unwrap().to_string();
                     self.cms.insert(cm.clone(), id.clone());
                     self.applied_cms.push(cm);
@@ -286,6 +371,78 @@ impl Server {
                 }
             }
             "read" => ok(json!({})),
+            "upload_start" => {
+                let conv = r["conv_id"].as_str().unwrap().to_string();
+                if self.forbidden.contains(&conv) || !self.logs.contains_key(&conv) {
+                    fail(json!({"code": "forbidden", "message": "not a member"}))
+                } else {
+                    self.next_id += 1;
+                    let file = format!("f{}", self.next_id);
+                    self.uploads.insert(
+                        file.clone(),
+                        FakeUpload {
+                            conv,
+                            name: r["name"].as_str().unwrap().to_string(),
+                            size: r["size"].as_u64().unwrap(),
+                            thumb_size: r["thumb_size"].as_u64().unwrap_or(0),
+                            ready: false,
+                            taken: false,
+                        },
+                    );
+                    ok(self.targets(&file, 1, true))
+                }
+            }
+            "upload_parts" => {
+                let file = r["file_id"].as_str().unwrap().to_string();
+                match self.uploads.get(&file) {
+                    None => fail(json!({"code": "not_found", "message": "no such upload"})),
+                    Some(u) if u.ready => {
+                        fail(json!({"code": "conflict", "message": "the upload is complete"}))
+                    }
+                    Some(_) => {
+                        let from = r["from"].as_u64().unwrap_or(1) as u32;
+                        ok(self.targets(&file, from, from == 1))
+                    }
+                }
+            }
+            "upload_complete" => {
+                let file = r["file_id"].as_str().unwrap().to_string();
+                match self.uploads.get(&file).cloned() {
+                    None => fail(json!({"code": "not_found", "message": "no such upload"})),
+                    Some(u) => {
+                        let total = u.total(self.part_size);
+                        let whole = (1..=total)
+                            .all(|n| self.objects.contains_key(&format!("{file}/{n}")))
+                            && (u.thumb_size == 0
+                                || self.objects.contains_key(&format!("{file}/thumb")));
+                        if !u.ready && !whole {
+                            self.uploads.remove(&file);
+                            fail(json!({"code": "bad_request", "message": "parts are missing"}))
+                        } else {
+                            self.uploads.get_mut(&file).unwrap().ready = true;
+                            let kind = if u.thumb_size > 0 || u.name.ends_with(".png") {
+                                "image"
+                            } else {
+                                "file"
+                            };
+                            ok(
+                                json!({"file_id": file, "name": u.name, "size": u.size, "kind": kind, "thumb": u.thumb_size > 0}),
+                            )
+                        }
+                    }
+                }
+            }
+            "file_url" => {
+                let file = r["file_id"].as_str().unwrap();
+                let variant = r["variant"].as_str().unwrap_or("original");
+                if self.uploads.get(file).is_some_and(|u| u.ready) {
+                    ok(
+                        json!({"url": format!("/files/d/{file}/{variant}?exp={}", self.now + 300_000), "variant": variant, "expires_at": self.now + 300_000}),
+                    )
+                } else {
+                    fail(json!({"code": "not_found", "message": "no such file"}))
+                }
+            }
             "history" => {
                 let conv = r["conv_id"].as_str().unwrap().to_string();
                 let anchor = match &r["anchor"] {
@@ -415,6 +572,15 @@ pub enum Outcome {
 
 enum Delivery {
     Input(Input),
+    /// A PUT ends now (its result decided then).
+    PutEnd {
+        op_id: String,
+        file_id: String,
+        key: String,
+        url: String,
+        len: u64,
+        outcome: PutOutcome,
+    },
     Frame(u64, String),
     Closed(u64, u16, String),
 }
@@ -450,6 +616,26 @@ pub struct World {
     pub effects: Vec<Effect>,
     /// Acknowledgements seen while the store held less (must stay empty).
     pub early_acks: Vec<String>,
+    /// How the next PUTs end (default: as the fake store answers).
+    pub put_plan: VecDeque<PutOutcome>,
+    /// How long a PUT takes.
+    pub put_ms: i64,
+    pub puts: Vec<(String, String)>,
+    pub releases: Vec<String>,
+    /// PUTs running now, and the most at once (per operation).
+    pub running: HashMap<String, usize>,
+    pub most_running: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum PutOutcome {
+    Store,
+    /// An HTTP status other than the store's answer.
+    Status(u16),
+    /// The network failed (no answer).
+    Lost,
+    /// The source is gone.
+    Unreadable,
 }
 
 impl World {
@@ -488,6 +674,12 @@ impl World {
             views: HashMap::new(),
             effects: vec![],
             early_acks: vec![],
+            put_plan: VecDeque::new(),
+            put_ms: 50,
+            puts: vec![],
+            releases: vec![],
+            running: HashMap::new(),
+            most_running: 0,
         };
         w.server.now = w.now;
         w
@@ -503,6 +695,7 @@ impl World {
     pub fn restart(&mut self, seed: u64) {
         self.queue.clear();
         self.items.clear();
+        self.running.clear();
         if self.open {
             self.server.close();
             self.open = false;
@@ -690,6 +883,45 @@ impl World {
                 Effect::Reply { id, result } => {
                     self.replies.insert(id, result);
                 }
+                Effect::Put {
+                    op_id,
+                    file_id,
+                    key,
+                    url,
+                    len,
+                    ..
+                } => {
+                    assert!(
+                        url.starts_with("https://im.example/files/u/"),
+                        "absolute: {url}"
+                    );
+                    self.puts.push((file_id.clone(), key.clone()));
+                    let r = self.running.entry(op_id.clone()).or_default();
+                    *r += 1;
+                    self.most_running = self.most_running.max(*r);
+                    let outcome = self.put_plan.pop_front().unwrap_or(PutOutcome::Store);
+                    self.later(
+                        self.put_ms / 2,
+                        Delivery::Input(Input::PutProgress {
+                            op_id: op_id.clone(),
+                            file_id: file_id.clone(),
+                            key: key.clone(),
+                            sent: len / 2,
+                        }),
+                    );
+                    self.later(
+                        self.put_ms,
+                        Delivery::PutEnd {
+                            op_id,
+                            file_id,
+                            key,
+                            url,
+                            len,
+                            outcome,
+                        },
+                    );
+                }
+                Effect::ReleaseUpload { op_id } => self.releases.push(op_id),
             }
         }
     }
@@ -755,6 +987,43 @@ impl World {
                 let Reverse((_, _, k)) = self.queue.pop().unwrap();
                 match self.items.remove(&k).unwrap() {
                     Delivery::Input(i) => self.input(i),
+                    Delivery::PutEnd {
+                        op_id,
+                        file_id,
+                        key,
+                        url,
+                        len,
+                        outcome,
+                    } => {
+                        if let Some(r) = self.running.get_mut(&op_id) {
+                            *r = r.saturating_sub(1);
+                        }
+                        self.server.now = self.now;
+                        let result = match outcome {
+                            PutOutcome::Store => match self.server.put(&url, len) {
+                                200 => PutResult::Done(format!("e-{key}")),
+                                s => PutResult::Failed {
+                                    status: Some(s),
+                                    detail: "refused".into(),
+                                },
+                            },
+                            PutOutcome::Status(s) => PutResult::Failed {
+                                status: Some(s),
+                                detail: "refused".into(),
+                            },
+                            PutOutcome::Lost => PutResult::Failed {
+                                status: None,
+                                detail: "connection reset".into(),
+                            },
+                            PutOutcome::Unreadable => PutResult::Unreadable("deleted".into()),
+                        };
+                        self.input(Input::PutDone {
+                            op_id,
+                            file_id,
+                            key,
+                            result,
+                        })
+                    }
                     Delivery::Frame(c, f) => {
                         if c == self.conn && self.open {
                             self.input(Input::Frame(f))

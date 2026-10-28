@@ -249,6 +249,10 @@ impl Core {
                         self.reply(id, Err(ClientError::new("disconnected", "connection lost")));
                     }
                 }
+                Purpose::FileUrl { cmd, .. } => self.reply(
+                    cmd,
+                    Err(ClientError::new("disconnected", "connection lost")),
+                ),
                 _ => {}
             }
         }
@@ -508,6 +512,7 @@ impl Core {
             Purpose::Focus => {}
             Purpose::Heads(ids) => self.on_heads(f, &ids),
             Purpose::Op(op) => self.on_op_result(&op, f, err),
+            Purpose::FileUrl { cmd, key } => self.on_file_url(cmd, key, f, err),
             Purpose::History {
                 conv_id,
                 anchor,
@@ -595,6 +600,9 @@ impl Core {
                         self.reply(id, Err(ClientError::new("timeout", "no answer in time")));
                     }
                 }
+                Purpose::FileUrl { cmd, .. } => {
+                    self.reply(cmd, Err(ClientError::new("timeout", "no answer in time")))
+                }
                 Purpose::Ack | Purpose::Focus => {}
                 _ => {
                     self.drop_connection("request_timeout");
@@ -640,8 +648,10 @@ impl Core {
             self.put_msg(&conv, m, false);
         }
         for o in s.ops {
-            if let Some(op) = Op::from_json(&o) {
-                self.ops.push(op);
+            match Op::from_json(&o) {
+                Some(op) => self.ops.push(op),
+                // Written by another version: shown in debug_state.
+                None => self.note_failure("unreadable_operation", o),
             }
         }
         self.ops.sort_by_key(|o| o.n);

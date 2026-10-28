@@ -744,6 +744,17 @@ pub fn image_size(head: &[u8]) -> Option<(u32, u32)> {
         .ok()
 }
 
+/// The size an image is shown at: a JPEG whose EXIF turns it a quarter
+/// (orientations 5–8) has its width and height swapped, so clients reserve
+/// the right space before they load it.
+pub fn upright_size(head: &[u8]) -> Option<(u32, u32)> {
+    let (w, h) = image_size(head)?;
+    Some(match crate::media::orientation(head) {
+        Some(5..=8) => (h, w),
+        _ => (w, h),
+    })
+}
+
 /// A declared type clients may give for a non-image file: `type/subtype`
 /// of token characters; anything else is `application/octet-stream`.
 pub fn clean_mime(m: Option<&str>) -> String {
@@ -834,6 +845,23 @@ mod tests {
             .unwrap();
         assert_eq!(image_size(&png), Some((3, 2)));
         assert_eq!(image_size(b"not an image"), None);
+        // A photo taken upright: stored 4 x 2, turned by its EXIF (6).
+        let mut j = vec![];
+        image::RgbImage::new(4, 2)
+            .write_to(&mut std::io::Cursor::new(&mut j), image::ImageFormat::Jpeg)
+            .unwrap();
+        let tiff: &[u8] = b"MM\0\x2a\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0";
+        let mut app1 = vec![0xFF, 0xE1];
+        app1.extend_from_slice(&((tiff.len() + 8) as u16).to_be_bytes());
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(tiff);
+        j.splice(2..2, app1);
+        assert_eq!(crate::media::orientation(&j), Some(6));
+        assert_eq!(
+            (image_size(&j), upright_size(&j)),
+            (Some((4, 2)), Some((2, 4)))
+        );
+        assert_eq!(upright_size(&png), Some((3, 2)));
     }
 
     #[test]

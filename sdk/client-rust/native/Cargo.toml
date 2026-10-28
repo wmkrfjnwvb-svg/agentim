@@ -12,13 +12,17 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 [dependencies]
 agentim-client-core = { path = "../core" }
 serde_json = "1"
-tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros"] }
+tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros", "fs", "io-util"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "__rustls-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-native-certs = "0.8"
 rusqlite = { version = "0.37", features = ["bundled"] }
 getrandom = "0.3"
+# Uploads (docs/02-architecture.md §2.7): PUTs to the store, thumbnails.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "stream"] }
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+tokio-util = { version = "0.7", default-features = false, features = ["io"] }
 
 [dev-dependencies]
 tempfile = "3"

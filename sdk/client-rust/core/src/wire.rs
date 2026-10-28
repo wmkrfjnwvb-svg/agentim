@@ -10,13 +10,17 @@
 //! `"tick"`, `{"restored": snapshot}`,
 //! `{"page_loaded": {"req", "conv_id", "messages"}}`,
 //! `{"storage_failed": "full" | "corrupt" | "unavailable"}`,
-//! `"storage_recovered"`, `{"persisted": id}`.
+//! `"storage_recovered"`, `{"persisted": id}`,
+//! `{"put_done": {"op_id", "file_id", "key", "etag"} | {…, "error": {"status"?, "unreadable"?, "detail"}}}`,
+//! `{"put_progress": {"op_id", "file_id", "key", "sent"}}`.
 //!
 //! Effects: `{"need_token": true}`, `{"connect": {url, token}}`, `{"send": text}`,
 //! `{"close": {"code", "reason"}}`, `{"persist": batch}`,
 //! `{"load_page": {"req", "conv_id", "before_seq", "limit"}}`,
 //! `{"wipe_store": true}`, `{"emit": event}`,
-//! `{"reply": {"id", "ok", "result" | "error"}}`.
+//! `{"reply": {"id", "ok", "result" | "error"}}`,
+//! `{"put": {"op_id", "file_id", "key", "url", "headers", "source", "offset", "len"}}`,
+//! `{"release_upload": {"op_id"}}`.
 
 use serde_json::{Value, json};
 
@@ -64,6 +68,27 @@ pub fn input_from_json(v: &Value) -> Option<Input> {
             kind: x.as_str()?.to_string(),
         },
         "persisted" => Input::Persisted(x.as_u64()?),
+        "put_done" => Input::PutDone {
+            op_id: x["op_id"].as_str()?.to_string(),
+            file_id: x["file_id"].as_str()?.to_string(),
+            key: x["key"].as_str()?.to_string(),
+            result: match x.get("error") {
+                Some(e) if e["unreadable"] == true => {
+                    crate::PutResult::Unreadable(e["detail"].as_str().unwrap_or("").to_string())
+                }
+                Some(e) => crate::PutResult::Failed {
+                    status: e["status"].as_u64().map(|s| s as u16),
+                    detail: e["detail"].as_str().unwrap_or("").to_string(),
+                },
+                None => crate::PutResult::Done(x["etag"].as_str().unwrap_or("").to_string()),
+            },
+        },
+        "put_progress" => Input::PutProgress {
+            op_id: x["op_id"].as_str()?.to_string(),
+            file_id: x["file_id"].as_str()?.to_string(),
+            key: x["key"].as_str()?.to_string(),
+            sent: x["sent"].as_u64()?,
+        },
         _ => return None,
     })
 }
@@ -89,6 +114,20 @@ pub fn effect_to_json(e: &Effect) -> Value {
             Ok(v) => json!({"reply": {"id": id, "ok": true, "result": v}}),
             Err(e) => json!({"reply": {"id": id, "ok": false, "error": e.to_json()}}),
         },
+        Effect::Put {
+            op_id,
+            file_id,
+            key,
+            url,
+            headers,
+            source,
+            offset,
+            len,
+        } => json!({"put": {
+            "op_id": op_id, "file_id": file_id, "key": key, "url": url, "headers": headers,
+            "source": source, "offset": offset, "len": len,
+        }}),
+        Effect::ReleaseUpload { op_id } => json!({"release_upload": {"op_id": op_id}}),
     }
 }
 
@@ -115,6 +154,10 @@ mod tests {
             json!({"storage_failed": "full"}),
             json!("storage_recovered"),
             json!({"persisted": 9}),
+            json!({"put_done": {"op_id": "o", "file_id": "f", "key": "1", "etag": "\"e\""}}),
+            json!({"put_done": {"op_id": "o", "file_id": "f", "key": "thumb", "error": {"status": 403, "detail": "expired"}}}),
+            json!({"put_done": {"op_id": "o", "file_id": "f", "key": "1", "error": {"unreadable": true, "detail": "gone"}}}),
+            json!({"put_progress": {"op_id": "o", "file_id": "f", "key": "2", "sent": 10}}),
         ];
         for i in &inputs {
             assert!(input_from_json(i).is_some(), "{i}");
@@ -155,6 +198,17 @@ mod tests {
                 id: 2,
                 result: Err(ClientError::new("timeout", "t")),
             },
+            Effect::Put {
+                op_id: "o".into(),
+                file_id: "f".into(),
+                key: "1".into(),
+                url: "https://s3/x".into(),
+                headers: Default::default(),
+                source: "/tmp/a".into(),
+                offset: 0,
+                len: 5,
+            },
+            Effect::ReleaseUpload { op_id: "o".into() },
         ];
         for e in &effects {
             let v = effect_to_json(e);

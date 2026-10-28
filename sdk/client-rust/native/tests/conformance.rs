@@ -50,7 +50,9 @@ impl Server {
     }
 
     fn run(&mut self) {
+        // In its own folder: files go to ./data/files there.
         let child = Command::new(bin())
+            .current_dir(self._dir.path())
             .args([
                 "--db",
                 self.db.to_str().unwrap(),
@@ -377,6 +379,175 @@ fn two_people_talk_edit_recall_and_read() {
         .cmd(json!({"cmd": "call", "op": "get_request", "args": {"request_id": "nope"}}))
         .unwrap_err();
     assert_eq!(e["code"], "not_found");
+}
+
+/// A JPEG with EXIF: orientation 6 and a GPS block.
+fn photo(w: u32, h: u32) -> Vec<u8> {
+    let mut out = vec![];
+    let img = image::RgbImage::from_fn(w, h, |x, y| {
+        image::Rgb([(x % 256) as u8, (y % 256) as u8, 9])
+    });
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80)
+        .encode_image(&img)
+        .unwrap();
+    let mut tiff = b"MM\0\x2a\0\0\0\x08".to_vec();
+    tiff.extend_from_slice(&[0, 2]);
+    tiff.extend_from_slice(&[0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0]);
+    tiff.extend_from_slice(&[0x88, 0x25, 0, 4, 0, 0, 0, 1, 0, 0, 0, 0x26]);
+    tiff.extend_from_slice(&[0, 0, 0, 0]);
+    tiff.extend_from_slice(b"GPS 51.5N 0.12W");
+    let mut seg = b"Exif\0\0".to_vec();
+    seg.extend_from_slice(&tiff);
+    let mut j = out[..2].to_vec();
+    j.extend_from_slice(&[0xFF, 0xE1]);
+    j.extend_from_slice(&((seg.len() + 2) as u16).to_be_bytes());
+    j.extend_from_slice(&seg);
+    j.extend_from_slice(&out[2..]);
+    j
+}
+
+fn download(url: &str) -> Vec<u8> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let r = reqwest::get(url).await.unwrap();
+            assert!(r.status().is_success(), "{url}: {}", r.status());
+            r.bytes().await.unwrap().to_vec()
+        })
+}
+
+/// The message under `key` once it has `status` (`sent`, `failed`, …).
+fn wait_status(a: &mut App, conv: &str, pred: impl Fn(&Value) -> bool, what: &str) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(m) = a.view(conv).into_iter().find(|m| pred(m)) {
+            return m;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{} timed out waiting for {what}: {:?}",
+            a.user,
+            a.view(conv)
+        );
+        if let Ok(v) = a.rx.recv_timeout(Duration::from_millis(100)) {
+            if v["type"] == "need_token" {
+                a.client.token(Ok(a.token.clone()));
+            }
+            a.seen.push(v);
+        }
+    }
+}
+
+#[test]
+fn photos_and_files_go_up_without_location_and_resume_after_a_restart() {
+    let s = Server::start();
+    let store = tempfile::tempdir().unwrap();
+    let pics = tempfile::tempdir().unwrap();
+    let mut bob = App::new(&s, "bob", "b1", None);
+    bob.connect();
+    let bob_id = bob.me();
+    let conv;
+    // A 17 MiB file: two parts of 16 MiB; queued offline, then the
+    // process ends before anything went up.
+    let big: Vec<u8> = (0..(17u32 << 20)).map(|i| (i % 251) as u8).collect();
+    let big_path = pics.path().join("data.bin");
+    std::fs::write(&big_path, &big).unwrap();
+    {
+        let mut alice = App::new(&s, "alice", "a1", Some(store.path().into()));
+        alice.connect();
+        conv = group(&mut alice, &[bob_id]);
+        alice.cmd(json!({"cmd": "close"})).unwrap();
+        alice
+            .cmd(json!({"cmd": "send_file", "conv_id": conv, "path": big_path, "mime": "application/octet-stream"}))
+            .unwrap();
+    }
+    let mut alice = App::new(&s, "alice", "a1", Some(store.path().into()));
+    alice
+        .cmd(json!({"cmd": "messages", "conv_id": conv}))
+        .unwrap();
+    alice.connect();
+    // A photo with its location, sent now (it does not wait for the big file).
+    let p = pics.path().join("IMG_0001.jpg");
+    std::fs::write(&p, photo(1200, 900)).unwrap();
+    let r = alice
+        .cmd(json!({"cmd": "send_file", "conv_id": conv, "path": p, "caption": "the view"}))
+        .unwrap();
+    let key = r["key"].as_str().unwrap().to_string();
+    let local = alice
+        .view(&conv)
+        .into_iter()
+        .find(|m| m["key"] == key.as_str())
+        .unwrap();
+    assert_eq!(local["kind"], "image");
+    assert!(
+        ["uploading", "sending", "sent"].contains(&local["status"].as_str().unwrap()),
+        "{local}"
+    );
+    bob.cmd(json!({"cmd": "messages", "conv_id": conv}))
+        .unwrap();
+    let img = wait_status(&mut bob, &conv, |m| m["kind"] == "image", "the photo");
+    let pl = &img["payload"];
+    assert_eq!(pl["caption"], "the view");
+    assert_eq!(
+        (pl["width"].as_u64(), pl["height"].as_u64()),
+        (Some(900), Some(1200)),
+        "upright: {pl}"
+    );
+    assert_eq!(pl["thumb"], true);
+    let fid = pl["file_id"].as_str().unwrap();
+    // Bob reads it: the location is gone, the orientation stays.
+    let u = bob
+        .cmd(json!({"cmd": "file_url", "conv_id": conv, "file_id": fid}))
+        .unwrap();
+    let original = download(u["url"].as_str().unwrap());
+    assert!(original.starts_with(&[0xFF, 0xD8]));
+    assert!(!original.windows(3).any(|w| w == b"GPS"), "no location");
+    assert_eq!(agentim_client_core::media::orientation(&original), Some(6));
+    let t = bob
+        .cmd(json!({"cmd": "file_url", "conv_id": conv, "file_id": fid, "variant": "thumb"}))
+        .unwrap();
+    let thumb = image::load_from_memory(&download(t["url"].as_str().unwrap())).unwrap();
+    assert_eq!((thumb.width(), thumb.height()), (240, 320));
+    // The big file arrives too, whole.
+    let f = wait_status(&mut bob, &conv, |m| m["kind"] == "file", "the big file");
+    assert_eq!(f["payload"]["size"], big.len() as u64);
+    let u = bob
+        .cmd(json!({"cmd": "file_url", "conv_id": conv, "file_id": f["payload"]["file_id"]}))
+        .unwrap();
+    assert!(
+        download(u["url"].as_str().unwrap()) == big,
+        "the parts join up"
+    );
+    // Alice's side settles; her copies without metadata are deleted.
+    wait_status(
+        &mut alice,
+        &conv,
+        |m| {
+            m["kind"] == "image"
+                && m["status"] == "sent"
+                && !m["key"].as_str().unwrap().starts_with("local:")
+        },
+        "alice's photo stored",
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while std::fs::read_dir(store.path().join("uploads"))
+        .map(|d| d.count())
+        .unwrap_or(0)
+        > 0
+    {
+        assert!(Instant::now() < deadline, "copies left in uploads/");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // A file that cannot be read is refused at once.
+    let e = alice
+        .cmd(json!({"cmd": "send_file", "conv_id": conv, "path": pics.path().join("nope")}))
+        .unwrap_err();
+    assert_eq!(e["code"], "bad_request");
+    // Bob was never sent the original location (the source still has it).
+    assert!(std::fs::read(&p).unwrap().windows(3).any(|w| w == b"GPS"));
 }
 
 #[test]

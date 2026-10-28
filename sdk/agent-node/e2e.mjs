@@ -12,7 +12,7 @@ import zlib from 'node:zlib';
 import { Agent, Connection } from './index.mjs';
 import { AgentIM, createUserToken } from '../node/index.mjs';
 
-const BIN = process.env.AGENTIM_BIN ?? 'server/target/debug/agentim';
+const BIN = path.resolve(process.env.AGENTIM_BIN ?? 'server/target/debug/agentim');
 const PORT = Number(process.env.PORT ?? 20000 + Math.floor(Math.random() * 20000));
 const URL = `http://127.0.0.1:${PORT}`;
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'agentim-e2e-'));
@@ -40,7 +40,8 @@ function png(w, h) {
 let server;
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { server?.kill(); process.exit(130); });
 async function startServer() {
-  server = spawn(BIN, ['--db', DB, '--addr', `127.0.0.1:${PORT}`], { stdio: 'ignore' });
+  // In its own folder: files go to ./data/files there.
+  server = spawn(BIN, ['--db', DB, '--addr', `127.0.0.1:${PORT}`], { stdio: 'ignore', cwd: DIR });
   for (let i = 0; i < 100; i++) {
     try { if ((await fetch(`${URL}/readyz`)).ok) return; } catch {}
     await sleep(100);

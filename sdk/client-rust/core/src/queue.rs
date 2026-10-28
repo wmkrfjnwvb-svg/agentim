@@ -27,6 +27,9 @@ pub enum Kind {
         /// event arrives, so the message does not blink).
         #[serde(default)]
         sent: Option<String>,
+        /// A file or image: uploaded before the message is sent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        upload: Option<Box<crate::upload::Upload>>,
     },
     /// `target` is a msg_id, or `local:<client_msg_id>` of a send still
     /// in the queue.
@@ -101,6 +104,11 @@ impl Op {
     fn waiting(&self) -> bool {
         self.in_flight.is_none() && self.failed.is_none()
     }
+
+    /// The message itself is not on its way (an upload may be).
+    pub(crate) fn not_sending(&self) -> bool {
+        self.in_flight.is_none() || self.uploading()
+    }
 }
 
 fn local(cm: &str) -> String {
@@ -127,7 +135,7 @@ impl Core {
         id
     }
 
-    fn save_op(&mut self, i: usize) {
+    pub(crate) fn save_op(&mut self, i: usize) {
         let v = self.ops[i].to_json();
         self.batch.put_ops.push(v);
     }
@@ -185,6 +193,30 @@ impl Core {
         if text.is_empty() && msg_kind.is_none() {
             return Err(ClientError::new("bad_request", "text is required"));
         }
+        self.queue_send(
+            &conv,
+            cmd["client_msg_id"].as_str(),
+            text,
+            msg_kind,
+            cmd.get("payload").filter(|p| !p.is_null()).cloned(),
+            cmd["reply_to"].as_str().map(String::from),
+            None,
+        )
+    }
+
+    /// Queues a send (a file send has its upload).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn queue_send(
+        &mut self,
+        conv: &str,
+        cm: Option<&str>,
+        text: String,
+        msg_kind: Option<String>,
+        payload: Option<Value>,
+        reply_to: Option<String>,
+        upload: Option<Box<crate::upload::Upload>>,
+    ) -> Result<Value, ClientError> {
+        let conv = conv.to_string();
         // No longer a member: refused here, as the server would (L4).
         if let Some(e) = self.convs.get(&conv).map(|c| &c.info["ended"])
             && !e.is_null()
@@ -198,7 +230,7 @@ impl Core {
                 )
             });
         }
-        let cm = match cmd["client_msg_id"].as_str() {
+        let cm = match cm {
             Some(c) if !c.is_empty() => c.to_string(),
             _ => self.rng.id(self.now),
         };
@@ -210,9 +242,10 @@ impl Core {
                     cm: cm.clone(),
                     text,
                     msg_kind,
-                    payload: cmd.get("payload").filter(|p| !p.is_null()).cloned(),
-                    reply_to: cmd["reply_to"].as_str().map(String::from),
+                    payload,
+                    reply_to,
                     sent: None,
+                    upload,
                 },
             );
             self.conv_mut(&conv);
@@ -229,10 +262,22 @@ impl Core {
         if let Some(cm) = target.strip_prefix("local:") {
             // Not sent yet: the send itself changes.
             if let Some(i) = self.find_send(cm)
-                && self.ops[i].in_flight.is_none()
+                && self.ops[i].not_sending()
             {
-                if let Kind::Send { text: t, .. } = &mut self.ops[i].kind {
-                    *t = text;
+                match &mut self.ops[i].kind {
+                    // A file's text is its caption.
+                    Kind::Send {
+                        upload: Some(u),
+                        payload,
+                        ..
+                    } => {
+                        u.caption = Some(text.clone()).filter(|t| !t.is_empty());
+                        if let Some(p) = payload {
+                            p["caption"] = json!(u.caption);
+                        }
+                    }
+                    Kind::Send { text: t, .. } => *t = text,
+                    _ => {}
                 }
                 self.save_op(i);
                 self.mark_changed(&conv, &target);
@@ -265,7 +310,7 @@ impl Core {
         let target = self.target(cmd)?;
         if let Some(cm) = target.strip_prefix("local:").map(String::from)
             && let Some(i) = self.find_send(&cm)
-            && self.ops[i].in_flight.is_none()
+            && self.ops[i].not_sending()
         {
             // Never sent: it and its edits are dropped.
             self.drop_with_dependents(&cm);
@@ -401,7 +446,7 @@ impl Core {
         let i = self
             .find_send(&cm)
             .ok_or_else(|| ClientError::new("not_found", "no such message waiting"))?;
-        if self.ops[i].in_flight.is_some() {
+        if !self.ops[i].not_sending() {
             return Err(ClientError::new(
                 "conflict",
                 "being sent; wait for the result",
@@ -429,28 +474,36 @@ impl Core {
             .rev()
             .collect();
         for i in gone {
-            self.remove_op(i);
+            let op = self.remove_op(i);
+            // Its PUTs stop; the server throws the upload away after a day.
+            if op.uploading() {
+                self.out.push(Effect::ReleaseUpload { op_id: op.id });
+            }
         }
     }
 
     /// Sends what may go now: per conversation the first waiting
     /// operation, if nothing of that conversation is in flight.
     pub(crate) fn pump_queue(&mut self) {
+        self.pump_uploads();
         if self.phase != Phase::Live || self.paused_until.is_some() {
             return;
         }
         let mut in_flight = self.ops.iter().filter(|o| o.in_flight.is_some()).count();
+        // An upload does not hold back its conversation.
         let mut busy: std::collections::HashSet<String> = self
             .ops
             .iter()
-            .filter(|o| o.in_flight.is_some())
+            .filter(|o| o.in_flight.is_some() && !o.uploading())
             .map(|o| o.conv_id.clone())
             .collect();
         let mut i = 0;
         while i < self.ops.len() && in_flight < MAX_IN_FLIGHT {
             let o = &self.ops[i];
             let conv = o.conv_id.clone();
-            let skip = o.failed.is_some() || matches!(o.kind, Kind::Send { sent: Some(_), .. });
+            let skip = o.failed.is_some()
+                || o.uploading()
+                || matches!(o.kind, Kind::Send { sent: Some(_), .. });
             if skip || busy.contains(&conv) {
                 i += 1;
                 continue;
@@ -566,6 +619,9 @@ impl Core {
             return;
         };
         self.ops[i].in_flight = None;
+        if let Some(step) = self.ops[i].upload_mut().and_then(|u| u.asked.take()) {
+            return self.on_upload_answer(i, step, f, err);
+        }
         let conv = self.ops[i].conv_id.clone();
         let key = Self::op_key(&self.ops[i]);
         let err = err.and_then(|e| {
@@ -609,41 +665,10 @@ impl Core {
                     self.emit_op(&op, None);
                 }
             }
-            Some(e) if e.retryable => {
-                self.note_failure("operation", e.to_json());
-                // A limit the server sets is waited out; trouble on its
-                // side costs retry budget.
-                if e.code != "rate_limited" {
-                    self.spend_budget();
-                }
-                let op = &mut self.ops[i];
-                op.attempts += 1;
-                let exp = (BACKOFF_BASE_MS << op.attempts.min(6)).min(BACKOFF_CAP_MS);
-                let wait = self.rng.upto(exp).max(e.retry_after_ms.unwrap_or(0));
-                self.ops[i].not_before = Some(self.now + wait);
-            }
+            Some(e) if e.retryable => self.back_off(i, &e),
             Some(e) => {
-                if let Kind::Send { cm, .. } = &self.ops[i].kind {
-                    let cm = cm.clone();
-                    // Shown as failed; the app may retry or discard it.
-                    self.ops[i].failed = Some(e.clone());
-                    self.save_op(i);
-                    let op = self.ops[i].clone();
-                    self.emit_op(&op, Some(&e));
-                    // What depends on it fails with it.
-                    let target = local(&cm);
-                    let deps: Vec<usize> = self
-                        .ops
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, o)| matches!(&o.kind, Kind::Edit { target: t, .. } | Kind::Recall { target: t } if *t == target))
-                        .map(|(j, _)| j)
-                        .rev()
-                        .collect();
-                    for j in deps {
-                        let d = self.remove_op(j);
-                        self.emit_op(&d, Some(&e));
-                    }
+                if matches!(self.ops[i].kind, Kind::Send { .. }) {
+                    self.fail_send(i, e);
                 } else {
                     let op = self.remove_op(i);
                     self.emit_op(&op, Some(&e));
@@ -654,6 +679,50 @@ impl Core {
         if let Some(k) = key {
             self.mark_changed(&conv, &k);
         }
+    }
+
+    /// Trouble that says nothing about the operation: tried again later.
+    pub(crate) fn back_off(&mut self, i: usize, e: &ClientError) {
+        self.note_failure("operation", e.to_json());
+        // A limit the server sets is waited out; trouble on its side costs
+        // retry budget.
+        if e.code != "rate_limited" {
+            self.spend_budget();
+        }
+        let op = &mut self.ops[i];
+        op.attempts += 1;
+        let exp = (BACKOFF_BASE_MS << op.attempts.min(6)).min(BACKOFF_CAP_MS);
+        let wait = self.rng.upto(exp).max(e.retry_after_ms.unwrap_or(0));
+        self.ops[i].not_before = Some(self.now + wait);
+    }
+
+    /// A send the server refused: shown as failed (the app may retry or
+    /// discard it), and what depends on it fails with it.
+    pub(crate) fn fail_send(&mut self, i: usize, e: ClientError) {
+        let Kind::Send { cm, .. } = &self.ops[i].kind else {
+            return;
+        };
+        let cm = cm.clone();
+        let conv = self.ops[i].conv_id.clone();
+        self.ops[i].failed = Some(e.clone());
+        self.save_op(i);
+        let op = self.ops[i].clone();
+        self.emit_op(&op, Some(&e));
+        let target = local(&cm);
+        let deps: Vec<usize> = self
+            .ops
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| matches!(&o.kind, Kind::Edit { target: t, .. } | Kind::Recall { target: t } if *t == target))
+            .map(|(j, _)| j)
+            .rev()
+            .collect();
+        for j in deps {
+            let d = self.remove_op(j);
+            self.emit_op(&d, Some(&e));
+        }
+        self.mark_changed(&conv, &target);
+        self.list_changed.insert(conv);
     }
 
     /// The connection went while an operation was in flight: it is sent

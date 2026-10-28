@@ -3,6 +3,7 @@
 //! ([`Client`]) and from any language through the C ABI (`include/agentim.h`).
 
 mod ffi;
+pub mod files;
 mod runtime;
 mod store;
 

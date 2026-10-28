@@ -205,7 +205,7 @@ Message {
 | 存储配置 | `[files] storage = "local"`（默认，`dir = "./data/files"`）或 `"s3"`。S3 要配：`bucket`、`region`、`endpoint`（MinIO、R2、阿里云 OSS、腾讯云 COS 这些兼容 S3 的服务都填自己的地址）、`prefix`、`path_style`；密钥用环境变量 `AGENTIM_S3_ACCESS_KEY_ID` / `AGENTIM_S3_SECRET_ACCESS_KEY`。签名用 `rusty-s3`（纯 Rust、只负责签名不发请求，0.10.2，2026-08-01），请求由服务端已有的 HTTP 客户端发。集群里多个节点必须用 S3，或者 `local` 加 `shared = true`（大家挂同一个网络盘）；都没有时照常运行，但上传返回 `conflict` 并说明要怎么配，启动时也打一条警告（不让已有的集群因为升级起不来）。用 S3 时启动先写一个探测对象再删掉，桶不可用就报错；本机文件夹在第一次写入时才建 |
 | 存放路径 | `{prefix}/{conv_id}/{file_id}/original` 和 `…/thumb`。`file_id` 是随机 ID，文件名只在数据库里，不进路径 |
 | 类型 | 只有 JPEG、PNG、WebP、GIF 算图片（`kind: "image"`），其余都是 `kind: "file"`。普通文件下载时带 `Content-Disposition: attachment`。本机存储由服务端输出，还带 `X-Content-Type-Options: nosniff` 和 `Content-Security-Policy: sandbox`；S3 的预签名地址里用 `response-content-disposition` 和 `response-content-type` 指定这两项。SVG 当普通文件（里面可以有脚本）。iPhone 的 HEIC 由客户端转成 JPEG 再传 |
-| 缩略图 | **客户端生成**：长边 320 像素（聊天里约 160–240 点宽），先按 EXIF 方向转正。不透明的出 JPEG（质量 75），透明的出 PNG，一般 15–40 KB。原图长边不到 320 就不传缩略图，直接用原图。生成的位置：浏览器用 `createImageBitmap` 和 `OffscreenCanvas`；其他平台都在共用的 Rust 原生运行层里用 `image` 库（0.25.10，2026-03-10），Swift、Kotlin、C#、Dart、React Native 都不用自己写。图片解不开或超过 4000 万像素，就不生成缩略图，当成普通文件发。另外记下原图的宽高，客户端下载前按比例留出位置，界面不跳动 |
+| 缩略图 | **客户端生成**：长边 320 像素（聊天里约 160–240 点宽），先按 EXIF 方向转正。不透明的出 JPEG（质量 75），透明的出 PNG，一般 15–40 KB。原图长边不到 320 就不传缩略图，直接用原图。生成的位置：浏览器用 `createImageBitmap` 和 `OffscreenCanvas`；其他平台都在共用的 Rust 原生运行层里用 `image` 库（0.25.10，2026-03-10），Swift、Kotlin、C#、Dart、React Native 都不用自己写。图片解不开或超过 4000 万像素，就不生成缩略图，当成普通文件发。另外记下原图转正后的宽高（服务端也按 EXIF 方向算，方向 5–8 宽高互换），客户端下载前按比例留出位置，界面不跳动 |
 | 位置信息 | 客户端上传前默认去掉原图里的 EXIF 和 XMP（含 GPS）：JPEG 的 APP1、PNG 的 `eXIf`/`iTXt`、WebP 的 `EXIF`/`XMP`。只删这些数据块、不重新编码，画质不变；方向信息先用掉再删。这段放在 Rust 核心里，所有平台共用。应用可以关掉（`send_file {keep_metadata: true}`），部署可以禁止关掉（`files.allow_metadata = false`，默认禁止）。服务端 SDK 和 Agent SDK 上传时也做同样的处理 |
 | 下载 | `file_url {file_id, variant: "thumb" | "original"}`（客户端协议、开放 API、MCP 都有）每次都检查权限：上传者本人，或者引用它的消息你看得见；被移出后立刻不能再取。返回 5 分钟有效的地址：S3 是预签名 GET，流量不经过服务端；本机是服务端的 `/files/{file_id}/{variant}?exp=…&sig=…`，支持 `Range`。文件内容不会变，客户端按 `file_id` 一直缓存 |
 | 静态加密 | S3：内容不经过服务端，用桶的服务端加密（SSE-S3 或 SSE-KMS）；解散会话、删除文件时删掉对象。本机文件夹：**还没做**应用层加密，先用磁盘加密（LUKS、BitLocker、云盘加密）。计划的做法：用会话的 DEK 按 64 KiB 分块 AES-256-GCM，AAD 是（文件 ID、档位、块序号、是否最后一块）；排在 [06 §2](06-plan.md) |
@@ -216,12 +216,15 @@ Message {
 | 其他 | Agent 上传的文件标记 `ai_generated: true`（EU AI Act 第 50 条）。会话迁到另一个库时，`files` 记录和 DEK 跟着会话走，存储是共用的，内容不用搬 |
 | 以后 | 可选的病毒扫描钩子（接 ClamAV，扫描通过前不能引用）；视频的封面和时长 |
 
-**客户端 SDK**：`send_file {conv_id, file, caption?}`。
-- 先显示一条本地消息，状态"上传中"，带进度。上传完成再自动发消息。
-- 上传失败和发送失败一样标记失败，可以重试（从没传完的片继续）或删掉。
-- 原生平台记下文件路径，重启后继续上传；浏览器把文件放进 IndexedDB，单个超过 200 MiB 的不放，刷新后要重新选。
-- 客户端核心不做网络请求：核心发出 `upload_part` 效果，运行层 PUT 后回报结果和进度；缩略图和去位置信息在发出 `upload_start` 之前做完。
-- 缩略图按 `file_id` 缓存。
+**客户端 SDK**（核心 `core/src/upload.rs`；原生运行层 `native/src/files.rs`）
+- 应用发 `send_file {conv_id, path, name?, mime?, caption?, reply_to?, client_msg_id?, keep_metadata?}`（原生；浏览器传 `File`）。运行层先做完准备：读开头判断是不是图片；图片（256 MiB 以内，要整张读进内存）去掉 EXIF 和 XMP 写一份副本、按方向转正生成缩略图、记下转正后的宽高；其他文件直接用原路径。然后交给核心的 `send_file {conv_id, file: {source, name, size, mime?, width?, height?}, thumb?: {source, size, width, height}, caption?}`。
+- 核心马上显示一条本地消息：`status: "uploading"`，`payload` 带名字、大小、宽高和本地来源（`local_source`、`local_thumb`，界面先用它显示），`upload: {sent, size}` 是进度。说明文字可以在发出前改（`edit` 改的是说明）。
+- 一个文件就是离线队列里的一条发送，前面多一段上传：`upload_start` → 运行层按 `Put` 效果 PUT（每个文件最多同时 4 片，缩略图也是一次 `Put`），回报 `PutDone`（带 ETag）和 `PutProgress` → 全部传完 `upload_complete` → 按普通消息发出，种类以服务端判断为准（声称是图片但不是的按文件发）。传好的片和 ETag 跟着操作一起存下，重启后只传没传完的。
+- **上传不挡住会话**：上传期间后面写的消息照常发出，文件消息在上传完成时排进发送顺序。Matrix 的 Rust SDK 把上传放进房间的顺序队列，上传期间后面的消息都要等；它的提案 MSC2246 把"大文件挡住后面所有消息"列为要解决的问题（[send_queue](https://docs.rs/matrix-sdk/0.18.0/matrix_sdk/send_queue/)、[MSC2246](https://github.com/tulir/matrix-spec-proposals/blob/9a395ed0ab19172cc77eaf648b52f8a8ff5a0ac7/proposals/2246-asynchronous-uploads.md)）。待负责人确认（[06 §1.1](06-plan.md)）。
+- PUT 不需要 WebSocket：断线时进行中的 PUT 照常完成。失败处理：网络错误和 5xx 退避重试（和消息一样一直重试）；400/401/403/404/410（地址过期、上传已关）先重新要地址（`upload_parts`），快过期（剩 1 分钟）的地址也重新要；413（代理的请求体上限）和来源读不到直接失败；`upload_parts` 或 `upload_complete` 说 `not_found`（上传过期被清理）就从头再传，最多 3 次；`upload_parts` 说 `conflict`（其实已经完成、只是回答丢了）就再 `upload_complete`；`upload_complete` 说 `bad_request`（内容和声明的不符，服务端已扔掉）标记失败，`retry` 从头再传。
+- 删掉（`discard`）或撤回还没发出的文件：核心发 `ReleaseUpload`，运行层停掉它的 PUT；上传完成时也发，运行层删掉自己做的副本和缩略图。启动时删掉 `uploads/` 里队列不再引用的文件。来源被删掉的标记失败。
+- `file_url {conv_id, file_id, variant?}` 返回绝对地址（本机存储的相对地址按 `url` 补全），在有效期前 30 秒内重复问直接用缓存，离线时也能用缓存。
+- 浏览器（还没做）：缩略图用 `createImageBitmap` 和 `OffscreenCanvas`，去位置信息用 wasm 里同一份 `media.rs`，文件放进 IndexedDB（单个超过 200 MiB 的不放，刷新后要重新选）。
 
 **界面（Web 和 React Native 组件）**
 - 图片：聊天里显示缩略图，按比例，最大 240×240 点，圆角，加载前是浅灰占位。点开后全屏显示放大的缩略图，底部（手机）或右上角（电脑）有"View original"，点了下载原图、加载时显示进度，下载完替换显示。还有"Download"和关闭：Esc、点背景、手机上往下滑都能关。连发的多张排成网格。

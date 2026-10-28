@@ -76,20 +76,34 @@ impl Core {
                 payload,
                 reply_to,
                 sent,
+                upload,
                 ..
             } = &op.kind
             else {
                 return None;
             };
+            let uploading = upload.as_ref().filter(|u| u.file.is_none());
             let mut m = json!({
                 "key": key, "msg_id": sent.as_deref().unwrap_or(key), "client_msg_id": cm, "conv_id": conv,
                 "sender_id": self.me["id"], "sender_name": self.me["name"], "sender_type": "human",
                 "kind": msg_kind.clone().unwrap_or_else(|| "text".into()),
                 "content": text, "payload": payload, "reply_to": reply_to,
                 "created_at": op.created_at, "version": 0, "state": "committed",
-                "status": if sent.is_some() { "sent" } else if op.failed.is_some() { "failed" } else { "sending" },
+                "status": if sent.is_some() { "sent" } else if op.failed.is_some() { "failed" } else if uploading.is_some() { "uploading" } else { "sending" },
                 "order": LOCAL_ORDER + op.n as i64,
             });
+            // Until the server has the file: what the app picked, and how
+            // far the upload is; then the file as the server checked it.
+            if let Some(u) = upload {
+                let mut p = u.preview();
+                if let Some(f) = &u.file
+                    && let (Some(o), Some(fo)) = (p.as_object_mut(), f.as_object())
+                {
+                    o.extend(fo.clone());
+                }
+                m["payload"] = p;
+                m["upload"] = json!({"sent": if u.file.is_some() { u.size } else { u.sent() }, "size": u.size});
+            }
             if let Some(e) = &op.failed {
                 m["error"] = e.to_json();
             }

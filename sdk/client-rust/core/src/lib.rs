@@ -20,6 +20,7 @@ pub mod media;
 mod queue;
 mod rng;
 mod sync;
+pub mod upload;
 mod view;
 pub mod wire;
 
@@ -30,6 +31,7 @@ use serde_json::{Value, json};
 
 pub use error::{ClientError, is_transient};
 pub use queue::Op;
+pub use upload::PutResult;
 
 /// How long a connection attempt may take, handshake and welcome included.
 pub const CONNECT_TIMEOUT_MS: i64 = 10_000;
@@ -129,6 +131,20 @@ pub enum Input {
     StorageRecovered,
     /// A `Persist` was written (its batch id).
     Persisted(u64),
+    /// A `Put` ended.
+    PutDone {
+        op_id: String,
+        file_id: String,
+        key: String,
+        result: PutResult,
+    },
+    /// Bytes of a running `Put` sent so far (a few times a second at most).
+    PutProgress {
+        op_id: String,
+        file_id: String,
+        key: String,
+        sent: u64,
+    },
 }
 
 /// What the runtime must do.
@@ -166,6 +182,27 @@ pub enum Effect {
     Reply {
         id: u64,
         result: Result<Value, ClientError>,
+    },
+    /// Upload `len` bytes of `source` from `offset`: an HTTP PUT of exactly
+    /// those bytes to `url` with `headers` (and no others that change what
+    /// is signed). Answer with `Input::PutDone`, the response's `ETag`
+    /// included; report `Input::PutProgress` on the way.
+    Put {
+        op_id: String,
+        file_id: String,
+        /// The part number, or `thumb`.
+        key: String,
+        url: String,
+        headers: BTreeMap<String, String>,
+        source: String,
+        offset: u64,
+        len: u64,
+    },
+    /// The upload of this operation ended (complete, or the send was
+    /// discarded): stop its PUTs, and the runtime's own copies of its
+    /// sources (a copy without metadata, a thumbnail) may be deleted.
+    ReleaseUpload {
+        op_id: String,
     },
 }
 
@@ -275,6 +312,11 @@ pub(crate) enum Purpose {
     },
     App(u64),
     Focus,
+    /// `file_url` for a command: cached under `key`.
+    FileUrl {
+        cmd: u64,
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -369,6 +411,8 @@ pub struct Core {
     pub(crate) acks_waiting: Vec<(u64, Vec<Value>)>,
     pub(crate) next_req: u64,
     pub(crate) page_reqs: HashMap<u64, (String, Option<u64>)>,
+    /// `file_url` answers by `file_id/variant` (the content never changes).
+    pub(crate) file_urls: HashMap<String, Value>,
 }
 
 impl Core {
@@ -427,6 +471,7 @@ impl Core {
             acks_waiting: vec![],
             next_req: 0,
             page_reqs: HashMap::new(),
+            file_urls: HashMap::new(),
         }
     }
 
@@ -452,6 +497,18 @@ impl Core {
             Input::StorageFailed { kind } => self.on_storage_failed(&kind),
             Input::StorageRecovered => self.on_storage_recovered(),
             Input::Persisted(id) => self.on_persisted(id),
+            Input::PutDone {
+                op_id,
+                file_id,
+                key,
+                result,
+            } => self.on_put_done(&op_id, &file_id, &key, result),
+            Input::PutProgress {
+                op_id,
+                file_id,
+                key,
+                sent,
+            } => self.on_put_progress(&op_id, &file_id, &key, sent),
         }
         self.timers();
         self.pump_queue();
@@ -474,6 +531,14 @@ impl Core {
         d.extend(self.paused_until);
         if self.phase == Phase::Live {
             d.extend(self.ops.iter().filter_map(|o| o.not_before));
+        } else {
+            // PUTs go on without a connection.
+            d.extend(
+                self.ops
+                    .iter()
+                    .filter(|o| o.uploading())
+                    .filter_map(|o| o.not_before),
+            );
         }
         // Whatever was due is handled at the end of every input; what
         // remains due is waiting for something else (a connection).
@@ -542,6 +607,8 @@ impl Core {
                 Ok(json!({}))
             }
             "send" => self.cmd_send(&cmd),
+            "send_file" => self.cmd_send_file(&cmd),
+            "file_url" => return self.cmd_file_url(id, &cmd),
             "edit" => self.cmd_edit(&cmd),
             "recall" => self.cmd_recall(&cmd),
             "read" => self.cmd_read(&cmd),

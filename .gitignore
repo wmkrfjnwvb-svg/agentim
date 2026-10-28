@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 node_modules/
+
+# Files of a server run from the repository (files.dir = ./data/files)
+/data/

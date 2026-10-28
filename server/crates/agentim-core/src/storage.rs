@@ -1275,9 +1275,13 @@ pub async fn columns(c: &mut AnyConnection, d: Dialect, table: &str) -> ApiResul
         }
     };
     let rows = sqlx::query(d.q(sql)).bind(table).fetch_all(&mut *c).await?;
-    rows.iter()
+    let mut v = rows
+        .iter()
         .map(|r| Ok(r.try_get::<String, _>(0)?.to_lowercase()))
-        .collect()
+        .collect::<ApiResult<Vec<String>>>()?;
+    // Byte order: the databases' collations order `_` differently.
+    v.sort();
+    Ok(v)
 }
 
 /// `name TYPE [NOT NULL]` of a declared column.

@@ -3,10 +3,11 @@
 # Usage: sdk/smoke.sh [path/to/agentim]   (default: server/target/debug/agentim)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-BIN=${1:-server/target/debug/agentim}
+BIN=$(realpath "${1:-server/target/debug/agentim}")
 DIR=$(mktemp -d)
 PORT=${PORT:-18765}
-"$BIN" --db "$DIR/smoke.db" --addr "127.0.0.1:$PORT" >"$DIR/server.log" 2>&1 &
+# In its own folder: files go to ./data/files there.
+(cd "$DIR" && exec "$BIN" --db "$DIR/smoke.db" --addr "127.0.0.1:$PORT") >"$DIR/server.log" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true; rm -rf "$DIR"' EXIT
 for _ in $(seq 1 100); do

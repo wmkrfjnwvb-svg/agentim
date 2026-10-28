@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "python"))
 from agentim import AgentIM, create_user_token  # noqa: E402  (the server SDK)
 from agentim_agent import Agent, AgentIMError, Connection  # noqa: E402
 
-BIN = os.environ.get("AGENTIM_BIN", "server/target/debug/agentim")
+BIN = os.path.abspath(os.environ.get("AGENTIM_BIN", "server/target/debug/agentim"))
 PORT = int(os.environ.get("PORT", 20000 + random.randrange(20000)))
 URL = f"http://127.0.0.1:{PORT}"
 DIR = tempfile.mkdtemp(prefix="agentim-e2e-")
@@ -59,7 +59,8 @@ def cli(*args):
 
 def start_server():
     global server
-    server = subprocess.Popen([BIN, "--db", DB, "--addr", f"127.0.0.1:{PORT}"],
+    # In its own folder: files go to ./data/files there.
+    server = subprocess.Popen([BIN, "--db", DB, "--addr", f"127.0.0.1:{PORT}"], cwd=DIR,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):
         try:

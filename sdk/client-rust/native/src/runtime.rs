@@ -4,11 +4,11 @@
 //! ABI; it hears back through one callback with JSON events, on the
 //! runtime's thread (wrappers move them to their UI thread).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agentim_client_core::{Config, Core, Effect, Input};
+use agentim_client_core::{ClientError, Config, Core, Effect, Input, PutResult};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -33,6 +33,10 @@ enum In {
     Failed(u64, Option<u16>, Option<i64>, String),
     Frame(u64, String),
     Closed(u64, u16, String),
+    /// A `send_file {path}` made ready for the core.
+    Prepared(u64, Result<Value, ClientError>),
+    PutDone(String, String, String, PutResult),
+    PutProgress(String, String, String, u64),
 }
 
 /// A running client. Dropping it stops the runtime.
@@ -158,6 +162,21 @@ async fn run(
         }
     };
     let tls = tls();
+    let http = reqwest::Client::builder()
+        .tls_backend_preconfigured((*tls).clone())
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .build()
+        .expect("http client");
+    // Copies made for uploads (without metadata, thumbnails), until the
+    // core releases them; PUTs running, per operation.
+    let uploads = dir
+        .as_ref()
+        .map(|d| d.join("uploads"))
+        .unwrap_or_else(|| std::env::temp_dir().join("agentim-uploads"));
+    let mut puts: HashMap<String, Vec<tokio::task::AbortHandle>> = HashMap::new();
+    let mut owned: HashMap<String, HashSet<PathBuf>> = HashMap::new();
+    let mut swept = false;
     let mut sink: Option<(u64, Box<Sink>)> = None;
     let mut conn: u64 = 0;
     let mut full = false;
@@ -247,6 +266,48 @@ async fn run(
                         }
                     }
                     Effect::Emit(v) => emit(v),
+                    Effect::Put {
+                        op_id,
+                        file_id,
+                        key,
+                        url,
+                        headers,
+                        source,
+                        offset,
+                        len,
+                    } => {
+                        let p = PathBuf::from(&source);
+                        if p.starts_with(&uploads) {
+                            owned.entry(op_id.clone()).or_default().insert(p);
+                        }
+                        let (http, tx) = (http.clone(), tx.clone());
+                        let (o, f, k) = (op_id.clone(), file_id.clone(), key.clone());
+                        let progress = {
+                            let (tx, o, f, k) = (tx.clone(), o.clone(), f.clone(), k.clone());
+                            move |n| {
+                                let _ =
+                                    tx.send(In::PutProgress(o.clone(), f.clone(), k.clone(), n));
+                            }
+                        };
+                        let h = tokio::spawn(async move {
+                            let r = crate::files::put(
+                                &http, &url, &headers, &source, offset, len, progress,
+                            )
+                            .await;
+                            let _ = tx.send(In::PutDone(o, f, k, r));
+                        });
+                        let list = puts.entry(op_id).or_default();
+                        list.retain(|a| !a.is_finished());
+                        list.push(h.abort_handle());
+                    }
+                    Effect::ReleaseUpload { op_id } => {
+                        for a in puts.remove(&op_id).unwrap_or_default() {
+                            a.abort();
+                        }
+                        for p in owned.remove(&op_id).unwrap_or_default() {
+                            let _ = std::fs::remove_file(p);
+                        }
+                    }
                     Effect::Reply { id, result } => emit(match result {
                         Ok(v) => json!({"type": "reply", "id": id, "ok": true, "result": v}),
                         Err(e) => {
@@ -255,6 +316,11 @@ async fn run(
                     }),
                 }
             }
+        }
+        if !swept {
+            // Copies left by an earlier run that no queued upload names.
+            swept = true;
+            sweep_uploads(&uploads, &core.debug_state());
         }
         let wait = core
             .next_deadline()
@@ -269,7 +335,30 @@ async fn run(
         let Some(msg) = msg else { break };
         match msg {
             In::Shutdown => break,
+            In::Command(id, cmd) if cmd["cmd"] == "send_file" && cmd.get("path").is_some() => {
+                // Reading, removing metadata and the thumbnail take a while.
+                let (tx, dir) = (tx.clone(), uploads.clone());
+                tokio::task::spawn_blocking(move || {
+                    let _ = tx.send(In::Prepared(id, crate::files::prepare(&cmd, &dir)));
+                });
+            }
             In::Command(id, cmd) => inputs.push_back(Input::Command { id, cmd }),
+            In::Prepared(id, Ok(cmd)) => inputs.push_back(Input::Command { id, cmd }),
+            In::Prepared(id, Err(e)) => {
+                emit(json!({"type": "reply", "id": id, "ok": false, "error": e.to_json()}))
+            }
+            In::PutDone(op_id, file_id, key, result) => inputs.push_back(Input::PutDone {
+                op_id,
+                file_id,
+                key,
+                result,
+            }),
+            In::PutProgress(op_id, file_id, key, sent) => inputs.push_back(Input::PutProgress {
+                op_id,
+                file_id,
+                key,
+                sent,
+            }),
             In::Token(t) => inputs.push_back(Input::Token(t)),
             In::Network(online, generation) => {
                 inputs.push_back(Input::Network { online, generation })
@@ -299,6 +388,23 @@ async fn run(
     }
     if let Some((_, mut s)) = sink.take() {
         let _ = s.close().await;
+    }
+}
+
+/// Deletes files in `dir` that no queued upload uses.
+fn sweep_uploads(dir: &std::path::Path, state: &Value) {
+    let mut keep: HashSet<PathBuf> = HashSet::new();
+    for o in state["queue"].as_array().into_iter().flatten() {
+        for s in [&o["upload"]["source"], &o["upload"]["thumb"]["source"]] {
+            if let Some(s) = s.as_str() {
+                keep.insert(PathBuf::from(s));
+            }
+        }
+    }
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if !keep.contains(&e.path()) {
+            let _ = std::fs::remove_file(e.path());
+        }
     }
 }
 

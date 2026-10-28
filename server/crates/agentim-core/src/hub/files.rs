@@ -169,7 +169,7 @@ impl Hub {
             .head_bytes(&f.conv_id, &f.file_id, "original", HEAD_BYTES)
             .await?;
         let (mime, kind, size) = match fs::sniff_image(&head) {
-            Some(m) => match fs::image_size(&head) {
+            Some(m) => match fs::upright_size(&head) {
                 Some((w, h)) => (m.to_string(), "image", Some((w as i64, h as i64))),
                 // An image whose size cannot be read: shown as a file.
                 None => (m.to_string(), "file", None),
