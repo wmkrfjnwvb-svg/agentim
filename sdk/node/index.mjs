@@ -48,9 +48,10 @@ export class AgentIM {
   }
 
   /** Low-level call. POSTs get an Idempotency-Key reused across retries. */
-  async request(method, path, body, { idempotencyKey } = {}) {
+  async request(method, path, body, { idempotencyKey, raw } = {}) {
     const headers = { authorization: `Bearer ${this.apiKey}` };
-    if (body !== undefined) headers["content-type"] = "application/json";
+    if (raw !== undefined) headers["content-type"] = "application/octet-stream";
+    else if (body !== undefined) headers["content-type"] = "application/json";
     if (method === "POST") headers["idempotency-key"] = idempotencyKey ?? randomUUID();
     const retryable = method === "GET" || method === "PUT" || method === "POST";
     for (let attempt = 0; ; attempt++) {
@@ -59,7 +60,7 @@ export class AgentIM {
         res = await this.fetch(this.baseUrl + path, {
           method,
           headers,
-          body: body === undefined ? undefined : JSON.stringify(body),
+          body: raw !== undefined ? raw : body === undefined ? undefined : JSON.stringify(body),
         });
       } catch (e) {
         if (retryable && attempt < this.retries) {
@@ -180,6 +181,27 @@ export class AgentIM {
   }
 
   // ---- messages
+  /**
+   * Uploads a whole file (at most 64 MiB) as `as`: the server removes EXIF
+   * and GPS and makes a thumbnail. Returns the file ({file_id, kind, ...}).
+   */
+  uploadFile(convId, { as, name, data, mime }) {
+    const q = new URLSearchParams({ as, name, ...(mime ? { mime } : {}) });
+    return this.request("POST", `/v1/conversations/${enc(convId)}/files?${q}`, undefined, { raw: data });
+  }
+  /** Uploads a file and sends it as an image or file message. */
+  async sendFile(convId, { as, name, data, mime, caption, replyTo }) {
+    const f = await this.uploadFile(convId, { as, name, data, mime });
+    const kind = f.kind === "image" ? "image" : "file";
+    const payload = { file_id: f.file_id, ...(caption ? { caption } : {}) };
+    const sent = await this.sendMessage(convId, { as, text: kind === "image" ? "[Image]" : `[File] ${f.name}`, kind, payload, replyTo });
+    return { ...sent, file: f };
+  }
+  /** A link (valid 5 minutes) to read a file; `variant` is original or thumb. */
+  fileUrl(convId, fileId, { as, variant } = {}) {
+    const q = new URLSearchParams({ ...(as ? { as } : {}), ...(variant ? { variant } : {}) });
+    return this.request("GET", `/v1/conversations/${enc(convId)}/files/${enc(fileId)}?${q}`);
+  }
   sendMessage(convId, m) {
     return this.request("POST", `/v1/conversations/${enc(convId)}/messages`, msg(m));
   }

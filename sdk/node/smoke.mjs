@@ -39,6 +39,8 @@ assert.equal((await im.resumeAgent(bot)).stopped, false);
 assert.ok((await im.exportAgent(bot)).sha256);
 assert.equal((await im.destroyAgent(bot)).destroyed, true);
 
+const outsiderFirst = `${run}_o`;
+await im.upsertUser(outsiderFirst);
 const conv = await im.createConversation({ as: "system", owner: a, kind: "group", title: "smoke", members: [b] });
 const sent = await im.sendMessage(conv.id, { as: a, text: "hello", clientMsgId: "m1" });
 const again = await im.sendMessage(conv.id, { as: a, text: "hello", clientMsgId: "m1" });
@@ -53,6 +55,18 @@ const h = await im.history(conv.id, { limit: 200 });
 assert.ok(h.events.some((e) => e.msg?.content === "hello!"));
 assert.ok(h.events.some((e) => e.msg?.sender_id === "_system"));
 await im.markRead(dm.conv_id, b, 1);
+// Files: an image and a file, read back through a short-lived link.
+const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+const img = await im.sendFile(conv.id, { as: a, name: "dot.png", data: png, caption: "a dot" });
+assert.equal(img.file.kind, "image");
+const doc = await im.sendFile(conv.id, { as: a, name: "notes.txt", data: Buffer.from("notes"), mime: "text/plain" });
+assert.equal(doc.file.kind, "file");
+const link = await im.fileUrl(conv.id, doc.file.file_id, { as: b });
+assert.equal(await (await fetch(new URL(link.url, process.env.AGENTIM_URL))).text(), "notes");
+// A small image is its own thumbnail.
+assert.equal(img.file.thumb, false);
+assert.equal((await im.fileUrl(conv.id, img.file.file_id, { as: b, variant: "thumb" })).variant, "original");
+await assert.rejects(im.fileUrl(conv.id, doc.file.file_id, { as: outsiderFirst }), (e) => e.code === "forbidden");
 
 await assert.rejects(im.sendMessage(conv.id, { as: "nobody", text: "x" }), (e) => e instanceof AgentIMError && e.code === "not_found" && e.status === 404);
 const outsider = `${run}_c`;

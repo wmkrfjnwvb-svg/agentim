@@ -4,10 +4,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -114,7 +117,29 @@ func main() {
 		log.Fatal("history")
 	}
 	must(im.MarkRead(ctx, dm["conv_id"].(string), b, 1))
-	_, err := im.SendMessage(ctx, id, M{"as": "nobody", "text": "x"})
+	var err error
+	// Files: an image and a file, read back through a short-lived link.
+	png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+	img := must(im.SendFile(ctx, id, a, "dot.png", png, "", "a dot"))
+	doc := must(im.SendFile(ctx, id, a, "notes.txt", []byte("notes"), "text/plain", ""))
+	if img["file"].(M)["kind"] != "image" || doc["file"].(M)["kind"] != "file" {
+		log.Fatal("file kinds")
+	}
+	docID := doc["file"].(M)["file_id"].(string)
+	link := must(im.FileURL(ctx, id, docID, b, ""))
+	r := must(http.Get(os.Getenv("AGENTIM_URL") + link["url"].(string)))
+	body, _ := io.ReadAll(r.Body)
+	r.Body.Close()
+	if string(body) != "notes" {
+		log.Fatal("file contents")
+	}
+	// A small image is its own thumbnail.
+	if img["file"].(M)["thumb"] != false || must(im.FileURL(ctx, id, img["file"].(M)["file_id"].(string), b, "thumb"))["variant"] != "original" {
+		log.Fatal("thumb")
+	}
+	_, err = im.FileURL(ctx, id, docID, c, "")
+	expect(err, "forbidden")
+	_, err = im.SendMessage(ctx, id, M{"as": "nobody", "text": "x"})
 	expect(err, "not_found")
 	_, err = im.SendMessage(ctx, id, M{"as": c, "text": "x"})
 	expect(err, "forbidden")

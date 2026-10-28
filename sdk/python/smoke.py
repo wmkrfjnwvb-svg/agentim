@@ -6,6 +6,7 @@ import socket
 import sys
 import time
 import urllib.parse
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from agentim import AgentIM, AgentIMError, create_user_token  # noqa: E402
@@ -58,6 +59,23 @@ assert [r["ok"] for r in im.batch_send(b, [a, "nobody"], "promo")["results"]] ==
 h = im.history(conv["id"], limit=200)
 assert any(e.get("msg") and e["msg"]["content"] == "hello!" for e in h["events"])
 im.mark_read(dm["conv_id"], b, 1)
+# Files: an image and a file, read back through a short-lived link.
+png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+img = im.send_file(conv["id"], a, "dot.png", png, caption="a dot")
+assert img["file"]["kind"] == "image", img
+doc = im.send_file(conv["id"], a, "notes.txt", b"notes", mime="text/plain")
+assert doc["file"]["kind"] == "file", doc
+link = im.file_url(conv["id"], doc["file"]["file_id"], b)
+with urllib.request.urlopen(os.environ["AGENTIM_URL"] + link["url"]) as r:
+    assert r.read() == b"notes"
+# A small image is its own thumbnail.
+assert img["file"]["thumb"] is False
+assert im.file_url(conv["id"], img["file"]["file_id"], b, "thumb")["variant"] == "original"
+try:
+    im.file_url(conv["id"], doc["file"]["file_id"], c)
+    raise SystemExit("expected forbidden")
+except AgentIMError as e:
+    assert e.code == "forbidden", e
 
 for who, code, status in [("nobody", "not_found", 404), (c, "forbidden", 403)]:
     try:

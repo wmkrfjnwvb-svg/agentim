@@ -60,13 +60,22 @@ func newKey() string {
 // Do is the low-level call: POSTs get an Idempotency-Key reused across
 // retries; GET, PUT and POST are retried on network errors, 429 and 503.
 func (c *Client) Do(ctx context.Context, method, path string, body any, out any) error {
-	var data []byte
-	if body != nil {
-		var err error
-		if data, err = json.Marshal(clean(body)); err != nil {
-			return err
-		}
+	if body == nil {
+		return c.send(ctx, method, path, nil, "", out)
 	}
+	data, err := json.Marshal(clean(body))
+	if err != nil {
+		return err
+	}
+	return c.send(ctx, method, path, data, "application/json", out)
+}
+
+// DoRaw sends bytes as the body (application/octet-stream), e.g. a file.
+func (c *Client) DoRaw(ctx context.Context, method, path string, data []byte, out any) error {
+	return c.send(ctx, method, path, data, "application/octet-stream", out)
+}
+
+func (c *Client) send(ctx context.Context, method, path string, data []byte, contentType string, out any) error {
 	idem := newKey()
 	retryable := method == http.MethodGet || method == http.MethodPut || method == http.MethodPost
 	for attempt := 0; ; attempt++ {
@@ -75,8 +84,8 @@ func (c *Client) Do(ctx context.Context, method, path string, body any, out any)
 			return err
 		}
 		req.Header.Set("authorization", "Bearer "+c.APIKey)
-		if body != nil {
-			req.Header.Set("content-type", "application/json")
+		if contentType != "" {
+			req.Header.Set("content-type", contentType)
 		}
 		if method == http.MethodPost {
 			req.Header.Set("idempotency-key", idem)
@@ -429,6 +438,53 @@ func (c *Client) SetRole(ctx context.Context, id, user, role, as string) (M, err
 
 // ---- messages; m holds as, text and optionally kind, payload,
 // client_msg_id, reply_to, to_user
+
+// UploadFile uploads a whole file (at most 64 MiB) as user `as`: the server
+// removes EXIF and GPS and makes a thumbnail. mime may be empty.
+func (c *Client) UploadFile(ctx context.Context, convID, as, name string, data []byte, mime string) (M, error) {
+	qs := url.Values{"as": {as}, "name": {name}}
+	if mime != "" {
+		qs.Set("mime", mime)
+	}
+	var out M
+	return out, c.DoRaw(ctx, "POST", "/v1/conversations/"+q(convID)+"/files?"+qs.Encode(), data, &out)
+}
+
+// SendFile uploads a file and sends it as an image or file message.
+func (c *Client) SendFile(ctx context.Context, convID, as, name string, data []byte, mime, caption string) (M, error) {
+	f, err := c.UploadFile(ctx, convID, as, name, data, mime)
+	if err != nil {
+		return nil, err
+	}
+	kind, text := "file", fmt.Sprintf("[File] %v", f["name"])
+	if f["kind"] == "image" {
+		kind, text = "image", "[Image]"
+	}
+	payload := M{"file_id": f["file_id"]}
+	if caption != "" {
+		payload["caption"] = caption
+	}
+	out, err := c.SendMessage(ctx, convID, M{"as": as, "text": text, "kind": kind, "payload": payload})
+	if err != nil {
+		return nil, err
+	}
+	out["file"] = f
+	return out, nil
+}
+
+// FileURL is a link (valid 5 minutes) to read a file; variant is "original",
+// "thumb" or empty, as may be empty (the system).
+func (c *Client) FileURL(ctx context.Context, convID, fileID, as, variant string) (M, error) {
+	qs := url.Values{}
+	if as != "" {
+		qs.Set("as", as)
+	}
+	if variant != "" {
+		qs.Set("variant", variant)
+	}
+	var out M
+	return out, c.Do(ctx, "GET", "/v1/conversations/"+q(convID)+"/files/"+q(fileID)+"?"+qs.Encode(), nil, &out)
+}
 
 func (c *Client) SendMessage(ctx context.Context, convID string, m M) (M, error) {
 	var out M

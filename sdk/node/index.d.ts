@@ -90,10 +90,29 @@ export class AgentIM {
   removeMember(id: string, user: string, as: As): Promise<any>;
   setRole(id: string, user: string, role: "owner" | "admin" | "member", as: As): Promise<any>;
   sendMessage(convId: string, m: Message): Promise<{ conv_id: string; seq?: number; msg_id?: string; duplicate?: boolean }>;
+  /** Uploads a whole file (at most 64 MiB); the server removes EXIF and GPS and makes a thumbnail. */
+  uploadFile(convId: string, opts: { as: string; name: string; data: Uint8Array | ArrayBuffer | Blob; mime?: string }): Promise<FileInfo>;
+  /** Uploads a file and sends it as an image or file message. */
+  sendFile(convId: string, opts: { as: string; name: string; data: Uint8Array | ArrayBuffer | Blob; mime?: string; caption?: string; replyTo?: string }): Promise<{ conv_id: string; seq?: number; msg_id?: string; file: FileInfo }>;
+  /** A link (valid 5 minutes) to read a file. */
+  fileUrl(convId: string, fileId: string, opts?: { as?: string; variant?: "original" | "thumb" }): Promise<{ url: string; variant: string; expires_at: number; file: FileInfo }>;
   sendToUser(userId: string, m: Message): Promise<any>;
   batchSend(m: { as: As; to: string[]; text: string; kind?: string; payload?: Record<string, unknown>; clientMsgId?: string }): Promise<{ results: any[] }>;
   editMessage(id: string, m: { as: As; text: string; payload?: Record<string, unknown> }): Promise<{ seq: number }>;
   recallMessage(id: string, as: As): Promise<{ seq: number }>;
   history(convId: string, opts?: { afterSeq?: number; limit?: number }): Promise<{ events: any[]; next_after_seq: number; has_more: boolean }>;
   markRead(convId: string, as: As, seq: number): Promise<{}>;
+}
+
+/** A stored file (docs/02-architecture.md §2.7). */
+export interface FileInfo {
+  file_id: string;
+  name: string;
+  size: number;
+  mime: string;
+  kind: "image" | "file";
+  width: number | null;
+  height: number | null;
+  thumb: boolean;
+  ai_generated: boolean;
 }

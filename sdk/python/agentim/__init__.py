@@ -62,11 +62,14 @@ class AgentIM:
         self.timeout = timeout
 
     def request(self, method: str, path: str, body: Optional[dict] = None,
-                idempotency_key: Optional[str] = None) -> Any:
+                idempotency_key: Optional[str] = None, raw: Optional[bytes] = None) -> Any:
         """Low-level call. POSTs get an Idempotency-Key reused across retries."""
         headers = {"authorization": f"Bearer {self.api_key}"}
         data = None
-        if body is not None:
+        if raw is not None:
+            headers["content-type"] = "application/octet-stream"
+            data = raw
+        elif body is not None:
             headers["content-type"] = "application/json"
             data = json.dumps(_clean(body)).encode()
         if method == "POST":
@@ -249,6 +252,31 @@ class AgentIM:
         return {"as": as_, "text": text, "kind": kind, "payload": payload,
                 "client_msg_id": client_msg_id, "reply_to": reply_to, "to_user": to_user,
                 "to": to, "topics": topics, "intent": intent, "refs": refs, "sources": sources}
+
+    def upload_file(self, conv_id, as_, name, data, mime=None):
+        """Uploads a whole file (at most 64 MiB); the server removes EXIF and
+        GPS and makes a thumbnail. Returns the file (file_id, kind, ...)."""
+        q = {"as": as_, "name": name}
+        if mime:
+            q["mime"] = mime
+        return self.request("POST", f"/v1/conversations/{_q(conv_id)}/files?{urllib.parse.urlencode(q)}", raw=bytes(data))
+
+    def send_file(self, conv_id, as_, name, data, mime=None, caption=None, reply_to=None):
+        """Uploads a file and sends it as an image or file message."""
+        f = self.upload_file(conv_id, as_, name, data, mime)
+        kind = "image" if f["kind"] == "image" else "file"
+        payload = {"file_id": f["file_id"]}
+        if caption:
+            payload["caption"] = caption
+        text = "[Image]" if kind == "image" else f"[File] {f['name']}"
+        sent = self.send_message(conv_id, as_, text, kind=kind, payload=payload, reply_to=reply_to)
+        sent["file"] = f
+        return sent
+
+    def file_url(self, conv_id, file_id, as_=None, variant=None):
+        """A link (valid 5 minutes) to read a file; variant is original or thumb."""
+        q = {k: v for k, v in {"as": as_, "variant": variant}.items() if v}
+        return self.request("GET", f"/v1/conversations/{_q(conv_id)}/files/{_q(file_id)}?{urllib.parse.urlencode(q)}")
 
     def send_message(self, conv_id, as_, text, **kw):
         return self.request("POST", f"/v1/conversations/{_q(conv_id)}/messages", self._msg(as_, text, **kw))
