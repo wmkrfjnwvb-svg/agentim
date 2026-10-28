@@ -12,7 +12,7 @@ use crate::model::{ApiError, ApiResult};
 
 /// Version of the schema in `TABLES`. Bump it together with a new entry in
 /// `MIGRATIONS` (docs/02-architecture.md §5.3).
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -891,6 +891,55 @@ pub const TABLES: &[Table] = &[
         indexes: &[],
         conv_key: Some("conv_id"),
     },
+    // v9: files and images of a conversation (docs/02-architecture.md §2.7):
+    // `pending` while uploading, `ready` once checked; `ref_id` is the
+    // message (or draft) that carries it.
+    Table {
+        name: "files",
+        cols: &[
+            c("file_id", Id),
+            c("conv_id", Id),
+            c("uploader_id", Id),
+            c("name", Name),
+            c("size", Big),
+            c("mime", Key),
+            c("kind", Id),
+            n("width", Big),
+            n("height", Big),
+            c("thumb_size", Big),
+            n("thumb_mime", Key),
+            c("state", Id),
+            n("upload_id", Text),
+            c("part_size", Big),
+            n("ref_id", Id),
+            c("ai", Big),
+            c("created_at", Big),
+            n("ready_at", Big),
+        ],
+        pk: &["file_id"],
+        indexes: &[
+            ("files_conv", &["conv_id"], false),
+            ("files_uploader", &["uploader_id", "created_at"], false),
+            ("files_state", &["state", "created_at"], false),
+            ("files_ref", &["ref_id"], false),
+        ],
+        conv_key: Some("conv_id"),
+    },
+    // v9: stored objects to delete (no conversation key: it outlives a
+    // dissolved conversation until its objects are gone).
+    Table {
+        name: "file_trash",
+        cols: &[
+            c("file_id", Id),
+            c("conv_id", Id),
+            n("upload_id", Text),
+            c("attempts", Big),
+            c("next_at", Big),
+        ],
+        pk: &["file_id"],
+        indexes: &[("file_trash_next", &["next_at"], false)],
+        conv_key: None,
+    },
     // v2: events waiting for webhook delivery, in commit order.
     Table {
         name: "webhook_outbox",
@@ -1189,6 +1238,12 @@ pub const MIGRATIONS: &[Migration] = &[
                 column: "permissions",
             },
         ],
+    },
+    Migration {
+        version: 9,
+        compat: 1,
+        about: "files and images: files, file_trash (new tables only)",
+        steps: &[],
     },
 ];
 

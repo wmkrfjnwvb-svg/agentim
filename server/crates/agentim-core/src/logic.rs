@@ -22,6 +22,7 @@ use crate::registry::{Out, Recip, Registry};
 mod ai;
 mod cards;
 mod compliance;
+pub mod files;
 mod history;
 mod lifecycle;
 mod requests;
@@ -203,6 +204,9 @@ pub struct Shared {
     pub db_names: Vec<String>,
     /// (user, blocked user) pairs, loaded from the control database.
     pub blocks: std::sync::RwLock<std::collections::HashSet<(String, String)>>,
+    /// Where files are stored (docs/02-architecture.md §2.7).
+    pub files: Arc<crate::filestore::Store>,
+    pub files_cfg: crate::config::FilesConfig,
 }
 
 impl Shared {
@@ -567,6 +571,54 @@ pub enum Op {
         key: String,
         version: i64,
     },
+    /// Files (docs/02 §2.7): an upload checked and recorded in its
+    /// conversation's database; `upload_id` is the S3 multipart upload the
+    /// hub started for it.
+    FileStart {
+        conv_id: String,
+        user: User,
+        file_id: String,
+        name: String,
+        size: u64,
+        mime: Option<String>,
+        thumb_size: Option<u64>,
+        upload_id: Option<String>,
+    },
+    /// The upload as recorded, for the hub to check the stored objects.
+    FileCheck {
+        conv_id: String,
+        user: User,
+        file_id: String,
+    },
+    /// The hub checked the objects: the file is usable.
+    FileReady {
+        conv_id: String,
+        user: User,
+        file_id: String,
+        mime: String,
+        kind: String,
+        size: Option<(i64, i64)>,
+        thumb: Option<(i64, String)>,
+    },
+    /// The objects failed the checks: the upload is thrown away.
+    FileDiscard {
+        conv_id: String,
+        file_id: String,
+    },
+    /// Throws away expired uploads and files (maintenance).
+    FileSweep {
+        now: i64,
+    },
+    /// Objects of a thrown away file were deleted (or not yet).
+    TrashDone {
+        file_id: String,
+        /// None: done; Some: try again at this time.
+        retry_at: Option<i64>,
+    },
+    /// The key that signs the server's own file addresses, made once.
+    FilesKey {
+        candidate: String,
+    },
     /// The owner stops or resumes an agent (control database), then each
     /// of its conversations records it (docs/03-agents.md §4.3–§4.4).
     SetStopped {
@@ -832,7 +884,12 @@ impl Op {
             | Op::Silence { conv_id, .. }
             | Op::RemoveDestroyed { conv_id, .. }
             | Op::ImportConv { conv_id, .. }
-            | Op::EraseInConv { conv_id, .. } => Route::Conv(conv_id.clone()),
+            | Op::EraseInConv { conv_id, .. }
+            | Op::FileStart { conv_id, .. }
+            | Op::FileCheck { conv_id, .. }
+            | Op::FileReady { conv_id, .. }
+            | Op::FileDiscard { conv_id, .. } => Route::Conv(conv_id.clone()),
+            Op::FileSweep { .. } | Op::TrashDone { .. } => Route::Maintenance,
             Op::StopConvStreams(c) | Op::DeleteConv(c) => Route::Conv(c.clone()),
             Op::TouchToken { .. }
             | Op::AckCursors { .. }
@@ -880,7 +937,8 @@ impl Op {
             | Op::EraseFinish { .. }
             | Op::ReportPut { .. }
             | Op::ReportResolve { .. }
-            | Op::ModerationUpkeep { .. } => Route::Control,
+            | Op::ModerationUpkeep { .. }
+            | Op::FilesKey { .. } => Route::Control,
         }
     }
 }
@@ -915,6 +973,13 @@ impl Op {
             Op::SetDeactivated { .. } => "set_deactivated",
             Op::StatePut { .. } => "state_put",
             Op::StateDelete { .. } => "state_delete",
+            Op::FileStart { .. } => "file_start",
+            Op::FileCheck { .. } => "file_check",
+            Op::FileReady { .. } => "file_ready",
+            Op::FileDiscard { .. } => "file_discard",
+            Op::FileSweep { .. } => "file_sweep",
+            Op::TrashDone { .. } => "trash_done",
+            Op::FilesKey { .. } => "files_key",
             Op::SetStopped { .. } => "set_stopped",
             Op::AgentStopped { .. } => "agent_stopped",
             Op::Silence { .. } => "silence",
@@ -1045,6 +1110,10 @@ pub fn check_kind(kind: Option<String>, payload: &Option<Value>) -> ApiResult<St
                 return Err(err("bad_request", "payload needs a custom kind"));
             }
             Ok("text".into())
+        }
+        Some(k @ ("image" | "file")) => {
+            files::check_payload(k, payload)?;
+            Ok(k.to_string())
         }
         Some(cards::KIND) => {
             cards::check_card(
@@ -1512,6 +1581,57 @@ impl Ctx<'_, '_> {
                 key,
                 version,
             } => self.state_delete(&agent_id, &key, version).await,
+            Op::FileStart {
+                conv_id,
+                user,
+                file_id,
+                name,
+                size,
+                mime,
+                thumb_size,
+                upload_id,
+            } => {
+                self.file_start(
+                    &user,
+                    &conv_id,
+                    &file_id,
+                    &name,
+                    size,
+                    mime.as_deref(),
+                    thumb_size,
+                    upload_id,
+                )
+                .await
+            }
+            Op::FileCheck {
+                conv_id,
+                user,
+                file_id,
+            } => self.upload_check(&user, &conv_id, &file_id).await,
+            Op::FileReady {
+                conv_id,
+                user,
+                file_id,
+                mime,
+                kind,
+                size,
+                thumb,
+            } => {
+                self.file_ready(&user, &conv_id, &file_id, &mime, &kind, size, thumb)
+                    .await
+            }
+            Op::FileDiscard { conv_id, file_id } => self.file_discard(&conv_id, &file_id).await,
+            Op::FileSweep { now } => self.file_sweep(now).await,
+            Op::TrashDone { file_id, retry_at } => {
+                match retry_at {
+                    None => self.db.trash_done(&file_id).await?,
+                    Some(t) => self.db.trash_retry(&file_id, t).await?,
+                }
+                Ok(json!({}))
+            }
+            Op::FilesKey { candidate } => {
+                Ok(json!({"key": self.db.meta_once("files_url_key", &candidate).await?}))
+            }
             Op::SetDeactivated { user_id, on } => {
                 self.db.set_deactivated(&user_id, on).await?;
                 self.out.push(Out::Invalidate);
@@ -1942,6 +2062,24 @@ impl Ctx<'_, '_> {
                 base_version,
             } => self.edit(me, &msg_id, &text, payload, base_version).await,
             ClientMsg::Recall { msg_id } => self.recall(me, &msg_id).await,
+            ClientMsg::UploadParts {
+                conv_id,
+                file_id,
+                from,
+            } => self.upload_parts(me, &conv_id, &file_id, from).await,
+            ClientMsg::FileUrl {
+                conv_id,
+                file_id,
+                variant,
+            } => {
+                self.file_url(me, &conv_id, &file_id, variant.as_deref())
+                    .await
+            }
+            // The hub checks the store first and comes back with FileStart
+            // and FileReady.
+            ClientMsg::UploadStart { .. } | ClientMsg::UploadComplete { .. } => {
+                Err(err("internal", "uploads go through the hub"))
+            }
             ClientMsg::SetMute {
                 conv_id,
                 mode,
@@ -3159,7 +3297,9 @@ impl Ctx<'_, '_> {
             )
             .await?;
         self.emit(ev).await?;
-        // The conversation's data keys go too (crypto-shredding).
+        // The conversation's data keys go too (crypto-shredding), and its
+        // files (deleted from the store in the background).
+        self.trash_conv(conv_id).await?;
         self.db.shred_scope(conv_id).await?;
         self.db.delete_conv_content(conv_id).await?;
         self.db.forget_outbox(conv_id, None).await?;
@@ -3273,6 +3413,13 @@ impl Ctx<'_, '_> {
         }
 
         self.check_dm_block(conv_id, &me.id).await?;
+        let has_file = files::KINDS.contains(&kind.as_str());
+        if has_file && to_user.is_some() {
+            return Err(err(
+                "bad_request",
+                "files go to the conversation, not to_user",
+            ));
+        }
         // Targeted visibility goes to the side channel and takes no conv_seq.
         if let Some(target) = to_user {
             let t = self.resolve_user(&target)?;
@@ -3306,6 +3453,10 @@ impl Ctx<'_, '_> {
         if me.kind == UserKind::Agent && member.approval {
             let audience = self.approvers(conv_id, me).await?;
             let draft_id = format!("d_{}", crate::db::new_id());
+            let payload = match &payload {
+                Some(p) if has_file => Some(self.attach(conv_id, me, &kind, p, &draft_id).await?),
+                _ => payload,
+            };
             let (d, side) = self
                 .db
                 .create_draft(
@@ -3350,6 +3501,17 @@ impl Ctx<'_, '_> {
                 envelope.as_ref(),
             )
             .await?;
+        // The file is taken under a placeholder, then by the message's id.
+        let holding = format!("p_{}", crate::db::new_id());
+        let file_id = payload
+            .as_ref()
+            .filter(|_| has_file)
+            .and_then(|p| p["file_id"].as_str())
+            .map(String::from);
+        let payload = match &payload {
+            Some(p) if has_file => Some(self.attach(conv_id, me, &kind, p, &holding).await?),
+            _ => payload,
+        };
         let res = self
             .db
             .commit_message(NewMsg {
@@ -3371,6 +3533,15 @@ impl Ctx<'_, '_> {
                 wake: Some(wake),
             })
             .await?;
+        if let Some(fid) = &file_id {
+            match &res {
+                Committed::New(ev) => {
+                    let mid = &ev.msg.as_ref().unwrap().msg_id;
+                    self.db.file_take(fid, mid, Some(&holding)).await?;
+                }
+                Committed::Duplicate { .. } => self.db.file_release(fid, &holding).await?,
+            }
+        }
         match res {
             Committed::Duplicate { seq, msg_id } => {
                 metrics::counter!(m::DEDUP_HITS).increment(1);
@@ -3454,6 +3625,30 @@ impl Ctx<'_, '_> {
             ));
         }
         check_text(text)?;
+        // A file stays: only its caption changes.
+        let payload = match payload {
+            Some(p) if files::KINDS.contains(&msg.kind.as_str()) => {
+                files::check_payload(&msg.kind, &Some(p.clone()))?;
+                let old = msg.payload.clone().unwrap_or_default();
+                if p["file_id"] != old["file_id"] {
+                    return Err(err(
+                        "bad_request",
+                        "the file of a message cannot be changed; send a new one",
+                    ));
+                }
+                let mut new = old;
+                match p.get("caption") {
+                    Some(c) => new["caption"] = c.clone(),
+                    None => {
+                        if let Some(o) = new.as_object_mut() {
+                            o.remove("caption");
+                        }
+                    }
+                }
+                Some(new)
+            }
+            other => other,
+        };
         if let Some(p) = &payload {
             if msg.kind == "text" {
                 return Err(err("bad_request", "text messages have no payload"));
@@ -3539,6 +3734,8 @@ impl Ctx<'_, '_> {
                 .await?;
         }
         self.db.set_payload(msg_id, None).await?;
+        // Its file goes too: no address works from now on.
+        self.trash_ref(msg_id).await?;
         let ev = self
             .db
             .update_message(
@@ -4231,6 +4428,8 @@ impl Ctx<'_, '_> {
             .await?;
         if let Committed::New(ev) = &res {
             self.charge(ev.msg.as_ref().unwrap()).await?;
+            let mid = ev.msg.as_ref().unwrap().msg_id.clone();
+            self.reattach(&d.payload, draft_id, &mid).await?;
         }
         self.db
             .audit(
@@ -4272,6 +4471,7 @@ impl Ctx<'_, '_> {
             .db
             .decide_draft(draft_id, "rejected", &me.id, &audience, &d.conv_id)
             .await?;
+        self.trash_ref(draft_id).await?;
         self.db
             .audit(
                 Some(&me.id),

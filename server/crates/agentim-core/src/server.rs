@@ -32,6 +32,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::admin_api::routes(state.clone()))
         .merge(crate::console::routes())
         .merge(crate::demo_web::routes())
+        .merge(crate::files_http::routes())
         .route("/ws", get(ws))
         .route("/api/login", post(login))
         .route("/api/dev/users", post(dev_create_user))

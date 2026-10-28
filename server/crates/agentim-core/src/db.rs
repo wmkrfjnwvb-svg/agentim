@@ -14,7 +14,9 @@ use crate::storage::{Dialect, TABLES, Ty};
 
 pub mod admin;
 mod compliance;
+mod files;
 pub use compliance::ERASE_BATCH;
+pub use files::{FileRow, TrashRow};
 
 /// Escapes a user's text for `LIKE … ESCAPE '!'`.
 fn like_escape(s: &str) -> String {
@@ -2961,6 +2963,10 @@ impl Db<'_> {
                 continue;
             }
             purged.push(conv.clone());
+            // Files of the messages that go, go too.
+            for f in self.files_of_messages_before(&conv, upto).await? {
+                self.file_trash(&f).await?;
+            }
             for (q, by_seq) in [
                 ("DELETE FROM events WHERE conv_id = ? AND seq < ?", true),
                 (

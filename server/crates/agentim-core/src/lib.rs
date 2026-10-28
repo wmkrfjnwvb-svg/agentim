@@ -13,6 +13,8 @@ pub mod db;
 pub mod demo;
 pub mod demo_web;
 pub mod failpoint;
+pub mod files_http;
+pub mod filestore;
 pub mod guard;
 pub mod hub;
 pub mod logic;

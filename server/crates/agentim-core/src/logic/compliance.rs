@@ -81,6 +81,8 @@ impl Ctx<'_, '_> {
             return Ok(json!({"done": false}));
         }
         self.db.erase_user_extras(conv_id, &user.id).await?;
+        // And the files they uploaded (deleted from the store in the background).
+        self.trash_uploader(conv_id, &user.id).await?;
         // Devices clear their local copies of what this person wrote.
         let ev = self
             .db

@@ -31,6 +31,7 @@ pub use compliance::{CATEGORIES as REPORT_CATEGORIES, DELETED_CAN_SEND, ERASURE_
 pub mod admin;
 mod developer;
 mod export;
+mod files;
 mod history;
 mod lifecycle;
 pub mod login;
@@ -228,6 +229,11 @@ impl Hub {
             db_names: db_names.clone(),
             cfg: hub_cfg,
             blocks: Default::default(),
+            files: Arc::new(
+                crate::filestore::Store::from_config(&cfg.files, crate::webhook::client())
+                    .map_err(|e| err("config", e))?,
+            ),
+            files_cfg: cfg.files.clone(),
         });
         let mut shards = Vec::new();
         let master = cfg.master_key().map_err(|e| err("config", e))?;
@@ -310,6 +316,7 @@ impl Hub {
         self.load_app_settings().await?;
         self.load_agent_flags().await?;
         self.resume_erasures().await?;
+        self.open_files().await?;
         Ok(())
     }
 
@@ -1046,6 +1053,9 @@ impl Hub {
                     let _ = hub.expire_tokens().await;
                     let _ = hub.expire_admin_sessions().await;
                     let _ = hub.moderation_upkeep().await;
+                    if let Err(e) = hub.files_upkeep().await {
+                        tracing::warn!(error = e.message, "file upkeep");
+                    }
                 }
             }));
         let hub = self.clone();
@@ -2426,6 +2436,25 @@ impl Hub {
                 let c = conv_id.clone();
                 self.on_conv(sess, &c, msg).await
             }
+            ClientMsg::UploadParts { ref conv_id, .. } | ClientMsg::FileUrl { ref conv_id, .. } => {
+                let c = conv_id.clone();
+                self.on_conv(sess, &c, msg).await
+            }
+            ClientMsg::UploadStart {
+                conv_id,
+                name,
+                size,
+                mime,
+                thumb_size,
+            } => {
+                self.upload_start(me, &conv_id, &name, size, mime, thumb_size)
+                    .await
+            }
+            ClientMsg::UploadComplete {
+                conv_id,
+                file_id,
+                parts,
+            } => self.upload_complete(me, &conv_id, &file_id, &parts).await,
             ClientMsg::Decide { ref request_id, .. }
             | ClientMsg::CancelRequest { ref request_id } => {
                 let id = request_id.clone();

@@ -24,6 +24,7 @@ pub const FEATURES: &[&str] = &[
     "custom_kinds",
     "signals",
     "devices",
+    "files",
 ];
 
 /// Every operation of protocol v1, so an unknown one can be told apart from
@@ -48,6 +49,10 @@ pub const OPS: &[&str] = &[
     "edit",
     "signal",
     "recall",
+    "upload_start",
+    "upload_parts",
+    "upload_complete",
+    "file_url",
     "pull",
     "pull_side",
     "read",

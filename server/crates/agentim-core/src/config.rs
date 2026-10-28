@@ -64,6 +64,97 @@ pub struct Config {
     /// People reading older messages page by page (docs/08 §2.8, D108).
     #[serde(default)]
     pub history: HistoryConfig,
+    /// Files and images (docs/02-architecture.md §2.7).
+    #[serde(default)]
+    pub files: FilesConfig,
+}
+
+/// `[files]`: where files go and their limits.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FilesConfig {
+    /// `local` (a folder; uploads go through the server) or `s3` (an S3
+    /// compatible store; clients upload to it directly).
+    pub storage: String,
+    /// The folder of `local`, made on first use.
+    pub dir: String,
+    /// `local` on a folder every node of a cluster shares (a network disk).
+    pub shared: bool,
+    pub s3: S3Config,
+    /// Largest file, in bytes (4 GiB).
+    pub max_bytes: u64,
+    /// Bytes one user may upload a day; 0 = no limit.
+    pub daily_bytes_per_user: u64,
+    /// Uploads one user may have open at once.
+    pub max_open_per_user: u32,
+    /// Files are deleted this many days after upload; 0 = kept.
+    pub retention_days: u64,
+    /// Whether apps may keep EXIF and GPS in images (`keep_metadata`).
+    pub allow_metadata: bool,
+}
+
+impl Default for FilesConfig {
+    fn default() -> Self {
+        FilesConfig {
+            storage: "local".into(),
+            dir: "./data/files".into(),
+            shared: false,
+            s3: S3Config::default(),
+            max_bytes: 4 << 30,
+            daily_bytes_per_user: 0,
+            max_open_per_user: 10,
+            retention_days: 0,
+            allow_metadata: false,
+        }
+    }
+}
+
+/// `[files.s3]`. The keys come from `AGENTIM_S3_ACCESS_KEY_ID` and
+/// `AGENTIM_S3_SECRET_ACCESS_KEY` (never the file).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct S3Config {
+    pub bucket: String,
+    pub region: String,
+    /// `https://s3.<region>.amazonaws.com`, or the address of a compatible
+    /// service (MinIO, R2, OSS, COS...).
+    pub endpoint: String,
+    /// Prefix of every object's key.
+    pub prefix: String,
+    /// `https://endpoint/bucket/key` instead of `https://bucket.endpoint/key`.
+    pub path_style: bool,
+}
+
+impl FilesConfig {
+    pub fn check(&self, clustered: bool) -> Result<(), String> {
+        match self.storage.as_str() {
+            "local" => {
+                if self.dir.is_empty() {
+                    return Err("files.dir is empty".into());
+                }
+                if clustered && !self.shared {
+                    return Err("a cluster needs files.storage = \"s3\", or a local folder all nodes share (files.shared = true)".into());
+                }
+            }
+            "s3" => {
+                let s = &self.s3;
+                if s.bucket.is_empty() || s.endpoint.is_empty() {
+                    return Err("files.s3 needs bucket and endpoint".into());
+                }
+                if !(s.endpoint.starts_with("https://") || s.endpoint.starts_with("http://")) {
+                    return Err("files.s3.endpoint is an http(s) address".into());
+                }
+            }
+            other => return Err(format!("files.storage is local or s3, not {other:?}")),
+        }
+        if self.max_bytes == 0 {
+            return Err("files.max_bytes must be positive".into());
+        }
+        if self.max_open_per_user == 0 {
+            return Err("files.max_open_per_user must be positive".into());
+        }
+        Ok(())
+    }
 }
 
 /// `[history]`.
@@ -960,6 +1051,7 @@ impl Config {
             mcp: Default::default(),
             moderation: Default::default(),
             history: Default::default(),
+            files: Default::default(),
             cluster: Default::default(),
         }
     }
@@ -994,6 +1086,7 @@ impl Config {
         if names.is_empty() {
             return Err("storage.databases is empty".into());
         }
+        self.files.check(self.cluster.enabled)?;
         if self.cluster.enabled {
             self.cluster.check()?;
             if let Some(d) = self
@@ -1261,6 +1354,7 @@ mod tests {
             mcp: Default::default(),
             moderation: Default::default(),
             history: Default::default(),
+            files: Default::default(),
             cluster: Default::default(),
         }
     }

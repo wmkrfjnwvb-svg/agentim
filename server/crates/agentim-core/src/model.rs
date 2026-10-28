@@ -819,6 +819,47 @@ pub enum ClientMsg {
         #[serde(default)]
         values: Option<Value>,
     },
+    /// Starts uploading a file to a conversation (docs/02 §2.7): the
+    /// addresses to PUT its parts (and thumbnail) to.
+    UploadStart {
+        conv_id: String,
+        name: String,
+        size: u64,
+        #[serde(default)]
+        mime: Option<String>,
+        /// Bytes of the thumbnail the client made (images).
+        #[serde(default)]
+        thumb_size: Option<u64>,
+    },
+    /// More part addresses, from part `from`.
+    UploadParts {
+        conv_id: String,
+        file_id: String,
+        #[serde(default)]
+        from: Option<u32>,
+    },
+    /// All parts are up: checks them and makes the file usable.
+    UploadComplete {
+        conv_id: String,
+        file_id: String,
+        #[serde(default)]
+        parts: Vec<PartTag>,
+    },
+    /// A short-lived address to read a file (`thumb` or `original`).
+    FileUrl {
+        conv_id: String,
+        file_id: String,
+        #[serde(default)]
+        variant: Option<String>,
+    },
+}
+
+/// A part the client uploaded, and the ETag the store answered.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PartTag {
+    pub n: u32,
+    #[serde(default)]
+    pub etag: String,
 }
 
 impl ClientMsg {
@@ -900,6 +941,10 @@ impl ClientMsg {
             ClientMsg::Feedback { .. } => "feedback",
             ClientMsg::ListFeedback { .. } => "list_feedback",
             ClientMsg::Report { .. } => "report",
+            ClientMsg::UploadStart { .. } => "upload_start",
+            ClientMsg::UploadParts { .. } => "upload_parts",
+            ClientMsg::UploadComplete { .. } => "upload_complete",
+            ClientMsg::FileUrl { .. } => "file_url",
         }
     }
 
@@ -935,7 +980,11 @@ impl ClientMsg {
             | ClientMsg::Takeover { conv_id, .. }
             | ClientMsg::Release { conv_id, .. }
             | ClientMsg::SetAgentPolicy { conv_id, .. }
-            | ClientMsg::ResetGuard { conv_id, .. } => Some(conv_id),
+            | ClientMsg::ResetGuard { conv_id, .. }
+            | ClientMsg::UploadStart { conv_id, .. }
+            | ClientMsg::UploadParts { conv_id, .. }
+            | ClientMsg::UploadComplete { conv_id, .. }
+            | ClientMsg::FileUrl { conv_id, .. } => Some(conv_id),
             ClientMsg::Focus { conv_id, .. } => conv_id.as_deref(),
             _ => None,
         }
