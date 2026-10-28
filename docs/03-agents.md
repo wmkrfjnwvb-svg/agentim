@@ -79,7 +79,7 @@ MCP 和 WebSocket 协议提供同一份操作，共用权限和审计。WebSocke
 | 形式 | 没有依赖：`sdk/agent-node`（`.mjs` + 类型声明，Node 22 自带 WebSocket）；`sdk/agent-python`（3.9+，只用标准库 `asyncio`，自带最小的 WebSocket 客户端）。都用 Agent 密钥连 `/ws` |
 | 收消息 | 先 `hello`，再按 [08](08-sync-and-client.md) 同步：分批拉，处理完一批再确认，所以处理器抛错或进程崩溃时这一批重新给（**至少一次**，用 `seq` 去重）。断线自动重连（退避 0.5–30 秒），从服务端记住的位置继续。处理器失败后这条连接不再确认，断开重连让服务端重给，失败之前处理完的先确认；`rate_limited` 先等 2 秒。服务端按业务规则拒绝的（`forbidden`、`conflict`、`taken_over`、`bad_request` 等）记日志后照常确认，不再重给。第一次连接最多重试 15 秒。请人决定的结果走侧信道，不排在等待它的处理器后面。每 30 秒用 `heads` 校验位置 |
 | 处理器 | `on_message`（只给 `wake` 为真的消息）、`on_event`（所有事件）、`on_card_response`、`on_handback`；`ctx` 可以 `reply`（带 `reply_to`）、`stream`（`append`、结束，出错时自动取消）、`progress` |
-| 操作 | 发消息（含信封 `to` / `topics` / `intent` / `refs` / `sources`）、发卡片、`ask_human`（请人决定并等待结果）、转人工、读历史 / 上下文 / 搜索、写摘要、检查点、抢单、任务状态；错误统一抛 `AgentIMError(code, message)`，`code` 和协议一致 |
+| 操作 | 发消息（含信封 `to` / `topics` / `intent` / `refs` / `sources`）、发卡片、发文件（`sendFile` / `send_file`：整个文件 `POST /api/files`，最多 64 MiB，服务端去掉 EXIF 和 GPS、生成缩略图，再发 `image` 或 `file` 消息，可带说明文字；`uploadFile` / `upload_file` 只上传）、`fileUrl` / `file_url`（5 分钟有效的绝对链接，`original` 或 `thumb`）、`ask_human`（请人决定并等待结果）、转人工、读历史 / 上下文 / 搜索、写摘要、检查点、抢单、任务状态；错误统一抛 `AgentIMError(code, message)`，`code` 和协议一致 |
 | 开放 API | `/v1` 的发消息接口带信封字段 `to`、`topics`、`intent`、`refs`、`sources`；Node、Python 服务端 SDK 同步支持 |
 | 端到端验证 | `sdk/agent_e2e.sh`：起真实服务端，CLI 建两个 Agent（Python、TS），一个人和它们对话：流式回复、卡片回应、请人决定、检查点版本冲突、读上下文、两个 Agent 用 `to` 互相点名、转人工后交回、处理器抛错后重新交付、服务端重启后自动重连。CI 在 Linux 和 Windows 上每次推送都跑 |
 

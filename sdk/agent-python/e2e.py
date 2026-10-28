@@ -17,6 +17,8 @@ import tempfile
 import time
 import urllib.request
 import uuid
+import struct
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -32,6 +34,15 @@ DIR = tempfile.mkdtemp(prefix="agentim-e2e-")
 DB = os.path.join(DIR, "e2e.db")
 failures = 0
 server = None
+
+
+def png(w, h):
+    """A w x h RGB PNG, made here (no image library needed)."""
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    rows = b"".join(b"\0" + bytes(((x * 7) % 256, 0, 0)[i] for x in range(w) for i in range(3)) for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
 def check(cond, what):
@@ -145,6 +156,9 @@ async def main():
     conv = (await alice.conn.call("create_conv", kind="group", title="e2e",
                                   members=[one["agent"]["id"], two["agent"]["id"]]))["conv_id"]
 
+    # A conversation pybot is not in.
+    elsewhere = (await alice.conn.call("create_conv", kind="group", title="without pybot",
+                                       members=[two["agent"]["id"]]))["conv_id"]
     failed_once = {"done": False}
     refused_runs = {"n": 0}
     bot = Agent(URL, one["key"], log=lambda m: print("[pybot]", m, flush=True))
@@ -192,6 +206,18 @@ async def main():
             await bot.send(ctx.conv_id, "pybot2, are you there?", to=["pybot2"], intent="request")
         elif "handoff" in t:
             await bot.handoff(ctx.conv_id, "a person should take this")
+        elif "picture" in t:
+            sent = await bot.send_file(ctx.conv_id, "chart.png", png(640, 480), caption="the chart",
+                                       reply_to=msg["msg_id"])
+            doc = await bot.send_file(ctx.conv_id, "report.txt", b"the report", mime="text/plain")
+            link = await bot.file_url(ctx.conv_id, doc["file"]["file_id"])
+            body = await asyncio.to_thread(lambda: urllib.request.urlopen(link["url"]).read().decode())
+            outside = ""
+            try:
+                await bot.upload_file(elsewhere, "x.txt", b"x")
+            except AgentIMError as e:
+                outside = e.code
+            await ctx.reply(f"files {sent['file']['kind']} {sent['file']['thumb']} {doc['file']['kind']} {body} {outside}")
         elif "sources" in t:
             await ctx.reply("see the docs", sources=[{"title": "Docs", "url": "https://example.com/docs"}])
 
@@ -243,6 +269,19 @@ async def main():
     await alice.say(conv, "@pybot sources")
     r = await alice.reply(a, "see the docs")
     check(r["msg"]["envelope"]["sources"][0]["title"] == "Docs", "sources travel with the reply")
+
+    await asyncio.sleep(3)  # the agent's per-conversation message budget refills (three messages follow)
+    await alice.say(conv, "@pybot picture")
+    await alice.reply(a, "files image True file the report forbidden")
+    pic = await alice.wait(lambda e: e.get("msg") and e["msg"]["kind"] == "image", "the image")
+    p = pic["msg"]["payload"]
+    check(p["width"] == 640 and p["caption"] == "the chart", "the image message carries the file and its caption")
+    thumb = await alice.conn.call("file_url", conv_id=conv, file_id=p["file_id"], variant="thumb")
+    tb = urllib.request.urlopen(URL + thumb["url"]).read()
+    sof = tb.find(b"\xff\xc0")  # a baseline JPEG's frame header: height, then width
+    check(thumb["variant"] == "thumb" and tb[:2] == b"\xff\xd8"
+          and struct.unpack(">HH", tb[sof + 5:sof + 9]) == (240, 320), "the person reads a 320 x 240 JPEG thumbnail")
+    check(True, "an agent sends an image and a file, reads one back, and cannot upload elsewhere")
 
     await alice.say(conv, "@pybot fail once")
     await alice.reply(a, "retried")

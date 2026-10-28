@@ -20,7 +20,9 @@ import asyncio
 import itertools
 import json
 import uuid
-from urllib.parse import quote
+import urllib.error
+import urllib.request
+from urllib.parse import quote, urlencode, urljoin
 
 from .ws import ConnectionClosed, HandshakeError, WebSocket
 
@@ -44,6 +46,11 @@ TRANSIENT = {"rate_limited", "disconnected", "storage", "conv_moved", "conv_migr
 
 def _retriable(e):
     return not isinstance(e, AgentIMError) or e.code in TRANSIENT
+
+
+def _http_base(url):
+    """The server's HTTP address, whether the agent was given http(s) or ws(s)."""
+    return url.rstrip("/").replace("ws", "http", 1) if url.startswith("ws") else url.rstrip("/")
 
 
 def _clean(d):
@@ -406,6 +413,50 @@ class Agent:
         """A card (docs/03-agents.md §3); ``text`` is what clients without cards show."""
         return await self.call("send", conv_id=conv_id, text=text, kind="agentim.card", payload=card,
                                client_msg_id=str(uuid.uuid4()), reply_to=reply_to)
+
+    async def upload_file(self, conv_id, name, data, mime=None):
+        """Uploads a whole file (at most 64 MiB) to a conversation the agent is
+        in; the server removes EXIF and GPS and makes an image's thumbnail.
+        Returns the file (file_id, kind, name, size, ...)."""
+        q = {"conv_id": conv_id, "name": name}
+        if mime:
+            q["mime"] = mime
+        url = f"{_http_base(self.url)}/api/files?{urlencode(q)}"
+        headers = {"authorization": f"Bearer {self.key}", "content-type": "application/octet-stream"}
+
+        def post():
+            req = urllib.request.Request(url, data=bytes(data), headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                try:
+                    err = json.loads(e.read())["error"]
+                except Exception:
+                    err = {"code": "unavailable", "message": f"HTTP {e.code}"}
+                raise AgentIMError(err.get("code", "unavailable"), err.get("message", "")) from None
+
+        return await asyncio.to_thread(post)
+
+    async def send_file(self, conv_id, name, data, mime=None, caption=None, reply_to=None, client_msg_id=None):
+        """Uploads a file and sends it as an image or file message."""
+        f = await self.upload_file(conv_id, name, data, mime)
+        image = f["kind"] == "image"
+        payload = {"file_id": f["file_id"]}
+        if caption:
+            payload["caption"] = caption
+        sent = await self.call(
+            "send", conv_id=conv_id, text="[Image]" if image else f"[File] {f['name']}",
+            kind="image" if image else "file", payload=payload,
+            client_msg_id=client_msg_id or str(uuid.uuid4()), reply_to=reply_to,
+        )
+        return {**sent, "file": f}
+
+    async def file_url(self, conv_id, file_id, variant=None):
+        """A link (valid 5 minutes, absolute) to read a file of a message;
+        ``variant``: "original" (default) or "thumb"."""
+        r = await self.call("file_url", conv_id=conv_id, file_id=file_id, variant=variant)
+        return {**r, "url": urljoin(_http_base(self.url) + "/", r["url"])}
 
     async def stream(self, conv_id, reply_to=None):
         r = await self.call("stream_start", conv_id=conv_id, client_msg_id=str(uuid.uuid4()), reply_to=reply_to)

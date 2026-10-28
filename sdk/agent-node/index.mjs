@@ -297,6 +297,44 @@ export class Agent {
     return this.conn.call('send', { conv_id: convId, text, kind: 'agentim.card', payload: card, client_msg_id: opts.clientMsgId ?? uid(), reply_to: opts.replyTo });
   }
 
+  /**
+   * Uploads a whole file (at most 64 MiB) to a conversation the agent is in;
+   * the server removes EXIF and GPS and makes an image's thumbnail.
+   * Returns the file ({file_id, kind, name, size, ...}).
+   */
+  async uploadFile(convId, name, data, { mime } = {}) {
+    const q = new URLSearchParams({ conv_id: convId, name, ...(mime ? { mime } : {}) });
+    const res = await fetch(`${this.url.replace(/^ws/, 'http').replace(/\/$/, '')}/api/files?${q}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${this.key}`, 'content-type': 'application/octet-stream' },
+      body: data,
+    });
+    const v = await res.json().catch(() => ({}));
+    if (!res.ok) throw new AgentIMError(v.error?.code ?? 'unavailable', v.error?.message ?? `HTTP ${res.status}`);
+    return v;
+  }
+
+  /** Uploads a file and sends it as an image or file message; `opts`: mime, caption, replyTo. */
+  async sendFile(convId, name, data, opts = {}) {
+    const f = await this.uploadFile(convId, name, data, { mime: opts.mime });
+    const image = f.kind === 'image';
+    const sent = await this.conn.call('send', {
+      conv_id: convId, text: image ? '[Image]' : `[File] ${f.name}`, kind: image ? 'image' : 'file',
+      payload: { file_id: f.file_id, ...(opts.caption ? { caption: opts.caption } : {}) },
+      client_msg_id: opts.clientMsgId ?? uid(), reply_to: opts.replyTo,
+    });
+    return { ...sent, file: f };
+  }
+
+  /**
+   * A link (valid 5 minutes, absolute) to read a file of a message;
+   * `variant`: 'original' (default) or 'thumb'.
+   */
+  async fileUrl(convId, fileId, { variant } = {}) {
+    const r = await this.conn.call('file_url', { conv_id: convId, file_id: fileId, variant });
+    return { ...r, url: new URL(r.url, this.url.replace(/^ws/, 'http')).toString() };
+  }
+
   /** A streamed reply; cancelled if `end` is never called before `fail`. */
   async stream(convId, { replyTo } = {}) {
     const r = await this.conn.call('stream_start', { conv_id: convId, client_msg_id: uid(), reply_to: replyTo });

@@ -86,6 +86,12 @@ export class Agent {
   call(op: string, args?: Record<string, unknown>): Promise<any>;
   send(convId: string, text: string, opts?: SendOptions): Promise<{ msg_id?: string; seq?: number; draft_id?: string; wake?: string[] }>;
   sendCard(convId: string, text: string, card: unknown, opts?: { replyTo?: string; clientMsgId?: string }): Promise<any>;
+  /** Uploads a whole file (at most 64 MiB); EXIF and GPS removed, thumbnail made by the server. */
+  uploadFile(convId: string, name: string, data: Uint8Array | ArrayBuffer | Blob, opts?: { mime?: string }): Promise<AgentFile>;
+  /** Uploads a file and sends it as an image or file message. */
+  sendFile(convId: string, name: string, data: Uint8Array | ArrayBuffer | Blob, opts?: { mime?: string; caption?: string; replyTo?: string; clientMsgId?: string }): Promise<{ seq: number; msg_id: string; file: AgentFile }>;
+  /** An absolute link (valid 5 minutes) to read a file of a message. */
+  fileUrl(convId: string, fileId: string, opts?: { variant?: 'original' | 'thumb' }): Promise<{ url: string; variant: string; expires_at: number }>;
   stream(convId: string, opts?: { replyTo?: string }): Promise<Stream>;
   progress(convId: string, kind: ProgressKind, text: string, opts?: { msgId?: string; data?: unknown }): Promise<any>;
   askHuman(convId: string, o: { kind?: 'approve' | 'answer' | 'choose'; title: string; context?: unknown; options?: string[]; assignees?: string[]; ttlSecs?: number; timeoutMs?: number }): Promise<Decision>;
@@ -98,4 +104,16 @@ export class Agent {
   putState(key: string, value: unknown, version: number): Promise<{ key: string; version: number }>;
   claim(msgId: string): Promise<any>;
   updateTask(convId: string, state: string, note?: string): Promise<any>;
+}
+
+export interface AgentFile {
+  file_id: string;
+  kind: 'image' | 'file';
+  name: string;
+  mime: string;
+  size: number;
+  width?: number | null;
+  height?: number | null;
+  thumb: boolean;
+  ai_generated: boolean;
 }

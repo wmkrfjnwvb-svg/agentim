@@ -8,6 +8,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { Agent, Connection } from './index.mjs';
 import { AgentIM, createUserToken } from '../node/index.mjs';
 
@@ -20,6 +21,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failures = 0;
 const check = (cond, what) => { console.log(`${cond ? 'ok  ' : 'FAIL'} ${what}`); if (!cond) failures++; };
 const cli = (...args) => JSON.parse(execFileSync(BIN, ['--db', DB, ...args], { stdio: ['ignore', 'pipe', 'ignore'] }).toString());
+
+// A w x h RGB PNG, made here (no image library needed).
+function png(w, h) {
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type), data]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(zlib.crc32(td));
+    return Buffer.concat([len, td, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 2;
+  const rows = Buffer.alloc((w * 3 + 1) * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) rows[y * (w * 3 + 1) + 1 + x * 3] = (x * 7) % 256;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
+}
 
 let server;
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { server?.kill(); process.exit(130); });
@@ -96,6 +112,8 @@ try {
   const two = await agent('nbot2');
   const conv = (await alice.conn.call('create_conv', { kind: 'group', title: 'e2e', members: [one.agent.id, two.agent.id] })).conv_id;
 
+  // A conversation nbot is not in.
+  const elsewhere = (await alice.conn.call('create_conv', { kind: 'group', title: 'without nbot', members: [two.agent.id] })).conv_id;
   // The agents.
   let failedOnce = false;
   let refusedRuns = 0;
@@ -133,6 +151,14 @@ try {
       await bot.send(ctx.convId, 'nbot2, are you there?', { to: ['nbot2'], intent: 'request' });
     } else if (t.includes('handoff')) {
       await bot.handoff(ctx.convId, 'a person should take this');
+    } else if (t.includes('picture')) {
+      const sent = await bot.sendFile(ctx.convId, 'chart.png', png(640, 480), { caption: 'the chart', replyTo: msg.msg_id });
+      const doc = await bot.sendFile(ctx.convId, 'report.txt', Buffer.from('the report'), { mime: 'text/plain' });
+      const link = await bot.fileUrl(ctx.convId, doc.file.file_id);
+      const body = await (await fetch(link.url)).text();
+      let outside = '';
+      try { await bot.uploadFile(elsewhere, 'x.txt', Buffer.from('x')); } catch (e) { outside = e.code; }
+      await ctx.reply(`files ${sent.file.kind} ${sent.file.thumb} ${doc.file.kind} ${body} ${outside}`);
     } else if (t.includes('sources')) {
       await ctx.reply('see the docs', { sources: [{ title: 'Docs', url: 'https://example.com/docs' }] });
     }
@@ -174,6 +200,17 @@ try {
   await alice.say(conv, '@nbot sources');
   const src = await alice.reply(a, 'see the docs');
   check(src.msg.envelope?.sources?.[0]?.title === 'Docs', 'sources travel with the reply');
+
+  await sleep(3000); // the agent's per-conversation message budget refills (three messages follow)
+  await alice.say(conv, '@nbot picture');
+  await alice.reply(a, 'files image true file the report forbidden');
+  const pic = await alice.wait((e) => e.msg && e.msg.kind === 'image', 'the image');
+  check(pic.msg.payload?.width === 640 && pic.msg.payload?.caption === 'the chart', 'the image message carries the file and its caption');
+  const thumb = await alice.conn.call('file_url', { conv_id: conv, file_id: pic.msg.payload.file_id, variant: 'thumb' });
+  const tb = Buffer.from(await (await fetch(new globalThis.URL(thumb.url, URL))).arrayBuffer());
+  const sof = tb.indexOf(Buffer.from([0xff, 0xc0])); // a baseline JPEG's frame header: height, then width
+  check(thumb.variant === 'thumb' && tb[0] === 0xff && tb[1] === 0xd8 && tb.readUInt16BE(sof + 7) === 320 && tb.readUInt16BE(sof + 5) === 240, 'the person reads a 320 x 240 JPEG thumbnail');
+  check(true, 'an agent sends an image and a file, reads one back, and cannot upload elsewhere');
 
   await alice.say(conv, '@nbot fail once');
   await alice.reply(a, 'retried');
