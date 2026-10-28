@@ -224,7 +224,7 @@ Message {
 - PUT 不需要 WebSocket：断线时进行中的 PUT 照常完成。失败处理：网络错误和 5xx 退避重试（和消息一样一直重试）；400/401/403/404/410（地址过期、上传已关）先重新要地址（`upload_parts`），快过期（剩 1 分钟）的地址也重新要；413（代理的请求体上限）和来源读不到直接失败；`upload_parts` 或 `upload_complete` 说 `not_found`（上传过期被清理）就从头再传，最多 3 次；`upload_parts` 说 `conflict`（其实已经完成、只是回答丢了）就再 `upload_complete`；`upload_complete` 说 `bad_request`（内容和声明的不符，服务端已扔掉）标记失败，`retry` 从头再传。
 - 删掉（`discard`）或撤回还没发出的文件：核心发 `ReleaseUpload`，运行层停掉它的 PUT；上传完成时也发，运行层删掉自己做的副本和缩略图。启动时删掉 `uploads/` 里队列不再引用的文件。来源被删掉的标记失败。
 - `file_url {conv_id, file_id, variant?}` 返回绝对地址（本机存储的相对地址按 `url` 补全），在有效期前 30 秒内重复问直接用缓存，离线时也能用缓存。
-- 浏览器（还没做）：缩略图用 `createImageBitmap` 和 `OffscreenCanvas`，去位置信息用 wasm 里同一份 `media.rs`，文件放进 IndexedDB（单个超过 200 MiB 的不放，刷新后要重新选）。
+- 浏览器（`client-web/src/files.ts`）：`sendFile(convId, file)` 在调用的标签页里准备：去位置信息用 wasm 里同一份 `media.rs`，缩略图用 `createImageBitmap`（按 EXIF 转正）和 `OffscreenCanvas`；文件放进 IndexedDB（单个超过 200 MiB 的只在内存里，刷新后要重新选，上传时报读不到而失败）。持有连接的标签页用 `XMLHttpRequest` PUT（有上传进度；浏览器自己带 `Content-Length`），别的标签页发的文件随命令一起传过去。Swift、Kotlin、C#、Dart、React Native 的 `sendFile(path)` 走原生运行层。
 
 **界面（Web 和 React Native 组件）**
 - 图片：聊天里显示缩略图，按比例，最大 240×240 点，圆角，加载前是浅灰占位。点开后全屏显示放大的缩略图，底部（手机）或右上角（电脑）有"View original"，点了下载原图、加载时显示进度，下载完替换显示。还有"Download"和关闭：Esc、点背景、手机上往下滑都能关。连发的多张排成网格。

@@ -319,6 +319,28 @@ class AgentIMClient private constructor(private val o: ClientOptions) : AutoClos
     suspend fun send(convId: String, text: String, clientMsgId: String? = null, replyTo: String? = null) =
         cmd("send", "conv_id" to convId, "text" to text, "client_msg_id" to clientMsgId, "reply_to" to replyTo) as JSONObject
 
+    /**
+     * Sends a file or a photo from a path: shown at once as uploading, sent
+     * when it is up. A photo loses its EXIF and GPS (unless [keepMetadata])
+     * and gets a 320-pixel thumbnail (docs/02 §2.7).
+     */
+    suspend fun sendFile(
+        convId: String,
+        path: String,
+        name: String? = null,
+        mime: String? = null,
+        caption: String? = null,
+        replyTo: String? = null,
+        keepMetadata: Boolean = false,
+    ) = cmd(
+        "send_file", "conv_id" to convId, "path" to path, "name" to name, "mime" to mime,
+        "caption" to caption, "reply_to" to replyTo, "keep_metadata" to keepMetadata,
+    ) as JSONObject
+
+    /** A link (valid a few minutes) to read a file: `original` or `thumb`. */
+    suspend fun fileUrl(convId: String, fileId: String, variant: String = "original") =
+        cmd("file_url", "conv_id" to convId, "file_id" to fileId, "variant" to variant) as JSONObject
+
     suspend fun edit(convId: String, msgId: String, text: String) = cmd("edit", "conv_id" to convId, "msg_id" to msgId, "text" to text)
     suspend fun recall(convId: String, msgId: String) = cmd("recall", "conv_id" to convId, "msg_id" to msgId)
     suspend fun read(convId: String, seq: Long? = null) = cmd("read", "conv_id" to convId, "seq" to seq)

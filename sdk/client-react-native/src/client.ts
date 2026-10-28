@@ -197,6 +197,21 @@ export class AgentIMClient {
   send(convId: string, text: string, opts: { kind?: string; payload?: unknown; replyTo?: string; clientMsgId?: string } = {}) {
     return this.command({ cmd: 'send', conv_id: convId, text, kind: opts.kind, payload: opts.payload, reply_to: opts.replyTo, client_msg_id: opts.clientMsgId });
   }
+  /**
+   * Sends a file or a photo from a path (`file://` URIs work): shown at once
+   * as uploading, sent when it is up. A photo loses its EXIF and GPS (unless
+   * `keepMetadata`) and gets a 320-pixel thumbnail (docs/02 §2.7).
+   */
+  sendFile(convId: string, path: string, opts: { name?: string; mime?: string; caption?: string; replyTo?: string; clientMsgId?: string; keepMetadata?: boolean } = {}) {
+    return this.command({
+      cmd: 'send_file', conv_id: convId, path: path.startsWith('file://') ? decodeURIComponent(path.slice(7)) : path, name: opts.name, mime: opts.mime,
+      caption: opts.caption, reply_to: opts.replyTo, client_msg_id: opts.clientMsgId, keep_metadata: opts.keepMetadata,
+    });
+  }
+  /** A link (valid a few minutes) to read a file: `original` or `thumb`. */
+  fileUrl(convId: string, fileId: string, variant: 'original' | 'thumb' = 'original'): Promise<{ url: string; variant: string; expires_at: number }> {
+    return this.command({ cmd: 'file_url', conv_id: convId, file_id: fileId, variant });
+  }
   edit(convId: string, target: { msgId?: string; clientMsgId?: string }, text: string) {
     return this.command({ cmd: 'edit', conv_id: convId, msg_id: target.msgId, client_msg_id: target.clientMsgId, text });
   }

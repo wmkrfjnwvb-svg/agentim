@@ -475,6 +475,21 @@ namespace AgentIM.Client
         public Task<JsonNode?> SendAsync(string convId, string text, string? clientMsgId = null, string? replyTo = null) =>
             Cmd("send", new JsonObject { ["conv_id"] = convId, ["text"] = text, ["client_msg_id"] = clientMsgId, ["reply_to"] = replyTo });
 
+        /// <summary>Sends a file or a photo from a path: shown at once as uploading, sent when it
+        /// is up. A photo loses its EXIF and GPS (unless <paramref name="keepMetadata"/>) and gets a
+        /// 320-pixel thumbnail (docs/02 §2.7).</summary>
+        public Task<JsonNode?> SendFileAsync(string convId, string path, string? name = null, string? mime = null,
+            string? caption = null, string? replyTo = null, bool keepMetadata = false) =>
+            Cmd("send_file", new JsonObject
+            {
+                ["conv_id"] = convId, ["path"] = path, ["name"] = name, ["mime"] = mime,
+                ["caption"] = caption, ["reply_to"] = replyTo, ["keep_metadata"] = keepMetadata,
+            });
+
+        /// <summary>A link (valid a few minutes) to read a file: <c>original</c> or <c>thumb</c>.</summary>
+        public Task<JsonNode?> FileUrlAsync(string convId, string fileId, string variant = "original") =>
+            Cmd("file_url", new JsonObject { ["conv_id"] = convId, ["file_id"] = fileId, ["variant"] = variant });
+
         public Task<JsonNode?> EditAsync(string convId, string msgId, string text) =>
             Cmd("edit", new JsonObject { ["conv_id"] = convId, ["msg_id"] = msgId, ["text"] = text });
 

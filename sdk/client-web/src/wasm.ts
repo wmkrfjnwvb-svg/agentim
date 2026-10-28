@@ -11,6 +11,7 @@ interface Exports {
   agentim_handle(h: number, ptr: number, len: number, now: number): bigint;
   agentim_next_deadline(h: number): number;
   agentim_free(h: number): void;
+  agentim_strip_metadata(ptr: number, len: number): bigint;
 }
 
 const enc = new TextEncoder();
@@ -85,4 +86,27 @@ export class WasmCore {
   free() {
     this.x.agentim_free(this.h);
   }
+}
+
+let helper: Promise<Exports> | null = null;
+
+/** The image without EXIF and XMP (the core's `media.rs`), or null when
+ * there was nothing to remove. */
+export async function stripMetadata(b: Uint8Array, src?: WasmSource): Promise<Uint8Array | null> {
+  helper ??= compile(src).then(async (m) => (await WebAssembly.instantiate(m, {})).exports as unknown as Exports);
+  const x = await helper;
+  const p = x.agentim_alloc(b.length);
+  new Uint8Array(x.memory.buffer, p, b.length).set(b);
+  let r: bigint;
+  try {
+    r = x.agentim_strip_metadata(p, b.length);
+  } finally {
+    x.agentim_dealloc(p, b.length);
+  }
+  if (r === 0n) return null;
+  const ptr = Number(r >> 32n);
+  const len = Number(r & 0xffffffffn);
+  const out = new Uint8Array(x.memory.buffer, ptr, len).slice();
+  x.agentim_dealloc(ptr, len);
+  return out;
 }

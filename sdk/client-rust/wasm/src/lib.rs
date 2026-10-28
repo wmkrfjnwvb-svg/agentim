@@ -8,11 +8,14 @@
 //!   effects (a JSON array, see `agentim_client_core::wire`) as
 //!   `ptr << 32 | len`, to be freed with `agentim_dealloc`;
 //! - `agentim_next_deadline(handle) -> f64` (ms since 1970, or -1);
-//! - `agentim_free(handle)`.
+//! - `agentim_free(handle)`;
+//! - `agentim_strip_metadata(ptr, len) -> u64`: the image without EXIF and
+//!   XMP (`media::strip_metadata`) as `ptr << 32 | len`, or 0 when there
+//!   was nothing to remove.
 
 use std::cell::RefCell;
 
-use agentim_client_core::{Config, Core, wire};
+use agentim_client_core::{Config, Core, media, wire};
 use serde_json::Value;
 
 thread_local! {
@@ -104,4 +107,12 @@ pub extern "C" fn agentim_free(h: u32) {
             *slot = None;
         }
     });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn agentim_strip_metadata(ptr: *const u8, len: usize) -> u64 {
+    match media::strip_metadata(read(ptr, len)) {
+        Some(b) if !b.is_empty() => give(b),
+        _ => 0,
+    }
 }

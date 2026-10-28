@@ -34,7 +34,8 @@ async function until(what, f, ms = 15000) {
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'agentim-web-'));
-  server = spawn(BIN, ['--demo', '--db', join(dir, 'a.db'), '--addr', `127.0.0.1:${PORT}`], { stdio: 'ignore' });
+  // In its own folder: files go to ./data/files there.
+  server = spawn(BIN, ['--demo', '--db', join(dir, 'a.db'), '--addr', `127.0.0.1:${PORT}`], { stdio: 'ignore', cwd: dir });
   await until('server ready', async () => fetch(`${URL_}/readyz`).then((r) => r.ok).catch(() => false), 30000);
 });
 after(async () => {
@@ -113,6 +114,61 @@ test('two people talk; edits, recalls and the list follow', async () => {
   await assert.rejects(a.call('get_request', { request_id: 'nope' }), (e) => e.code === 'not_found');
   const d = await a.debugState();
   assert.equal(d.state, 'connected');
+});
+
+/** A JPEG with EXIF: orientation 6 and a GPS block. */
+function photo() {
+  const j = Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHBwgHBgoICAgLCgoLDhgQDg0NDh0VFhEYIx8lJCIfIiEmKzcvJik0KSEiMEExNDk7Pj4+JS5ESUM8SDc9Pjv/2wBDAQoLCw4NDhwQEBw7KCIoOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozv/wAARCAAwAEADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDmaKKK8g/RAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAP/9k=', 'base64');
+  const tiff = Buffer.concat([
+    Buffer.from('MM\0\x2a\0\0\0\x08\0\x02', 'latin1'),
+    Buffer.from([0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0x88, 0x25, 0, 4, 0, 0, 0, 1, 0, 0, 0, 0x26, 0, 0, 0, 0]),
+    Buffer.from('GPS 51.5N 0.12W'),
+  ]);
+  const seg = Buffer.concat([Buffer.from('Exif\0\0', 'latin1'), tiff]);
+  const len = Buffer.alloc(2);
+  len.writeUInt16BE(seg.length + 2);
+  return new Uint8Array(Buffer.concat([j.subarray(0, 2), Buffer.from([0xff, 0xe1]), len, seg, j.subarray(2)]));
+}
+
+test('files: an image without its location and a document, read back by the other side', async () => {
+  const alice = await person('alice');
+  const bob = await person('bob');
+  const a = await client(alice);
+  const b = await client(bob);
+  await Promise.all([a.connect(), b.connect()]);
+  await Promise.all([connected(a), connected(b)]);
+  const { conv_id } = await a.call('create_conv', { kind: 'group', title: 'files', members: [bob.id] });
+  const av = a.messages(conv_id);
+  const pic = photo();
+  assert.ok(Buffer.from(pic).includes('GPS'));
+  const r = await a.sendFile(conv_id, new Blob([pic], { type: 'image/jpeg' }), { name: 'IMG_1.jpg', caption: 'the view' });
+  const local = av.get().find((m) => m.key === r.key);
+  assert.ok(local && ['uploading', 'sending', 'sent'].includes(local.status), JSON.stringify(local));
+  assert.equal(local.payload.name, 'IMG_1.jpg');
+  await a.sendFile(conv_id, new Blob(['the notes']), { name: 'notes.txt' });
+  await until('bob has the conversation', () => b.conversations.get().some((c) => c.conv_id === conv_id));
+  const bv = b.messages(conv_id);
+  await until('bob sees both', () => bv.get().filter((m) => m.kind === 'image' || m.kind === 'file').length === 2);
+  const img = bv.get().find((m) => m.kind === 'image');
+  assert.equal(img.payload.caption, 'the view');
+  // Upright: stored 64 x 48, turned by its orientation.
+  assert.deepEqual([img.payload.width, img.payload.height], [48, 64]);
+  const u = await b.fileUrl(conv_id, img.payload.file_id);
+  assert.match(u.url, /^http:\/\/127\.0\.0\.1/);
+  const got = Buffer.from(await (await fetch(u.url)).arrayBuffer());
+  assert.ok(!got.includes('GPS'), 'the location is gone');
+  assert.ok(got.includes('Exif'), 'the orientation stays');
+  const doc = bv.get().find((m) => m.kind === 'file');
+  assert.equal(doc.content, '[File] notes.txt');
+  const du = await b.fileUrl(conv_id, doc.payload.file_id);
+  assert.equal(await (await fetch(du.url)).text(), 'the notes');
+  await until('alice settles', () => av.get().every((m) => m.status === 'sent'));
+  // Bad input is refused by the core, a stranger cannot read the file.
+  await assert.rejects(a.command({ cmd: 'send_file', conv_id, file: { name: 'x', size: 0, source: 's' } }), (e) => e.code === 'bad_request');
+  const eve = await client(await person('eve'));
+  await eve.connect();
+  await connected(eve);
+  await assert.rejects(eve.fileUrl(conv_id, doc.payload.file_id), (e) => e.code === 'forbidden' || e.code === 'not_found');
 });
 
 test('the queue survives in IndexedDB and is sent once', async () => {

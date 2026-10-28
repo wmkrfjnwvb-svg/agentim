@@ -17,6 +17,7 @@
 
 import { IndexedDBStore, MemoryStore, StoreError, type Store } from './store.js';
 import { WasmCore, type Effect, type WasmSource } from './wasm.js';
+import { FileSources, prepare, put } from './files.js';
 import { AgentIMError, Messages, Observable, TokenRefused, type Connection, type Message } from './view.js';
 
 export { AgentIMError, Messages, Observable, TokenRefused };
@@ -58,11 +59,19 @@ class Engine {
   private generation = 0;
   private stopped = false;
   private detach: Array<() => void> = [];
+  readonly sources: FileSources;
+  /** PUTs running, per operation. */
+  private puts = new Map<string, Array<() => void>>();
+  /** Sources each operation uses (released together). */
+  private used = new Map<string, Set<string>>();
 
   constructor(
     private o: ClientOptions,
     private emit: Listener,
-  ) {}
+  ) {
+    const keep = o.store !== 'memory' && !(typeof o.store === 'object' && o.store.kind === 'memory');
+    this.sources = new FileSources(keep ? (o.storeName ?? `agentim-${o.deviceId}`) : null);
+  }
 
   async start() {
     this.core = await WasmCore.create(
@@ -97,6 +106,10 @@ class Engine {
       snap = { account: null, convs: [], ops: [], messages: [] };
     }
     this.signals();
+    // Kept sources no queued upload names any more.
+    const keep = new Set<string>();
+    for (const op of snap.ops as any[]) for (const k of [op?.upload?.source, op?.upload?.thumb?.source]) if (k) keep.add(k);
+    void this.sources.sweep(keep);
     this.feed({ restored: snap });
     if (failed) this.feed({ storage_failed: failed });
   }
@@ -175,6 +188,14 @@ class Engine {
       this.feed({ page_loaded: { req: p.req, conv_id: p.conv_id, messages } });
     } else if ('wipe_store' in e) {
       await this.store.wipe().catch(() => {});
+    } else if ('put' in e) {
+      this.startPut(e.put);
+    } else if ('release_upload' in e) {
+      const id = e.release_upload.op_id;
+      for (const abort of this.puts.get(id) ?? []) abort();
+      this.puts.delete(id);
+      for (const k of this.used.get(id) ?? []) void this.sources.remove(k);
+      this.used.delete(id);
     } else if ('emit' in e) {
       this.emit(e.emit);
     } else if ('reply' in e) {
@@ -182,6 +203,26 @@ class Engine {
       this.tags.delete(e.reply.id);
       this.emit({ type: 'reply', ...e.reply, id: tag ?? e.reply.id });
     }
+  }
+
+  private async startPut(p: { op_id: string; file_id: string; key: string; url: string; headers: Record<string, string>; source: string; offset: number; len: number }) {
+    const id = { op_id: p.op_id, file_id: p.file_id, key: p.key };
+    let s = this.used.get(p.op_id);
+    if (!s) this.used.set(p.op_id, (s = new Set()));
+    s.add(p.source);
+    const blob = await this.sources.get(p.source);
+    if (!blob || blob.size < p.offset + p.len) {
+      // Not kept (over 200 MiB and the page was reloaded) or gone.
+      this.feed({ put_done: { ...id, error: { unreadable: true, detail: 'the file is no longer available; pick it again' } } });
+      return;
+    }
+    const r = put(p.url, p.headers, blob.slice(p.offset, p.offset + p.len), (sent) => this.feed({ put_progress: { ...id, sent } }));
+    const list = this.puts.get(p.op_id) ?? [];
+    list.push(r.abort);
+    this.puts.set(p.op_id, list);
+    const res = await r.done;
+    this.puts.set(p.op_id, (this.puts.get(p.op_id) ?? []).filter((a) => a !== r.abort));
+    this.feed({ put_done: { ...id, ...res } });
   }
 
   private open(url: string, token: string) {
@@ -214,8 +255,13 @@ class Engine {
   private tags = new Map<number, string>();
   private seq = 0;
 
-  command(tag: string, cmd: unknown) {
+  command(tag: string, cmd: any, blobs?: Record<string, Blob>) {
     const id = ++this.seq;
+    if (blobs) {
+      // The sources first: the core may ask for them at once.
+      const kept = Promise.all(Object.entries(blobs).map(([k, b]) => this.sources.put(k, b)));
+      this.chain = this.chain.then(() => kept.then(() => {}));
+    }
     this.tags.set(id, tag);
     this.feed({ command: { id, cmd } });
   }
@@ -236,7 +282,7 @@ class Engine {
 let tabSeq = 0;
 
 /** Commands that do no harm when the core gets them twice. */
-const SAFE_TWICE = new Set(['state', 'connect', 'close', 'logout', 'conversations', 'messages', 'send', 'read', 'focus', 'discard', 'pending', 'debug_state']);
+const SAFE_TWICE = new Set(['state', 'connect', 'close', 'logout', 'conversations', 'messages', 'send', 'send_file', 'file_url', 'read', 'focus', 'discard', 'pending', 'debug_state']);
 
 export class AgentIMClient {
   readonly connection = new Observable<Connection>({ state: 'closed' });
@@ -244,7 +290,7 @@ export class AgentIMClient {
   private convMap = new Map<string, any>();
   private views = new Map<string, Messages>();
   private listeners = new Map<string, Set<Listener>>();
-  private pending = new Map<number, { cmd: Record<string, unknown>; ok: (v: any) => void; no: (e: AgentIMError) => void; timer: ReturnType<typeof setTimeout> }>();
+  private pending = new Map<number, { cmd: Record<string, unknown>; blobs?: Record<string, Blob>; ok: (v: any) => void; no: (e: AgentIMError) => void; timer: ReturnType<typeof setTimeout> }>();
   private next = 0;
   private engine: Engine | null = null;
   private channel: BroadcastChannel | null = null;
@@ -313,7 +359,7 @@ export class AgentIMClient {
     // it is safe to do twice, else refused so the caller decides.
     for (const [n, p] of this.pending) {
       if (SAFE_TWICE.has(String(p.cmd.cmd))) {
-        engine.command(`${this.tab}:${n}`, p.cmd);
+        engine.command(`${this.tab}:${n}`, p.cmd, p.blobs);
       } else {
         clearTimeout(p.timer);
         this.pending.delete(n);
@@ -350,7 +396,8 @@ export class AgentIMClient {
       if (m.event.type === 'reply' && !(typeof m.event.id === 'string' && m.event.id.startsWith(this.tab))) return;
       this.dispatch(m.event);
     } else if (m?.kind === 'command' && this.engine) {
-      this.engine.command(m.id, m.cmd);
+      // Blobs travel with the command (structured clone).
+      this.engine.command(m.id, m.cmd, m.blobs);
     }
   }
 
@@ -401,7 +448,7 @@ export class AgentIMClient {
   }
 
   /** Any core command (`{cmd: …}`); resolves with its result. */
-  async command(cmd: Record<string, unknown>): Promise<any> {
+  async command(cmd: Record<string, unknown>, blobs?: Record<string, Blob>): Promise<any> {
     const n = ++this.next;
     const id = `${this.tab}:${n}`;
     return new Promise((ok, no) => {
@@ -409,9 +456,9 @@ export class AgentIMClient {
         this.pending.delete(n);
         no(new AgentIMError({ code: 'timeout', message: 'no answer from the client core', retryable: true }));
       }, 60_000);
-      this.pending.set(n, { cmd, ok, no, timer });
-      if (this.engine) this.engine.command(id, cmd);
-      else this.channel?.postMessage({ kind: 'command', id, cmd });
+      this.pending.set(n, { cmd, blobs, ok, no, timer });
+      if (this.engine) this.engine.command(id, cmd, blobs);
+      else this.channel?.postMessage({ kind: 'command', id, cmd, blobs });
     });
   }
 
@@ -470,9 +517,24 @@ export class AgentIMClient {
     return this.conversations.get();
   }
 
+  /**
+   * Sends a file or an image: shown at once as uploading (with progress),
+   * sent when it is up. An image loses its EXIF and GPS (unless
+   * `keepMetadata`) and gets a thumbnail of 320 pixels.
+   */
+  async sendFile(convId: string, file: Blob, opts: { name?: string; caption?: string; replyTo?: string; clientMsgId?: string; keepMetadata?: boolean } = {}) {
+    const cm = opts.clientMsgId ?? newClientMsgId();
+    const p = await prepare(convId, file, { ...opts, clientMsgId: cm, wasm: this.o.wasm });
+    return this.command(p.cmd, p.blobs);
+  }
+
+  /** A link to read a file (`original` or `thumb`), valid a few minutes. */
+  fileUrl(convId: string, fileId: string, variant: 'original' | 'thumb' = 'original'): Promise<{ url: string; variant: string; expires_at: number }> {
+    return this.command({ cmd: 'file_url', conv_id: convId, file_id: fileId, variant });
+  }
+
   send(convId: string, text: string, opts: { kind?: string; payload?: unknown; replyTo?: string; clientMsgId?: string } = {}) {
-    // Chosen here, so asking twice (a leader change) is still one message.
-    const cm = opts.clientMsgId ?? `${Date.now().toString(16)}${crypto.getRandomValues(new Uint32Array(3)).reduce((s, x) => s + x.toString(16).padStart(8, '0'), '')}`;
+    const cm = opts.clientMsgId ?? newClientMsgId();
     return this.command({ cmd: 'send', conv_id: convId, text, kind: opts.kind, payload: opts.payload, reply_to: opts.replyTo, client_msg_id: cm });
   }
   edit(convId: string, target: { msgId?: string; clientMsgId?: string }, text: string) {
@@ -510,6 +572,11 @@ export class AgentIMClient {
   debugState() {
     return this.command({ cmd: 'debug_state' });
   }
+}
+
+/** Chosen here, so asking twice (a leader change) is still one message. */
+function newClientMsgId(): string {
+  return `${Date.now().toString(16)}${crypto.getRandomValues(new Uint32Array(3)).reduce((s, x) => s + x.toString(16).padStart(8, '0'), '')}`;
 }
 
 /** UTF-8, base64url without padding (the subprotocol's alphabet). */

@@ -48,7 +48,8 @@ const port = 19500 + Math.floor(Math.random() * 300);
 const IM = `http://127.0.0.1:${port}`;
 const cfg = path.join(dir, 'agentim.toml');
 fs.writeFileSync(cfg, `[storage]\ncontrol = "main"\n[[storage.databases]]\nname = "main"\nurl = "sqlite://${path.join(dir, 'a.db').replace(/\\/g, '/')}?mode=rwc"\n[server]\nallowed_origins = ["${origin}"]\n`);
-const server = spawn(BIN, ['--demo', '--config', cfg, '--addr', `127.0.0.1:${port}`], { stdio: 'ignore' });
+// In its own folder: files go to ./data/files there.
+const server = spawn(BIN, ['--demo', '--config', cfg, '--addr', `127.0.0.1:${port}`], { stdio: 'ignore', cwd: dir });
 for (let i = 0; i < 300; i++) {
   if (await fetch(`${IM}/readyz`).then((r) => r.ok).catch(() => false)) break;
   await sleep(100);
@@ -127,6 +128,50 @@ try {
   await waitIn(b, (c) => window.texts(c).includes('while offline:sending'), conv, 'shown as sending while offline');
   await ctx.setOffline(false);
   await waitIn(b, (c) => window.texts(c).filter((t) => t === 'while offline:sent').length === 1, conv, 'sent once back online');
+
+  // An image from another origin: a thumbnail made here, PUTs across
+  // origins with their ETag, progress, and the other side reads it.
+  const shot = await b.evaluate(async (c) => {
+    const cv = new OffscreenCanvas(1000, 600);
+    const g = cv.getContext('2d');
+    g.fillStyle = '#36c';
+    g.fillRect(0, 0, 1000, 600);
+    g.fillStyle = '#fff';
+    g.fillRect(100, 100, 300, 200);
+    const png = await cv.convertToBlob({ type: 'image/png' });
+    const seen = [];
+    const v = window.client.messages(c);
+    const off = v.subscribe(() => {
+      for (const m of v.get()) if (m.upload) seen.push(m.status);
+    });
+    const r = await window.client.sendFile(c, new File([png], 'chart.png', { type: 'image/png' }), { caption: 'chart' });
+    for (let i = 0; i < 200 && !v.get().some((m) => m.kind === 'image' && m.status === 'sent' && !m.key.startsWith('local:')); i++) await new Promise((ok) => setTimeout(ok, 50));
+    off();
+    const m = v.get().find((x) => x.kind === 'image' && !x.key.startsWith('local:'));
+    const t = await window.client.fileUrl(c, m.payload.file_id, 'thumb');
+    const tb = await createImageBitmap(await (await fetch(t.url)).blob());
+    return { key: r.key, seen: [...new Set(seen)], payload: m.payload, thumb: [tb.width, tb.height], variant: t.variant };
+  }, conv);
+  check(shot.seen.includes('uploading'), `shown as uploading first (${shot.seen})`);
+  check(shot.payload.thumb === true && shot.payload.width === 1000 && shot.payload.caption === 'chart', `sent as an image with its thumbnail (${JSON.stringify(shot.payload)})`);
+  check(shot.variant === 'thumb' && shot.thumb.join('x') === '320x192', `the thumbnail is 320 x 192 (${shot.thumb})`);
+  // Picked while not connected, the page reloaded: the kept file goes up after.
+  await b.evaluate(() => window.client.close());
+  await waitIn(b, () => window.client.connection.get().state === 'closed', null, 'closed');
+  await b.evaluate((c) => window.client.sendFile(c, new Blob([new Uint8Array(300000).fill(7)]), { name: 'data.bin', clientMsgId: 'file-offline' }), conv);
+  await waitIn(b, (c) => window.client.messages(c).get().some((m) => m.client_msg_id === 'file-offline' && m.status === 'uploading'), conv, 'a file waits while not connected');
+  await b.reload();
+  await b.waitForFunction(() => window.ready);
+  await b.evaluate(
+    async ([url, token]) => {
+      window.client = await window.sdk.AgentIMClient.create({ url, deviceId: 'laptop', storeName: 'alice', tokenProvider: async () => token });
+      window.views = {};
+      window.texts = (c) => (window.views[c] ??= window.client.messages(c)).get().map((m) => `${m.content}:${m.status}`);
+      await window.client.connect();
+    },
+    [IM, alice.token],
+  );
+  await waitIn(b, (c) => window.texts(c).includes('[File] data.bin:sent'), conv, 'after a reload the kept file is uploaded and sent');
   // A reload keeps the cache: the messages show before connecting.
   await b.reload();
   await b.waitForFunction(() => window.ready);

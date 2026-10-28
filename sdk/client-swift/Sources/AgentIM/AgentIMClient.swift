@@ -410,6 +410,24 @@ public final class AgentIMClient: @unchecked Sendable {
         return try await command(c) as? JSONObject ?? [:]
     }
 
+    /// Sends a file or a photo from a path: shown at once as uploading,
+    /// sent when it is up. A photo loses its EXIF and GPS (unless
+    /// `keepMetadata`) and gets a 320-pixel thumbnail (docs/02 §2.7).
+    @discardableResult
+    public func sendFile(_ convId: String, path: String, name: String? = nil, mime: String? = nil, caption: String? = nil, replyTo: String? = nil, keepMetadata: Bool = false) async throws -> JSONObject {
+        var c: JSONObject = ["cmd": "send_file", "conv_id": convId, "path": path, "keep_metadata": keepMetadata]
+        c["name"] = name
+        c["mime"] = mime
+        c["caption"] = caption
+        c["reply_to"] = replyTo
+        return try await command(c) as? JSONObject ?? [:]
+    }
+
+    /// A link (valid a few minutes) to read a file: `original` or `thumb`.
+    public func fileUrl(_ convId: String, fileId: String, variant: String = "original") async throws -> JSONObject {
+        try await command(["cmd": "file_url", "conv_id": convId, "file_id": fileId, "variant": variant]) as? JSONObject ?? [:]
+    }
+
     public func edit(_ convId: String, msgId: String, _ text: String) async throws {
         try await command(["cmd": "edit", "conv_id": convId, "msg_id": msgId, "text": text])
     }
