@@ -135,7 +135,7 @@ const THUMBS_KEPT = 300;
  * own) or to read it: a local copy while this tab sends it, then the
  * server's. `error` when it is gone (expired, deleted).
  */
-export function useFileUrl(convId: string, payload: any, variant: 'thumb' | 'original' = 'thumb'): { url?: string; error?: string } {
+export function useFileUrl(convId: string, payload: any, variant: 'thumb' | 'original' = 'thumb', opts: { blob?: boolean } = {}): { url?: string; error?: string } {
   const client = useClient();
   const local = client.localPreview?.(variant === 'thumb' ? (payload?.local_thumb ?? payload?.local_source) : payload?.local_source);
   const fileId: string | undefined = payload?.file_id;
@@ -144,15 +144,19 @@ export function useFileUrl(convId: string, payload: any, variant: 'thumb' | 'ori
   useEffect(() => {
     if (!key || !fileId || !client.fileUrl) return;
     let live = true;
-    let p = variant === 'thumb' ? thumbs.get(key) : undefined;
+    // Only local copies are kept here: a signed address expires (the client
+    // core reuses it while it is valid).
+    const keep = variant === 'thumb' && opts.blob !== false;
+    let p = keep ? thumbs.get(key) : undefined;
     if (!p) {
       p = client.fileUrl(convId, fileId, variant).then(async (r) => {
-        if (variant !== 'thumb' || typeof fetch !== 'function' || typeof URL.createObjectURL !== 'function') return r.url;
+        // React Native has no Blob URLs (`blob: false`): its image cache keeps the picture.
+        if (variant !== 'thumb' || opts.blob === false || typeof fetch !== 'function' || typeof URL.createObjectURL !== 'function') return r.url;
         // Kept as a local copy: the signed address changes, the picture does not.
         const b = await fetch(r.url).then((x) => (x.ok ? x.blob() : Promise.reject(new Error(String(x.status)))));
         return URL.createObjectURL(b);
       });
-      if (variant === 'thumb') {
+      if (keep) {
         thumbs.set(key, p);
         if (thumbs.size > THUMBS_KEPT) thumbs.delete(thumbs.keys().next().value!);
         p.catch(() => thumbs.delete(key));
@@ -165,7 +169,7 @@ export function useFileUrl(convId: string, payload: any, variant: 'thumb' | 'ori
     return () => {
       live = false;
     };
-  }, [client, convId, fileId, key, variant]);
+  }, [client, convId, fileId, key, variant, opts.blob]);
   if (state.key === key && (state.url || state.error)) return { url: state.url ?? local, error: state.url ? undefined : state.error };
   return { url: local };
 }

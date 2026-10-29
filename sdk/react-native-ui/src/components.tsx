@@ -31,9 +31,12 @@ import {
 } from '@agentimhq/react/hooks';
 import { AgentIMThemeProvider, useTheme, type Theme } from './theme';
 import type { Colors } from './tokens';
+import { FileMessage, ImageMessage } from './files';
 
 export interface MessageProps {
   message: Message;
+  /** The conversation (to read the message's file). */
+  convId: string;
   mine: boolean;
   first: boolean;
   last: boolean;
@@ -372,7 +375,7 @@ function TextLink({ label, onPress, tone }: { label: string; onPress(): void; to
   );
 }
 
-function DefaultMessage({ message: m, mine, first, last, time, strings, onRetry, onDiscard, onFeedback, onRespond, onEdit, onRecall, onStop }: MessageProps) {
+function DefaultMessage({ message: m, convId, mine, first, last, time, strings, onRetry, onDiscard, onFeedback, onRespond, onEdit, onRecall, onStop }: MessageProps) {
   const s = useStyles();
   const [editing, setEditing] = useState(false);
   // A long press shows what I can do with my message (iMessage, WhatsApp).
@@ -391,6 +394,7 @@ function DefaultMessage({ message: m, mine, first, last, time, strings, onRetry,
   const notes = [streaming && strings.streaming, m.state === 'cancelled' && strings.cancelled, m.state === 'failed' && strings.streamFailed, edited && strings.edited].filter(Boolean) as string[];
   const feedback = m.sender_type === 'agent' && !mine && !streaming && m.status === 'sent';
   const agent = m.sender_type === 'agent';
+  const image = !!(m.payload?.file_id || m.payload?.local_source || m.payload?.local_thumb);
   if (editing && onEdit)
     return (
       <EditBox
@@ -413,10 +417,14 @@ function DefaultMessage({ message: m, mine, first, last, time, strings, onRetry,
         accessibilityHint={onEdit || onRecall ? 'Long press for actions' : undefined}
         accessibilityState={{ busy: streaming }}
         testID={`bubble-${m.key}`}
-        style={[s.bubble, corners, mine ? s.bubbleMine : agent ? s.bubbleAi : null, m.status === 'sending' && s.sending, failed && s.failedBubble]}
+        style={[s.bubble, corners, mine ? s.bubbleMine : agent ? s.bubbleAi : null, m.status === 'sending' && s.sending, failed && s.failedBubble, m.kind === 'image' && image && s.bubbleImage]}
       >
         {m.kind === 'agentim.card' ? (
           <Card m={m} mine={mine} strings={strings} onRespond={onRespond} />
+        ) : m.kind === 'image' && image ? (
+          <ImageMessage convId={convId} message={m} strings={strings} mine={mine} />
+        ) : (m.kind === 'file' || m.kind === 'image') && m.payload ? (
+          <FileMessage convId={convId} message={m} strings={strings} mine={mine} />
         ) : (
           <Text style={[s.text, mine && s.textMine]} selectable>
             {text}
@@ -531,6 +539,7 @@ const Cell = memo(function Cell({ item, convId }: RowProps) {
           ) : null}
           <components.Message
             message={m}
+            convId={convId}
             mine={mine}
             first={first}
             last={last}
@@ -688,8 +697,17 @@ export function TypingIndicator({ convId, names }: { convId: string; names?: (id
 const MAX_COMPOSER_LINES = 6;
 
 /** A growing text field and a round send button (44 pt). */
-export function Composer({ convId }: { convId: string }) {
+/**
+ * `onAttach`: the app's own picker (expo-document-picker, react-native-image-picker, …)
+ * returns the paths to send; without it there is no attach button.
+ */
+export function Composer({ convId, onAttach }: { convId: string; onAttach?: () => Promise<string[] | undefined | null> }) {
+  const client = useClient();
   const { send } = useSend(convId);
+  const attach = async () => {
+    const paths = (await onAttach?.().catch(() => null)) ?? [];
+    for (const p of paths) void (client as any).sendFile?.(convId, p).catch(() => {});
+  };
   const { notify } = useTyping(convId);
   const s = useStyles();
   const t = useTheme();
@@ -717,6 +735,11 @@ export function Composer({ convId }: { convId: string }) {
   return (
     <View style={s.composer}>
       <View style={s.composerBox}>
+        {onAttach ? (
+          <Pressable onPress={() => void attach()} accessibilityRole="button" accessibilityLabel={strings.attach} hitSlop={8} style={({ pressed }) => [s.attach, pressed && s.pressed]} testID="attach">
+            <Text style={s.attachText}>＋</Text>
+          </Pressable>
+        ) : null}
         <TextInput
           value={text}
           onChangeText={(v) => {
@@ -790,7 +813,7 @@ export function HandoffNotice({ convId }: { convId: string }) {
 }
 
 /** A whole chat screen: header, status, messages, typing, composer. Wrap it in the app's keyboard handling. */
-export function Chat({ convId, title, subtitle, notices }: { convId: string; title?: string; subtitle?: string; notices?: Notice<ReactNode>[] }) {
+export function Chat({ convId, title, subtitle, notices, onAttach }: { convId: string; title?: string; subtitle?: string; notices?: Notice<ReactNode>[]; onAttach?: () => Promise<string[] | undefined | null> }) {
   const s = useStyles();
   return (
     <View style={s.chat}>
@@ -810,7 +833,7 @@ export function Chat({ convId, title, subtitle, notices }: { convId: string; tit
       <HandoffNotice convId={convId} />
       <MessageList convId={convId} notices={notices} />
       <TypingIndicator convId={convId} />
-      <Composer convId={convId} />
+      <Composer convId={convId} onAttach={onAttach} />
     </View>
   );
 }
@@ -864,6 +887,9 @@ function makeStyles(t: Theme) {
 
     bubble: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: t.radius.bubble, backgroundColor: c.bubble },
     bubbleMine: { backgroundColor: c.bubbleMine },
+    bubbleImage: { padding: 3 },
+    attach: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', alignSelf: 'flex-end' },
+    attachText: { fontSize: 22, color: c.muted, lineHeight: 26 },
     bubbleAi: { backgroundColor: c.bubbleAi },
     sending: { opacity: 0.7 },
     failedBubble: { borderWidth: 2, borderColor: c.danger },

@@ -208,6 +208,10 @@ export class AgentIMClient {
       caption: opts.caption, reply_to: opts.replyTo, client_msg_id: opts.clientMsgId, keep_metadata: opts.keepMetadata,
     });
   }
+  /** A local address for a file this device is sending (`payload.local_thumb` or `local_source`: paths). */
+  localPreview(key?: string | null): string | undefined {
+    return key && key.startsWith('/') ? `file://${key}` : key ?? undefined;
+  }
   /** A link (valid a few minutes) to read a file: `original` or `thumb`. */
   fileUrl(convId: string, fileId: string, variant: 'original' | 'thumb' = 'original'): Promise<{ url: string; variant: string; expires_at: number }> {
     return this.command({ cmd: 'file_url', conv_id: convId, file_id: fileId, variant });

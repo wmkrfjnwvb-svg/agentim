@@ -19,3 +19,4 @@ export {
   type ConversationItemProps,
   type MessageProps,
 } from './components';
+export { FileIcon, FileMessage, ImageMessage, ImageViewer } from './files';

@@ -22,6 +22,9 @@ const maya: [string, string, string] = [ME, 'Maya Chen', 'human'];
 const nova: [string, string, string] = ['u_nova', 'Nova', 'agent'];
 const jordan: [string, string, string] = ['u_jordan', 'Jordan Lee', 'human'];
 
+// A picture drawn here (no network).
+const label = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240"><rect width="320" height="240" fill="#e0f2fe"/><rect x="40" y="40" width="240" height="160" rx="10" fill="#fff" stroke="#0e7490" stroke-width="4"/><rect x="60" y="64" width="120" height="14" rx="4" fill="#0e7490"/><rect x="60" y="92" width="180" height="10" rx="4" fill="#94a3b8"/><rect x="60" y="112" width="150" height="10" rx="4" fill="#94a3b8"/><rect x="60" y="148" width="200" height="30" fill="#0f172a"/></svg>')}`;
+
 const messages = [
   m(maya, 'Hi! My order #4821 still says “processing” and it’s been a week.', '2026-10-25T21:10:00Z'),
   m(nova, 'Sorry about the wait, Maya. Let me look that up for you.', '2026-10-25T21:10:20Z'),
@@ -33,6 +36,8 @@ const messages = [
   }),
   m(jordan, 'Hey Maya, Jordan from support here. I’ve got this one.', '2026-10-26T17:20:00Z'),
   m(jordan, 'What’s the new address?', '2026-10-26T17:20:15Z'),
+  m(jordan, '[Image]', '2026-10-26T17:21:00Z', { kind: 'image', payload: { file_id: 'f_label', name: 'label.jpg', width: 1600, height: 1200, thumb: true, caption: 'Your shipping label' } }),
+  m(jordan, '[File] Return form.pdf', '2026-10-26T17:21:20Z', { kind: 'file', payload: { file_id: 'f_pdf', name: 'Return form.pdf', size: 184_000, mime: 'application/pdf' } }),
   m(maya, '500 Market St, San Francisco, CA 94105', '2026-10-26T17:24:00Z'),
   m(maya, 'Apt 12B', '2026-10-26T17:24:10Z', { status: 'failed', key: 'local:f', client_msg_id: 'f' }),
   m(nova, 'Updated. You’ll get a new tracking email shortly', '2026-10-26T17:25:00Z', { state: 'streaming', streamed: 'Updated. You’ll get a new tracking email shortly' }),
@@ -58,6 +63,8 @@ const client: any = {
   connection: new Observable<any>({ state: 'connected' }),
   conversations: new Observable<any[]>(conversations),
   messages: () => view,
+  fileUrl: async (_c: string, id: string, variant: string) => ({ url: label, variant, expires_at: 0 }),
+  sendFile: noop,
   send: noop, edit: noop, recall: noop, retry: noop, discard: noop, feedback: noop, respond: noop, read: noop, call: noop, focus: noop,
   on: (t: string, f: (e: any) => void) => {
     let s = listeners.get(t);

@@ -2,7 +2,7 @@
 // clock, in the React Native test renderer: the same cases as the web
 // components, plus what is native here (long press, switches, chips).
 
-import { act, fireEvent, render, screen, within } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 import { Observable } from '@agentimhq/client-web/view';
 import { AgentIM, Chat, ConversationList, MemberList, MessageList, dark, light, type MessageProps } from '../src/index';
@@ -37,6 +37,12 @@ function fake(messages: any[] = [], opts: { hasOlder?: boolean } = {}) {
     read: jest.fn(async () => ({})),
     call: jest.fn(async () => ({})),
     focus: jest.fn(async () => ({})),
+    sendFile: jest.fn(async () => ({ key: 'local:f' })),
+    fileUrl: jest.fn(async (_c: string, id: string, variant: string) => {
+      if (id === 'gone') throw Object.assign(new Error('gone'), { code: 'not_found' });
+      return { url: `https://files.example/${id}/${variant}`, variant, expires_at: 0 };
+    }),
+    localPreview: jest.fn((k?: string) => (k ? `file://${k}` : undefined)),
     on: (t: string, f: (e: any) => void) => {
       let s = listeners.get(t);
       if (!s) listeners.set(t, (s = new Set()));
@@ -382,5 +388,73 @@ describe('a conversation this person is no longer in (L4)', () => {
     await act(() => client.conversations.set([conv(undefined)]));
     expect(screen.queryByText('This conversation was closed')).toBeNull();
     expect(screen.getByLabelText('Message')).toBeTruthy();
+  });
+});
+
+describe('Images and files (docs/02 §2.7)', () => {
+  const Linking = require('react-native').Linking;
+  const img = (key: string, extra: any = {}) => msg(key, '[Image]', { kind: 'image', payload: { file_id: `f_${key}`, name: 'view.jpg', width: 4000, height: 3000, thumb: true, caption: 'the view', ...extra } });
+
+  it('shows the thumbnail at its proportions with the caption, and opens the viewer; View original swaps it', async () => {
+    const { client } = fake([img('a')]);
+    await chat(client);
+    const b = await screen.findByTestId('image-a');
+    expect(StyleSheet.flatten(b.props.style)).toMatchObject({ width: 240, height: 180 });
+    expect(client.fileUrl).toHaveBeenCalledWith('c1', 'f_a', 'thumb');
+    expect(screen.getByText('the view')).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId('image-a').props.accessibilityState?.disabled).toBeFalsy());
+    await fireEvent.press(screen.getByLabelText('Photo: the view'));
+    expect(await screen.findByTestId('viewer-thumb')).toBeTruthy();
+    await act(async () => fireEvent.press(screen.getByText('View original')));
+    expect(await screen.findByTestId('viewer-original')).toBeTruthy();
+    expect(client.fileUrl).toHaveBeenCalledWith('c1', 'f_a', 'original');
+    expect(screen.queryByText('View original')).toBeNull();
+    await fireEvent.press(screen.getAllByLabelText('Close').at(-1)!);
+    expect(screen.queryByTestId('viewer-original')).toBeNull();
+  });
+
+  it('shows my image uploading from its local file, with progress', async () => {
+    const { client } = fake([msg('local:u', '[Image]', { kind: 'image', status: 'uploading', sender_id: 'u_me', upload: { sent: 30, size: 100 }, payload: { name: 'p.jpg', width: 300, height: 300, local_thumb: '/tmp/t.jpg' } })]);
+    await chat(client);
+    expect(screen.getByLabelText('Uploading… 30%')).toBeTruthy();
+    expect(client.localPreview).toHaveBeenCalledWith('/tmp/t.jpg');
+  });
+
+  it('says when an image is gone', async () => {
+    const { client } = fake([img('g', { file_id: 'gone' })]);
+    await chat(client);
+    expect(await screen.findByText('File no longer available')).toBeTruthy();
+  });
+
+  it('a file card with type, size, opens the file; while uploading it shows the bar and cannot be opened', async () => {
+    const open = jest.spyOn(Linking, 'openURL').mockResolvedValue(true);
+    const { client } = fake([
+      msg('f', '[File] Report.pdf', { kind: 'file', payload: { file_id: 'f_f', name: 'Report.pdf', size: 2_400_000 } }),
+      msg('local:z', '[File] a.zip', { kind: 'file', status: 'uploading', sender_id: 'u_me', upload: { sent: 50, size: 200 }, payload: { name: 'a.zip', size: 200 } }),
+    ]);
+    await chat(client);
+    expect(screen.getByText('2.4 MB · PDF')).toBeTruthy();
+    await act(async () => fireEvent.press(screen.getByTestId('file-f')));
+    expect(open).toHaveBeenCalledWith('https://files.example/f_f/original');
+    expect(screen.getByText('Uploading… 25%')).toBeTruthy();
+    expect(screen.getByTestId('file-local:z').props.accessibilityState?.disabled).toBe(true);
+    expect(screen.getByText('ZIP', { includeHiddenElements: true })).toBeTruthy();
+    open.mockRestore();
+  });
+
+  it('attaches through the app’s picker; no button without one', async () => {
+    const { client } = fake();
+    const pick = jest.fn(async () => ['/a.jpg', '/b.pdf']);
+    await render(
+      <AgentIM client={client as any} me="u_me" {...when}>
+        <Chat convId="c1" onAttach={pick} />
+      </AgentIM>,
+    );
+    await act(async () => fireEvent.press(screen.getByTestId('attach')));
+    expect(client.sendFile).toHaveBeenCalledWith('c1', '/a.jpg');
+    expect(client.sendFile).toHaveBeenCalledWith('c1', '/b.pdf');
+    await screen.unmount();
+    await chat(client);
+    expect(screen.queryByTestId('attach')).toBeNull();
   });
 });
