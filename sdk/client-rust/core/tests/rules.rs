@@ -534,6 +534,44 @@ fn another_account_never_sees_the_cache() {
 // ----------------------------------------------------------------- queue
 
 #[test]
+fn messages_say_whether_they_are_mine_also_from_the_cache_before_connecting() {
+    let mut w = World::new(1);
+    w.server.conv("c1");
+    w.connected();
+    w.server.other_says("c1", "from bob");
+    w.run(1_000);
+    w.ask(json!({"cmd": "send", "conv_id": "c1", "text": "from me", "client_msg_id": "cmM"}))
+        .unwrap();
+    w.run(1_000);
+    let check = |w: &mut World| {
+        w.cmd(json!({"cmd": "messages", "conv_id": "c1"}));
+        let mine: Vec<(String, bool)> = w
+            .view("c1")
+            .iter()
+            .map(|m| (m["content"].as_str().unwrap().into(), m["mine"] == true))
+            .collect();
+        assert_eq!(mine, [("from bob".into(), false), ("from me".into(), true)]);
+        let list = w.ask(json!({"cmd": "conversations"})).unwrap();
+        assert_eq!(list["conversations"][0]["last_message"]["mine"], true);
+    };
+    check(&mut w);
+    // A new process, offline: the cache's account says who I am.
+    w.restart(2);
+    w.cmd(json!({"cmd": "close"}));
+    check(&mut w);
+    // Queued before the connection: mine, with my id.
+    let r = w
+        .ask(json!({"cmd": "send", "conv_id": "c1", "text": "queued", "client_msg_id": "cmQ"}))
+        .unwrap();
+    let v = w.view("c1");
+    let q = v.iter().find(|m| m["key"] == r["key"]).unwrap();
+    assert_eq!(
+        (q["mine"].clone(), q["sender_id"].clone()),
+        (json!(true), json!(ME))
+    );
+}
+
+#[test]
 fn sends_offline_show_at_once_and_go_out_once() {
     let mut w = World::new(1);
     w.server.conv("c1");

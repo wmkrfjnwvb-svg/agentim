@@ -77,10 +77,15 @@ export interface Connection {
 
 /** One message as shown in a list. */
 export interface Message {
-  /** The list identity: `local:<client_msg_id>` for a message sent from this device until the server's copy replaces it (in one change), then its `msg_id`. */
+  /**
+   * The list identity: `local:<client_msg_id>` for a message sent from this device until the
+   * server's copy replaces it (in one change), then its `msg_id`.
+   */
   key: string;
-  /** The server's id (empty while it is still queued). */
+  /** The server's id (`local:<client_msg_id>` until the server has it). */
   msg_id: string;
+  /** Whether I sent it (from any of my devices). */
+  mine?: boolean;
   /** The id this device gave the message, for retries. */
   client_msg_id?: string;
   /** The conversation it belongs to. */

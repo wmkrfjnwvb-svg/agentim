@@ -208,7 +208,7 @@ function preview(c: any, strings: Strings, me?: string): string {
   const m = c.last_message;
   if (!m) return '';
   const text = m.state === 'recalled' ? strings.recalled : m.content || '';
-  return m.sender_id && m.sender_id === me ? `${strings.you}: ${text}` : text;
+  return m.mine || (m.sender_id && m.sender_id === me) ? `${strings.you}: ${text}` : text;
 }
 
 function DefaultConversationItem({ conversation: c, selected, onSelect, strings, time, me }: ConversationItemProps) {
@@ -557,7 +557,7 @@ const Cell = memo(function Cell({ item, convId }: RowProps) {
     );
   }
   const { message: m, day, unread, first, last } = item.row;
-  const mine = m.sender_id === me || m.key.startsWith('local:');
+  const mine = m.mine || m.sender_id === me || m.key.startsWith('local:');
   const agent = m.sender_type === 'agent';
   const sent = mine && m.status === 'sent' && m.msg_id && !m.key.startsWith('local:');
   const target = { msgId: m.msg_id };
@@ -638,7 +638,7 @@ export function MessageList({ convId, notices = [] }: { convId: string; notices?
     const all = endText ? [...notices, { key: 'ended', seq: Number.MAX_SAFE_INTEGER, content: endText, tone: 'info' as const }] : notices;
     return interleave(layout(messages, when(), unreadFrom >= 0 ? unreadFrom : undefined), all).reverse();
   }, [messages, notices, unreadFrom, when, endText]);
-  const isMine = (m: Message) => m.sender_id === me || m.key.startsWith('local:');
+  const isMine = (m: Message) => m.mine || m.sender_id === me || m.key.startsWith('local:');
 
   useEffect(() => {
     const focus = (c: string | null) => void client.focus?.(c).catch(() => {});

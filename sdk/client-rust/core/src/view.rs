@@ -99,12 +99,12 @@ impl Core {
             let uploading = upload.as_ref().filter(|u| u.file.is_none());
             let mut m = json!({
                 "key": key, "msg_id": sent.as_deref().unwrap_or(key), "client_msg_id": cm, "conv_id": conv,
-                "sender_id": self.me["id"], "sender_name": self.me["name"], "sender_type": "human",
+                "sender_id": self.my_id(), "sender_name": self.me["name"], "sender_type": "human",
                 "kind": msg_kind.clone().unwrap_or_else(|| "text".into()),
                 "content": text, "payload": payload, "reply_to": reply_to,
                 "created_at": op.created_at, "version": 0, "state": "committed",
                 "status": if sent.is_some() { "sent" } else if op.failed.is_some() { "failed" } else if uploading.is_some() { "uploading" } else { "sending" },
-                "order": LOCAL_ORDER + op.n as i64,
+                "order": LOCAL_ORDER + op.n as i64, "mine": true,
             });
             // Until the server has the file: what the app picked, and how
             // far the upload is; then the file as the server checked it.
@@ -129,6 +129,12 @@ impl Core {
         m["key"] = json!(key);
         m["status"] = json!("sent");
         m["order"] = json!(seq);
+        // Known from the cache's account before the connection says who I am.
+        m["mine"] = json!(
+            m["sender_id"]
+                .as_str()
+                .is_some_and(|s| Some(s) == self.my_id())
+        );
         // The queue on top: edits and recalls not confirmed yet.
         for o in &self.ops {
             match &o.kind {
@@ -145,6 +151,11 @@ impl Core {
             }
         }
         Some(m)
+    }
+
+    /// My user id: from the connection, or the account the cache belongs to.
+    pub(crate) fn my_id(&self) -> Option<&str> {
+        self.me["id"].as_str().or(self.account.as_deref())
     }
 
     /// Whether the stored window has the message sent with `cm` (ids made
@@ -228,6 +239,10 @@ impl Core {
             .filter(|o| o.conv_id == id && matches!(o.kind, Kind::Send { sent: None, .. }))
             .count();
         v["sending"] = json!(local);
+        if let Some(sender) = v["last_message"]["sender_id"].as_str() {
+            let mine = Some(sender) == self.my_id();
+            v["last_message"]["mine"] = json!(mine);
+        }
         v
     }
 

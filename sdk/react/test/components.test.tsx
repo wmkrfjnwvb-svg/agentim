@@ -399,6 +399,22 @@ describe('Runs, days, unread and scrolling (docs/12 §3.1)', () => {
     expect(screen.getByRole('separator', { name: 'New messages' }).nextElementSibling?.textContent).toContain('new 1');
   });
 
+  it('knows my messages from the core without the me prop', () => {
+    const { client } = fake([msg('a', 'theirs'), msg('b', 'ours', { sender_id: 'u_x', mine: true })]);
+    client.conversations.set([{ conv_id: 'c1', unread: 1, last_message: { content: 'ours', sender_id: 'u_x', mine: true } }]);
+    render(
+      <AgentIM client={client as any}>
+        <ConversationList onSelect={() => {}} />
+        <MessageList convId="c1" />
+      </AgentIM>,
+    );
+    const rows = [...document.querySelectorAll('.aim-row')];
+    expect(rows.map((r) => r.hasAttribute('data-mine'))).toEqual([false, true]);
+    expect(screen.getByText('You: ours')).toBeTruthy();
+    // "New messages" counts only theirs.
+    expect(screen.getByRole('separator', { name: 'New messages' }).nextElementSibling?.textContent).toContain('theirs');
+  });
+
   it('shows no unread line when nothing was unread', () => {
     const { client } = fake([msg('a', 'x')]);
     client.conversations.set([{ conv_id: 'c1', unread: 0 }]);

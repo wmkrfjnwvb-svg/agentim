@@ -176,7 +176,7 @@ function preview(c: any, strings: Strings, me?: string): string {
   const m = c.last_message;
   if (!m) return '';
   const text = m.state === 'recalled' ? strings.recalled : m.content || '';
-  return m.sender_id && m.sender_id === me ? `${strings.you}: ${text}` : text;
+  return m.mine || (m.sender_id && m.sender_id === me) ? `${strings.you}: ${text}` : text;
 }
 
 function DefaultConversationItem({ conversation: c, selected, onSelect, strings, time, me }: ConversationItemProps) {
@@ -525,7 +525,7 @@ export function MessageList({ convId, notices = [] }: { convId: string; notices?
   const end = ended(conv, me);
   const all = end ? [...notices, { key: 'ended', seq: Number.MAX_SAFE_INTEGER, content: strings.ended(end.reason, end.by), tone: 'info' as const }] : notices;
   const items = interleave(layout(messages, w, unreadFrom >= 0 ? unreadFrom : undefined), all);
-  const isMine = (m: Message) => m.sender_id === me || m.key.startsWith('local:');
+  const isMine = (m: Message) => m.mine || m.sender_id === me || m.key.startsWith('local:');
 
   useLayoutEffect(() => {
     bottom.current = true;

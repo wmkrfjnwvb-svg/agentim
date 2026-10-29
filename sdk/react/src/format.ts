@@ -142,13 +142,13 @@ export function avatarColor(id: string | undefined, n: number): number {
  * Where "New messages" goes when a conversation opens with `unread` unread:
  * above the unread-th message from the end that is not mine.
  */
-export function unreadIndex(messages: { sender_id?: string; key: string }[], unread: number, me?: string): number | undefined {
+export function unreadIndex(messages: { sender_id?: string; key: string; mine?: boolean }[], unread: number, me?: string): number | undefined {
   if (unread <= 0) return undefined;
   let left = unread;
   let at: number | undefined;
   for (let i = messages.length - 1; i >= 0 && left > 0; i--) {
     const m = messages[i];
-    if (m.sender_id === me || m.key.startsWith('local:')) continue;
+    if (m.mine || m.sender_id === me || m.key.startsWith('local:')) continue;
     at = i;
     left--;
   }

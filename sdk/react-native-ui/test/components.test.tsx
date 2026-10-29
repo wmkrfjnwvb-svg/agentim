@@ -130,6 +130,17 @@ describe('MessageList', () => {
     }
   });
 
+  it('knows my messages from the core without the me prop', async () => {
+    const { client } = fake([msg('a', 'theirs'), msg('b', 'ours', { sender_id: 'u_x', mine: true, created_at: 1 })]);
+    await render(
+      <AgentIM client={client as any} {...when}>
+        <Chat convId="c1" />
+      </AgentIM>,
+    );
+    // Both say Bob, but my own message shows no name.
+    expect(screen.getAllByText('Bob')).toHaveLength(1);
+  });
+
   it('shows sending, and not delivered with retry and delete', async () => {
     const { client } = fake([
       msg('local:1', 'on its way', { status: 'sending', client_msg_id: '1', sender_id: 'u_me' }),

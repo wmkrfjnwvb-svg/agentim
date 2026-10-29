@@ -256,7 +256,7 @@ agentim                                    # 打开 http://127.0.0.1:8080
 
 ### 2.11 给应用的接口
 
-- **三个可订阅对象**：`conversations`（会话列表：按最后活动排序，未读数、@我、最后一条、免打扰、正在输入）、`messages(convId)`（`loadOlder()`、`hasOlder`、`jumpTo()`、流式回复、每条的 `sending` / `failed` / `pending`）、`connection`。
+- **三个可订阅对象**：`conversations`（会话列表：按最后活动排序，未读数、@我、最后一条、免打扰、正在输入）、`messages(convId)`（`loadOlder()`、`hasOlder`、`jumpTo()`、流式回复、每条的 `sending` / `failed` / `pending`，以及 `mine`：是不是我发的，没连上时按缓存的账号算，所以应用不需要知道服务端内部的用户 ID）、`connection`。会话列表里的 `last_message` 也带 `mine`。
 - 核心输出**差量**（追加、插入、替换、删除、重置）；**订阅时先给一次完整内容，再给之后的差量**（matrix #3535 修的就是订阅时漏更新）；订阅返回句柄，释放后停止。
 - **方法完成时状态已经更新**（`await send()` 返回时消息已经在列表里）。
 - 各平台的接法：React `useSyncExternalStore`（快照不变就返回同一个对象）；Swift `@MainActor @Observable` + `AsyncSequence`；Kotlin `StateFlow`；Flutter `Stream`；C# 事件和 `IAsyncEnumerable`，**Unity 保证在主线程触发**。
