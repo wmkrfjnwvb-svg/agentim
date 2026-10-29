@@ -359,7 +359,7 @@ function DefaultMessage({ message: m, convId, mine, first, last, time, strings, 
       <div className="aim-bubble" data-state={m.state} data-mine={mine || undefined} data-first={first || undefined} data-last={last || undefined} data-failed={failed || undefined} data-sending={m.status === 'sending' || undefined} data-kind={m.kind === 'image' || m.kind === 'file' ? m.kind : undefined} aria-busy={streaming || undefined}>
         {m.kind === 'agentim.card' ? (
           <Card m={m} mine={mine} strings={strings} onRespond={onRespond} />
-        ) : m.kind === 'image' && (m.payload?.file_id || m.payload?.local_source) ? (
+        ) : m.kind === 'image' && (m.payload?.file_id || m.payload?.local_source || m.payload?.local_thumb) ? (
           <ImageMessage convId={convId} message={m} strings={strings} />
         ) : (m.kind === 'file' || m.kind === 'image') && m.payload ? (
           <FileMessage convId={convId} message={m} strings={strings} />
@@ -392,7 +392,6 @@ function DefaultMessage({ message: m, convId, mine, first, last, time, strings, 
           ))}
           {last && time && !failed ? <span className="aim-time">{time}</span> : null}
           {mine && m.status === 'sending' ? <span>{strings.sending}</span> : null}
-          {mine && m.status === 'uploading' ? <span>{strings.uploading(Math.floor((((m as any).upload?.sent ?? 0) / Math.max(1, (m as any).upload?.size ?? 1)) * 100))}</span> : null}
           {mine && last && m.status === 'sent' ? (
             <span className="aim-sent" title={strings.sent}>
               <Check />

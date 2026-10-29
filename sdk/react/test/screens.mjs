@@ -52,6 +52,10 @@ const shots = [
   ['web-support', 'web/gallery.html?view=support', 1000, 760],
   ['web-phone', 'web/gallery.html?view=support', 390, 844],
   ['web-offline', 'web/gallery.html?view=support&offline=1', 480, 760],
+  ['web-files', 'web/gallery.html?view=files', 1000, 900],
+  ['web-files-dark', 'web/gallery.html?view=files&theme=dark', 390, 844],
+  ['web-viewer', 'web/gallery.html?view=files&open=1', 1000, 760],
+  ['web-viewer-phone', 'web/gallery.html?view=files&open=1', 390, 844],
   ['rn-light', 'rn/gallery.html', 900, 830],
   ['rn-dark', 'rn/gallery.html?theme=dark', 900, 830],
 ];

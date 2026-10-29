@@ -71,12 +71,28 @@ const conversations = [
   { conv_id: 'c_alex', title: 'Alex Rivera', unread: 0, last_message: { content: 'See you at the offsite!', sender_id: 'u_alex', created_at: at('2026-09-30T13:00:00Z') } },
 ];
 
+// A picture drawn here (no network): a sunset at 4:3.
+const picture = (w: number, h: number) =>
+  `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f97316"/><stop offset="0.6" stop-color="#fb7185"/><stop offset="1" stop-color="#312e81"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#s)"/><circle cx="${w * 0.62}" cy="${h * 0.58}" r="${h * 0.16}" fill="#fde68a"/><path d="M0 ${h * 0.78} Q ${w * 0.3} ${h * 0.68} ${w * 0.55} ${h * 0.8} T ${w} ${h * 0.74} V ${h} H 0 Z" fill="#1e1b4b"/></svg>`)}`;
+const files = [
+  m(jordan, 'Here are the photos from the venue and the contract.', '2026-10-26T17:01:00Z'),
+  m(jordan, '[Image]', '2026-10-26T17:01:10Z', { kind: 'image', payload: { file_id: 'f_sunset', name: 'IMG_2041.jpg', width: 4032, height: 3024, thumb: true, caption: 'View from the terrace' } }),
+  m(jordan, '[File] Venue contract (signed).pdf', '2026-10-26T17:01:20Z', { kind: 'file', payload: { file_id: 'f_pdf', name: 'Venue contract (signed).pdf', size: 2_412_000, mime: 'application/pdf' } }),
+  m(jordan, '[File] Budget Q4.xlsx', '2026-10-26T17:01:25Z', { kind: 'file', payload: { file_id: 'f_xls', name: 'Budget Q4.xlsx', size: 88_400 } }),
+  m(maya, '[Image]', '2026-10-26T17:20:00Z', { kind: 'image', payload: { file_id: 'f_tall', name: 'floorplan.png', width: 900, height: 1600, thumb: true } }),
+  m(maya, '[File] Seating plan v3.key', '2026-10-26T17:21:00Z', { kind: 'file', payload: { file_id: 'f_key', name: 'Seating plan v3.key', size: 18_200_000 } }),
+  m(maya, '[File] All photos.zip', '2026-10-26T17:24:00Z', { kind: 'file', status: 'uploading', key: 'local:z', client_msg_id: 'z', upload: { sent: 148_000_000, size: 412_000_000 }, payload: { name: 'All photos.zip', size: 412_000_000 } }),
+  m(maya, '[Image]', '2026-10-26T17:24:30Z', { kind: 'image', status: 'uploading', key: 'local:i', client_msg_id: 'i', upload: { sent: 1_300_000, size: 3_100_000 }, payload: { name: 'IMG_2050.jpg', width: 3024, height: 4032, local_thumb: 'sunset-tall' } }),
+];
+const thumbs: Record<string, string> = { f_sunset: picture(320, 240), f_tall: picture(180, 320), 'sunset-tall': picture(240, 320) };
+
 class View extends Observable<any[]> {
   hasOlder = false;
   olderEnd = 'start';
   async loadOlder() {}
 }
-const view = new View(messages);
+const filesView = q.get('view') === 'files';
+const view = new View(filesView ? files : messages);
 const noop = async () => ({});
 const listeners = new Map<string, Set<(e: any) => void>>();
 const client: any = {
@@ -90,6 +106,9 @@ const client: any = {
   respond: noop,
   read: noop,
   call: noop,
+  sendFile: noop,
+  fileUrl: async (_c: string, id: string, variant: string) => ({ url: variant === 'thumb' ? (thumbs[id] ?? picture(320, 240)) : picture(1600, 1200), variant, expires_at: 0 }),
+  localPreview: (k?: string) => (k ? thumbs[k] : undefined),
   on: (t: string, f: (e: any) => void) => {
     let s = listeners.get(t);
     if (!s) listeners.set(t, (s = new Set()));
@@ -99,12 +118,21 @@ const client: any = {
 };
 setTimeout(() => listeners.get('signal')?.forEach((f) => f({ conv_id: 'c_support', kind: 'typing', from: 'u_jordan' })), 50);
 
-const support = q.get('view') === 'support';
+const support = q.get('view') === 'support' || filesView;
+// ?open=1: the viewer open on the first image.
+if (q.get('open')) {
+  const tryOpen = () => {
+    const b = document.querySelector<HTMLButtonElement>('.aim-image img') ? document.querySelector<HTMLButtonElement>('.aim-image') : null;
+    if (b) b.click();
+    else setTimeout(tryOpen, 30);
+  };
+  setTimeout(tryOpen, 250);
+}
 createRoot(document.getElementById('root')!).render(
   <AgentIM client={client} me={ME} locale="en-US" timeZone="America/Los_Angeles" now={() => NOW}>
     {support ? (
       <div className="support">
-        <Chat convId="c_support" title="Acme Support" subtitle="Nova (AI) and our team typically reply in minutes" />
+        <Chat convId="c_support" title={filesView ? 'Offsite planning' : 'Acme Support'} subtitle={filesView ? 'Maya Chen, Jordan Lee' : 'Nova (AI) and our team typically reply in minutes'} />
       </div>
     ) : (
       <div className="app">

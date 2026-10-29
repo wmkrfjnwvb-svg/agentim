@@ -450,7 +450,9 @@
 .aim-viewer {
   position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center;
   background: rgba(9, 9, 11, 0.92); color: #fff; padding: 56px 16px 16px;
+  font-family: var(--aim-font); font-size: var(--aim-font-size); line-height: var(--aim-line);
 }
+.aim-viewer * { box-sizing: border-box; }
 .aim-viewer-bar { position: absolute; top: 0; inset-inline: 0; display: flex; align-items: center; gap: var(--aim-space-2); padding: 8px 12px; }
 .aim-viewer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--aim-font-size-small); opacity: 0.85; }
 .aim-viewer-bar button {
@@ -459,7 +461,7 @@
 }
 .aim-viewer-bar button:hover { background: rgba(255, 255, 255, 0.22); }
 .aim-viewer-bar button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
-.aim-viewer-img { max-width: 100%; max-height: calc(100% - 48px); object-fit: contain; border-radius: 4px; }
+.aim-viewer-img { flex: 1; min-height: 0; width: 100%; object-fit: contain; }
 .aim-viewer-caption { margin-top: 12px; max-width: 640px; text-align: center; font-size: var(--aim-font-size); }
 /* On a phone the actions sit at the bottom, within reach of the thumb. */
 @media (max-width: 600px) {

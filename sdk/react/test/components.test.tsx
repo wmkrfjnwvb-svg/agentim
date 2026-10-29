@@ -708,7 +708,7 @@ describe('Images and files (docs/02 §2.7)', () => {
     const bar = screen.getAllByRole('progressbar')[0];
     expect(bar.getAttribute('aria-valuenow')).toBe('30');
     expect(screen.getByRole('button', { name: 'Photo' }).querySelector('img')!.getAttribute('src')).toBe('blob:t1');
-    expect(screen.getByText('Uploading… 30%')).toBeTruthy();
+    expect(bar.getAttribute('aria-label')).toBe('Uploading… 30%');
   });
 
   it('says when a file is gone', async () => {

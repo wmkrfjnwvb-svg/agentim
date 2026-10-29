@@ -5,6 +5,7 @@
 // upload while it runs.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import type { Message } from '@agentimhq/client-web';
 import { useClient, useFileUrl } from './hooks.js';
 import type { Strings } from './strings.js';
@@ -185,7 +186,10 @@ export function ImageMessage({ convId, message: m, strings }: { convId: string; 
           {p.caption}
         </div>
       ) : null}
-      {open ? <ImageViewer convId={convId} message={m} thumb={url} strings={strings} onClose={() => setOpen(false)} /> : null}
+      {open
+        ? // Over everything: the list around it may clip or contain it.
+          createPortal(<ImageViewer convId={convId} message={m} thumb={url} strings={strings} onClose={() => setOpen(false)} />, document.body)
+        : null}
     </>
   );
 }
