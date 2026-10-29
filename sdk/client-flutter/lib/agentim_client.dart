@@ -372,8 +372,16 @@ class AgentIMClient {
   /// Sends a file or a photo from a path: shown at once as uploading, sent
   /// when it is up. A photo loses its EXIF and GPS (unless [keepMetadata])
   /// and gets a 320-pixel thumbnail (docs/02 §2.7).
-  Future<Map<String, dynamic>> sendFile(String convId, String path,
-          {String? name, String? mime, String? caption, String? replyTo, String? clientMsgId, bool keepMetadata = false}) async =>
+  Future<Map<String, dynamic>> sendFile(
+    String convId,
+    String path, {
+    String? name,
+    String? mime,
+    String? caption,
+    String? replyTo,
+    String? clientMsgId,
+    bool keepMetadata = false,
+  }) async =>
       ((await command({
                 'cmd': 'send_file',
                 'conv_id': convId,
@@ -390,8 +398,7 @@ class AgentIMClient {
 
   /// A link (valid a few minutes) to read a file: `original` or `thumb`.
   Future<Map<String, dynamic>> fileUrl(String convId, String fileId, {String variant = 'original'}) async =>
-      ((await command({'cmd': 'file_url', 'conv_id': convId, 'file_id': fileId, 'variant': variant})) as Map)
-          .cast<String, dynamic>();
+      ((await command({'cmd': 'file_url', 'conv_id': convId, 'file_id': fileId, 'variant': variant})) as Map).cast<String, dynamic>();
 
   Future<Map<String, dynamic>> send(String convId, String text, {String? clientMsgId, String? replyTo}) async =>
       ((await command({
