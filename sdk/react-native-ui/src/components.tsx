@@ -33,37 +33,66 @@ import { AgentIMThemeProvider, useTheme, type Theme } from './theme';
 import type { Colors } from './tokens';
 import { FileMessage, ImageMessage } from './files';
 
+/** What a message component gets: replace `Message` in `components` to draw messages your way. */
 export interface MessageProps {
+  /** The message to show. */
   message: Message;
   /** The conversation (to read the message's file). */
   convId: string;
+  /** Whether I sent it (shown on the right). */
   mine: boolean;
+  /** Whether it starts a run of messages from the same sender (shows the name and avatar). */
   first: boolean;
+  /** Whether it ends a run of messages from the same sender (shows the time). */
   last: boolean;
+  /** The formatted time to show, when it shows one. */
   time?: string;
+  /** The interface texts in the current language. */
   strings: Strings;
+  /** Sends a failed message again. */
   onRetry(): void;
+  /** Drops a failed message. */
   onDiscard(): void;
+  /** Rates an agent's message. */
   onFeedback(rating: 'up' | 'down'): void;
+  /** Answers a card block: a button `action` or form `values`. */
   onRespond(blockId: string, r: { action?: string; values?: Record<string, unknown> }): void;
+  /** Edits my message (when it can still be edited). */
   onEdit?(text: string): void;
+  /** Recalls my message for everyone. */
   onRecall?(): void;
+  /** Stops an agent's streaming reply. */
   onStop?(): void;
 }
 
+/**
+ * What a conversation list row gets: replace `ConversationItem` in `components` to draw rows your
+ * way.
+ */
 export interface ConversationItemProps {
+  /** The conversation (title, last message, unread count, members…). */
   conversation: any;
+  /** Whether it is the open conversation. */
   selected: boolean;
+  /** Opens it. */
   onSelect(): void;
+  /** The interface texts in the current language. */
   strings: Strings;
+  /** The formatted time of the last message. */
   time?: string;
+  /** My user id (for "You: …" previews and direct-conversation titles). */
   me?: string;
 }
 
+/** The parts you can replace, passed as `components` to `AgentIM`. */
 export interface Components {
+  /** Draws one message. */
   Message: ComponentType<MessageProps>;
+  /** Draws one conversation list row. */
   ConversationItem: ComponentType<ConversationItemProps>;
+  /** Draws an avatar from the id, name and kind (human or agent). */
   Avatar: ComponentType<{ id?: string; name?: string; kind?: string; size?: number }>;
+  /** Draws an empty state (no conversations, no messages). */
   Empty: ComponentType<{ text: string; hint?: string }>;
 }
 
@@ -141,6 +170,10 @@ function DefaultAvatar({ id, name, kind, size = 32 }: { id?: string; name?: stri
   );
 }
 
+/**
+ * The AI mark (EU AI Act art. 50): drawn next to every agent's name and message, also under a
+ * replaced Message component.
+ */
 export function AIBadge() {
   const s = useStyles();
   const { strings } = useUi();
@@ -153,6 +186,10 @@ export function AIBadge() {
   );
 }
 
+/**
+ * A line saying what the connection is doing (offline, reconnecting, waiting for network); nothing
+ * while connected.
+ */
 export function ConnectionBanner() {
   const c = useConnection();
   const s = useStyles();

@@ -16,35 +16,46 @@ interface Readable<T> {
 
 const Ctx = createContext<Client | null>(null);
 
+/** Gives the hooks their client (the components use `AgentIM`, which includes it). */
 export function AgentIMProvider({ client, children }: { client: Client; children?: ReactNode }) {
   return createElement(Ctx.Provider, { value: client }, children);
 }
 
+/** The client given to the provider. */
 export function useClient(): Client {
   const c = useContext(Ctx);
   if (!c) throw new Error('useClient: wrap the tree in <AgentIMProvider client={…}>');
   return c;
 }
 
+/** The current value of an observable, re-rendering on change. */
 export function useObservable<T>(o: Readable<T>): T {
   return useSyncExternalStore(o.subscribe, o.get, o.get);
 }
 
+/** The connection state, re-rendering on change. */
 export function useConnection(): Connection {
   return useObservable(useClient().connection);
 }
 
+/** The conversation list, re-rendering on change. */
 export function useConversations(): any[] {
   return useObservable(useClient().conversations);
 }
 
+/** What `useMessages` returns. */
 export interface MessagesState {
+  /** The messages, oldest first. */
   messages: Message[];
+  /** Whether older messages can still be loaded. */
   hasOlder: boolean;
   /** `start` when the beginning is reached, `retention` when older ones are gone. */
   olderEnd?: string;
+  /** Whether older messages are loading now. */
   loadingOlder: boolean;
+  /** Loads the next page of older messages. */
   loadOlder(): Promise<void>;
+  /** Why loading older messages failed, if it did. */
   error?: { code: string; message: string };
 }
 

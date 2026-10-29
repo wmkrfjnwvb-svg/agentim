@@ -24,6 +24,8 @@ import 'dart:io' show Platform;
 
 import 'package:ffi/ffi.dart';
 
+/// How the client starts: the server address, this device's id, the cache, the token provider and
+/// how it names itself.
 class ClientOptions {
   /// `https://chat.example.com`.
   final String url;
@@ -78,6 +80,7 @@ class AgentIMError implements Exception {
     retryAfterMs: (e?['retry_after_ms'] as num?)?.toInt(),
   );
 
+  /// `code: message`.
   @override
   String toString() => 'AgentIMError($code: $message)';
 }
@@ -88,6 +91,7 @@ class Observed<T> {
   final _changes = StreamController<T>.broadcast(sync: true);
   Observed(this._value);
 
+  /// The current value.
   T get value => _value;
 
   /// The current value, then every change.
@@ -102,6 +106,8 @@ class Observed<T> {
   }
 }
 
+/// The connection state and why: `state` is `closed`, `connecting`, `connected`, `disconnected`,
+/// `suspended` or `failed`.
 class Connection {
   /// closed, connecting, connected, disconnected, suspended or failed.
   final String state;
@@ -117,6 +123,9 @@ class Messages {
   final String convId;
   final list = Observed<List<Map<String, dynamic>>>(const []);
   bool hasOlder = false;
+
+  /// Why nothing older can be loaded: `start` (the beginning) or `retention` (deleted by the
+  /// retention period).
   String? olderEnd;
   final _byKey = <String, Map<String, dynamic>>{};
 
@@ -194,6 +203,8 @@ external void agentim_client_free(Pointer<Void> c);
 @Native<Pointer<Utf8> Function()>()
 external Pointer<Utf8> agentim_version();
 
+/// The AgentIM client for one account on one device: keeps the connection, syncs, sends the offline
+/// queue in order, keeps the local cache, and turns everything into observable state.
 class AgentIMClient {
   final ClientOptions _o;
   late final NativeCallable<_EventNative> _callable;
@@ -212,8 +223,11 @@ class AgentIMClient {
 
   AgentIMClient._(this._o);
 
+  /// The version of the native core.
   static String version() => agentim_version().toDartString();
 
+  /// Starts a client with its options: the server address, this device's id, the token provider and
+  /// the cache. Nothing connects until `connect`.
   static AgentIMClient create(ClientOptions o) {
     final c = AgentIMClient._(o);
     c._callable = NativeCallable<_EventNative>.listener(c._onEvent);
@@ -360,6 +374,8 @@ class AgentIMClient {
     return v;
   }
 
+  /// Connects and keeps connecting: reconnects with backoff when the network or the server goes,
+  /// syncs what it missed, sends the offline queue.
   Future<void> connect() => command({'cmd': 'connect'});
 
   /// Closes the connection (the client stays usable; [dispose] frees it).
@@ -400,6 +416,9 @@ class AgentIMClient {
   Future<Map<String, dynamic>> fileUrl(String convId, String fileId, {String variant = 'original'}) async =>
       ((await command({'cmd': 'file_url', 'conv_id': convId, 'file_id': fileId, 'variant': variant})) as Map).cast<String, dynamic>();
 
+  /// Sends a text, optionally as a reply: shown at once as sending, sent when the connection
+  /// allows, in order. Returns the `client_msg_id` and the local key; a retry with the same
+  /// `client_msg_id` is the same message.
   Future<Map<String, dynamic>> send(String convId, String text, {String? clientMsgId, String? replyTo}) async =>
       ((await command({
                 'cmd': 'send',
@@ -411,14 +430,27 @@ class AgentIMClient {
               as Map)
           .cast<String, dynamic>();
 
+  /// Edits one of my messages (by `msgId`, or by `clientMsgId` while it is still queued); the
+  /// change shows at once.
   Future<void> edit(String convId, String msgId, String text) => command({'cmd': 'edit', 'conv_id': convId, 'msg_id': msgId, 'text': text});
+
+  /// Recalls one of my messages for everyone; a message still in the queue is simply not sent.
   Future<void> recall(String convId, String msgId) => command({'cmd': 'recall', 'conv_id': convId, 'msg_id': msgId});
+
+  /// Marks the conversation read up to `seq` (default: the newest) on all my devices.
   Future<void> read(String convId, {int? seq}) => command({'cmd': 'read', 'conv_id': convId, if (seq != null) 'seq': seq});
+
+  /// Sends a failed message again (the same `client_msg_id`, so it is never doubled).
   Future<void> retry(String convId, String clientMsgId) => command({'cmd': 'retry', 'conv_id': convId, 'client_msg_id': clientMsgId});
+
+  /// Drops a failed or waiting message from the queue.
   Future<void> discard(String convId, String clientMsgId) => command({'cmd': 'discard', 'conv_id': convId, 'client_msg_id': clientMsgId});
 
   /// A request that needs the server now (approvals, decisions, queries).
   Future<Object?> call(String op, [Map<String, Object?> args = const {}]) => command({'cmd': 'call', 'op': op, 'args': args});
+
+  /// Everything that helps report a problem: the connection, positions, the queue and recent
+  /// failures.
   Future<Object?> debugState() => command({'cmd': 'debug_state'});
 
   /// Stops the client; no event is handled after it returns. Waiting calls fail with `closed`.

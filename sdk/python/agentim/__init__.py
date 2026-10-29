@@ -55,6 +55,10 @@ def _clean(d: dict) -> dict:
 
 
 class AgentIM:
+    """The open API client for your backend: an API key with the scopes the calls need.
+    Retries network errors and 429/5xx with backoff; POSTs reuse one Idempotency-Key
+    across retries.
+    """
     def __init__(self, base_url: str, api_key: str, retries: int = 3, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -108,37 +112,60 @@ class AgentIM:
 
     # ---- agent keys
     def issue_agent_key(self, agent_id, revoke_others=False):
+        """A new key for an agent (`agents:write`). `revoke_others` revokes every other key
+        of the agent in the same write (rotation). The key is shown only here.
+        """
         return self.request("POST", f"/v1/agents/{_q(agent_id)}/keys", {"revoke_others": revoke_others})
 
     def revoke_agent_keys(self, agent_id):
+        """Revokes every key of an agent and disconnects it."""
         return self.request("DELETE", f"/v1/agents/{_q(agent_id)}/keys")
 
     def revoke_agent_key(self, agent_id, device_id):
+        """Revokes one key of an agent (by its device id) and disconnects that connection."""
         return self.request("DELETE", f"/v1/agents/{_q(agent_id)}/keys/{_q(device_id)}")
 
     # ---- agents (docs/13 §4.1)
     def list_agents(self, user_id):
+        """The agents a person owns, with their keys (never the secrets)."""
         return self.request("GET", f"/v1/users/{_q(user_id)}/agents")
 
     def stop_agent(self, agent_id, reason=None):
+        """Stops an agent at once (kill switch): it is disconnected and every request is
+        refused until `resume_agent`.
+        """
         return self.request("POST", f"/v1/agents/{_q(agent_id)}:stop",
                             {"reason": reason} if reason is not None else None)
 
     def resume_agent(self, agent_id):
+        """Resumes a stopped agent."""
         return self.request("POST", f"/v1/agents/{_q(agent_id)}:resume")
 
     def transfer_agent(self, agent_id, owner, rotate_keys=False):
+        """Gives a team agent to another person of its unit; `rotate_keys` revokes its keys
+        in the same write.
+        """
         return self.request("POST", f"/v1/agents/{_q(agent_id)}:transfer",
                             {"owner": owner, "rotate_keys": rotate_keys})
 
     def destroy_agent(self, agent_id):
+        """Destroys an agent for good: keys revoked, memberships ended, checkpoints
+        deleted. Its messages stay in the conversations; its name cannot be used again.
+        """
         return self.request("DELETE", f"/v1/agents/{_q(agent_id)}")
 
     def export_agent(self, agent_id, with_conversations=False):
+        """Exports an agent (settings, checkpoints, optionally its conversations) as a
+        package signed by this deployment, to import elsewhere.
+        """
         flag = "true" if with_conversations else "false"
         return self.request("GET", f"/v1/agents/{_q(agent_id)}/export?with_conversations={flag}")
 
     def import_agent(self, package, owner, name=None, allow_unverified=False):
+        """Imports an agent package from `export_agent` under a new owner. A package this
+        deployment cannot verify (unsigned, or signed elsewhere) is refused unless
+        `allow_unverified`.
+        """
         """``allow_unverified``: accept a package this deployment cannot verify
         (unsigned, or from another deployment)."""
         return self.request(
@@ -149,9 +176,11 @@ class AgentIM:
 
     # ---- devices
     def list_devices(self, user_id):
+        """A person's devices (one per client token), with when each was last seen."""
         return self.request("GET", f"/v1/users/{_q(user_id)}/devices")
 
     def logout_device(self, user_id, device_id):
+        """Revokes one device's token and disconnects it."""
         return self.request("DELETE", f"/v1/users/{_q(user_id)}/devices/{_q(device_id)}")
 
     # ---- compliance (docs/04 §4.2)
@@ -160,6 +189,7 @@ class AgentIM:
         return self.request("DELETE", f"/v1/users/{_q(user_id)}")
 
     def erasure(self, user_id):
+        """Progress of an account deletion: `running` or `done`, with what was erased."""
         return self.request("GET", f"/v1/users/{_q(user_id)}/erasure")
 
     def export_user(self, user_id, after=None):
@@ -181,12 +211,17 @@ class AgentIM:
 
     # ---- moderation
     def reports(self, state="open", limit=50, offset=0):
+        """The moderation queue: reports by state, newest first, in pages."""
         return self.request("GET", f"/v1/reports?state={_q(state)}&limit={limit}&offset={offset}")
 
     def get_report(self, report_id):
+        """One report with its target and what was decided."""
         return self.request("GET", f"/v1/reports/{_q(report_id)}")
 
     def resolve_report(self, report_id, action, reason, ground=None, automated=None, days=None):
+        """Decides a report (DSA art. 16, 17): no action, remove the content, suspend or
+        ban the user; the reason is shown to the people affected.
+        """
         return self.request("POST", f"/v1/reports/{_q(report_id)}:resolve",
                             {"action": action, "reason": reason, "ground": ground,
                              "automated": automated, "days": days})
@@ -197,52 +232,73 @@ class AgentIM:
                             {"seconds": seconds, "reason": reason})
 
     def unsilence_member(self, conv_id, user_id):
+        """Lifts a silence early."""
         return self.request("POST", f"/v1/conversations/{_q(conv_id)}/members/{_q(user_id)}:unsilence")
 
     # ---- users
     def upsert_user(self, id, **attrs):
+        """Creates or updates a user with your own id: a person, or an agent with an
+        `owner` (then the answer carries its first key).
+        """
         return self.request("PUT", f"/v1/users/{_q(id)}", attrs)
 
     def get_user(self, id):
+        """A user by your id."""
         return self.request("GET", f"/v1/users/{_q(id)}")
 
     def update_user(self, id, **attrs):
+        """Changes a user's display name, avatar or custom fields."""
         return self.request("PATCH", f"/v1/users/{_q(id)}", attrs)
 
     def deactivate_user(self, id):
+        """Deactivates a user: logged out everywhere and refused until reactivated; their
+        data stays.
+        """
         return self.request("POST", f"/v1/users/{_q(id)}:deactivate")
 
     def reactivate_user(self, id):
+        """Reactivates a deactivated user."""
         return self.request("POST", f"/v1/users/{_q(id)}:reactivate")
 
     def batch_users(self, users):
+        """Creates or updates up to 100 users in one call; one result per user."""
         return self.request("POST", "/v1/users:batch", {"users": users})
 
     def user_conversations(self, id):
+        """The conversations a user is in."""
         return self.request("GET", f"/v1/users/{_q(id)}/conversations")
 
     # ---- conversations (`as_` is a user id or "system")
     def create_conversation(self, as_, kind, title, members=None, owner=None, fields=None):
+        """Creates a conversation as a user or as the system (`as_="system"`, then name an
+        `owner`).
+        """
         return self.request("POST", "/v1/conversations",
                             {"as": as_, "kind": kind, "title": title, "members": members or [],
                              "owner": owner, "fields": fields})
 
     def get_conversation(self, id):
+        """A conversation: kind, title, members, custom fields."""
         return self.request("GET", f"/v1/conversations/{_q(id)}")
 
     def update_conversation(self, id, as_, title=None, fields=None):
+        """Renames a conversation or replaces its custom fields."""
         return self.request("PATCH", f"/v1/conversations/{_q(id)}", {"as": as_, "title": title, "fields": fields})
 
     def dissolve_conversation(self, id, as_):
+        """Dissolves a conversation: everyone loses access and the content is deleted."""
         return self.request("DELETE", f"/v1/conversations/{_q(id)}?as={_q(as_)}")
 
     def add_members(self, id, as_, users):
+        """Adds users to a conversation; one result per user."""
         return self.request("POST", f"/v1/conversations/{_q(id)}/members", {"as": as_, "users": users})
 
     def remove_member(self, id, user, as_):
+        """Removes a member."""
         return self.request("DELETE", f"/v1/conversations/{_q(id)}/members/{_q(user)}?as={_q(as_)}")
 
     def set_role(self, id, user, role, as_):
+        """Makes a member an admin or a member, or the owner (transfers ownership)."""
         return self.request("PATCH", f"/v1/conversations/{_q(id)}/members/{_q(user)}", {"as": as_, "role": role})
 
     # ---- messages
@@ -279,26 +335,39 @@ class AgentIM:
         return self.request("GET", f"/v1/conversations/{_q(conv_id)}/files/{_q(file_id)}?{urllib.parse.urlencode(q)}")
 
     def send_message(self, conv_id, as_, text, **kw):
+        """Sends a message as a member or as the system. With `client_msg_id` a retry
+        returns the first result (`duplicate: true`).
+        """
         return self.request("POST", f"/v1/conversations/{_q(conv_id)}/messages", self._msg(as_, text, **kw))
 
     def send_to_user(self, user_id, as_, text, **kw):
+        """Sends to a user directly: the direct conversation with them is opened if needed."""
         return self.request("POST", f"/v1/users/{_q(user_id)}/messages", self._msg(as_, text, **kw))
 
     def batch_send(self, as_, to, text, kind=None, payload=None, client_msg_id=None):
+        """Sends the same message to up to 100 users (each in their direct conversation);
+        one result per user.
+        """
         return self.request("POST", "/v1/messages:batch-send",
                             {"as": as_, "to": to, "text": text, "kind": kind, "payload": payload,
                              "client_msg_id": client_msg_id})
 
     def edit_message(self, id, as_, text, payload=None):
+        """Edits a message as its sender (or the system)."""
         return self.request("PATCH", f"/v1/messages/{_q(id)}", {"as": as_, "text": text, "payload": payload})
 
     def recall_message(self, id, as_):
+        """Recalls a message for everyone."""
         return self.request("POST", f"/v1/messages/{_q(id)}:recall", {"as": as_})
 
     def history(self, conv_id, after_seq=0, limit=50):
+        """A conversation's events after a seq, in pages (your backend's own records,
+        search, analytics).
+        """
         return self.request("GET", f"/v1/conversations/{_q(conv_id)}/messages?after_seq={after_seq}&limit={limit}")
 
     def mark_read(self, conv_id, as_, seq):
+        """Marks a conversation read up to `seq` for a user."""
         return self.request("POST", f"/v1/conversations/{_q(conv_id)}/read", {"as": as_, "seq": seq})
 
 

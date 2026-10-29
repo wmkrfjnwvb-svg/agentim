@@ -171,6 +171,7 @@ pub struct HistoryConfig {
     pub page_max: i64,
     /// Pages per second per person (all connections), and the burst.
     pub rate_per_second: f64,
+    /// Reads at once before `rate_per_second` applies.
     pub burst: f64,
 }
 
@@ -250,9 +251,11 @@ impl Default for AgentsConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct McpConfig {
+    /// Serve the MCP endpoint (`POST /mcp`).
     pub enabled: bool,
     /// Tool calls per agent key (token bucket).
     pub rate_per_second: f64,
+    /// Calls an agent may make at once before `rate_per_second` applies.
     pub burst: f64,
 }
 
@@ -270,21 +273,38 @@ impl Default for McpConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SyncFile {
+    /// Events per conversation per sync round.
     pub batch_size: i64,
+    /// Events sent to a device and not acknowledged yet, per conversation.
     pub max_unacked: i64,
+    /// A device further behind than this starts over like a new device.
     pub max_gap: i64,
+    /// Devices that acknowledge nothing for this long lose their positions.
     pub device_ttl_days: i64,
+    /// A new device gets messages from this many days back…
     pub window_days: i64,
+    /// …at most this many per conversation.
     pub max_messages: i64,
+    /// Conversations with nothing in the window: give a new device their last
+    /// few events.
     pub older_enabled: bool,
+    /// How many of those last events.
     pub older_messages: i64,
+    /// At most this many such conversations.
     pub older_max: i64,
+    /// Someone added to a group sees this many earlier messages…
     pub member_messages: i64,
+    /// …from at most this many days back.
     pub member_days: i64,
+    /// Most earlier messages whoever adds someone may share (`history`).
     pub share_max: i64,
+    /// Sync rounds a person may run a second…
     pub rate_per_second: f64,
+    /// …with bursts up to this many.
     pub burst: f64,
+    /// Sync rounds an agent may run a second…
     pub agent_rate_per_second: f64,
+    /// …with bursts up to this many.
     pub agent_burst: f64,
 }
 
@@ -412,6 +432,7 @@ impl Config {
 /// Encryption at rest (docs/04-security-compliance.md §2.6). On by default.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct EncryptionConfig {
+    /// `managed` (the default: content encrypted with a master key) or `off`.
     #[serde(default)]
     pub mode: EncryptionMode,
     /// File holding the base64 master key.
@@ -637,6 +658,7 @@ fn write_private(path: &str, content: &str) -> std::io::Result<()> {
 pub struct AuthConfig {
     /// Failed admin logins before the account is locked, and for how long.
     pub max_failures: i64,
+    /// How long a console login stays locked after `max_failures`.
     pub lock_minutes: i64,
     /// A person's device unused this many days is forgotten (0: never):
     /// its next connection is a new device. Agent keys do not expire (D94).
@@ -680,6 +702,7 @@ pub struct ServerConfig {
 pub struct TlsConfig {
     /// PEM certificate chain and private key files.
     pub cert: String,
+    /// The private key (PEM) of `cert`.
     pub key: String,
 }
 
@@ -696,6 +719,7 @@ pub struct OpenApiConfig {
     pub proxy_hops: usize,
     /// Requests per second per key, and the burst allowed.
     pub rate_per_second: f64,
+    /// Requests a key may make at once before `rate_per_second` applies.
     pub burst: f64,
 }
 
@@ -712,7 +736,9 @@ impl Default for OpenApiConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WebhookConfig {
+    /// A name for the webhook (logs, metrics, its outbox position).
     pub name: String,
+    /// Where events are POSTed (signed with `secret`).
     pub url: String,
     /// HMAC key for the `webhook-signature` header: a Standard Webhooks
     /// secret (`whsec_` + base64, the key being the decoded bytes, as the
@@ -725,6 +751,7 @@ pub struct WebhookConfig {
     /// Attempts per event before it is dropped (and audited).
     #[serde(default = "default_attempts")]
     pub max_attempts: u32,
+    /// How long one delivery may take before it is retried.
     #[serde(default = "default_webhook_timeout")]
     pub timeout_ms: u64,
     /// First retry delay; doubles per attempt, at most 5 minutes.
@@ -747,8 +774,11 @@ fn default_backoff() -> u64 {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct BeforeSendConfig {
+    /// Called before a message is stored: it may allow, replace or refuse it.
     pub url: String,
+    /// Signs the requests (Standard Webhooks, base64).
     pub secret: String,
+    /// How long the hook may take; then `fail_open` decides.
     #[serde(default = "default_hook_timeout")]
     pub timeout_ms: u64,
     /// What to do when the hook cannot be reached or answers badly.
@@ -774,6 +804,7 @@ pub enum HookFailure {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ClusterConfig {
+    /// Run as one node of a cluster (docs/11).
     pub enabled: bool,
     /// Stable name of this node (letters, digits, `-`), unique in the
     /// cluster.
@@ -784,9 +815,16 @@ pub struct ClusterConfig {
     pub advertise: Option<String>,
     /// Shards per database; fixed when the cluster is first set up.
     pub shards: u32,
+    /// How long a node holds its shards without renewing; must be at least 1.5
+    /// × `stop_ms`.
     pub lease_ms: u64,
+    /// How often a node renews its leases; `renew_ms + 2 × op_timeout_ms ≤
+    /// stop_ms`.
     pub renew_ms: u64,
+    /// A node that could not renew for this long stops writing (before its
+    /// lease ends).
     pub stop_ms: u64,
+    /// How long a request to another node may take.
     pub op_timeout_ms: u64,
     /// Protects the cluster's certificate authority in the database (the
     /// same on every node); the encryption master key when not set.
@@ -858,6 +896,7 @@ pub struct ClientsConfig {
     /// Messages a person may send per second, and the burst (all their
     /// connections together).
     pub send_rate: f64,
+    /// Messages a person may send at once before `send_rate` applies.
     pub send_burst: f64,
     /// Connections (WebSocket and MCP sessions) per user at once.
     pub max_connections: usize,
@@ -875,9 +914,13 @@ pub struct ClientsConfig {
 #[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct AllowConfig {
+    /// Create group conversations.
     pub create_groups: bool,
+    /// Start direct conversations.
     pub create_direct: bool,
+    /// Add members to groups they own or administer.
     pub add_members: bool,
+    /// Find other users by exact name.
     pub find_users: bool,
     /// Create agents of their own and manage their keys (off: the
     /// developer hands agents out through the open API).
@@ -885,6 +928,7 @@ pub struct AllowConfig {
     /// Their own messages can be edited / recalled this long after sending
     /// (None: always).
     pub edit_minutes: Option<i64>,
+    /// Like `edit_minutes`, for recalling (deleting for everyone).
     pub recall_minutes: Option<i64>,
 }
 
@@ -918,14 +962,19 @@ impl Default for ClientsConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StorageConfig {
+    /// The database (by `name`) holding users, devices, units and the
+    /// conversation directory.
     pub control: String,
     pub databases: Vec<DatabaseConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DatabaseConfig {
+    /// A name for this database, used by `control` and by units.
     pub name: String,
+    /// `sqlite://…`, `postgres://…` or `mysql://…`.
     pub url: String,
+    /// Connections for reads (the writer has its own).
     #[serde(default)]
     pub read_pool: Option<u32>,
     /// Start even if the database is not configured for full durability.
@@ -953,6 +1002,8 @@ pub enum ReplicationMode {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ReplicationConfig {
+    /// `auto` (detect replicas at start), `managed_sync` (the provider
+    /// replicates synchronously: RDS Multi-AZ, Cloud SQL HA) or `none`.
     pub mode: ReplicationMode,
     /// How long a batch waits for the replicas before answering
     /// `unavailable` (the write stays and is confirmed later).
@@ -976,7 +1027,10 @@ impl Default for ReplicationConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct UnitConfig {
+    /// The unit (an organisation or subsidiary) whose conversations are stored
+    /// apart.
     pub name: String,
+    /// The database (by `name`) for the unit's new conversations.
     pub database: String,
 }
 

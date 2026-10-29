@@ -27,13 +27,16 @@ using System.Threading.Tasks;
 
 namespace AgentIM.Client
 {
+    /// <summary>How the client starts: the server address, this device's id, the cache, the token provider and how it names itself.</summary>
     public sealed class ClientOptions
     {
         /// <summary><c>https://chat.example.com</c>.</summary>
         public string Url { get; set; } = "";
         /// <summary>This device's id, the same every run (1..64 of A-Z a-z 0-9 _ -).</summary>
         public string DeviceId { get; set; } = "";
+        /// <summary>A name for this device in the user's device list, like "Maya's iPhone".</summary>
         public string? DeviceName { get; set; }
+        /// <summary>The platform reported to the server (<c>ios</c>, <c>android</c>, <c>windows</c>…), for the device list and push.</summary>
         public string? Platform { get; set; }
         /// <summary>Where the cache lives; null keeps it in memory.</summary>
         public string? StoreDir { get; set; }
@@ -41,7 +44,9 @@ namespace AgentIM.Client
         public Func<CancellationToken, Task<string>> TokenProvider { get; set; } = _ => Task.FromResult("");
         /// <summary>Where state changes and events are delivered (Unity: the main thread). Null: the SDK's thread.</summary>
         public SynchronizationContext? Context { get; set; }
+        /// <summary>This app's name, sent to the server with each connection (for diagnostics and minimum-version rules).</summary>
         public string ClientName { get; set; } = "agentim-dotnet";
+        /// <summary>This app's version, sent with <c>ClientName</c>.</summary>
         public string ClientVersion { get; set; } = "0.1.0";
         /// <summary>How long a command waits for the core.</summary>
         public TimeSpan CommandTimeout { get; set; } = TimeSpan.FromSeconds(60);
@@ -60,8 +65,11 @@ namespace AgentIM.Client
     /// </summary>
     public sealed class AgentIMException : Exception
     {
+        /// <summary>The error code: the server's (<c>forbidden</c>, <c>not_found</c>, <c>conflict</c>, <c>bad_request</c>, …) or the client's (<c>disconnected</c>, <c>timeout</c>, <c>closed</c>, <c>unauthenticated</c>).</summary>
         public string Code { get; }
+        /// <summary>Whether the same request may work later.</summary>
         public bool Retryable { get; }
+        /// <summary>How long the server asked to wait before trying again.</summary>
         public long? RetryAfterMs { get; }
 
         public AgentIMException(string code, string message, bool retryable = false, long? retryAfterMs = null) : base(message)
@@ -127,14 +135,18 @@ namespace AgentIM.Client
     {
         private Action? f;
         public Unsubscribe(Action f) => this.f = f;
+        /// <summary>Stops the subscription.</summary>
         public void Dispose() => Interlocked.Exchange(ref f, null)?.Invoke();
     }
 
+    /// <summary>The connection state and why: <c>state</c> is <c>closed</c>, <c>connecting</c>, <c>connected</c>, <c>disconnected</c>, <c>suspended</c> or <c>failed</c>.</summary>
     public sealed class Connection
     {
         /// <summary>closed, connecting, connected, disconnected, suspended or failed.</summary>
         public string State { get; }
+        /// <summary>Why it is not connected (an error code), when it is not.</summary>
         public string? Reason { get; }
+        /// <summary>When the next reconnect attempt is due (Unix ms), while waiting to reconnect.</summary>
         public long? RetryAt { get; }
 
         public Connection(string state, string? reason = null, long? retryAt = null)
@@ -152,9 +164,13 @@ namespace AgentIM.Client
         private readonly object gate = new object();
         private Dictionary<string, JsonObject> byKey = new Dictionary<string, JsonObject>();
 
+        /// <summary>The conversation these messages belong to.</summary>
         public string ConvId { get; }
+        /// <summary>The messages as shown, oldest first, kept up to date.</summary>
         public Observable<IReadOnlyList<JsonObject>> List { get; } = new Observable<IReadOnlyList<JsonObject>>(Array.Empty<JsonObject>());
+        /// <summary>Whether older messages can still be loaded.</summary>
         public bool HasOlder { get; private set; }
+        /// <summary>Why nothing older can be loaded: <c>start</c> (the beginning) or <c>retention</c> (deleted by the retention period).</summary>
         public string? OlderEnd { get; private set; }
 
         internal Messages(AgentIMClient client, string convId)
@@ -176,7 +192,7 @@ namespace AgentIM.Client
             Publish();
         }
 
-        /// <summary>A `messages` event: with <paramref name="reset"/> the view is replaced
+        /// <summary>A <c>messages</c> event: with <paramref name="reset"/> the view is replaced
         /// by the changes in one update, so no one sees it empty in between.</summary>
         internal void Apply(JsonArray? changes, bool reset = false)
         {
@@ -213,6 +229,7 @@ namespace AgentIM.Client
             client.CommandAsync(new JsonObject { ["cmd"] = "jump_to", ["conv_id"] = ConvId, ["seq"] = seq });
     }
 
+    /// <summary>The AgentIM client for one account on one device: keeps the connection, syncs, sends the offline queue in order, keeps the local cache, and turns everything into observable state.</summary>
     public sealed class AgentIMClient : IDisposable
     {
         // Kept alive for the process: native code holds a pointer to it.
@@ -233,9 +250,12 @@ namespace AgentIM.Client
         private long next;
         private long generation;
 
+        /// <summary>The connection state (<c>closed</c>, <c>connecting</c>, <c>connected</c>, <c>disconnected</c>, <c>suspended</c>, <c>failed</c>) and why; subscribe to follow it.</summary>
         public Observable<Connection> Connection { get; } = new Observable<Connection>(new Connection("closed"));
+        /// <summary>The conversation list, newest first, kept up to date.</summary>
         public Observable<IReadOnlyList<JsonObject>> Conversations { get; } = new Observable<IReadOnlyList<JsonObject>>(Array.Empty<JsonObject>());
 
+        /// <summary>The version of the native core.</summary>
         public static string Version => Native.FromUtf8(Native.agentim_version());
 
         private AgentIMClient(ClientOptions o) => this.o = o;
@@ -248,6 +268,7 @@ namespace AgentIM.Client
             : RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? "linux"
             : RuntimeInformation.OSDescription;
 
+        /// <summary>Starts a client with its options: the server address, this device's id, the token provider and the cache. Nothing connects until <c>ConnectAsync</c>.</summary>
         public static AgentIMClient Create(ClientOptions o)
         {
             var c = new AgentIMClient(o);
@@ -466,7 +487,9 @@ namespace AgentIM.Client
             return v;
         }
 
+        /// <summary>Connects and keeps connecting: reconnects with backoff when the network or the server goes, syncs what it missed, sends the offline queue.</summary>
         public Task<JsonNode?> ConnectAsync() => Cmd("connect");
+        /// <summary>Disconnects; the queue and the cache stay. <c>ConnectAsync</c> again picks up where it stopped.</summary>
         public Task<JsonNode?> CloseAsync() => Cmd("close");
         /// <summary>Logs out here: closes and wipes the cache and the queue (GDPR).</summary>
         public Task<JsonNode?> LogoutAsync() => Cmd("logout");
@@ -490,18 +513,23 @@ namespace AgentIM.Client
         public Task<JsonNode?> FileUrlAsync(string convId, string fileId, string variant = "original") =>
             Cmd("file_url", new JsonObject { ["conv_id"] = convId, ["file_id"] = fileId, ["variant"] = variant });
 
+        /// <summary>Edits one of my messages (by <c>msgId</c>, or by <c>clientMsgId</c> while it is still queued); the change shows at once.</summary>
         public Task<JsonNode?> EditAsync(string convId, string msgId, string text) =>
             Cmd("edit", new JsonObject { ["conv_id"] = convId, ["msg_id"] = msgId, ["text"] = text });
 
+        /// <summary>Recalls one of my messages for everyone; a message still in the queue is simply not sent.</summary>
         public Task<JsonNode?> RecallAsync(string convId, string msgId) =>
             Cmd("recall", new JsonObject { ["conv_id"] = convId, ["msg_id"] = msgId });
 
+        /// <summary>Marks the conversation read up to <c>seq</c> (default: the newest) on all my devices.</summary>
         public Task<JsonNode?> ReadAsync(string convId, long? seq = null) =>
             Cmd("read", new JsonObject { ["conv_id"] = convId, ["seq"] = seq });
 
+        /// <summary>Sends a failed message again (the same <c>client_msg_id</c>, so it is never doubled).</summary>
         public Task<JsonNode?> RetryAsync(string convId, string clientMsgId) =>
             Cmd("retry", new JsonObject { ["conv_id"] = convId, ["client_msg_id"] = clientMsgId });
 
+        /// <summary>Drops a failed or waiting message from the queue.</summary>
         public Task<JsonNode?> DiscardAsync(string convId, string clientMsgId) =>
             Cmd("discard", new JsonObject { ["conv_id"] = convId, ["client_msg_id"] = clientMsgId });
 
@@ -509,6 +537,7 @@ namespace AgentIM.Client
         public Task<JsonNode?> CallAsync(string op, JsonObject? args = null) =>
             Cmd("call", new JsonObject { ["op"] = op, ["args"] = args ?? new JsonObject() });
 
+        /// <summary>Everything that helps report a problem: the connection, positions, the queue and recent failures.</summary>
         public Task<JsonNode?> DebugStateAsync() => Cmd("debug_state");
 
         private Task<JsonNode?> Cmd(string name, JsonObject? fields = null)

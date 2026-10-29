@@ -159,6 +159,10 @@ export function ImageViewer({ convId, message: m, thumb, strings, onClose }: { c
   );
 }
 
+/**
+ * An image message: the thumbnail at its proportions (at most 240 × 240) with its caption and
+ * upload progress; tapping opens the viewer.
+ */
 export function ImageMessage({ convId, message: m, strings }: { convId: string; message: Message; strings: Strings }) {
   const p = m.payload ?? {};
   const { url, error } = useFileUrl(convId, p, 'thumb');
@@ -194,6 +198,10 @@ export function ImageMessage({ convId, message: m, strings }: { convId: string; 
   );
 }
 
+/**
+ * A file message: a card with the type's icon, the name, the size and upload progress; clicking
+ * downloads the file.
+ */
 export function FileMessage({ convId, message: m, strings }: { convId: string; message: Message; strings: Strings }) {
   const client = useClient();
   const p = m.payload ?? {};

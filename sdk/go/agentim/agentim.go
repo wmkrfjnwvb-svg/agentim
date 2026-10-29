@@ -28,6 +28,7 @@ type Error struct {
 	Detail string
 }
 
+// Error formats the HTTP status, the error code and the server's explanation.
 func (e *Error) Error() string { return fmt.Sprintf("%d %s: %s", e.Status, e.Code, e.Detail) }
 
 // Client calls the open API with one API key.
@@ -197,16 +198,20 @@ func (c *Client) RevokeTokens(ctx context.Context, userID string) (M, error) {
 
 // ---- agent keys
 
+// IssueAgentKey returns a new key for an agent; revokeOthers revokes every other key of it in the
+// same write (rotation). The key is shown only here.
 func (c *Client) IssueAgentKey(ctx context.Context, agentID string, revokeOthers bool) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/agents/"+q(agentID)+"/keys", M{"revoke_others": revokeOthers}, &out)
 }
 
+// RevokeAgentKeys revokes every key of an agent and disconnects it.
 func (c *Client) RevokeAgentKeys(ctx context.Context, agentID string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "DELETE", "/v1/agents/"+q(agentID)+"/keys", nil, &out)
 }
 
+// RevokeAgentKey revokes one key of an agent (by its device id).
 func (c *Client) RevokeAgentKey(ctx context.Context, agentID, deviceID string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "DELETE", "/v1/agents/"+q(agentID)+"/keys/"+q(deviceID), nil, &out)
@@ -214,11 +219,14 @@ func (c *Client) RevokeAgentKey(ctx context.Context, agentID, deviceID string) (
 
 // ---- agents (docs/13 §4.1)
 
+// ListAgents returns the agents a person owns, with their keys (never the secrets).
 func (c *Client) ListAgents(ctx context.Context, userID string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "GET", "/v1/users/"+q(userID)+"/agents", nil, &out)
 }
 
+// StopAgent stops an agent at once (kill switch): it is disconnected and refused until
+// ResumeAgent.
 func (c *Client) StopAgent(ctx context.Context, agentID, reason string) (M, error) {
 	var out M
 	var body any
@@ -228,21 +236,27 @@ func (c *Client) StopAgent(ctx context.Context, agentID, reason string) (M, erro
 	return out, c.Do(ctx, "POST", "/v1/agents/"+q(agentID)+":stop", body, &out)
 }
 
+// ResumeAgent resumes a stopped agent.
 func (c *Client) ResumeAgent(ctx context.Context, agentID string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/agents/"+q(agentID)+":resume", nil, &out)
 }
 
+// TransferAgent gives a team agent to another person of its unit; rotateKeys revokes its keys in
+// the same write.
 func (c *Client) TransferAgent(ctx context.Context, agentID, owner string, rotateKeys bool) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/agents/"+q(agentID)+":transfer", M{"owner": owner, "rotate_keys": rotateKeys}, &out)
 }
 
+// DestroyAgent destroys an agent for good: keys revoked, memberships ended, checkpoints deleted.
 func (c *Client) DestroyAgent(ctx context.Context, agentID string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "DELETE", "/v1/agents/"+q(agentID), nil, &out)
 }
 
+// ExportAgent exports an agent (settings, checkpoints, optionally its conversations) as a package
+// signed by this deployment.
 func (c *Client) ExportAgent(ctx context.Context, agentID string, withConversations bool) (M, error) {
 	var out M
 	return out, c.Do(ctx, "GET", "/v1/agents/"+q(agentID)+"/export?with_conversations="+strconv.FormatBool(withConversations), nil, &out)
@@ -261,11 +275,13 @@ func (c *Client) ImportAgent(ctx context.Context, pkg M, owner, name string, all
 
 // ---- devices
 
+// ListDevices returns a person's devices (one per client token).
 func (c *Client) ListDevices(ctx context.Context, userID string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "GET", "/v1/users/"+q(userID)+"/devices", nil, &out)
 }
 
+// LogoutDevice revokes one device's token and disconnects it.
 func (c *Client) LogoutDevice(ctx context.Context, userID, deviceID string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "DELETE", "/v1/users/"+q(userID)+"/devices/"+q(deviceID), nil, &out)
@@ -279,6 +295,7 @@ func (c *Client) DeleteUser(ctx context.Context, userID string) (M, error) {
 	return out, c.Do(ctx, "DELETE", "/v1/users/"+q(userID), nil, &out)
 }
 
+// Erasure returns the progress of an account deletion: running or done.
 func (c *Client) Erasure(ctx context.Context, userID string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "GET", "/v1/users/"+q(userID)+"/erasure", nil, &out)
@@ -326,11 +343,13 @@ func (c *Client) ExportUser(ctx context.Context, userID, after string) ([]M, err
 
 // ---- moderation
 
+// Reports returns the moderation queue by state, newest first, in pages.
 func (c *Client) Reports(ctx context.Context, state string, limit, offset int) (M, error) {
 	var out M
 	return out, c.Do(ctx, "GET", fmt.Sprintf("/v1/reports?state=%s&limit=%d&offset=%d", url.QueryEscape(state), limit, offset), nil, &out)
 }
 
+// GetReport returns one report with its target and what was decided.
 func (c *Client) GetReport(ctx context.Context, id string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "GET", "/v1/reports/"+q(id), nil, &out)
@@ -354,6 +373,7 @@ func (c *Client) SilenceMember(ctx context.Context, convID, userID string, secon
 	return out, c.Do(ctx, "POST", "/v1/conversations/"+q(convID)+"/members/"+q(userID)+":silence", body, &out)
 }
 
+// UnsilenceMember lifts a silence early.
 func (c *Client) UnsilenceMember(ctx context.Context, convID, userID string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/conversations/"+q(convID)+"/members/"+q(userID)+":unsilence", nil, &out)
@@ -361,6 +381,8 @@ func (c *Client) UnsilenceMember(ctx context.Context, convID, userID string) (M,
 
 // ---- users
 
+// UpsertUser creates or updates a user with your own id: a person, or an agent with an owner (then
+// the answer carries its first key).
 func (c *Client) UpsertUser(ctx context.Context, id string, attrs M) (M, error) {
 	var out M
 	if attrs == nil {
@@ -369,31 +391,37 @@ func (c *Client) UpsertUser(ctx context.Context, id string, attrs M) (M, error) 
 	return out, c.Do(ctx, "PUT", "/v1/users/"+q(id), attrs, &out)
 }
 
+// GetUser returns a user by your id.
 func (c *Client) GetUser(ctx context.Context, id string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "GET", "/v1/users/"+q(id), nil, &out)
 }
 
+// UpdateUser changes a user's display name, avatar or custom fields.
 func (c *Client) UpdateUser(ctx context.Context, id string, attrs M) (M, error) {
 	var out M
 	return out, c.Do(ctx, "PATCH", "/v1/users/"+q(id), attrs, &out)
 }
 
+// DeactivateUser logs a user out everywhere and refuses them until reactivated; their data stays.
 func (c *Client) DeactivateUser(ctx context.Context, id string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/users/"+q(id)+":deactivate", nil, &out)
 }
 
+// ReactivateUser reactivates a deactivated user.
 func (c *Client) ReactivateUser(ctx context.Context, id string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/users/"+q(id)+":reactivate", nil, &out)
 }
 
+// BatchUsers creates or updates up to 100 users in one call; one result per user.
 func (c *Client) BatchUsers(ctx context.Context, users []M) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/users:batch", M{"users": users}, &out)
 }
 
+// UserConversations returns the conversations a user is in.
 func (c *Client) UserConversations(ctx context.Context, id string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "GET", "/v1/users/"+q(id)+"/conversations", nil, &out)
@@ -401,36 +429,44 @@ func (c *Client) UserConversations(ctx context.Context, id string) (M, error) {
 
 // ---- conversations; `as` is a user id or "system"
 
+// CreateConversation creates a conversation as a user or as the system ("as": "system", then name
+// an "owner").
 func (c *Client) CreateConversation(ctx context.Context, conv M) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/conversations", conv, &out)
 }
 
+// GetConversation returns a conversation: kind, title, members, custom fields.
 func (c *Client) GetConversation(ctx context.Context, id string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "GET", "/v1/conversations/"+q(id), nil, &out)
 }
 
+// UpdateConversation renames a conversation or replaces its custom fields.
 func (c *Client) UpdateConversation(ctx context.Context, id string, change M) (M, error) {
 	var out M
 	return out, c.Do(ctx, "PATCH", "/v1/conversations/"+q(id), change, &out)
 }
 
+// DissolveConversation dissolves a conversation: everyone loses access and the content is deleted.
 func (c *Client) DissolveConversation(ctx context.Context, id, as string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "DELETE", "/v1/conversations/"+q(id)+"?as="+url.QueryEscape(as), nil, &out)
 }
 
+// AddMembers adds users to a conversation; one result per user.
 func (c *Client) AddMembers(ctx context.Context, id, as string, users []string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/conversations/"+q(id)+"/members", M{"as": as, "users": users}, &out)
 }
 
+// RemoveMember removes a member.
 func (c *Client) RemoveMember(ctx context.Context, id, user, as string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "DELETE", "/v1/conversations/"+q(id)+"/members/"+q(user)+"?as="+url.QueryEscape(as), nil, &out)
 }
 
+// SetRole makes a member an admin or a member, or the owner (transfers ownership).
 func (c *Client) SetRole(ctx context.Context, id, user, role, as string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "PATCH", "/v1/conversations/"+q(id)+"/members/"+q(user), M{"as": as, "role": role}, &out)
@@ -486,36 +522,44 @@ func (c *Client) FileURL(ctx context.Context, convID, fileID, as, variant string
 	return out, c.Do(ctx, "GET", "/v1/conversations/"+q(convID)+"/files/"+q(fileID)+"?"+qs.Encode(), nil, &out)
 }
 
+// SendMessage sends a message as a member or as the system; with client_msg_id a retry returns the
+// first result.
 func (c *Client) SendMessage(ctx context.Context, convID string, m M) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/conversations/"+q(convID)+"/messages", m, &out)
 }
 
+// SendToUser sends to a user in their direct conversation, opened if needed.
 func (c *Client) SendToUser(ctx context.Context, userID string, m M) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/users/"+q(userID)+"/messages", m, &out)
 }
 
+// BatchSend sends the same message to up to 100 users; one result per user.
 func (c *Client) BatchSend(ctx context.Context, m M) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/messages:batch-send", m, &out)
 }
 
+// EditMessage edits a message as its sender (or the system).
 func (c *Client) EditMessage(ctx context.Context, id string, m M) (M, error) {
 	var out M
 	return out, c.Do(ctx, "PATCH", "/v1/messages/"+q(id), m, &out)
 }
 
+// RecallMessage recalls a message for everyone.
 func (c *Client) RecallMessage(ctx context.Context, id, as string) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/messages/"+q(id)+":recall", M{"as": as}, &out)
 }
 
+// History returns a conversation's events after a seq, in pages.
 func (c *Client) History(ctx context.Context, convID string, afterSeq, limit int) (M, error) {
 	var out M
 	return out, c.Do(ctx, "GET", fmt.Sprintf("/v1/conversations/%s/messages?after_seq=%d&limit=%d", q(convID), afterSeq, limit), nil, &out)
 }
 
+// MarkRead marks a conversation read up to seq for a user.
 func (c *Client) MarkRead(ctx context.Context, convID, as string, seq int) (M, error) {
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/conversations/"+q(convID)+"/read", M{"as": as, "seq": seq}, &out)

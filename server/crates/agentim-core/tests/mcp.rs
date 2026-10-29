@@ -182,6 +182,17 @@ async fn discovery_versions_and_headers(db: TestDb) {
     let tools = v["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert_eq!(names, agentim_core::mcp::TOOLS);
+    // The documentation (site/) is built from this file: kept equal to the
+    // server's answer (UPDATE=1 rewrites it).
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/mcp-tools.json");
+    let now = serde_json::to_string_pretty(&v["result"]["tools"]).unwrap() + "\n";
+    if std::env::var("UPDATE").is_ok_and(|u| u == "1") {
+        std::fs::write(file, &now).unwrap();
+    }
+    assert!(
+        std::fs::read_to_string(file).is_ok_and(|f| f == now),
+        "mcp-tools.json is out of date: run the test with UPDATE=1"
+    );
     for t in tools {
         assert_eq!(t["inputSchema"]["type"], "object", "{t}");
         assert!(t["description"].as_str().unwrap().len() > 10);

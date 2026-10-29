@@ -23,12 +23,18 @@ import { AgentIMError, Messages, Observable, TokenRefused, type Connection, type
 export { AgentIMError, Messages, Observable, TokenRefused };
 export type { Connection, Message };
 
+/**
+ * How the client starts: the server address, this device's id, the token provider, the cache and
+ * how it names itself.
+ */
 export interface ClientOptions {
   /** `https://chat.example.com`. */
   url: string;
   /** This device's id, the same every run (1..64 of A-Z a-z 0-9 _ -). */
   deviceId: string;
+  /** A name for this device in the user's device list, like "Maya's laptop". */
   deviceName?: string;
+  /** The platform reported to the server (`web`, `ios`, `android`…), for the device list and push. */
   platform?: string;
   /** A client token from your backend; throw `TokenRefused` to stop. */
   tokenProvider: () => Promise<string>;
@@ -40,9 +46,16 @@ export interface ClientOptions {
   wasm?: WasmSource;
   /** Share one connection between tabs (default: where the browser can). */
   multiTab?: boolean;
+  /** The WebSocket class to use, for Node and tests; browsers have their own. */
   WebSocket?: typeof WebSocket;
+  /**
+   * This app's name, sent with each connection (for diagnostics and the server's minimum-version
+   * rules).
+   */
   clientName?: string;
+  /** This app's version, sent with `clientName`. */
   clientVersion?: string;
+  /** Receives the client's diagnostic lines (connections, retries, failures); none by default. */
   log?: (m: string) => void;
 }
 
@@ -284,8 +297,17 @@ let tabSeq = 0;
 /** Commands that do no harm when the core gets them twice. */
 const SAFE_TWICE = new Set(['state', 'connect', 'close', 'logout', 'conversations', 'messages', 'send', 'send_file', 'file_url', 'read', 'focus', 'discard', 'pending', 'debug_state']);
 
+/**
+ * The AgentIM client for one account on one device: keeps the connection, syncs, sends the offline
+ * queue in order, keeps the local cache, and turns everything into observable state.
+ */
 export class AgentIMClient {
+  /**
+   * The connection state (`closed`, `connecting`, `connected`, `disconnected`, `suspended`,
+   * `failed`) and why; subscribe to follow it.
+   */
   readonly connection = new Observable<Connection>({ state: 'closed' });
+  /** The conversation list, newest first, kept up to date. */
   readonly conversations = new Observable<any[]>([]);
   private convMap = new Map<string, any>();
   private views = new Map<string, Messages>();
@@ -301,6 +323,11 @@ export class AgentIMClient {
 
   private constructor(private o: ClientOptions) {}
 
+  /**
+   * Starts a client with its options: the server address, this device's id, the token provider and
+   * the cache. Nothing connects until `connect`. In a browser the first tab holds the connection;
+   * other tabs share it.
+   */
   static async create(o: ClientOptions): Promise<AgentIMClient> {
     const c = new AgentIMClient(o);
     const g = globalThis as any;
@@ -472,11 +499,16 @@ export class AgentIMClient {
     return () => s!.delete(fn);
   }
 
+  /**
+   * Connects and keeps connecting: reconnects with backoff when the network or the server goes,
+   * syncs what it missed, sends the offline queue.
+   */
   connect() {
     this.wantConnect = true;
     return this.command({ cmd: 'connect' });
   }
 
+  /** Disconnects; the queue and the cache stay. `connect` again picks up where it stopped. */
   close() {
     this.wantConnect = false;
     return this.command({ cmd: 'close' });
@@ -548,31 +580,47 @@ export class AgentIMClient {
     return this.command({ cmd: 'file_url', conv_id: convId, file_id: fileId, variant });
   }
 
+  /**
+   * Sends a text (or a custom kind with its payload): shown at once as sending, sent when the
+   * connection allows, in order. Returns the `client_msg_id` and the local key; a retry with the
+   * same `client_msg_id` is the same message.
+   */
   send(convId: string, text: string, opts: { kind?: string; payload?: unknown; replyTo?: string; clientMsgId?: string } = {}) {
     const cm = opts.clientMsgId ?? newClientMsgId();
     return this.command({ cmd: 'send', conv_id: convId, text, kind: opts.kind, payload: opts.payload, reply_to: opts.replyTo, client_msg_id: cm });
   }
+  /**
+   * Edits one of my messages (by `msgId`, or by `clientMsgId` while it is still queued); the
+   * change shows at once.
+   */
   edit(convId: string, target: { msgId?: string; clientMsgId?: string }, text: string) {
     return this.command({ cmd: 'edit', conv_id: convId, msg_id: target.msgId, client_msg_id: target.clientMsgId, text });
   }
+  /** Recalls one of my messages for everyone; a message still in the queue is simply not sent. */
   recall(convId: string, target: { msgId?: string; clientMsgId?: string }) {
     return this.command({ cmd: 'recall', conv_id: convId, msg_id: target.msgId, client_msg_id: target.clientMsgId });
   }
+  /** Marks the conversation read up to `seq` (default: the newest) on all my devices. */
   read(convId: string, seq?: number) {
     return this.command({ cmd: 'read', conv_id: convId, seq });
   }
+  /** Rates an agent's message up or down, with an optional reason. */
   feedback(convId: string, msgId: string, rating: 'up' | 'down', reason?: string) {
     return this.command({ cmd: 'feedback', conv_id: convId, msg_id: msgId, rating, reason });
   }
+  /** Answers a card: a button (`action`) or a filled form (`values`). */
   respond(convId: string, msgId: string, blockId: string, r: { action?: string; values?: Record<string, unknown> }) {
     return this.command({ cmd: 'respond', conv_id: convId, msg_id: msgId, block_id: blockId, ...r });
   }
+  /** Sends a failed message again (the same `client_msg_id`, so it is never doubled). */
   retry(convId: string, clientMsgId: string) {
     return this.command({ cmd: 'retry', conv_id: convId, client_msg_id: clientMsgId });
   }
+  /** Drops a failed or waiting message from the queue. */
   discard(convId: string, clientMsgId: string) {
     return this.command({ cmd: 'discard', conv_id: convId, client_msg_id: clientMsgId });
   }
+  /** The conversation on screen (or none): its agents' replies stream in live. */
   focus(convId: string | null) {
     return this.command({ cmd: 'focus', conv_id: convId });
   }
@@ -584,6 +632,10 @@ export class AgentIMClient {
   call(op: string, args: Record<string, unknown> = {}) {
     return this.command({ cmd: 'call', op, args });
   }
+  /**
+   * Everything that helps report a problem: the connection, positions, the queue and recent
+   * failures.
+   */
   debugState() {
     return this.command({ cmd: 'debug_state' });
   }

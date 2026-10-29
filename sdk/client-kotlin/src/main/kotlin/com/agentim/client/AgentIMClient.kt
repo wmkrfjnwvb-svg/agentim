@@ -29,6 +29,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * How the client starts: the server address, this device's id, the cache, the token provider and
+ * how it names itself.
+ */
 class ClientOptions(
     /** `https://chat.example.com`. */
     val url: String,
@@ -38,10 +42,21 @@ class ClientOptions(
     val tokenProvider: suspend () -> String,
     /** Where the cache lives; null keeps it in memory. */
     val storeDir: String? = null,
+    /** A name for this device in the user's device list, like "Maya's iPhone". */
     val deviceName: String? = null,
+    /**
+     * The platform reported to the server (`ios`, `android`, `windows`…), for the device list and
+     * push.
+     */
     val platform: String? = null,
+    /**
+     * This app's name, sent to the server with each connection (for diagnostics and
+     * minimum-version rules).
+     */
     val clientName: String = "agentim-kotlin",
+    /** This app's version, sent with `clientName`. */
     val clientVersion: String = "0.1.0",
+    /** How long a command waits for its answer before failing with `timeout`. In milliseconds. */
     val commandTimeoutMs: Long = 60_000,
 )
 
@@ -54,9 +69,15 @@ class TokenRefused(message: String) : Exception(message)
  * pass through as they are.
  */
 class AgentIMException(
+    /**
+     * The error code: the server's (`forbidden`, `not_found`, `conflict`, `bad_request`, …) or the
+     * client's (`disconnected`, `timeout`, `closed`, `unauthenticated`).
+     */
     val code: String,
     message: String,
+    /** Whether the same request may work later. */
     val retryable: Boolean = false,
+    /** How long the server asked to wait before trying again. */
     val retryAfterMs: Long? = null,
 ) : Exception(message) {
     internal companion object {
@@ -69,10 +90,16 @@ class AgentIMException(
     }
 }
 
+/**
+ * The connection state and why: `state` is `closed`, `connecting`, `connected`, `disconnected`,
+ * `suspended` or `failed`.
+ */
 data class Connection(
     /** closed, connecting, connected, disconnected, suspended or failed. */
     val state: String,
+    /** Why it is not connected (an error code), when it is not. */
     val reason: String? = null,
+    /** When the next reconnect attempt is due (Unix ms), while waiting to reconnect. */
     val retryAt: Long? = null,
 )
 
@@ -80,6 +107,7 @@ data class Connection(
 class Messages internal constructor(private val client: AgentIMClient, val convId: String) {
     private val byKey = LinkedHashMap<String, JSONObject>()
     private val flow = MutableStateFlow<List<JSONObject>>(emptyList())
+    /** The messages as shown, oldest first, kept up to date. */
     val list: StateFlow<List<JSONObject>> = flow.asStateFlow()
 
     @Volatile var hasOlder = false
@@ -130,6 +158,10 @@ class Messages internal constructor(private val client: AgentIMClient, val convI
     suspend fun jumpTo(seq: Long) = client.command(JSONObject().put("cmd", "jump_to").put("conv_id", convId).put("seq", seq))
 }
 
+/**
+ * The AgentIM client for one account on one device: keeps the connection, syncs, sends the offline
+ * queue in order, keeps the local cache, and turns everything into observable state.
+ */
 class AgentIMClient private constructor(private val o: ClientOptions) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<Any?>>()
@@ -145,7 +177,12 @@ class AgentIMClient private constructor(private val o: ClientOptions) : AutoClos
 
     private val connectionFlow = MutableStateFlow(Connection("closed"))
     private val conversationsFlow = MutableStateFlow<List<JSONObject>>(emptyList())
+    /**
+     * The connection state (`closed`, `connecting`, `connected`, `disconnected`, `suspended`,
+     * `failed`) and why; subscribe to follow it.
+     */
     val connection: StateFlow<Connection> = connectionFlow.asStateFlow()
+    /** The conversation list, newest first, kept up to date. */
     val conversations: StateFlow<List<JSONObject>> = conversationsFlow.asStateFlow()
 
     companion object {
@@ -309,6 +346,10 @@ class AgentIMClient private constructor(private val o: ClientOptions) : AutoClos
         return v
     }
 
+    /**
+     * Connects and keeps connecting: reconnects with backoff when the network or the server goes,
+     * syncs what it missed, sends the offline queue.
+     */
     suspend fun connect() = cmd("connect")
     /** Closes the connection (the client stays usable; [close] frees it). */
     suspend fun disconnect() = cmd("close")
@@ -341,14 +382,26 @@ class AgentIMClient private constructor(private val o: ClientOptions) : AutoClos
     suspend fun fileUrl(convId: String, fileId: String, variant: String = "original") =
         cmd("file_url", "conv_id" to convId, "file_id" to fileId, "variant" to variant) as JSONObject
 
+    /**
+     * Edits one of my messages (by `msgId`, or by `clientMsgId` while it is still queued); the
+     * change shows at once.
+     */
     suspend fun edit(convId: String, msgId: String, text: String) = cmd("edit", "conv_id" to convId, "msg_id" to msgId, "text" to text)
+    /** Recalls one of my messages for everyone; a message still in the queue is simply not sent. */
     suspend fun recall(convId: String, msgId: String) = cmd("recall", "conv_id" to convId, "msg_id" to msgId)
+    /** Marks the conversation read up to `seq` (default: the newest) on all my devices. */
     suspend fun read(convId: String, seq: Long? = null) = cmd("read", "conv_id" to convId, "seq" to seq)
+    /** Sends a failed message again (the same `client_msg_id`, so it is never doubled). */
     suspend fun retry(convId: String, clientMsgId: String) = cmd("retry", "conv_id" to convId, "client_msg_id" to clientMsgId)
+    /** Drops a failed or waiting message from the queue. */
     suspend fun discard(convId: String, clientMsgId: String) = cmd("discard", "conv_id" to convId, "client_msg_id" to clientMsgId)
 
     /** A request that needs the server now (approvals, decisions, queries). */
     suspend fun call(op: String, args: JSONObject = JSONObject()) = cmd("call", "op" to op, "args" to args)
+    /**
+     * Everything that helps report a problem: the connection, positions, the queue and recent
+     * failures.
+     */
     suspend fun debugState() = cmd("debug_state")
 
     private suspend fun cmd(name: String, vararg fields: Pair<String, Any?>): Any? {
@@ -369,6 +422,7 @@ class AgentIMClient private constructor(private val o: ClientOptions) : AutoClos
 
 /** The native side calls this with each event (UTF-8 JSON). */
 fun interface EventSink {
+    /** Receives one event from the native core as UTF-8 JSON. */
     fun onEvent(json: ByteArray)
 }
 

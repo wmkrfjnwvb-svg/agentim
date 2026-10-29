@@ -36,7 +36,12 @@ function binding(): Binding {
   return b;
 }
 
+/**
+ * How the client starts: the server address, this device's id, the token provider, the cache and
+ * how it names itself.
+ */
 export interface ClientOptions {
+  /** `https://chat.example.com`. */
   url: string;
   /** This device's id, the same every run (1..64 of A-Z a-z 0-9 _ -). */
   deviceId: string;
@@ -44,17 +49,34 @@ export interface ClientOptions {
   tokenProvider: () => Promise<string>;
   /** Where the cache lives (the app's documents directory); none keeps it in memory. */
   storeDir?: string;
+  /** A name for this device in the user's device list, like "Maya's laptop". */
   deviceName?: string;
+  /** The platform reported to the server (`web`, `ios`, `android`…), for the device list and push. */
   platform?: string;
+  /**
+   * This app's name, sent with each connection (for diagnostics and the server's minimum-version
+   * rules).
+   */
   clientName?: string;
+  /** This app's version, sent with `clientName`. */
   clientVersion?: string;
+  /** How long a command waits for its answer before failing with `timeout`, in ms (default 60000). */
   commandTimeoutMs?: number;
 }
 
 type Listener = (e: any) => void;
 
+/**
+ * The AgentIM client for one account on one device: keeps the connection, syncs, sends the offline
+ * queue in order, keeps the local cache, and turns everything into observable state.
+ */
 export class AgentIMClient {
+  /**
+   * The connection state (`closed`, `connecting`, `connected`, `disconnected`, `suspended`,
+   * `failed`) and why; subscribe to follow it.
+   */
   readonly connection = new Observable<Connection>({ state: 'closed' });
+  /** The conversation list, newest first, kept up to date. */
   readonly conversations = new Observable<any[]>([]);
   private h = 0;
   private next = 0;
@@ -68,10 +90,15 @@ export class AgentIMClient {
 
   private constructor(private o: ClientOptions) {}
 
+  /** The version of the native core. */
   static version(): string {
     return binding().version();
   }
 
+  /**
+   * Starts a client with its options: the server address, this device's id, the token provider and
+   * the cache. Nothing connects until `connect`. The native core runs on its own thread.
+   */
   static create(o: ClientOptions): AgentIMClient {
     const c = new AgentIMClient(o);
     const cfg = JSON.stringify({
@@ -174,6 +201,10 @@ export class AgentIMClient {
     if (this.h) binding().foreground(this.h, foreground);
   }
 
+  /**
+   * The messages of a conversation, oldest first, kept up to date while subscribed; pages back
+   * with `loadOlder`.
+   */
   messages(convId: string): Messages {
     let v = this.views.get(convId);
     if (!v) {
@@ -184,9 +215,14 @@ export class AgentIMClient {
     return v;
   }
 
+  /**
+   * Connects and keeps connecting: reconnects with backoff when the network or the server goes,
+   * syncs what it missed, sends the offline queue.
+   */
   connect() {
     return this.command({ cmd: 'connect' });
   }
+  /** Disconnects; the queue and the cache stay. `connect` again picks up where it stopped. */
   close() {
     return this.command({ cmd: 'close' });
   }
@@ -194,6 +230,11 @@ export class AgentIMClient {
   logout() {
     return this.command({ cmd: 'logout' });
   }
+  /**
+   * Sends a text (or a custom kind with its payload): shown at once as sending, sent when the
+   * connection allows, in order. Returns the `client_msg_id` and the local key; a retry with the
+   * same `client_msg_id` is the same message.
+   */
   send(convId: string, text: string, opts: { kind?: string; payload?: unknown; replyTo?: string; clientMsgId?: string } = {}) {
     return this.command({ cmd: 'send', conv_id: convId, text, kind: opts.kind, payload: opts.payload, reply_to: opts.replyTo, client_msg_id: opts.clientMsgId });
   }
@@ -216,33 +257,52 @@ export class AgentIMClient {
   fileUrl(convId: string, fileId: string, variant: 'original' | 'thumb' = 'original'): Promise<{ url: string; variant: string; expires_at: number }> {
     return this.command({ cmd: 'file_url', conv_id: convId, file_id: fileId, variant });
   }
+  /**
+   * Edits one of my messages (by `msgId`, or by `clientMsgId` while it is still queued); the
+   * change shows at once.
+   */
   edit(convId: string, target: { msgId?: string; clientMsgId?: string }, text: string) {
     return this.command({ cmd: 'edit', conv_id: convId, msg_id: target.msgId, client_msg_id: target.clientMsgId, text });
   }
+  /** Recalls one of my messages for everyone; a message still in the queue is simply not sent. */
   recall(convId: string, target: { msgId?: string; clientMsgId?: string }) {
     return this.command({ cmd: 'recall', conv_id: convId, msg_id: target.msgId, client_msg_id: target.clientMsgId });
   }
+  /** Marks the conversation read up to `seq` (default: the newest) on all my devices. */
   read(convId: string, seq?: number) {
     return this.command({ cmd: 'read', conv_id: convId, seq });
   }
+  /** Rates an agent's message up or down, with an optional reason. */
   feedback(convId: string, msgId: string, rating: 'up' | 'down', reason?: string) {
     return this.command({ cmd: 'feedback', conv_id: convId, msg_id: msgId, rating, reason });
   }
+  /** Answers a card: a button (`action`) or a filled form (`values`). */
   respond(convId: string, msgId: string, blockId: string, r: { action?: string; values?: Record<string, unknown> }) {
     return this.command({ cmd: 'respond', conv_id: convId, msg_id: msgId, block_id: blockId, ...r });
   }
+  /** Sends a failed message again (the same `client_msg_id`, so it is never doubled). */
   retry(convId: string, clientMsgId: string) {
     return this.command({ cmd: 'retry', conv_id: convId, client_msg_id: clientMsgId });
   }
+  /** Drops a failed or waiting message from the queue. */
   discard(convId: string, clientMsgId: string) {
     return this.command({ cmd: 'discard', conv_id: convId, client_msg_id: clientMsgId });
   }
+  /** What waits in the offline queue. */
   pendingOps() {
     return this.command({ cmd: 'pending' }).then((r) => r.ops);
   }
+  /**
+   * A request that needs the server now (approvals, decisions, queries); fails at once when
+   * offline.
+   */
   call(op: string, args: Record<string, unknown> = {}) {
     return this.command({ cmd: 'call', op, args });
   }
+  /**
+   * Everything that helps report a problem: the connection, positions, the queue and recent
+   * failures.
+   */
   debugState() {
     return this.command({ cmd: 'debug_state' });
   }

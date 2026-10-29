@@ -369,7 +369,11 @@ pub enum ClientMsg {
         #[serde(default)]
         features: Option<Vec<String>>,
     },
+    /// The caller's conversations with their last message, unread count,
+    /// members and mute state.
     ListConvs,
+    /// Creates a conversation: `dm` (exactly one other member), `group` or
+    /// `task`; the caller is its owner.
     CreateConv {
         kind: String,
         title: String,
@@ -378,6 +382,8 @@ pub enum ClientMsg {
         #[serde(default)]
         assignee: Option<String>,
     },
+    /// Owner or admin adds a member (an agent owner may add their agent where
+    /// allowed).
     AddMember {
         conv_id: String,
         user_id: String,
@@ -387,38 +393,32 @@ pub enum ClientMsg {
         history: Option<i64>,
     },
     /// Owner / admin removes a member; anyone removes an agent they own.
-    RemoveMember {
-        conv_id: String,
-        user_id: String,
-    },
-    Leave {
-        conv_id: String,
-    },
+    RemoveMember { conv_id: String, user_id: String },
+    /// The caller leaves a group; the owner transfers ownership or dissolves
+    /// instead.
+    Leave { conv_id: String },
     /// Owner only: `admin` or `member`.
     SetRole {
         conv_id: String,
         user_id: String,
         role: String,
     },
-    TransferOwner {
-        conv_id: String,
-        user_id: String,
-    },
+    /// The owner makes another member (a person) the owner; the old owner
+    /// becomes an admin.
+    TransferOwner { conv_id: String, user_id: String },
     /// Owner only: everyone loses access and the content is deleted.
-    Dissolve {
-        conv_id: String,
-    },
-    Block {
-        user_id: String,
-    },
-    Unblock {
-        user_id: String,
-    },
+    Dissolve { conv_id: String },
+    /// The caller blocks a user: no direct messages, invitations or new
+    /// conversations from them.
+    Block { user_id: String },
+    /// Lifts a block.
+    Unblock { user_id: String },
+    /// Users the caller has blocked.
     ListBlocks,
     /// Exact user name; only users the caller may discover are returned.
-    FindUser {
-        name: String,
-    },
+    FindUser { name: String },
+    /// Sends a message. `client_msg_id` makes retries safe: the same id returns
+    /// the first result.
     Send {
         conv_id: String,
         client_msg_id: String,
@@ -452,6 +452,8 @@ pub enum ClientMsg {
         #[serde(default)]
         sources: Option<Vec<Value>>,
     },
+    /// Edits a message: the sender (or the sending agent's owner), within the
+    /// app's edit window.
     Edit {
         msg_id: String,
         text: String,
@@ -470,9 +472,10 @@ pub enum ClientMsg {
         #[serde(default)]
         data: Option<Value>,
     },
-    Recall {
-        msg_id: String,
-    },
+    /// Recalls (deletes for everyone) a message: the sender, the agent's owner,
+    /// an owner or admin.
+    Recall { msg_id: String },
+    /// Agents: events of a conversation after a seq (people use `sync`).
     Pull {
         conv_id: String,
         #[serde(default)]
@@ -483,24 +486,22 @@ pub enum ClientMsg {
         #[serde(default)]
         as_agent: Option<String>,
     },
+    /// Side-channel events (whispers, progress, ephemeral messages) after a
+    /// side seq.
     PullSide {
         conv_id: String,
         #[serde(default)]
         after_side_seq: i64,
     },
-    Read {
-        conv_id: String,
-        seq: i64,
-    },
+    /// Marks the conversation read up to `seq` on all of the caller's devices.
+    Read { conv_id: String, seq: i64 },
     /// Receive what this device has not acknowledged yet (docs/08 §2).
     Sync {
         #[serde(default)]
         limit: Option<i64>,
     },
     /// Positions this device has stored durably.
-    Ack {
-        acks: Vec<AckItem>,
-    },
+    Ack { acks: Vec<AckItem> },
     /// `none`, `all` or `mentions`, optionally until a time (ms).
     SetMute {
         conv_id: String,
@@ -508,12 +509,13 @@ pub enum ClientMsg {
         #[serde(default)]
         until: Option<i64>,
     },
+    /// Unread counts of the caller's conversations.
     Unread,
     /// The latest seq of each conversation (a client checks its position;
     /// a tail push lost on the way shows up here, docs/11 §6.4).
-    Heads {
-        conv_ids: Vec<String>,
-    },
+    Heads { conv_ids: Vec<String> },
+    /// The caller's preferences: whether reading on one device silences the
+    /// others.
     SetPrefs {
         #[serde(default)]
         read_silences_others: Option<bool>,
@@ -527,11 +529,15 @@ pub enum ClientMsg {
         #[serde(default)]
         limit: Option<i64>,
     },
+    /// The conversation open on screen: its streaming replies arrive as live
+    /// deltas.
     Focus {
         conv_id: Option<String>,
         #[serde(default)]
         as_agent: Option<String>,
     },
+    /// An agent starts a streamed reply; the message shows at once as
+    /// streaming.
     StreamStart {
         conv_id: String,
         client_msg_id: String,
@@ -540,38 +546,41 @@ pub enum ClientMsg {
         #[serde(default)]
         causation_id: Option<String>,
     },
+    /// Appends text to a stream; `idx` numbers the chunks from 0 (out of order
+    /// is refused).
     StreamAppend {
         msg_id: String,
         idx: u64,
         text: String,
     },
-    StreamEnd {
-        msg_id: String,
-    },
-    StreamCancel {
-        msg_id: String,
-    },
+    /// Ends a stream: the message becomes final.
+    StreamEnd { msg_id: String },
+    /// Stops a stream: the agent itself, a person in the conversation (Stop) or
+    /// the owner.
+    StreamCancel { msg_id: String },
+    /// An owner whispers to their agent in a conversation: only the agent and
+    /// the owner see it.
     Whisper {
         conv_id: String,
         agent_id: String,
         text: String,
     },
+    /// Publishes an agent's draft (optionally edited): its owner or an
+    /// approver.
     Approve {
         draft_id: String,
         #[serde(default)]
         text: Option<String>,
     },
-    Reject {
-        draft_id: String,
-    },
-    Takeover {
-        conv_id: String,
-        agent_id: String,
-    },
-    Release {
-        conv_id: String,
-        agent_id: String,
-    },
+    /// Discards an agent's draft.
+    Reject { draft_id: String },
+    /// An owner takes over their agent in a conversation: the agent stops
+    /// acting there.
+    Takeover { conv_id: String, agent_id: String },
+    /// Ends a takeover: the agent acts again.
+    Release { conv_id: String, agent_id: String },
+    /// An owner sets how their agent acts in a conversation: approval of
+    /// drafts, when it wakes, its topics.
     SetAgentPolicy {
         conv_id: String,
         agent_id: String,
@@ -583,10 +592,10 @@ pub enum ClientMsg {
         #[serde(default)]
         topics: Option<Vec<String>>,
     },
-    ResetGuard {
-        conv_id: String,
-        agent_id: String,
-    },
+    /// An owner resets their agent's tripped guardrail (loop breaker) in a
+    /// conversation.
+    ResetGuard { conv_id: String, agent_id: String },
+    /// Drafts waiting for the caller's approval.
     ListDrafts,
     /// Rename a conversation or replace its custom fields (owner, admin).
     UpdateConv {
@@ -599,14 +608,10 @@ pub enum ClientMsg {
     /// This user's devices (one per client token).
     ListDevices,
     /// Revokes one device's token and disconnects it (also this device).
-    LogoutDevice {
-        device_id: String,
-    },
+    LogoutDevice { device_id: String },
     /// A new agent owned by the caller, with its first key
     /// (docs/03-agents.md §2.1–§2.3).
-    CreateAgent {
-        name: String,
-    },
+    CreateAgent { name: String },
     /// The caller's agents and their keys (never the secrets).
     ListAgents,
     /// A new key for one of the caller's agents; `revoke_others` revokes
@@ -617,10 +622,7 @@ pub enum ClientMsg {
         revoke_others: bool,
     },
     /// Revokes one key of one of the caller's agents.
-    RevokeAgentKey {
-        agent_id: String,
-        device_id: String,
-    },
+    RevokeAgentKey { agent_id: String, device_id: String },
     /// An agent asks a person to approve, answer or choose
     /// (docs/03-agents.md §4.2).
     RequestHuman {
@@ -647,9 +649,7 @@ pub enum ClientMsg {
         choice: Option<String>,
     },
     /// The asking agent withdraws a pending request.
-    CancelRequest {
-        request_id: String,
-    },
+    CancelRequest { request_id: String },
     /// A request and its outcome; waits up to `wait_secs` (≤ 25) for a
     /// decision.
     GetRequest {
@@ -671,12 +671,9 @@ pub enum ClientMsg {
         note: Option<String>,
     },
     /// Takes a request (`intent: request`) for oneself; the first wins.
-    Claim {
-        msg_id: String,
-    },
-    ReleaseClaim {
-        msg_id: String,
-    },
+    Claim { msg_id: String },
+    /// Gives back a claimed request.
+    ReleaseClaim { msg_id: String },
     /// Gives a coordinated agent the floor for a while.
     FloorGrant {
         conv_id: String,
@@ -684,9 +681,8 @@ pub enum ClientMsg {
         #[serde(default)]
         ttl_secs: Option<i64>,
     },
-    FloorRelease {
-        conv_id: String,
-    },
+    /// Gives back the floor in a coordinated conversation.
+    FloorRelease { conv_id: String },
     /// Agents read what they may see of a conversation by seq
     /// (`after_seq` / `before_seq` / `limit`, docs/03-agents.md §7.1);
     /// people read pages of messages around an anchor (`anchor`, `before`,
@@ -708,11 +704,14 @@ pub enum ClientMsg {
     },
     /// Application-level heartbeat (docs/08 §2.9): answers the server time.
     Ping,
+    /// An agent's view of a conversation for its model: summaries and recent
+    /// messages within `max_tokens`.
     Context {
         conv_id: String,
         #[serde(default)]
         max_tokens: Option<i64>,
     },
+    /// An agent searches the messages it may see (optionally one conversation).
     Search {
         query: String,
         #[serde(default)]
@@ -722,6 +721,7 @@ pub enum ClientMsg {
         #[serde(default, flatten)]
         filter: SearchFilter,
     },
+    /// An agent stores a summary of a range of seqs (used by `context`).
     PutSummary {
         conv_id: String,
         from_seq: i64,
@@ -734,11 +734,14 @@ pub enum ClientMsg {
         #[serde(default)]
         version: Option<i64>,
     },
+    /// Writes a checkpoint; `version` is the version read (0 creates), so
+    /// concurrent writes conflict.
     StatePut {
         key: String,
         value: Value,
         version: i64,
     },
+    /// Lists checkpoint keys by prefix, in pages.
     StateList {
         #[serde(default)]
         prefix: Option<String>,
@@ -747,23 +750,19 @@ pub enum ClientMsg {
         #[serde(default)]
         limit: Option<i64>,
     },
-    StateDelete {
-        key: String,
-        version: i64,
-    },
+    /// Deletes a checkpoint at the version read.
+    StateDelete { key: String, version: i64 },
     /// An owner's emergency stop, resume and destroy (docs/03-agents.md §4.3–§4.4).
     StopAgent {
         agent_id: String,
         #[serde(default)]
         reason: Option<String>,
     },
-    ResumeAgent {
-        agent_id: String,
-    },
-    DestroyAgent {
-        agent_id: String,
-        confirm: String,
-    },
+    /// Resumes a stopped agent.
+    ResumeAgent { agent_id: String },
+    /// Destroys an agent for good (`confirm` repeats its name): keys revoked,
+    /// memberships ended, checkpoints deleted.
+    DestroyAgent { agent_id: String, confirm: String },
     /// An agent hands the conversation to a person; that person or the
     /// owner hands it back (docs/03-agents.md §3).
     Handoff {
@@ -772,6 +771,7 @@ pub enum ClientMsg {
         to: Option<String>,
         note: String,
     },
+    /// Hands a handed-off conversation back to the agent.
     Handback {
         conv_id: String,
         agent_id: String,

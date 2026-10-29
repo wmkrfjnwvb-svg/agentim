@@ -40,6 +40,10 @@ function Bar({ pct, tone }: { pct: number; tone: string }) {
   );
 }
 
+/**
+ * The full-screen viewer of an image: the enlarged thumbnail, View original, Download, close
+ * (Android back closes it too).
+ */
 export function ImageViewer({ convId, message: m, thumb, strings, onClose }: { convId: string; message: Message; thumb?: string; strings: Strings; onClose(): void }) {
   const client = useClient();
   const p = m.payload ?? {};
@@ -87,6 +91,10 @@ export function ImageViewer({ convId, message: m, thumb, strings, onClose }: { c
   );
 }
 
+/**
+ * An image message: the thumbnail at its proportions (at most 240 × 240) with its caption and
+ * upload progress; pressing opens the viewer.
+ */
 export function ImageMessage({ convId, message: m, strings, mine }: { convId: string; message: Message; strings: Strings; mine: boolean }) {
   const t = useTheme();
   const p = m.payload ?? {};
@@ -119,6 +127,10 @@ export function ImageMessage({ convId, message: m, strings, mine }: { convId: st
   );
 }
 
+/**
+ * A file message: a card with the type's icon, the name, the size and upload progress; pressing
+ * opens the file.
+ */
 export function FileMessage({ convId, message: m, strings, mine }: { convId: string; message: Message; strings: Strings; mine: boolean }) {
   const client = useClient();
   const t = useTheme();

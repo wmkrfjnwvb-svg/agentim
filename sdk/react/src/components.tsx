@@ -17,20 +17,29 @@ export { defaultStrings, type Strings };
 /** The avatar palette's size (tokens.json `avatar`). */
 const AVATARS = 8;
 
+/** What a message component gets: replace `Message` in `components` to draw messages your way. */
 export interface MessageProps {
+  /** The message to show. */
   message: Message;
   /** The conversation (to read the message's file). */
   convId: string;
+  /** Whether I sent it (shown on the right). */
   mine: boolean;
   /** First and last of a run from one sender (the bubble's corners, the time). */
   first: boolean;
+  /** Whether it ends a run of messages from the same sender (shows the time). */
   last: boolean;
   /** The time to show under the message ("2:41 PM"), on the last of a run. */
   time?: string;
+  /** The interface texts in the current language. */
   strings: Strings;
+  /** Sends a failed message again. */
   onRetry(): void;
+  /** Drops a failed message. */
   onDiscard(): void;
+  /** Rates an agent's message. */
   onFeedback(rating: 'up' | 'down'): void;
+  /** Answers a card block: a button `action` or form `values`. */
   onRespond(blockId: string, r: { action?: string; values?: Record<string, unknown> }): void;
   /** Set when I may edit this message (mine, sent, plain text). */
   onEdit?(text: string): void;
@@ -40,20 +49,34 @@ export interface MessageProps {
   onStop?(): void;
 }
 
+/**
+ * What a conversation list row gets: replace `ConversationItem` in `components` to draw rows your
+ * way.
+ */
 export interface ConversationItemProps {
+  /** The conversation (title, last message, unread count, members…). */
   conversation: any;
+  /** Whether it is the open conversation. */
   selected: boolean;
+  /** Opens it. */
   onSelect(): void;
+  /** The interface texts in the current language. */
   strings: Strings;
   /** "2:41 PM", "Yesterday", "Mon": when the last message was sent. */
   time?: string;
+  /** My user id (for "You: …" previews and direct-conversation titles). */
   me?: string;
 }
 
+/** The parts you can replace, passed as `components` to `AgentIM`. */
 export interface Components {
+  /** Draws one message. */
   Message: ComponentType<MessageProps>;
+  /** Draws one conversation list row. */
   ConversationItem: ComponentType<ConversationItemProps>;
+  /** Draws an avatar from the id, name and kind (human or agent). */
   Avatar: ComponentType<{ id?: string; name?: string; kind?: string; size?: number }>;
+  /** Draws an empty state (no conversations, no messages). */
   Empty: ComponentType<{ text: string; hint?: string }>;
 }
 
@@ -118,6 +141,10 @@ function DefaultAvatar({ id, name, kind, size = 32 }: { id?: string; name?: stri
   );
 }
 
+/**
+ * The AI mark (EU AI Act art. 50): drawn next to every agent's name and message, also under a
+ * replaced Message component.
+ */
 export function AIBadge() {
   const { strings } = useUi();
   return (
@@ -128,6 +155,10 @@ export function AIBadge() {
   );
 }
 
+/**
+ * A line saying what the connection is doing (offline, reconnecting, waiting for network); nothing
+ * while connected.
+ */
 export function ConnectionBanner() {
   const c = useConnection();
   const { strings } = useUi();
@@ -700,6 +731,11 @@ export function TypingIndicator({ convId, names }: { convId: string; names?: (id
 
 const MAX_COMPOSER_PX = 160;
 
+/**
+ * The message box: Enter sends, Shift+Enter adds a line, it grows with the text; a paperclip, drag
+ * and drop and paste send files (`attach={false}` hides them). Replaced by a notice once the
+ * person is no longer a member.
+ */
 export function Composer({ convId, attach = true }: { convId: string; attach?: boolean }) {
   const client = useClient();
   const { send } = useSend(convId);

@@ -22,6 +22,8 @@ import Observation
 
 public typealias JSONObject = [String: Any]
 
+/// How the client starts: the server address, this device's id, the cache, the token provider and
+/// how it names itself.
 public struct ClientOptions {
     /// `https://chat.example.com`.
     public var url: String
@@ -29,14 +31,23 @@ public struct ClientOptions {
     public var deviceId: String
     /// Where the cache lives; nil keeps it in memory.
     public var storeDir: String?
+    /// A name for this device in the user's device list, like "Maya's iPhone".
     public var deviceName: String?
+    /// The platform reported to the server (`ios`, `android`, `windows`…), for the device list and
+    /// push.
     public var platform: String?
     /// A client token from your backend; throw `TokenRefused` to stop.
     public var tokenProvider: @Sendable () async throws -> String
+    /// This app's name, sent to the server with each connection (for diagnostics and
+    /// minimum-version rules).
     public var clientName = "agentim-swift"
+    /// This app's version, sent with `clientName`.
     public var clientVersion = "0.1.0"
+    /// How long a command waits for its answer before failing with `timeout`. In seconds.
     public var commandTimeout: TimeInterval = 60
 
+    /// Options with the required server address, device id and token provider; the rest are
+    /// optional.
     public init(url: String, deviceId: String, storeDir: String? = nil, deviceName: String? = nil, platform: String? = nil,
                 tokenProvider: @escaping @Sendable () async throws -> String) {
         self.url = url
@@ -50,6 +61,7 @@ public struct ClientOptions {
 
 /// Thrown by a token provider when the backend refuses the user.
 public struct TokenRefused: Error {
+    /// Throw `TokenRefused()` from the token provider.
     public init() {}
 }
 
@@ -57,11 +69,17 @@ public struct TokenRefused: Error {
 /// `rate_limited`…) or the client's (`disconnected`, `timeout`, `closed`…); unknown codes
 /// pass through as they are.
 public struct AgentIMError: Error, CustomStringConvertible {
+    /// The error code: the server's (`forbidden`, `not_found`, `conflict`, `bad_request`, …) or the
+    /// client's (`disconnected`, `timeout`, `closed`, `unauthenticated`).
     public let code: String
+    /// A human-readable explanation, for logs (not for showing to users).
     public let message: String
+    /// Whether the same request may work later.
     public let retryable: Bool
+    /// How long the server asked to wait before trying again.
     public let retryAfterMs: Int64?
 
+    /// An error with its code; used by the client and by tests.
     public init(code: String, message: String, retryable: Bool = false, retryAfterMs: Int64? = nil) {
         self.code = code
         self.message = message
@@ -76,21 +94,31 @@ public struct AgentIMError: Error, CustomStringConvertible {
         retryAfterMs = (e?["retry_after_ms"] as? NSNumber)?.int64Value
     }
 
+    /// `code: message`.
     public var description: String { "\(code): \(message)" }
 }
 
+/// The connection state and why: `state` is `closed`, `connecting`, `connected`, `disconnected`,
+/// `suspended` or `failed`.
 public struct Connection: Equatable {
     /// closed, connecting, connected, disconnected, suspended or failed.
     public let state: String
+    /// Why it is not connected (an error code), when it is not.
     public let reason: String?
+    /// When the next reconnect attempt is due (Unix ms), while waiting to reconnect.
     public let retryAt: Int64?
 }
 
 /// One message as shown; `raw` has every field the core gives.
 public struct Message {
+    /// The stable local key: the same while the message goes from sending to sent, for list
+    /// identity.
     public let key: String
+    /// The server's id, once sent.
     public let msgId: String?
+    /// The id this device gave the message, for retries.
     public let clientMsgId: String?
+    /// The text (for a streaming reply, what has arrived so far).
     public let content: String
     /// sent, sending or failed.
     public let status: String
@@ -98,7 +126,9 @@ public struct Message {
     public let state: String?
     /// human, agent, system: agent messages must show the AI mark (EU AI Act art. 50).
     public let senderType: String?
+    /// The sort position in the list.
     public let order: Double
+    /// Every field as the core sent it.
     public let raw: JSONObject
 
     init(_ m: JSONObject) {
@@ -114,8 +144,11 @@ public struct Message {
     }
 }
 
+/// One conversation in the list.
 public struct Conversation {
+    /// The conversation id.
     public let convId: String
+    /// Every field as the core sent it.
     public let raw: JSONObject
 
     init(_ c: JSONObject) {
@@ -127,6 +160,7 @@ public struct Conversation {
 /// One conversation's messages as shown, oldest first.
 @Observable
 public final class Messages {
+    /// The conversation these messages belong to.
     public let convId: String
     public private(set) var list: [Message] = []
     public private(set) var hasOlder = false
@@ -195,6 +229,8 @@ public final class Messages {
     }
 }
 
+/// The AgentIM client for one account on one device: keeps the connection, syncs, sends the offline
+/// queue in order, keeps the local cache, and turns everything into observable state.
 @Observable
 public final class AgentIMClient: @unchecked Sendable {
     public private(set) var connection = Connection(state: "closed", reason: nil, retryAt: nil)
@@ -213,6 +249,7 @@ public final class AgentIMClient: @unchecked Sendable {
     @ObservationIgnored private var convs: [String: JSONObject] = [:]
     @ObservationIgnored private var listeners: [String: [UUID: (JSONObject) -> Void]] = [:]
 
+    /// The version of the native core.
     public static var version: String { String(cString: agentim_version()) }
 
     /// `queue`: where state changes, events and replies are handled, in order (main by default).
@@ -395,6 +432,8 @@ public final class AgentIMClient: @unchecked Sendable {
         return v
     }
 
+    /// Connects and keeps connecting: reconnects with backoff when the network or the server goes,
+    /// syncs what it missed, sends the offline queue.
     public func connect() async throws { try await command(["cmd": "connect"]) }
     /// Closes the connection (the client stays usable; `close()` frees it).
     public func disconnect() async throws { try await command(["cmd": "close"]) }
@@ -428,24 +467,30 @@ public final class AgentIMClient: @unchecked Sendable {
         try await command(["cmd": "file_url", "conv_id": convId, "file_id": fileId, "variant": variant]) as? JSONObject ?? [:]
     }
 
+    /// Edits one of my messages (by `msgId`, or by `clientMsgId` while it is still queued); the
+    /// change shows at once.
     public func edit(_ convId: String, msgId: String, _ text: String) async throws {
         try await command(["cmd": "edit", "conv_id": convId, "msg_id": msgId, "text": text])
     }
 
+    /// Recalls one of my messages for everyone; a message still in the queue is simply not sent.
     public func recall(_ convId: String, msgId: String) async throws {
         try await command(["cmd": "recall", "conv_id": convId, "msg_id": msgId])
     }
 
+    /// Marks the conversation read up to `seq` (default: the newest) on all my devices.
     public func read(_ convId: String, seq: Int64? = nil) async throws {
         var c: JSONObject = ["cmd": "read", "conv_id": convId]
         c["seq"] = seq
         try await command(c)
     }
 
+    /// Sends a failed message again (the same `client_msg_id`, so it is never doubled).
     public func retry(_ convId: String, clientMsgId: String) async throws {
         try await command(["cmd": "retry", "conv_id": convId, "client_msg_id": clientMsgId])
     }
 
+    /// Drops a failed or waiting message from the queue.
     public func discard(_ convId: String, clientMsgId: String) async throws {
         try await command(["cmd": "discard", "conv_id": convId, "client_msg_id": clientMsgId])
     }
@@ -456,6 +501,8 @@ public final class AgentIMClient: @unchecked Sendable {
         try await command(["cmd": "call", "op": op, "args": args])
     }
 
+    /// Everything that helps report a problem: the connection, positions, the queue and recent
+    /// failures.
     public func debugState() async throws -> Any? { try await command(["cmd": "debug_state"]) }
 
     /// Stops the client; no event arrives after it returns. Waiting calls fail with `closed`.
@@ -476,9 +523,11 @@ public final class AgentIMClient: @unchecked Sendable {
     }
 }
 
+/// A subscription to client events; cancel it to stop.
 public final class Subscription {
     private var f: (() -> Void)?
     init(_ f: @escaping () -> Void) { self.f = f }
+    /// Stops the subscription; calling it again does nothing.
     public func cancel() {
         f?()
         f = nil

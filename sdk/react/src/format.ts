@@ -1,6 +1,7 @@
 // How messages are laid out and dated (docs/12 §3.1), without React or the
 // DOM, so React Native lays them out the same way.
 
+/** How dates and times are shown: locale, time zone and "now". */
 export interface When {
   /** BCP 47 locale; undefined is the user's own (browser or system). */
   locale?: string;
@@ -74,7 +75,9 @@ export function formatShort(t: number, w: When = {}): string {
   return new Intl.DateTimeFormat(w.locale, { timeZone: w.timeZone, year: '2-digit', month: 'numeric', day: 'numeric' }).format(t);
 }
 
+/** One message row of a laid-out list. */
 export interface Row<M> {
+  /** The message. */
   message: M;
   /** A day separator goes above this message. */
   day?: string;
@@ -82,6 +85,7 @@ export interface Row<M> {
   unread?: boolean;
   /** First / last of a run from one sender (name and avatar on the first, time on the last). */
   first: boolean;
+  /** Whether it ends a run of messages from the same sender. */
   last: boolean;
 }
 
@@ -154,13 +158,17 @@ export function unreadIndex(messages: { sender_id?: string; key: string }[], unr
 
 /** A line in the timeline that is not a message: a system event, a whisper, progress. */
 export interface Notice<N = unknown> {
+  /** A stable key for the list. */
   key: string;
   /** Goes after the message with this seq (fractions sort between messages). */
   seq: number;
+  /** What the notice says. */
   content: N;
+  /** `info` (default), `warning` or `private` (only you can see it). */
   tone?: 'info' | 'warning' | 'private';
 }
 
+/** One entry of a laid-out list: a message row or a notice. */
 export type Item<M, N> = { row: Row<M>; notice?: undefined } | { notice: Notice<N>; row?: undefined; /** A day separator goes above this notice. */ day?: string };
 
 /**
@@ -193,6 +201,7 @@ export function interleave<M extends Laid, N>(rows: Row<M>[], notices: Notice<N>
 
 /** How this person's part in a conversation ended, from the client core. */
 export interface Ended {
+  /** `left` (I left), `removed` (someone removed me) or `dissolved` (the conversation was closed). */
   reason: 'left' | 'removed' | 'dissolved';
   /** The name of who removed them or closed it (not when it was themselves). */
   by?: string;
@@ -227,6 +236,10 @@ const EXT: Record<string, FileType> = {
   jpg: 'image', jpeg: 'image', png: 'image', gif: 'image', webp: 'image', heic: 'image', svg: 'image', bmp: 'image', tiff: 'image',
 };
 
+/**
+ * The icon a file gets from its name and type: `pdf`, `doc`, `sheet`, `slides`, `archive`,
+ * `audio`, `video`, `code`, `image` or `other`.
+ */
 export function fileType(name?: string, mime?: string): FileType {
   const ext = (name ?? '').toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
   if (ext && EXT[ext]) return EXT[ext];

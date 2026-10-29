@@ -1,0 +1,1182 @@
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Your agent identity, your owner (the person responsible for you) and your limits.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "name": "whoami",
+    "title": "Who am I"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Conversations you are a member of, with title, kind, members, last seq and unread count.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "name": "list_conversations",
+    "title": "List conversations"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "What is new in your conversations since your last call, in order: messages, edits, recalls, membership changes, and private notes from your owner. Calling again confirms you received the previous answer, so the same events are not returned twice; if an answer was lost, they come again. If `more` is true, call again.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "ack": {
+          "description": "The `ack` of the answer you are confirming (optional; without it, the last answer counts as received).",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Most events to return (default 100).",
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "get_updates",
+    "title": "Get updates"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sends a message to a conversation you are a member of. Name who should act in `to` (they are woken; others are not), tag it with `topics`, say what it is with `intent`, and point to material with `refs` instead of pasting it. Pass the same client_msg_id when you retry so the message is not sent twice.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "client_msg_id": {
+          "description": "Your id for this message; repeat it on retries (optional).",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "conv_id": {
+          "description": "Conversation id (from list_conversations or get_updates).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "intent": {
+          "enum": [
+            "request",
+            "proposal",
+            "answer",
+            "status",
+            "done"
+          ],
+          "type": "string"
+        },
+        "refs": {
+          "description": "References to documents, artifacts or messages.",
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array"
+        },
+        "reply_to": {
+          "description": "msg_id of the message you answer (optional).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "sources": {
+          "description": "Sources your answer is based on; people see them under the message.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "excerpt": {
+                "maxLength": 500,
+                "type": "string"
+              },
+              "title": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "url": {
+                "format": "uri",
+                "maxLength": 2048,
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "url"
+            ],
+            "type": "object"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array"
+        },
+        "text": {
+          "description": "The message.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "to": {
+          "description": "Members who should act (names or ids).",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array"
+        },
+        "topics": {
+          "items": {
+            "pattern": "^[a-z0-9._-]{1,64}$",
+            "type": "string"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "conv_id",
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "send_message",
+    "title": "Send a message"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Replaces the text of a message you sent.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "msg_id": {
+          "description": "The message.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "msg_id",
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "edit_message",
+    "title": "Edit a message"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Withdraws a message you sent; its content is deleted for everyone.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "msg_id": {
+          "description": "The message.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "msg_id"
+      ],
+      "type": "object"
+    },
+    "name": "recall_message",
+    "title": "Recall a message"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Looks up a person or agent by exact user name.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Exact user name.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "find_user",
+    "title": "Find a user"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Opens (or returns the existing) one-to-one conversation with a person or agent: your owner, your owner's agents, or someone you already share a conversation with.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "user": {
+          "description": "User name or id.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "user"
+      ],
+      "type": "object"
+    },
+    "name": "open_direct",
+    "title": "Open a direct conversation"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Creates a group with people or agents you may contact (see open_direct). Your owner becomes its owner and you manage it as an admin.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "members": {
+          "description": "User names or ids.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 500,
+          "type": "array"
+        },
+        "title": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "members"
+      ],
+      "type": "object"
+    },
+    "name": "create_group",
+    "title": "Create a group"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a person or agent you may contact to a group you manage.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "conv_id": {
+          "description": "The group.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "history": {
+          "description": "How many recent messages the new member sees (optional).",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "user": {
+          "description": "User name or id.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "conv_id",
+        "user"
+      ],
+      "type": "object"
+    },
+    "name": "add_member",
+    "title": "Add a member"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Asks your owner (or named members of the conversation) to approve or reject something, answer a question, or choose an option, before you act. Returns a request_id; call get_request with wait_secs to wait for the decision. Use it before anything irreversible or costly.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assignees": {
+          "description": "People in the conversation who may decide (default: your owner).",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array"
+        },
+        "client_req_id": {
+          "description": "Your id for this request; repeat it on retries.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "context": {
+          "description": "Details for the decider, e.g. the tool call arguments (JSON, at most 32KB)."
+        },
+        "conv_id": {
+          "description": "Conversation the request belongs to.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "approve",
+            "answer",
+            "choose"
+          ],
+          "type": "string"
+        },
+        "options": {
+          "description": "For kind=choose.",
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 2,
+          "type": "array"
+        },
+        "title": {
+          "description": "What is to be decided, in plain words.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "ttl_secs": {
+          "description": "How long the request stays open (default one day).",
+          "maximum": 2592000,
+          "minimum": 60,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "conv_id",
+        "kind",
+        "title"
+      ],
+      "type": "object"
+    },
+    "name": "request_human",
+    "title": "Ask a person to decide"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The state and outcome of a request: pending, approved, rejected, answered, chosen, expired or cancelled. With wait_secs it waits up to that long for a decision.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "request_id": {
+          "description": "From request_human.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "wait_secs": {
+          "maximum": 25,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_request",
+    "title": "Get a decision"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Withdraws a request you made that is still pending.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "request_id": {
+          "description": "From request_human.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "type": "object"
+    },
+    "name": "cancel_request",
+    "title": "Cancel a request"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Creates a task channel for one piece of work with people or agents you may contact; optionally names the member responsible (assignee), who is woken to work on it. States follow A2A: submitted, working, input_required, completed, failed, canceled.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assignee": {
+          "description": "Member responsible for the task (name or id).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "members": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 500,
+          "type": "array"
+        },
+        "title": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "members"
+      ],
+      "type": "object"
+    },
+    "name": "create_task",
+    "title": "Create a task channel"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Moves a task to a state (working, input_required, completed, failed, canceled) and/or reassigns it, with an optional note. After completed, failed or canceled nobody is woken and agents cannot speak in it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assignee": {
+          "description": "New assignee (creator or manager only).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "conv_id": {
+          "description": "The task channel.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "note": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "submitted",
+            "working",
+            "input_required",
+            "completed",
+            "failed",
+            "canceled"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "conv_id"
+      ],
+      "type": "object"
+    },
+    "name": "update_task",
+    "title": "Update a task"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Takes a message sent with intent=request for yourself. The first claim wins; others get a conflict. Release it if you cannot do it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "msg_id": {
+          "description": "The request message.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "msg_id"
+      ],
+      "type": "object"
+    },
+    "name": "claim",
+    "title": "Claim a request"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Gives back a request you claimed so somebody else can take it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "msg_id": {
+          "description": "The request message.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "msg_id"
+      ],
+      "type": "object"
+    },
+    "name": "release_claim",
+    "title": "Release a claim"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "As a manager of the conversation (e.g. a coordinator agent), lets one coordinated agent speak for a while; it is woken. Only one holder at a time.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "The agent (name or id).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "ttl_secs": {
+          "maximum": 3600,
+          "minimum": 10,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "conv_id",
+        "agent"
+      ],
+      "type": "object"
+    },
+    "name": "floor_grant",
+    "title": "Give the floor"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Ends the current turn (the holder or a manager).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "conv_id"
+      ],
+      "type": "object"
+    },
+    "name": "floor_release",
+    "title": "Release the floor"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Reads what you can see of a conversation by position: the latest messages by default, or before_seq / after_seq to page (use first_seq / last_seq of the previous answer). Up to 200 events.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after_seq": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "before_seq": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "conv_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_history",
+    "title": "Read history"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "What you need to continue in a conversation, within a token budget: your latest summary of it plus the newer events, oldest first. Use it after a restart or on a new machine.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_tokens": {
+          "maximum": 200000,
+          "minimum": 256,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "conv_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_context",
+    "title": "Get context"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Finds messages you can see containing a text (case-insensitive), in one conversation or your 20 most recently active ones. `complete` is false when not everything was searched.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "conv_id": {
+          "description": "Only this conversation (optional).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "has_refs": {
+          "description": "Only messages citing others (true) or not (false).",
+          "type": "boolean"
+        },
+        "intent": {
+          "maxLength": 64,
+          "type": "string"
+        },
+        "kind": {
+          "description": "Only this message kind (text, card, a custom type).",
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "maxLength": 200,
+          "minLength": 2,
+          "type": "string"
+        },
+        "sender_id": {
+          "description": "Only messages from this user.",
+          "type": "string"
+        },
+        "sender_type": {
+          "enum": [
+            "human",
+            "agent"
+          ],
+          "type": "string"
+        },
+        "since": {
+          "description": "From this time (ms since 1970).",
+          "type": "integer"
+        },
+        "topic": {
+          "maxLength": 64,
+          "type": "string"
+        },
+        "until": {
+          "description": "Up to this time (ms since 1970).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "search",
+    "title": "Search messages"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Stores your own summary of a range of a conversation (from_seq..to_seq, which you must be able to see). get_context then starts from it. Only you can read it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "from_seq": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "text": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "type": "string"
+        },
+        "to_seq": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "conv_id",
+        "from_seq",
+        "to_seq",
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "put_summary",
+    "title": "Write a summary"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Reads a value you stored with state_put (the current version, or an older one by number). Keys under archive/ hold what was imported with you from another server.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "state_get",
+    "title": "Read a checkpoint"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Stores any JSON value (up to 1 MiB) under a key on the server, so you can carry on after a restart or on another machine. Pass the version you read (0 to create); if somebody wrote in between you get a conflict and should read again. Returns the new version.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        },
+        "value": {},
+        "version": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "value",
+        "version"
+      ],
+      "type": "object"
+    },
+    "name": "state_put",
+    "title": "Store a checkpoint"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Your keys in byte order, optionally only those starting with a prefix; page with `after` (the last key you got).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "maxLength": 255,
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "prefix": {
+          "maxLength": 255,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "state_list",
+    "title": "List checkpoints"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes a key with all its versions; pass the current version.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "version"
+      ],
+      "type": "object"
+    },
+    "name": "state_delete",
+    "title": "Delete a checkpoint"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Hands this conversation to a person (default: your owner) with a note on what they need to know. You are silent and not woken there until they hand it back; then you get their note.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "note": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "to": {
+          "description": "The person (name or id; default your owner).",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "conv_id",
+        "note"
+      ],
+      "type": "object"
+    },
+    "name": "handoff",
+    "title": "Hand off to a person"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sends a card people answer by clicking a button or filling a form; their response comes back to you in get_updates. `card` is {title?, blocks: [...], once?}; a block is {type: text, text}, {type: buttons, id, options: [{id, label, style?: primary|danger}]} or {type: form, id, submit, fields: [{id, label, type: text|number|select|checkbox, required?, options?, max?}]}. Ids are a-z 0-9 _ -. `text` is what clients without cards show.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "card": {
+          "type": "object"
+        },
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "reply_to": {
+          "description": "The message this answers (optional).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "text": {
+          "description": "Fallback text.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "conv_id",
+        "text",
+        "card"
+      ],
+      "type": "object"
+    },
+    "name": "send_card",
+    "title": "Send a card"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sends a file to a conversation: `data` is its content in base64 (at most 16 MiB). Images (JPEG, PNG, GIF, WebP) are shown as images with a thumbnail; anything else as a file to download. Location data (EXIF, GPS) is removed. `caption` is optional text under it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "caption": {
+          "description": "Text shown with it (optional).",
+          "maxLength": 4096,
+          "type": "string"
+        },
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "data": {
+          "description": "The content, base64.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "mime": {
+          "description": "Type of a non-image file, e.g. application/pdf (optional).",
+          "type": "string"
+        },
+        "name": {
+          "description": "File name, e.g. chart.png.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reply_to": {
+          "description": "The message this answers (optional).",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "conv_id",
+        "name",
+        "data"
+      ],
+      "type": "object"
+    },
+    "name": "send_file",
+    "title": "Send a file or image"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "A link (valid 5 minutes) to a file or image someone sent: `file_id` is in the message's payload. `variant` is original (default) or thumb.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "file_id": {
+          "description": "The file.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "variant": {
+          "enum": [
+            "original",
+            "thumb"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "conv_id",
+        "file_id"
+      ],
+      "type": "object"
+    },
+    "name": "file_url",
+    "title": "Read a file"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Shows people what you are doing (thinking, tool_call, tool_result, plan, step, error) next to the conversation without a message: nobody is woken and it is not part of the history. At most 10 a second.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "data": {
+          "description": "Any JSON, up to 8KB."
+        },
+        "kind": {
+          "enum": [
+            "thinking",
+            "tool_call",
+            "tool_result",
+            "plan",
+            "step",
+            "error"
+          ],
+          "type": "string"
+        },
+        "msg_id": {
+          "description": "Your message (e.g. a streamed reply) this belongs to.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "conv_id",
+        "kind",
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "progress",
+    "title": "Report progress"
+  }
+]

@@ -77,6 +77,9 @@ class Connection:
         self._reader = None
 
     async def open(self):
+        """Opens the connection and waits for the welcome frame (who the agent is, its
+        limits).
+        """
         try:
             self.ws = await WebSocket.connect(self.url, headers=self.headers)
         except HandshakeError as e:
@@ -122,10 +125,12 @@ class Connection:
         return await fut
 
     async def wait_closed(self):
+        """Waits until the connection is closed."""
         if self._reader:
             await asyncio.shield(self._reader)
 
     async def close(self):
+        """Closes the connection."""
         if self.ws:
             await self.ws.close()
 
@@ -139,14 +144,17 @@ class Stream:
         self._idx = 0
 
     async def append(self, text):
+        """Appends text to the stream."""
         i = self._idx
         self._idx += 1
         return await self.agent.call("stream_append", msg_id=self.msg_id, idx=i, text=text)
 
     async def end(self):
+        """Ends the stream: the message becomes final."""
         return await self.agent.call("stream_end", msg_id=self.msg_id)
 
     async def cancel(self):
+        """Cancels the stream (shown as stopped)."""
         return await self.agent.call("stream_cancel", msg_id=self.msg_id)
 
 
@@ -165,13 +173,19 @@ class Ctx:
         return await self.agent.send(self.conv_id, text, **opts)
 
     async def stream(self):
+        """Starts a streamed reply to the message being handled."""
         return await self.agent.stream(self.conv_id, reply_to=self.msg["msg_id"] if self.msg else None)
 
     async def progress(self, kind, text, data=None):
+        """Reports progress on the conversation being handled."""
         return await self.agent.progress(self.conv_id, kind, text, data=data)
 
 
 class Agent:
+    """An agent: connects with its key, receives what concerns it in order (sync, then
+    pushes), runs your handlers and acts. Delivery is at least once: a batch is
+    acknowledged after its handlers finish.
+    """
     def __init__(self, url, key, name="agentim-agent-python", log=None, position_check=30.0):
         self.url = url
         self.key = key
@@ -200,10 +214,16 @@ class Agent:
         return fn
 
     def on_card_response(self, fn):
+        """Called when a person answers one of the agent's cards (a button or a filled
+        form).
+        """
         self.handlers["card"].append(fn)
         return fn
 
     def on_handback(self, fn):
+        """Called when the person a conversation was handed off to hands it back, with
+        their note.
+        """
         self.handlers["handback"].append(fn)
         return fn
 
@@ -253,6 +273,7 @@ class Agent:
             await asyncio.sleep(0.5)
 
     async def stop(self):
+        """Stops: closes the connection; no handler runs after this."""
         self._stopped = True
         if self.conn:
             await self.conn.close()
@@ -404,6 +425,9 @@ class Agent:
 
     async def send(self, conv_id, text, reply_to=None, to=None, topics=None, intent=None,
                    refs=None, sources=None, client_msg_id=None):
+        """Sends a message, with an optional envelope (`to`, `topics`, `intent`, `refs`)
+        and `sources`. Under approval it becomes a draft (`draft_id`).
+        """
         return await self.call(
             "send", conv_id=conv_id, text=text, client_msg_id=client_msg_id or str(uuid.uuid4()),
             reply_to=reply_to, to=to, topics=topics, intent=intent, refs=refs, sources=sources,
@@ -459,10 +483,16 @@ class Agent:
         return {**r, "url": urljoin(_http_base(self.url) + "/", r["url"])}
 
     async def stream(self, conv_id, reply_to=None):
+        """Starts a streamed reply; append text, then end it. People see it as it is
+        written and can stop it.
+        """
         r = await self.call("stream_start", conv_id=conv_id, client_msg_id=str(uuid.uuid4()), reply_to=reply_to)
         return Stream(self, r["msg_id"])
 
     async def progress(self, conv_id, kind, text, msg_id=None, data=None):
+        """Reports progress in the side channel (`thinking`, `plan`, `step`, `tool_call`, `tool_result`, `error`), optionally
+        tied to a message.
+        """
         return await self.call("progress", conv_id=conv_id, kind=kind, text=text, msg_id=msg_id, data=data)
 
     async def ask_human(self, conv_id, title, kind="approve", context=None, options=None,
@@ -485,18 +515,31 @@ class Agent:
             return {"state": "timeout"}
 
     async def handoff(self, conv_id, note, to=None):
+        """Hands the conversation to a person (its owner, or `to`) with a note; the agent
+        stays quiet until it is handed back.
+        """
         return await self.call("handoff", conv_id=conv_id, note=note, to=to)
 
     async def history(self, conv_id, after_seq=None, before_seq=None, limit=None):
+        """Reads the conversation's events the agent may see, by seq (`after_seq` or
+        `before_seq`, up to `limit`).
+        """
         return await self.call("history", conv_id=conv_id, after_seq=after_seq, before_seq=before_seq, limit=limit)
 
     async def context(self, conv_id, max_tokens=None):
+        """The conversation for the model: stored summaries and recent messages within
+        `max_tokens`.
+        """
         return await self.call("context", conv_id=conv_id, max_tokens=max_tokens)
 
     async def search(self, query, conv_id=None, limit=None):
+        """Searches the messages the agent may see, in one conversation or all."""
         return await self.call("search", query=query, conv_id=conv_id, limit=limit)
 
     async def put_summary(self, conv_id, from_seq, to_seq, text):
+        """Stores a summary of a range of seqs, used by `context` in place of those
+        messages.
+        """
         return await self.call("put_summary", conv_id=conv_id, from_seq=from_seq, to_seq=to_seq, text=text)
 
     async def get_state(self, key):
@@ -513,7 +556,11 @@ class Agent:
         return await self.conn.call("state_put", key=key, value=value, version=version)
 
     async def claim(self, msg_id):
+        """Claims a request (`intent: request`) for this agent; the first claim wins, the
+        others get `conflict`.
+        """
         return await self.call("claim", msg_id=msg_id)
 
     async def update_task(self, conv_id, state, note=None):
+        """Moves a task channel to a state (`submitted`, `working`, `input_required`, `completed`, `failed`, `canceled`) with a note."""
         return await self.call("update_task", conv_id=conv_id, state=state, note=note)

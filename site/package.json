@@ -1,0 +1,21 @@
+{
+  "name": "agentim-site",
+  "private": true,
+  "type": "module",
+  "description": "agentim.dev: the homepage and the documentation (docs/12 §5)",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "node scripts/reference.mjs && astro build",
+    "check:complete": "node scripts/complete.mjs",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/react": "7.0.1",
+    "@astrojs/starlight": "0.42.6",
+    "astro": "7.3.8",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "sharp": "0.35.5",
+    "starlight-links-validator": "0.27.0"
+  }
+}

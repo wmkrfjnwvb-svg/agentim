@@ -4,26 +4,40 @@
 // Message bodies and queued operations are encrypted with AES-GCM under
 // a non-extractable WebCrypto key kept in the database itself.
 
+/** One atomic write to the cache: everything in it is written or nothing is. */
 export interface Batch {
+  /** The batch number; the core waits for each in order. */
   id: number;
+  /** Conversations to write (replacing the stored ones). */
   convs: Array<{ conv_id: string; [k: string]: unknown }>;
+  /** Messages to write. */
   put_messages: Array<Record<string, any>>;
+  /** Messages to delete, as `[conv_id, key]`. */
   remove_messages: Array<[string, string]>;
+  /** Queued operations to write (the offline queue). */
   put_ops: Array<Record<string, any>>;
+  /** Queued operations that are done, by id. */
   remove_ops: string[];
+  /** Which account the cache belongs to; a different account wipes it. */
   meta?: { account?: string | null } | null;
 }
 
+/** What the cache holds at start: the account, the conversations, the queue and recent messages. */
 export interface Snapshot {
+  /** The account the cache belongs to, or null when empty. */
   account: string | null;
+  /** The stored conversations. */
   convs: unknown[];
+  /** The stored offline queue, in order. */
   ops: unknown[];
+  /** The newest messages of each conversation, up to the page size. */
   messages: unknown[];
 }
 
 /** Why a write failed, as the core names it. */
 export type Failure = 'full' | 'corrupt' | 'unavailable';
 
+/** Why the cache could not be written: `full`, `corrupt` or `unavailable`. */
 export class StoreError extends Error {
   constructor(
     public kind: Failure,
@@ -33,12 +47,22 @@ export class StoreError extends Error {
   }
 }
 
+/**
+ * A cache for the client (IndexedDB in browsers, memory elsewhere); implement it to keep the cache
+ * somewhere else.
+ */
 export interface Store {
+  /** `indexeddb` or `memory`. */
   readonly kind: 'indexeddb' | 'memory';
+  /** Opens the cache; fails with `StoreError` when it cannot. */
   open(): Promise<void>;
+  /** Reads what the cache holds, with up to `page` messages per conversation. */
   snapshot(page: number): Promise<Snapshot>;
+  /** Reads up to `limit` older messages of a conversation before `beforeSeq`. */
   page(convId: string, beforeSeq: number, limit: number): Promise<unknown[]>;
+  /** Writes one batch atomically. */
   write(b: Batch): Promise<void>;
+  /** Deletes everything (sign-out, a different account). */
   wipe(): Promise<void>;
   /** `navigator.storage.persist()` result, when asked. */
   persisted?: boolean;
@@ -46,14 +70,20 @@ export interface Store {
 
 /** Nothing kept after the page closes. */
 export class MemoryStore implements Store {
+  /** `memory`. */
   readonly kind = 'memory';
   private account: string | null = null;
   private convs = new Map<string, unknown>();
   private msgs = new Map<string, Record<string, any>>();
   private ops = new Map<string, Record<string, any>>();
 
+  /** Nothing to open. */
   async open() {}
 
+  /**
+   * What the core reads at start: the account, conversations, the queue and the newest `page`
+   * messages of each conversation.
+   */
   async snapshot(page: number): Promise<Snapshot> {
     const messages: unknown[] = [];
     for (const c of this.convs.keys()) {
@@ -64,6 +94,7 @@ export class MemoryStore implements Store {
     return { account: this.account, convs: [...this.convs.values()], ops, messages };
   }
 
+  /** Messages of a conversation before a seq, for paging back. */
   async page(convId: string, before: number, limit: number) {
     const ms = [...this.msgs.values()]
       .filter((m) => m.conv_id === convId && m.created_seq < before)
@@ -71,6 +102,7 @@ export class MemoryStore implements Store {
     return ms.slice(-limit);
   }
 
+  /** Writes a batch from the core atomically. */
   async write(b: Batch) {
     for (const o of b.put_ops) this.ops.set(o.id, o);
     for (const id of b.remove_ops) this.ops.delete(id);
@@ -80,6 +112,7 @@ export class MemoryStore implements Store {
     if (b.meta) this.account = b.meta.account ?? null;
   }
 
+  /** Deletes everything (logout, another account). */
   async wipe() {
     this.account = null;
     this.convs.clear();
@@ -118,7 +151,9 @@ function openDb(name: string, upgrade: (db: IDBDatabase) => void, idb: IDBFactor
  * it (`navigator.storage.persist()`) unless told not to.
  */
 export class IndexedDBStore implements Store {
+  /** `indexeddb`. */
   readonly kind = 'indexeddb';
+  /** Whether the browser agreed to keep the cache (`navigator.storage.persist()`). */
   persisted?: boolean;
   private cache!: IDBDatabase;
   private queue!: IDBDatabase;
@@ -133,6 +168,7 @@ export class IndexedDBStore implements Store {
     return this.opts.indexedDB ?? globalThis.indexedDB;
   }
 
+  /** Opens (or creates) the cache and the queue databases and the encryption key. */
   async open() {
     try {
       this.cache = await openDb(
@@ -181,6 +217,10 @@ export class IndexedDBStore implements Store {
     }
   }
 
+  /**
+   * What the core reads at start: the account, conversations, the queue and the newest `page`
+   * messages of each conversation.
+   */
   async snapshot(page: number): Promise<Snapshot> {
     const tx = this.cache.transaction(['meta', 'convs', 'messages'], 'readonly');
     const account = ((await req(tx.objectStore('meta').get('account'))) as string | undefined) ?? null;
@@ -209,6 +249,7 @@ export class IndexedDBStore implements Store {
     return { account, convs, ops, messages };
   }
 
+  /** Messages of a conversation before a seq, for paging back. */
   async page(convId: string, before: number, limit: number) {
     const tx = this.cache.transaction('messages', 'readonly');
     const range = IDBKeyRange.bound([convId, -Infinity], [convId, before], false, true);
@@ -227,6 +268,7 @@ export class IndexedDBStore implements Store {
     return out.filter((m) => m !== undefined);
   }
 
+  /** Writes a batch from the core in one transaction (the queue in its own database). */
   async write(b: Batch) {
     try {
       // Encrypt first: a transaction closes when it waits on anything else.
@@ -253,6 +295,7 @@ export class IndexedDBStore implements Store {
     }
   }
 
+  /** Deletes both databases (logout, another account). */
   async wipe() {
     const tx = this.cache.transaction(['meta', 'convs', 'messages'], 'readwrite');
     for (const s of ['meta', 'convs', 'messages']) tx.objectStore(s).clear();
