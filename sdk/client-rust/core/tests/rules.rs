@@ -612,6 +612,39 @@ fn a_send_answered_before_its_message_arrives_stays_shown() {
 }
 
 #[test]
+fn a_message_that_arrives_before_its_answer_replaces_the_local_copy_at_once() {
+    let mut w = World::new(1);
+    w.server.conv("c1");
+    w.connected();
+    w.cmd(json!({"cmd": "messages", "conv_id": "c1"}));
+    // The server pushes the message before it answers the send (as it does).
+    w.ask(json!({"cmd": "send", "conv_id": "c1", "text": "hi", "client_msg_id": "cmP"}))
+        .unwrap();
+    w.run(1_000);
+    let v = w.view("c1");
+    assert_eq!(v.len(), 1, "{v:?}");
+    let id = v[0]["msg_id"].as_str().unwrap().to_string();
+    // The stored copy came in the same change that took the local one away
+    // (World also checks after every change that nothing shows twice).
+    let swap = w.emitted("messages").into_iter().find(|e| {
+        e["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["op"] == "upsert" && c["message"]["key"] == id.as_str())
+    });
+    let ch = swap.expect("the stored copy was shown")["changes"].clone();
+    assert!(
+        ch.as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["op"] == "remove" && c["key"] == "local:cmP"),
+        "{ch}"
+    );
+    w.assert_converged();
+}
+
+#[test]
 fn a_lost_answer_is_resent_with_the_same_ids_and_applied_once() {
     let mut w = World::new(1);
     w.server.conv("c1");

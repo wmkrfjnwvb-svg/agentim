@@ -30,7 +30,10 @@ export interface Msg {
   envelope?: { to?: string[]; topics?: string[]; intent?: string; refs?: string[]; sources?: Source[] };
   /** The message it replies to. */
   reply_to?: string;
-  /** `committed`, `streaming`, `cancelled` (a stopped stream; what arrived stays), `failed` or `recalled`. */
+  /**
+   * `committed`, `streaming`, then `complete` (a finished stream), `cancelled` (stopped; what
+   * arrived stays) or `failed`; `recalled`.
+   */
   state: string;
 }
 
@@ -79,7 +82,7 @@ export interface Stream {
   msgId: string;
   /** Adds text to the end of the reply; members watching see it at once. */
   append(text: string): Promise<any>;
-  /** Finishes the reply: it becomes a normal message. */
+  /** Finishes the reply: its state becomes `complete`. */
   end(): Promise<any>;
   /** Stops the reply; what arrived stays, marked `cancelled`. */
   cancel(): Promise<any>;

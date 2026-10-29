@@ -77,7 +77,7 @@ export interface Connection {
 
 /** One message as shown in a list. */
 export interface Message {
-  /** The stable local key: the same while the message goes from sending to sent, for list identity. */
+  /** The list identity: `local:<client_msg_id>` for a message sent from this device until the server's copy replaces it (in one change), then its `msg_id`. */
   key: string;
   /** The server's id (empty while it is still queued). */
   msg_id: string;

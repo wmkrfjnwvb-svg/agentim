@@ -52,6 +52,16 @@ impl Core {
         }
         c.msgs.insert(seq, m.clone());
         c.seq_of.insert(id.clone(), seq);
+        // A send of ours still waiting for its answer: the local copy goes
+        // in the same change as the stored one comes, so it never shows twice.
+        if let Some(cm) = m["client_msg_id"].as_str()
+            && self.ops.iter().any(|o| {
+                o.conv_id == conv && matches!(&o.kind, Kind::Send { cm: c, .. } if c == cm)
+            })
+        {
+            let k = format!("local:{cm}");
+            self.mark_changed(conv, &k);
+        }
         if persist {
             if let Some(o) = m.as_object_mut() {
                 o.remove("streamed");
@@ -82,6 +92,10 @@ impl Core {
             else {
                 return None;
             };
+            // The stored copy came before the answer: it is shown instead.
+            if self.has_stored_send(conv, cm) {
+                return None;
+            }
             let uploading = upload.as_ref().filter(|u| u.file.is_none());
             let mut m = json!({
                 "key": key, "msg_id": sent.as_deref().unwrap_or(key), "client_msg_id": cm, "conv_id": conv,
@@ -131,6 +145,14 @@ impl Core {
             }
         }
         Some(m)
+    }
+
+    /// Whether the stored window has the message sent with `cm` (ids made
+    /// on this device, so only ever ours).
+    pub(crate) fn has_stored_send(&self, conv: &str, cm: &str) -> bool {
+        self.convs
+            .get(conv)
+            .is_some_and(|c| c.msgs.values().any(|m| m["client_msg_id"] == cm))
     }
 
     /// Every key of a conversation's loaded window, in order.

@@ -885,6 +885,17 @@ impl World {
                                 view.remove(ch["key"].as_str().unwrap());
                             }
                         }
+                        // After every change the app sees each message once:
+                        // never the local copy next to the stored one.
+                        let mut cms = std::collections::HashSet::new();
+                        for m in view.values() {
+                            if let Some(cm) = m["client_msg_id"].as_str() {
+                                assert!(
+                                    cms.insert(cm.to_string()),
+                                    "shown twice: {cm} in {view:?}"
+                                );
+                            }
+                        }
                     }
                     self.events.push(v);
                 }
