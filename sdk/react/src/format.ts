@@ -211,3 +211,65 @@ export function ended(conv: { ended?: any; members?: any[] } | undefined, me?: s
   if (reason === 'removed' && e.by && e.by === me) return { reason: 'left' };
   return by ? { reason, by } : { reason };
 }
+
+/** The icon a file gets, from its name and type (docs/02 §2.7). */
+export type FileType = 'pdf' | 'doc' | 'sheet' | 'slides' | 'archive' | 'audio' | 'video' | 'code' | 'image' | 'other';
+
+const EXT: Record<string, FileType> = {
+  pdf: 'pdf',
+  doc: 'doc', docx: 'doc', odt: 'doc', rtf: 'doc', txt: 'doc', md: 'doc', pages: 'doc',
+  xls: 'sheet', xlsx: 'sheet', ods: 'sheet', csv: 'sheet', tsv: 'sheet', numbers: 'sheet',
+  ppt: 'slides', pptx: 'slides', odp: 'slides', key: 'slides',
+  zip: 'archive', rar: 'archive', '7z': 'archive', tar: 'archive', gz: 'archive', tgz: 'archive', bz2: 'archive', xz: 'archive',
+  mp3: 'audio', wav: 'audio', m4a: 'audio', aac: 'audio', ogg: 'audio', flac: 'audio', opus: 'audio',
+  mp4: 'video', mov: 'video', webm: 'video', mkv: 'video', avi: 'video', m4v: 'video',
+  js: 'code', ts: 'code', tsx: 'code', jsx: 'code', py: 'code', rs: 'code', go: 'code', java: 'code', kt: 'code', swift: 'code', c: 'code', h: 'code', cpp: 'code', cs: 'code', rb: 'code', php: 'code', sh: 'code', json: 'code', yaml: 'code', yml: 'code', toml: 'code', xml: 'code', html: 'code', css: 'code', sql: 'code',
+  jpg: 'image', jpeg: 'image', png: 'image', gif: 'image', webp: 'image', heic: 'image', svg: 'image', bmp: 'image', tiff: 'image',
+};
+
+export function fileType(name?: string, mime?: string): FileType {
+  const ext = (name ?? '').toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  if (ext && EXT[ext]) return EXT[ext];
+  const m = (mime ?? '').toLowerCase();
+  if (m === 'application/pdf') return 'pdf';
+  if (m.startsWith('image/')) return 'image';
+  if (m.startsWith('audio/')) return 'audio';
+  if (m.startsWith('video/')) return 'video';
+  if (m.startsWith('text/')) return 'doc';
+  if (/zip|compressed|x-tar|gzip/.test(m)) return 'archive';
+  if (/spreadsheet|excel/.test(m)) return 'sheet';
+  if (/presentation|powerpoint/.test(m)) return 'slides';
+  if (/word|opendocument\.text/.test(m)) return 'doc';
+  return 'other';
+}
+
+/** "12 KB", "3.4 MB": decimal units, as the platforms' own file browsers show them. */
+export function formatBytes(n: number, locale?: string): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = Math.max(0, n);
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1000;
+    i++;
+  }
+  const digits = i === 0 || v >= 100 ? 0 : 1;
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(v)} ${units[i]}`;
+}
+
+/** The size an image is shown at: its proportions, at most `max` on each side. */
+export function fitBox(width?: number, height?: number, max = 240): { width: number; height: number } {
+  if (!width || !height) return { width: max, height: Math.round(max * 0.75) };
+  const k = Math.min(max / width, max / height, 1);
+  // Very long or tall images keep a usable minimum.
+  return { width: Math.max(48, Math.round(width * k)), height: Math.max(48, Math.round(height * k)) };
+}
+
+/** A long name with its start and its extension kept: "Quarterly re…port.pdf". */
+export function shortName(name: string, max = 32): string {
+  if (name.length <= max) return name;
+  const dot = name.lastIndexOf('.');
+  const ext = dot > 0 && name.length - dot <= 8 ? name.slice(dot) : '';
+  const keep = max - ext.length - 1;
+  const head = Math.ceil(keep * 0.6);
+  return `${name.slice(0, head)}…${name.slice(name.length - ext.length - (keep - head), name.length - ext.length)}${ext}`;
+}

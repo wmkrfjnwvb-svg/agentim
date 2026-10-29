@@ -525,7 +525,22 @@ export class AgentIMClient {
   async sendFile(convId: string, file: Blob, opts: { name?: string; caption?: string; replyTo?: string; clientMsgId?: string; keepMetadata?: boolean } = {}) {
     const cm = opts.clientMsgId ?? newClientMsgId();
     const p = await prepare(convId, file, { ...opts, clientMsgId: cm, wasm: this.o.wasm });
+    // What this tab shows until the server has it (an image's thumbnail, or itself).
+    const g = globalThis as any;
+    if (g.URL?.createObjectURL) {
+      const thumb = (p.cmd.thumb as any)?.source;
+      const src = (p.cmd.file as any).source;
+      if (thumb) this.previews.set(thumb, URL.createObjectURL(p.blobs[thumb]));
+      if (String((p.cmd.file as any).mime ?? '').startsWith('image/')) this.previews.set(src, URL.createObjectURL(p.blobs[src]));
+    }
     return this.command(p.cmd, p.blobs);
+  }
+
+  private previews = new Map<string, string>();
+
+  /** A local address for a file this tab is sending (`payload.local_thumb` or `local_source`). */
+  localPreview(key?: string | null): string | undefined {
+    return key ? this.previews.get(key) : undefined;
   }
 
   /** A link to read a file (`original` or `thumb`), valid a few minutes. */

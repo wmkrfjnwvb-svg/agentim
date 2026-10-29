@@ -41,6 +41,11 @@ export function contrastFailures(t = tokens) {
       if (r < min) out.push(`${theme}: ${fg} on ${bg} is ${r.toFixed(2)}, needs ${min}`);
     }
   }
+  for (const [k, v] of Object.entries(t.file ?? {})) {
+    if (k.startsWith('$')) continue;
+    const r = contrast('#ffffff', v);
+    if (r < 3) out.push(`file ${k} ${v}: a white glyph is ${r.toFixed(2)}, needs 3`);
+  }
   for (const a of t.avatar) {
     const r = contrast('#ffffff', a);
     if (r < 4.5) out.push(`avatar ${a}: white initials are ${r.toFixed(2)}, need 4.5`);
@@ -65,6 +70,9 @@ function css() {
     `  --aim-line: ${t.font.line};`,
     `  --aim-target: ${t.target.pointer}px;`,
     ...t.avatar.map((v, i) => `  --aim-avatar-${i}: ${v};`),
+    ...Object.entries(t.file ?? {})
+      .filter(([k]) => !k.startsWith('$'))
+      .map(([k, v]) => `  --aim-file-${k}: ${v};`),
   ].join('\n');
   const head = `/* AgentIM default theme (docs/12 §3.1). Generated from tokens.json by
    scripts/tokens.mjs; edit src/styles.css or tokens.json, not this file.
@@ -112,6 +120,11 @@ ${obj(t.color.dark, '  ')}
 };
 
 export const avatar = ${JSON.stringify(t.avatar)};
+
+/** File-type icon colours (white glyphs). */
+export const file = {
+${obj(t.file ?? {}, '  ')}
+};
 
 export const radius = {
 ${obj(t.radius, '  ')}

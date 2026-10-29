@@ -65,6 +65,20 @@ export const dark: Colors = {
 
 export const avatar = ["#2563eb","#7c3aed","#be185d","#047857","#b45309","#0e7490","#4f46e5","#b91c1c"];
 
+/** File-type icon colours (white glyphs). */
+export const file = {
+  pdf: "#dc2626",
+  doc: "#2563eb",
+  sheet: "#15803d",
+  slides: "#c2410c",
+  archive: "#a16207",
+  audio: "#db2777",
+  video: "#7c3aed",
+  code: "#0f766e",
+  image: "#0891b2",
+  other: "#71717a",
+};
+
 export const radius = {
   bubble: 18,
   bubbleJoined: 6,

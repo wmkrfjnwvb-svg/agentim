@@ -55,7 +55,7 @@ export interface Message {
   client_msg_id?: string;
   conv_id: string;
   content: string;
-  status: 'sent' | 'sending' | 'failed';
+  status: 'sent' | 'sending' | 'uploading' | 'failed';
   order: number;
   [k: string]: any;
 }

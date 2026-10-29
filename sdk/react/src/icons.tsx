@@ -70,3 +70,46 @@ export const Stop = () => (
     <rect x="6" y="6" width="12" height="12" rx="2" />
   </Svg>
 );
+export const Paperclip = () => (
+  <Svg>
+    <path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" />
+  </Svg>
+);
+export const Download = () => (
+  <Svg size={18}>
+    <path d="M12 3v12" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M5 21h14" />
+  </Svg>
+);
+export const Close = () => (
+  <Svg>
+    <path d="M18 6 6 18" />
+    <path d="m6 6 12 12" />
+  </Svg>
+);
+
+/** A page with a folded corner in the type's colour, its glyph in white (our own drawing). */
+export function FileIcon({ type, size = 40 }: { type: string; size?: number }) {
+  const glyph: Record<string, ReactNode> = {
+    pdf: <path d="M9 13.5h1.5a1.25 1.25 0 0 0 0-2.5H9v5M13.5 11v5h1a2 2 0 0 0 2-2v-1a2 2 0 0 0-2-2z" />,
+    doc: <path d="M8.5 11.5h7M8.5 14h7M8.5 16.5h4.5" />,
+    sheet: <path d="M8 11h8v6H8zM8 14h8M12 11v6" />,
+    slides: <path d="M8 11h8v5H8zM12 16v2M10 18h4" />,
+    archive: <path d="M12 9.5v1M12 12v1M12 14.5v1M11 16.5h2v1.5h-2z" />,
+    audio: <path d="M10.5 17.5a1.5 1.5 0 1 1-1.5-1.5h1.5V11l5-1v6a1.5 1.5 0 1 1-1.5-1.5H15" />,
+    video: <path d="M8 11.5h6v5H8zM14 13l2.5-1.5v4L14 14" />,
+    code: <path d="m10 11.5-2 2 2 2M14 11.5l2 2-2 2" />,
+    image: <path d="M8 17l2.5-3 2 2 1.5-1.5L16 17zM10 11.2a.8.8 0 1 0 0 .01" />,
+    other: <path d="M9 14h6" />,
+  };
+  return (
+    <svg className="aim-file-icon" data-type={type} width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M6 2.5h8.5L19.5 7.5v12.5a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 20V4A1.5 1.5 0 0 1 6 2.5z" fill={`var(--aim-file-${type}, var(--aim-file-other))`} />
+      <path d="M14.5 2.5v3.5a1.5 1.5 0 0 0 1.5 1.5h3.5" fill="rgba(255,255,255,0.35)" />
+      <g fill="none" stroke="#fff" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        {glyph[type] ?? glyph.other}
+      </g>
+    </svg>
+  );
+}

@@ -4,9 +4,10 @@
 // replacement), cards, feedback, typing, connection, texts and RTL.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Observable } from '@agentimhq/client-web';
 import { AgentIM, Chat, ConversationList, MemberList, MessageList, type MessageProps } from '../src/index.js';
+import { fileType, fitBox, formatBytes, shortName } from '../src/format.js';
 
 afterEach(cleanup);
 
@@ -41,6 +42,12 @@ function fake(messages: any[] = [], opts: { hasOlder?: boolean } = {}) {
     respond: vi.fn(async () => ({})),
     read: vi.fn(async () => ({})),
     call: vi.fn(async () => ({})),
+    sendFile: vi.fn(async () => ({ client_msg_id: 'f', key: 'local:f' })),
+    fileUrl: vi.fn(async (_c: string, id: string, variant: string) => {
+      if (id === 'gone') throw Object.assign(new Error('gone'), { code: 'not_found' });
+      return { url: `https://files.example/${id}/${variant}`, variant, expires_at: 0 };
+    }),
+    localPreview: vi.fn((k?: string) => (k ? `blob:${k}` : undefined)),
     on: (t: string, f: (e: any) => void) => {
       let s = listeners.get(t);
       if (!s) listeners.set(t, (s = new Set()));
@@ -641,5 +648,134 @@ describe('Focus', () => {
     expect(focus.mock.calls.map((c: any[]) => c[0])).toEqual(['c1', null, 'c2']);
     r.unmount();
     expect(focus).toHaveBeenLastCalledWith(null);
+  });
+});
+
+describe('Images and files (docs/02 §2.7)', () => {
+  const img = (key: string, extra: any = {}) => msg(key, '[Image]', { kind: 'image', payload: { file_id: `f_${key}`, name: 'view.jpg', width: 4000, height: 3000, thumb: true, caption: 'the view', ...extra } });
+  const flush = () => act(async () => void (await new Promise((r) => setTimeout(r, 20))));
+  // Thumbnails are fetched and kept as a local copy.
+  const realFetch = globalThis.fetch;
+  afterEach(() => void (globalThis.fetch = realFetch));
+  const stubFetch = () => {
+    globalThis.fetch = vi.fn(async (u: any) => new Response(String(u), { status: 200, headers: { 'content-length': String(String(u).length) } })) as any;
+    (URL as any).createObjectURL = vi.fn((b: Blob) => `blob:made-${b.size}`);
+    (URL as any).revokeObjectURL = vi.fn();
+  };
+
+  it('shows an image as its thumbnail at its proportions, at most 240, with the caption', async () => {
+    stubFetch();
+    const { client } = fake([img('a')]);
+    chat(client);
+    await waitFor(() => expect(document.querySelector('.aim-image img')).toBeTruthy());
+    const b = screen.getByRole('button', { name: 'Photo: the view' });
+    expect([b.style.width, b.style.height]).toEqual(['240px', '180px']);
+    expect(client.fileUrl).toHaveBeenCalledWith('c1', 'f_a', 'thumb');
+    expect(b.querySelector('img')!.getAttribute('src')).toMatch(/^blob:made-/);
+    expect(screen.getByText('the view')).toBeTruthy();
+    // A tall image keeps a usable width.
+    expect(fitBox(100, 4000)).toEqual({ width: 48, height: 240 });
+    expect(fitBox(100, 50)).toEqual({ width: 100, height: 50 });
+    expect(fitBox()).toEqual({ width: 240, height: 180 });
+  });
+
+  it('opens the viewer with the thumbnail; View original loads the original; Esc closes', async () => {
+    stubFetch();
+    const { client } = fake([img('b')]);
+    chat(client);
+    await waitFor(() => expect(document.querySelector('.aim-image img')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Photo: the view' }));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.querySelector('img')!.getAttribute('data-original')).toBeNull();
+    await act(async () => fireEvent.click(screen.getByText('View original')));
+    await waitFor(() => expect(dialog.querySelector('img')!.getAttribute('data-original')).toBe('true'));
+    expect(client.fileUrl).toHaveBeenCalledWith('c1', 'f_b', 'original');
+    expect(screen.queryByText('View original')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // Clicking the backdrop closes it too.
+    fireEvent.click(screen.getByRole('button', { name: 'Photo: the view' }));
+    fireEvent.click(screen.getByRole('dialog'));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('shows my image while it uploads from its local copy, with progress', () => {
+    const { client } = fake([
+      msg('local:u', '[Image]', { kind: 'image', status: 'uploading', sender_id: 'u_me', upload: { sent: 30, size: 100 }, payload: { name: 'p.jpg', width: 300, height: 300, local_source: 's1', local_thumb: 't1' } }),
+    ]);
+    chat(client);
+    const bar = screen.getAllByRole('progressbar')[0];
+    expect(bar.getAttribute('aria-valuenow')).toBe('30');
+    expect(screen.getByRole('button', { name: 'Photo' }).querySelector('img')!.getAttribute('src')).toBe('blob:t1');
+    expect(screen.getByText('Uploading… 30%')).toBeTruthy();
+  });
+
+  it('says when a file is gone', async () => {
+    stubFetch();
+    const { client } = fake([img('gone', { file_id: 'gone' })]);
+    chat(client);
+    await waitFor(() => expect(screen.getByText('File no longer available')).toBeTruthy());
+  });
+
+  it('shows a file as a card with its type, size and name, and downloads it', async () => {
+    stubFetch();
+    const { client } = fake([msg('f', '[File] Quarterly report.pdf', { kind: 'file', payload: { file_id: 'f_f', name: 'Quarterly report.pdf', size: 2_400_000, mime: 'application/pdf' } })]);
+    chat(client);
+    const card = screen.getByTitle('Quarterly report.pdf');
+    expect(card.getAttribute('data-type')).toBe('pdf');
+    expect(screen.getByText('2.4 MB · PDF')).toBeTruthy();
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    await act(async () => fireEvent.click(card));
+    await flush();
+    expect(client.fileUrl).toHaveBeenCalledWith('c1', 'f_f', 'original');
+    expect(click).toHaveBeenCalled();
+    click.mockRestore();
+  });
+
+  it('a file uploading shows its bar and cannot be opened yet', () => {
+    const { client } = fake([msg('local:g', '[File] a.zip', { kind: 'file', status: 'uploading', sender_id: 'u_me', upload: { sent: 50, size: 200 }, payload: { name: 'a.zip', size: 200 } })]);
+    chat(client);
+    const card = screen.getByTitle('a.zip') as HTMLButtonElement;
+    expect(card.disabled).toBe(true);
+    expect(card.getAttribute('data-type')).toBe('archive');
+    expect(screen.getAllByText('Uploading… 25%').length).toBeGreaterThan(0);
+  });
+
+  it('types, sizes and names', () => {
+    expect([fileType('a.PDF'), fileType('x.docx'), fileType('s.csv'), fileType('k.key'), fileType('z.7z'), fileType('m.mp3'), fileType('v.mov'), fileType('c.rs'), fileType('p.heic')]).toEqual(['pdf', 'doc', 'sheet', 'slides', 'archive', 'audio', 'video', 'code', 'image']);
+    expect([fileType('blob', 'application/pdf'), fileType('x', 'video/mp4'), fileType('x', 'application/vnd.ms-excel'), fileType('x'), fileType(undefined, undefined)]).toEqual(['pdf', 'video', 'sheet', 'other', 'other']);
+    expect([formatBytes(0), formatBytes(999), formatBytes(1000), formatBytes(1_234_567), formatBytes(4_000_000_000), formatBytes(250_000_000)]).toEqual(['0 B', '999 B', '1 KB', '1.2 MB', '4 GB', '250 MB']);
+    expect(shortName('short.pdf')).toBe('short.pdf');
+    const s = shortName('a very long name of a quarterly financial report.pdf');
+    expect(s.length).toBe(32);
+    expect(s.endsWith('.pdf')).toBe(true);
+    expect(s).toContain('…');
+  });
+
+  it('the composer attaches, takes dropped and pasted files', () => {
+    const { client } = fake();
+    chat(client);
+    const input = document.querySelector('input[type=file]') as HTMLInputElement;
+    const f = new File(['x'], 'a.png', { type: 'image/png' });
+    fireEvent.change(input, { target: { files: [f] } });
+    expect(client.sendFile).toHaveBeenCalledWith('c1', f);
+    const form = document.querySelector('.aim-composer')!;
+    fireEvent.dragOver(form, { dataTransfer: { types: ['Files'], files: [] } });
+    expect(screen.getByText('Drop files to send')).toBeTruthy();
+    fireEvent.drop(form, { dataTransfer: { types: ['Files'], files: [f, f] } });
+    expect(client.sendFile).toHaveBeenCalledTimes(3);
+    expect(screen.queryByText('Drop files to send')).toBeNull();
+    fireEvent.paste(screen.getByRole('textbox'), { clipboardData: { files: [f] } });
+    expect(client.sendFile).toHaveBeenCalledTimes(4);
+    // Without sendFile (or turned off) there is no paperclip.
+    expect(screen.getByRole('button', { name: 'Attach a file' })).toBeTruthy();
+  });
+
+  it('no paperclip when the client cannot send files', () => {
+    const { client } = fake();
+    delete (client as any).sendFile;
+    chat(client);
+    expect(screen.queryByRole('button', { name: 'Attach a file' })).toBeNull();
   });
 });

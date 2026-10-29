@@ -10,6 +10,7 @@ import { AgentIMProvider, useClient, useConnection, useConversations, useMessage
 import { defaultStrings, type Strings } from './strings.js';
 import { avatarColor, ended, formatShort, formatTime, initials, interleave, layout, unreadIndex, type Notice, type When } from './format.js';
 import { Alert, ArrowDown, ArrowUp, Check, Link, Search, Sparkle, Stop, ThumbDown, ThumbUp } from './icons.js';
+import { AttachButton, FileMessage, ImageMessage } from './files.js';
 
 export { defaultStrings, type Strings };
 
@@ -18,6 +19,8 @@ const AVATARS = 8;
 
 export interface MessageProps {
   message: Message;
+  /** The conversation (to read the message's file). */
+  convId: string;
   mine: boolean;
   /** First and last of a run from one sender (the bubble's corners, the time). */
   first: boolean;
@@ -322,7 +325,7 @@ function EditBox({ text, strings, onSave, onCancel }: { text: string; strings: S
   );
 }
 
-function DefaultMessage({ message: m, mine, first, last, time, strings, onRetry, onDiscard, onFeedback, onRespond, onEdit, onRecall, onStop }: MessageProps) {
+function DefaultMessage({ message: m, convId, mine, first, last, time, strings, onRetry, onDiscard, onFeedback, onRespond, onEdit, onRecall, onStop }: MessageProps) {
   const [editing, setEditing] = useState(false);
   if (m.state === 'recalled')
     return (
@@ -353,9 +356,13 @@ function DefaultMessage({ message: m, mine, first, last, time, strings, onRetry,
     );
   return (
     <>
-      <div className="aim-bubble" data-state={m.state} data-mine={mine || undefined} data-first={first || undefined} data-last={last || undefined} data-failed={failed || undefined} data-sending={m.status === 'sending' || undefined} aria-busy={streaming || undefined}>
+      <div className="aim-bubble" data-state={m.state} data-mine={mine || undefined} data-first={first || undefined} data-last={last || undefined} data-failed={failed || undefined} data-sending={m.status === 'sending' || undefined} data-kind={m.kind === 'image' || m.kind === 'file' ? m.kind : undefined} aria-busy={streaming || undefined}>
         {m.kind === 'agentim.card' ? (
           <Card m={m} mine={mine} strings={strings} onRespond={onRespond} />
+        ) : m.kind === 'image' && (m.payload?.file_id || m.payload?.local_source) ? (
+          <ImageMessage convId={convId} message={m} strings={strings} />
+        ) : (m.kind === 'file' || m.kind === 'image') && m.payload ? (
+          <FileMessage convId={convId} message={m} strings={strings} />
         ) : (
           <div className="aim-text" dir="auto">
             {text}
@@ -385,6 +392,7 @@ function DefaultMessage({ message: m, mine, first, last, time, strings, onRetry,
           ))}
           {last && time && !failed ? <span className="aim-time">{time}</span> : null}
           {mine && m.status === 'sending' ? <span>{strings.sending}</span> : null}
+          {mine && m.status === 'uploading' ? <span>{strings.uploading(Math.floor((((m as any).upload?.sent ?? 0) / Math.max(1, (m as any).upload?.size ?? 1)) * 100))}</span> : null}
           {mine && last && m.status === 'sent' ? (
             <span className="aim-sent" title={strings.sent}>
               <Check />
@@ -641,6 +649,7 @@ export function MessageList({ convId, notices = [] }: { convId: string; notices?
                   ) : null}
                   <components.Message
                     message={m}
+                    convId={convId}
                     mine={mine}
                     first={first}
                     last={last}
@@ -692,8 +701,14 @@ export function TypingIndicator({ convId, names }: { convId: string; names?: (id
 
 const MAX_COMPOSER_PX = 160;
 
-export function Composer({ convId }: { convId: string }) {
+export function Composer({ convId, attach = true }: { convId: string; attach?: boolean }) {
+  const client = useClient();
   const { send } = useSend(convId);
+  const [dragging, setDragging] = useState(false);
+  const sendFiles = (files: File[]) => {
+    for (const f of files) void client.sendFile?.(convId, f).catch(() => {});
+  };
+  const canAttach = attach && !!client.sendFile;
   const { notify } = useTyping(convId);
   const { strings, me } = useUi();
   const [text, setText] = useState('');
@@ -730,12 +745,27 @@ export function Composer({ convId }: { convId: string }) {
   return (
     <form
       className="aim-composer"
+      data-dragging={dragging || undefined}
       onSubmit={(e) => {
         e.preventDefault();
         submit();
       }}
+      onDragOver={(e) => {
+        if (!canAttach || !e.dataTransfer.types.includes('Files')) return;
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        if (!canAttach) return;
+        e.preventDefault();
+        setDragging(false);
+        sendFiles(Array.from(e.dataTransfer.files));
+      }}
     >
+      {dragging ? <div className="aim-drop">{strings.dropFiles}</div> : null}
       <div className="aim-composer-box">
+        {canAttach ? <AttachButton strings={strings} onFiles={sendFiles} /> : null}
         <textarea
           ref={area}
           aria-label={strings.placeholder}
@@ -748,6 +778,12 @@ export function Composer({ convId }: { convId: string }) {
             if (e.target.value) notify();
           }}
           onKeyDown={onKey}
+          onPaste={(e) => {
+            const files = Array.from(e.clipboardData.files);
+            if (!canAttach || !files.length) return;
+            e.preventDefault();
+            sendFiles(files);
+          }}
         />
         <button type="submit" className="aim-send" aria-label={strings.send} title={strings.send} disabled={!text.trim()}>
           <ArrowUp />

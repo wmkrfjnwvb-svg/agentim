@@ -15,3 +15,5 @@ export {
   type ConversationItemProps,
   type MessageProps,
 } from './components.js';
+export { AttachButton, FileMessage, ImageMessage, ImageViewer } from './files.js';
+export { FileIcon } from './icons.js';

@@ -7,7 +7,7 @@ import type { AgentIMClient, Connection, Message } from '@agentimhq/client-web';
 
 /** What the hooks need from a client: `AgentIMClient`, or a fake in tests. */
 export type Client = Pick<AgentIMClient, 'connection' | 'conversations' | 'messages' | 'send' | 'edit' | 'recall' | 'retry' | 'discard' | 'feedback' | 'respond' | 'read' | 'call' | 'on'> &
-  Partial<Pick<AgentIMClient, 'focus'>>;
+  Partial<Pick<AgentIMClient, 'focus' | 'sendFile' | 'fileUrl' | 'localPreview'>>;
 
 interface Readable<T> {
   get(): T;
@@ -124,4 +124,48 @@ export function useTyping(convId: string) {
     client.call('signal', { conv_id: convId, kind: 'typing' }).catch(() => {});
   }, [client, convId]);
   return { typing, notify };
+}
+
+/** Thumbnails fetched once per file and kept for the page (their content never changes). */
+const thumbs = new Map<string, Promise<string>>();
+const THUMBS_KEPT = 300;
+
+/**
+ * The address to show a file's thumbnail (`thumb`; a small image is its
+ * own) or to read it: a local copy while this tab sends it, then the
+ * server's. `error` when it is gone (expired, deleted).
+ */
+export function useFileUrl(convId: string, payload: any, variant: 'thumb' | 'original' = 'thumb'): { url?: string; error?: string } {
+  const client = useClient();
+  const local = client.localPreview?.(variant === 'thumb' ? (payload?.local_thumb ?? payload?.local_source) : payload?.local_source);
+  const fileId: string | undefined = payload?.file_id;
+  const [state, setState] = useState<{ key?: string; url?: string; error?: string }>({});
+  const key = fileId ? `${fileId}/${variant}` : undefined;
+  useEffect(() => {
+    if (!key || !fileId || !client.fileUrl) return;
+    let live = true;
+    let p = variant === 'thumb' ? thumbs.get(key) : undefined;
+    if (!p) {
+      p = client.fileUrl(convId, fileId, variant).then(async (r) => {
+        if (variant !== 'thumb' || typeof fetch !== 'function' || typeof URL.createObjectURL !== 'function') return r.url;
+        // Kept as a local copy: the signed address changes, the picture does not.
+        const b = await fetch(r.url).then((x) => (x.ok ? x.blob() : Promise.reject(new Error(String(x.status)))));
+        return URL.createObjectURL(b);
+      });
+      if (variant === 'thumb') {
+        thumbs.set(key, p);
+        if (thumbs.size > THUMBS_KEPT) thumbs.delete(thumbs.keys().next().value!);
+        p.catch(() => thumbs.delete(key));
+      }
+    }
+    p.then(
+      (url) => live && setState({ key, url }),
+      (e) => live && setState({ key, error: e?.code ?? 'unavailable' }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [client, convId, fileId, key, variant]);
+  if (state.key === key && (state.url || state.error)) return { url: state.url ?? local, error: state.url ? undefined : state.error };
+  return { url: local };
 }
