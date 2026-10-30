@@ -11,6 +11,8 @@ const group = (label, dir, collapsed = false) => ({ label, collapsed, items: [{ 
 export default defineConfig({
   site: 'https://agentim.dev',
   trailingSlash: 'ignore',
+  // The homepage renders sdk/react from source: its react is this site's.
+  vite: { resolve: { dedupe: ['react', 'react-dom'] } },
   integrations: [
     react(),
     starlight({

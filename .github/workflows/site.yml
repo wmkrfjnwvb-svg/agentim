@@ -1,0 +1,72 @@
+name: site
+
+# agentim.dev (docs/12 §5): build the homepage and the docs, check that every
+# API and SDK member is explained, that every link works, and that pages fit
+# phones, tablets and desktops in both themes; on main, publish to GitHub
+# Pages. The reference pages are generated from server/ and sdk/, so changes
+# there rebuild the site too.
+
+on:
+  push:
+    paths: ["site/**", "sdk/**", "server/crates/agentim-core/**", ".github/workflows/site.yml"]
+  pull_request:
+    paths: ["site/**", "sdk/**", "server/crates/agentim-core/**", ".github/workflows/site.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: site
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: every endpoint, request, MCP tool, config key and SDK member is explained
+        run: node scripts/complete.mjs
+      - name: build (reference pages generated, links validated)
+        run: npm run build
+      - name: install playwright
+        run: |
+          npm install --no-save --prefix ../server/ci playwright@1.56.1
+          npx --prefix ../server/ci playwright install --with-deps chromium
+      - name: layout at 390, 820 and 1440 px, light and dark
+        run: PLAYWRIGHT="$PWD/../server/ci/node_modules/playwright" OUT=screenshots node scripts/layout.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: site-screenshots
+          path: site/screenshots
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          path: site/dist
+
+  deploy:
+    # Needs Settings → Pages → Source: GitHub Actions, and the agentim.dev DNS
+    # records pointing at GitHub Pages (docs/06 D145).
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

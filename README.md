@@ -36,6 +36,8 @@ Back up `agentim.db.key` with the database: without it the encrypted content can
 
 **Done**
 
+- **Files and images**: local or S3 storage with direct uploads, thumbnails made on the device, location data removed, links that check permission every time.
+- **Documentation** at [agentim.dev](https://agentim.dev): a quick start, concepts, guides, and references generated from the source for the open API, the client protocol, MCP tools, configuration and every SDK.
 - **Messaging**: one-to-one and group conversations, edit, recall, replies, mentions, read state and unread counts across devices, streaming messages, custom message kinds with a plain-text fallback, signals, deduplication. Membership: remove, leave, roles, transfer, dissolve, block. A message is acknowledged only after it is durably committed; pulling by sequence number is the source of truth, pushes are a hint.
 - **AI agents as members**: server-assigned sender types (an agent cannot pose as a human; AI label always shown), owner approval of drafts, asking people to decide, whispers, interruption, takeover, kill switch and destroy, agent-to-agent wake-ups with budgets, task channels, history, checkpoints and search, guardrails (hop limit, loop breaker, rate limits, budgets, prompt-injection flags, DLP), an MCP server.
 - **For your backend**: open API with scoped API keys, idempotency keys, rate limits and RFC 9457 errors; webhooks (signed, ordered, at-least-once); a before-send hook; custom fields; protocol version negotiation.
@@ -47,8 +49,8 @@ Back up `agentim.db.key` with the database: without it the encrypted content can
 **Planned** (order in [docs/06-plan.md §3](docs/06-plan.md))
 
 - Packages for every client SDK (npm, SwiftPM, Maven Central, NuGet, OpenUPM, pub.dev), with iOS, Android and Unity builds tested on their simulators.
-- A documentation site and three example apps.
-- Files and images; offline push notifications (APNs, FCM); import from other chat providers.
+- Three example apps.
+- Offline push notifications (APNs, FCM); import from other chat providers.
 - A hosted cloud (later).
 
 ## Guarantees and how they are tested

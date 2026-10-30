@@ -81,3 +81,4 @@ site-search button[data-open-modal] { border-radius: 10px; background: var(--sl-
 .sl-link-button.primary { box-shadow: 0 8px 20px -8px rgba(37, 99, 235, 0.6); }
 [data-has-hero] .main-frame { background: radial-gradient(40rem 22rem at 85% 0%, color-mix(in srgb, #7c3aed 14%, transparent), transparent 70%), radial-gradient(36rem 20rem at 10% 0%, color-mix(in srgb, #2563eb 14%, transparent), transparent 70%); background-repeat: no-repeat; }
 :root, :root[data-theme='light'] { --sl-color-bg-sidebar: var(--sl-color-black); --sl-color-bg-nav: var(--sl-color-black); --sl-color-hairline-shade: var(--sl-color-gray-5); }
+.sl-markdown-content :is(td, th) code { overflow-wrap: anywhere; }

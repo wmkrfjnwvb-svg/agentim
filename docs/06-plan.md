@@ -75,6 +75,7 @@
 | D99 | 规模测试 `slow` 场景在 GitHub 的 Linux 机器上：停止读取超过空闲时间的连接，服务端已经关闭（连接数指标减少），但客户端恢复读取后既收不到剩余的帧也看不到关闭，本地和 Windows 上都能看到。消息不会丢：客户端重连后按设备位置同步，测试证明数据完整 | 测试工具现在按 SDK 的做法：一分钟没收到任何东西就自己重连并同步，单独计数。原因仍未查明（本地和 Windows 都复现不了）。C2 加了位置校验（`heads`，Agent SDK 每 30 秒一次），真实客户端即使遇到这种情况也会在 30 秒内发现并补齐。**告知你，暂不需要决定** |
 | D137 | 上传中的文件挡不挡住同一会话后面的消息（[02 §2.7](02-architecture.md)） | **不挡**（已这样实现）：后面写的消息照常发出，文件消息在上传完成时排进顺序。Matrix 的 Rust SDK 是挡住的，它自己的提案 MSC2246 把这列为问题；挡住的话一个几 GB 的文件会让整个会话几分钟发不出消息 |
 | D144 | 安全漏洞的报告方式和答复时限（文档站 Security › Reporting） | 用 GitHub 的私密漏洞报告（仓库要打开 Private vulnerability reporting）；先不写答复时限，等你定了再写（常见是 3 个工作日内确认、90 天内公开）。另外加一个 `SECURITY.md` |
+| D145 | 发布 agentim.dev（`.github/workflows/site.yml` 已在 main 上部署到 GitHub Pages，`site/public/CNAME` 是 `agentim.dev`） | 需要你做两件事：仓库 Settings → Pages → Source 选 GitHub Actions；域名 agentim.dev 的 DNS 指向 GitHub Pages（apex 的 4 条 A 记录 185.199.108–111.153，或 ALIAS/ANAME 到 `wmkrfjnwvb-svg.github.io`），然后在 Pages 设置里勾选 Enforce HTTPS。按版本分开的文档（`/docs/v0.1/`）等第一个版本发布时再做 |
 
 **D. 消息链路染色和业务规则**（2026-10-29 负责人提出，设计在 [14](14-tracing-and-business-rules.md)，确认前不写代码）
 

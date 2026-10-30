@@ -1,0 +1,28 @@
+---
+// Problem documents of the open API point at https://agentim.dev/errors/<code>
+// (docs/07 §5): each code gets a page that leads to its entry in the
+// error reference.
+import errorsMd from '../../content/docs/docs/reference/errors.md?raw';
+
+export function getStaticPaths() {
+  const md: string = errorsMd;
+  const codes = new Set([...md.matchAll(/<span id="([a-z_]+)">/g)].map((m) => m[1]));
+  for (const m of md.matchAll(/^\| `([a-z_]+)` \|/gm)) codes.add(m[1]);
+  return [...codes].map((code) => ({ params: { code } }));
+}
+const { code } = Astro.params;
+const target = `/docs/reference/errors/#${code}`;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{code} · AgentIM error</title>
+    <meta http-equiv="refresh" content={`0; url=${target}`} />
+    <link rel="canonical" href={target} />
+    <meta name="robots" content="noindex" />
+  </head>
+  <body>
+    <p>The error <code>{code}</code> is explained in the <a href={target}>error reference</a>.</p>
+  </body>
+</html>
