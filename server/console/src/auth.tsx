@@ -3,6 +3,15 @@
 import { useState } from 'react';
 import { api, setCsrf, ApiError, type Me } from './api';
 import { Err, Page, Secret, useAction } from './ui';
+import logoLight from './assets/logo-light.svg?raw';
+import logoDark from './assets/logo-dark.svg?raw';
+
+const Logo = () => (
+  <div className="card-logo" aria-hidden="true">
+    <span className="logo-light" dangerouslySetInnerHTML={{ __html: logoLight }} />
+    <span className="logo-dark" dangerouslySetInnerHTML={{ __html: logoDark }} />
+  </div>
+);
 
 export function Setup({ token, onDone }: { token: string; onDone: (m: Me) => void }) {
   const [name, setName] = useState('owner');
@@ -24,6 +33,7 @@ export function Setup({ token, onDone }: { token: string; onDone: (m: Me) => voi
           });
         }}
       >
+        <Logo />
         <h1>Set up the console</h1>
         <p className="muted">Create the first owner. This link works once, from the machine the server runs on.</p>
         <label>
@@ -74,6 +84,7 @@ export function Login({ onDone }: { onDone: (m: Me) => void }) {
           });
         }}
       >
+        <Logo />
         <h1>AgentIM console</h1>
         <label>
           Name

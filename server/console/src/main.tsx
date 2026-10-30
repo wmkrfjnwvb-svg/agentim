@@ -8,7 +8,31 @@ import { api, can, setCsrf, whenLoggedOut, type Me, type Role } from './api';
 import { Account, Login, Setup } from './auth';
 import { Agents, Audit, ClientSettings, Conversations, Keys, Overview, Reports, Users, Webhooks } from './app';
 import { Admins, Cluster, Status } from './deploy';
+import '@fontsource-variable/inter';
+import logoLight from './assets/logo-light.svg?raw';
+import logoDark from './assets/logo-dark.svg?raw';
 import './style.css';
+
+// Sidebar icons (24×24 strokes).
+const ICONS: Record<string, string> = {
+  overview: '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.8c2 .8 3.2 2.6 3.5 5.2"/>',
+  conversations: '<path d="M4 5h16v11H9l-5 4z"/>',
+  agents: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01M9 16h6"/>',
+  reports: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+  keys: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/>',
+  webhooks: '<path d="M10 14a4 4 0 1 1 2-7.5M14 10a4 4 0 1 1-2 7.5M8 18h8"/>',
+  audit: '<path d="M6 3h9l4 4v14H6z"/><path d="M9 12h7M9 16h7M9 8h3"/>',
+  settings: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+  status: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+  cluster: '<rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/>',
+  admins: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+  account: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/>',
+};
+const Icon = ({ name }: { name: string }) => (
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" dangerouslySetInnerHTML={{ __html: ICONS[name] ?? '' }} />
+);
+
 
 interface Route {
   path: string;
@@ -81,7 +105,11 @@ function App() {
   return (
     <div className="shell">
       <nav>
-        <div className="brand">AgentIM</div>
+        <div className="brand" aria-label="AgentIM console">
+          <span className="logo-light" dangerouslySetInnerHTML={{ __html: logoLight }} />
+          <span className="logo-dark" dangerouslySetInnerHTML={{ __html: logoDark }} />
+          <span className="brand-tag">Console</span>
+        </div>
         {(['App', 'Deployment', ''] as const).map((area) => {
           const items = mine.filter((r) => r.area === area);
           if (!items.length) return null;
@@ -98,6 +126,7 @@ function App() {
                     go(r.path);
                   }}
                 >
+                  <Icon name={r.path} />
                   {r.label}
                 </a>
               ))}
@@ -105,7 +134,11 @@ function App() {
           );
         })}
         <div className="who">
-          {me.admin.name} · {me.admin.role}
+          <span className="avatar" aria-hidden="true">{me.admin.name.slice(0, 1).toUpperCase()}</span>
+          <span className="who-text">
+            <strong>{me.admin.name}</strong>
+            <span className="muted small">{me.admin.role}</span>
+          </span>
           <button
             className="link"
             onClick={async () => {

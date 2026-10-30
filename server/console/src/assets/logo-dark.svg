@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 64" role="img" aria-label="AgentIM">
+  <g>  <path d="M8 6h28a8 8 0 0 1 8 8v14a8 8 0 0 1-8 8H20l-9 8v-8H8a8 8 0 0 1-8-8V14a8 8 0 0 1 8-8z" fill="#93c5fd"/>
+  <path d="M28 20h28a8 8 0 0 1 8 8v16a8 8 0 0 1-8 8h-3v9l-10-9H28a8 8 0 0 1-8-8V28a8 8 0 0 1 8-8z" fill="#2563eb"/>
+  <path d="M42 26.5l2.3 6.2 6.2 2.3-6.2 2.3-2.3 6.2-2.3-6.2-6.2-2.3 6.2-2.3z" fill="#fff"/>
+</g>
+  <text x="78" y="45" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="38" font-weight="750" letter-spacing="-1" fill="#f8fafc">Agent<tspan fill="#2563eb">IM</tspan></text>
+</svg>

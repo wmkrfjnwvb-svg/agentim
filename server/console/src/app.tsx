@@ -29,6 +29,27 @@ export function Overview() {
           ))}
         </div>
       )}
+      <div className="card next">
+        <h2>Get started</h2>
+        <ol className="steps">
+          <li>
+            <a href="/console/keys">Create a signing key and an API key</a>
+            <span className="muted">Your backend signs users in and calls the open API.</span>
+          </li>
+          <li>
+            <a href="/console/agents">Create an agent</a>
+            <span className="muted">Its key connects any framework over MCP or the agent SDKs.</span>
+          </li>
+          <li>
+            <a href="/console/settings">Choose what your users may do</a>
+            <span className="muted">Groups, direct messages, adding people, their own agents.</span>
+          </li>
+          <li>
+            <a href="https://agentim.dev/docs/get-started/quickstart/" rel="noreferrer">Follow the quick start</a>
+            <span className="muted">A React chat with a streaming agent in five minutes.</span>
+          </li>
+        </ol>
+      </div>
     </Page>
   );
 }
