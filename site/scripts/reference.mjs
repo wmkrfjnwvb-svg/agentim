@@ -82,7 +82,41 @@ export function openApi() {
     }
     write(`reference/open-api/${slug(g)}.md`, t);
   }
-  let t = fm('Schemas', 'Open API: the shared objects.', 99);
+  let t = fm('Open API', 'The HTTPS API for your backend: authentication, scopes, acting as a user or the system, idempotency, errors, rate limits and every endpoint.', 1);
+  t += `The open API is for your backend, never for apps. Base path \`/v1\`; the OpenAPI 3.1 document is at \`GET /v1/openapi.json\`. The [server SDKs](/docs/server-sdks/) wrap every endpoint.\n\n`;
+  t += '## Authentication\n\nSend an API key: `Authorization: Bearer ak_…`. Create keys with `agentim api-key create --name backend --scopes …`, in the console or the admin API. Keys can expire and can be limited to IP ranges; only a hash is stored, and a revoked key stops working within 10 seconds. Plain HTTP is accepted only from the same machine, or behind a TLS proxy with `open_api.behind_proxy = true`.\n\n';
+  t += '| Scope | Allows |\n|---|---|\n';
+  for (const [k, v] of [
+    ['users:read', 'Read profiles, devices and agents'],
+    ['users:write', 'Create, import, update, deactivate users; set their permissions'],
+    ['conversations:read', 'Read conversations and members'],
+    ['conversations:write', 'Create conversations, manage members and roles, dissolve'],
+    ['messages:write', 'Send, edit, recall, mark read, upload files, as a user or the system'],
+    ['messages:read', 'Read message history and files. Separate because it reveals private conversations; every read is audited'],
+    ['agents:read', 'List and export agents'],
+    ['agents:write', 'Create agents, issue and revoke keys, stop, resume, transfer, destroy, import'],
+    ['tokens:revoke', 'Sign a user out on every device; sign out one device'],
+    ['moderation', 'The report queue; silencing members'],
+    ['compliance', 'Export and delete user data (GDPR)'],
+  ]) t += `| \`${k}\` | ${v} |\n`;
+  t += '\n## Acting as someone\n\nCalls that act in a conversation name who acts with `as`: a user id (the call follows exactly that user\'s rules, like their app) or `system` (manage any conversation, send system notices, recall any message; it cannot speak as a user). Every call is audited with the key and the identity.\n\n';
+  t += '## Conventions\n\n| | |\n|---|---|\n';
+  t += '| Idempotency | Every `POST` takes `Idempotency-Key` (1–255 characters), kept for 24 hours. The same key and body returns the first result with `Idempotent-Replayed: true`; a different body is `422`; while the first is running, `409`. Messages also deduplicate by `clientMsgId` |\n';
+  t += '| Errors | `application/problem+json` with a stable `code`, the same codes as the WebSocket protocol ([error codes](/docs/reference/errors/)) |\n';
+  t += '| Batches | One result per item, `{"results": [{"ok": true, …}, {"ok": false, "code": "blocked"}]}`; one failure does not stop the others |\n';
+  t += '| Rate limits | A token bucket per key, 100 per second with bursts of 200 by default (`open_api.rate_per_second`, `open_api.burst`). `RateLimit-Policy` and `RateLimit` headers; over the limit `429` with `Retry-After` |\n';
+  t += '| Times and ids | Times are milliseconds since 1970; ids are strings. User ids are yours: 1–64 of letters, digits and `_-.@:` |\n';
+  t += '| Versioning | `/v1` only grows: new optional fields and endpoints, never removals |\n\n';
+  t += '## Endpoints\n\n| Endpoint | Summary |\n|---|---|\n';
+  for (const [path, opsOf] of Object.entries(doc.paths)) {
+    const g = path.split('/')[2]?.split(/[:{]/)[0] || 'other';
+    for (const [method, op] of Object.entries(opsOf)) {
+      const anchor = `${method} ${path}`.toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-');
+      t += `| [\`${method.toUpperCase()} ${path}\`](/docs/reference/open-api/${slug(g)}/#${anchor}) | ${esc(op.summary)} |\n`;
+    }
+  }
+  write('reference/open-api/index.md', t);
+  t = fm('Schemas', 'Open API: the shared objects.', 99);
   for (const [name, s] of Object.entries(schemas)) t += `## ${name}\n\n${esc(s.description)}\n\n${props({ $ref: `#/components/schemas/${name}` })}\n\n`;
   write('reference/open-api/schemas.md', t);
   return ops;

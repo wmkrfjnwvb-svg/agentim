@@ -6,7 +6,7 @@ import react from '@astrojs/react';
 import starlight from '@astrojs/starlight';
 import links from 'starlight-links-validator';
 
-const group = (label, dir, collapsed = false) => ({ label, collapsed, autogenerate: { directory: `docs/${dir}` } });
+const group = (label, dir, collapsed = false) => ({ label, collapsed, items: [{ autogenerate: { directory: `docs/${dir}` } }] });
 
 export default defineConfig({
   site: 'https://agentim.dev',

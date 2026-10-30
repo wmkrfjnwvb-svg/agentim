@@ -1,0 +1,114 @@
+---
+title: "Install and run"
+description: "Install the server, run it under systemd, Docker, Docker Compose or Kubernetes, and put TLS in front of it."
+sidebar:
+  order: 1
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+`agentim` is one static program for Linux (x86_64, aarch64), macOS and Windows. Production servers run on Linux; macOS and Windows are for development, and the whole test suite passes on Windows too.
+
+<Tabs>
+<TabItem label="Script">
+```sh
+curl -fsSL https://github.com/wmkrfjnwvb-svg/agentim/releases/latest/download/install.sh | sh
+```
+Installs to `~/.agentim/bin` without root and checks the download's SHA-256. On Windows: `irm …/install.ps1 | iex`.
+</TabItem>
+<TabItem label="Docker">
+```sh
+docker run -p 8080:8080 -v agentim:/var/lib/agentim ghcr.io/wmkrfjnwvb-svg/agentim --db /var/lib/agentim/agentim.db
+```
+Images for amd64 and arm64, with an SBOM.
+</TabItem>
+<TabItem label="Compose">
+`deploy/compose` runs three nodes on one PostgreSQL, behind Caddy for TLS:
+```sh
+cd deploy/compose && docker compose up -d
+```
+</TabItem>
+<TabItem label="Kubernetes">
+The Helm chart is published as an OCI package:
+```sh
+helm install agentim oci://ghcr.io/wmkrfjnwvb-svg/charts/agentim -f values.yaml
+```
+</TabItem>
+</Tabs>
+
+Every release file is signed with Sigstore and has a build provenance attestation:
+
+```sh
+gh attestation verify agentim-linux-x86_64.tar.gz --repo wmkrfjnwvb-svg/agentim
+```
+
+## First start
+
+In an empty folder, `agentim` with no options:
+
+- creates `agentim.db` (SQLite) and `agentim.db.key`, the master key for encryption at rest, readable only by you;
+- listens on `127.0.0.1:8080`;
+- prints a one-time link to set up the [console](/docs/operations/dashboard/).
+
+For anything else, write a configuration file and start with `agentim --config agentim.toml`. The [configuration reference](/docs/operations/configuration/) lists every option; `server/agentim.example.toml` is an annotated example.
+
+| Option | |
+|---|---|
+| `--config` | The configuration file |
+| `--db` | A single SQLite file, when there is no configuration file |
+| `--addr` | Listen address (default `127.0.0.1:8080`) |
+| `--log-format json` | JSON lines for log collectors |
+| `--metrics-token` | Require this bearer token on `/metrics` |
+| `--demo` | Demo people, conversations and scripted agents, with sign-in by name. Local development only: it refuses other addresses unless `--demo-public` |
+
+## systemd
+
+```ini title="/etc/systemd/system/agentim.service"
+[Unit]
+Description=AgentIM
+After=network-online.target postgresql.service
+
+[Service]
+User=agentim
+ExecStart=/usr/local/bin/agentim --config /etc/agentim/agentim.toml --log-format json
+Restart=always
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Put the master key in `encryption.key_file` (or the `AGENTIM_MASTER_KEY` environment variable). `Restart=always` matters: when a database write fails in a way that can't be retried safely (a failed `fsync`), the server stops accepting writes and exits with code 70, so it restarts and recovers from the database's log. Raise `LimitNOFILE`: each connection is a file descriptor.
+
+## TLS
+
+<Tabs>
+<TabItem label="Built in">
+```toml
+[server.tls]
+cert = "/etc/agentim/fullchain.pem"
+key = "/etc/agentim/privkey.pem"
+```
+</TabItem>
+<TabItem label="Behind a proxy">
+```toml
+[open_api]
+behind_proxy = true   # plain HTTP from the proxy; client address from X-Forwarded-For
+proxy_hops = 1
+```
+The proxy must pass WebSocket upgrades on `/ws` and allow 20 MB request bodies for file parts (Nginx: `client_max_body_size 20m;`, or `70m` for 64 MiB whole-file uploads).
+</TabItem>
+</Tabs>
+
+Set `server.public_url` to the address clients use, and `server.allowed_origins` to your web apps' origins.
+
+## Endpoints
+
+| Path | |
+|---|---|
+| `/ws` | Apps and agents |
+| `/v1` | The open API |
+| `/mcp` | MCP for agents |
+| `/console` | The console |
+| `/healthz`, `/readyz` | Liveness and readiness |
+| `/metrics` | Prometheus |

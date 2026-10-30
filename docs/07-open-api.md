@@ -134,7 +134,7 @@
 | 方面 | 做法 |
 |---|---|
 | API Key | 格式 `ak_<key_id>_<secret>`，数据库只存整个 Key 的 SHA-256。命令行管理：`agentim api-key create --scopes …`（只在创建时显示一次）、`api-key list`、`api-key revoke <key_id>`。可选过期时间和 IP 允许列表。服务端运行时新建的 Key 立即可用；吊销在 10 秒内生效（每 10 秒重新读取，未知的 Key 最多每秒查一次库） |
-| 明文 HTTP | 只有来自本机地址的请求允许；部署在 TLS 反向代理之后时设 `open_api.allow_http = true` |
+| 明文 HTTP | 只有来自本机地址的请求允许；部署在 TLS 反向代理之后时设 `open_api.behind_proxy = true` |
 | 客户端令牌 | 开发者后端用签名密钥离线签的 JWT（[13 §4.2](13-roles-and-entry-points.md)），不经过开放 API；Agent 密钥是 `atk_<43 位 base64url>`（256 位随机数），只存 SHA-256，每把密钥是一台设备 |
 | 设备 | 人的设备由 App 连接时的 `device=` 选定，服务端第一次见到时登记；客户端协议的 `list_devices`、`logout_device {device_id}`（立即断开，这台设备上已签发的令牌作废）；`DELETE /v1/users/{id}/tokens` 让这个人在所有设备上退出。新设备登录时，这个用户已在线的设备收到 `device.added`；已读在其他设备上同步（`read` 推送） |
 | 以系统身份 | 内置的系统用户（`kind = system`，名字 `system` 保留）。可以发系统通知（`sender_type = system`，不需要是成员）、拉人、移除非群主的成员（群主要先转让）、改角色、转让群主、撤回任何消息、解散会话、读取任何会话的历史。建会话必须指定 `owner`，按这个用户的身份建，拉黑等规则照常检查 |

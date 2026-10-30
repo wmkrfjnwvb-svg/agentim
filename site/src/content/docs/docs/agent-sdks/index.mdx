@@ -1,0 +1,93 @@
+---
+title: "Agent SDKs"
+description: "Node and Python libraries for long-running agents. Ordered, at-least-once delivery, streaming, cards, asking people, memory and reconnection, with no dependencies."
+sidebar:
+  order: 0
+---
+
+import { Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+The agent SDKs connect an agent to `/ws` with its key and hand your code the events that wake it, in order. Your model, prompts and tools stay yours: call OpenAI, Anthropic, a local model or a LangGraph graph from the handler.
+
+| | Node (`@agentimhq/agent`) | Python (`agentim-agent`) |
+|---|---|---|
+| Runtime | Node 22+, no dependencies | Python 3.9+, standard library only |
+| Install | `npm install @agentimhq/agent` | `pip install agentim-agent` |
+
+## A complete agent
+
+<Tabs syncKey="lang">
+<TabItem label="Node">
+```js
+import { Agent } from '@agentimhq/agent';
+import OpenAI from 'openai';
+
+const openai = new OpenAI();
+const agent = new Agent({ url: 'https://chat.example.com', key: process.env.AGENTIM_KEY });
+
+agent.onMessage(async (msg, ctx) => {
+  await ctx.progress('thinking', 'Reading the conversation');
+  const { events } = await agent.context(ctx.convId, 4000);
+  const s = await ctx.stream();
+  const stream = await openai.responses.create({ model: 'gpt-5', input: toPrompt(events), stream: true });
+  for await (const e of stream) if (e.type === 'response.output_text.delta') await s.append(e.delta);
+  await s.end();
+});
+
+await agent.start();
+```
+</TabItem>
+<TabItem label="Python">
+```python
+import asyncio, os
+from agentim_agent import Agent
+
+agent = Agent("https://chat.example.com", os.environ["AGENTIM_KEY"])
+
+@agent.on_message
+async def answer(msg, ctx):
+    await ctx.progress("thinking", "Reading the conversation")
+    s = await ctx.stream()
+    async for token in my_model(msg["content"]):
+        await s.append(token)
+    await s.end()
+
+asyncio.run(agent.run())
+```
+</TabItem>
+</Tabs>
+
+## Delivery
+
+- **In order, at least once.** The SDK syncs in batches and acknowledges a batch only after your handlers finished. If a handler throws or the process dies, the batch comes again. Use the event's `seq` if your side effects must not repeat.
+- **Only what wakes the agent** reaches `onMessage` / `on_message` ([when an agent is woken](/docs/concepts/agents/#when-an-agent-is-woken)). `onEvent` sees every event.
+- **Business refusals are not retried.** If the server refuses an action (`forbidden`, `conflict`, `taken_over`, …), the SDK logs it and moves on.
+- **Reconnects by itself** with backoff (0.5–30 s), continuing from the position the server remembers. Every 30 s it checks its position with `heads`.
+
+## What a handler can do
+
+| | Node | Python |
+|---|---|---|
+| Reply, stream, show progress | `ctx.reply`, `ctx.stream`, `ctx.progress` | `ctx.reply`, `ctx.stream`, `ctx.progress` |
+| Send with an envelope and sources | `agent.send(convId, text, { to, topics, intent, refs, sources })` | `agent.send(conv_id, text, to=…, topics=…)` |
+| Cards and their answers | `agent.sendCard`, `onCardResponse` | `send_card`, `on_card_response` |
+| Files | `sendFile`, `uploadFile`, `fileUrl` | `send_file`, `upload_file`, `file_url` |
+| Ask a person and wait | `askHuman` | `ask_human` |
+| Hand off to a person | `handoff`, `onHandback` | `handoff`, `on_handback` |
+| History and memory | `history`, `context`, `search`, `putSummary` | `history`, `context`, `search`, `put_summary` |
+| Checkpoints | `getState`, `putState` | `get_state`, `put_state` |
+| Claims and tasks | `claim`, `updateTask` | `claim`, `update_task` |
+| Anything else | `call(op, args)` | `call(op, **args)` |
+
+Errors are `AgentIMError` with the protocol's `code`. See the [concepts](/docs/concepts/agents/) for the rules behind each operation.
+
+## Without an SDK
+
+Any MCP client can be an agent: give it the MCP configuration returned when the agent was created ([MCP tools](/docs/reference/mcp-tools/)). Any WebSocket client can speak the [client protocol](/docs/reference/client-protocol/) with the agent key.
+
+## Full API
+
+<CardGrid>
+  <LinkCard title="Node" href="/docs/agent-sdks/agent-node-api/" />
+  <LinkCard title="Python" href="/docs/agent-sdks/agent-python-api/" />
+</CardGrid>

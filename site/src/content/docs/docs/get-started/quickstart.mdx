@@ -1,0 +1,217 @@
+---
+title: "Quick start"
+description: "Run the server, sign a user in from your backend, connect an AI agent and chat with it from a React app, in about five minutes."
+sidebar:
+  order: 1
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+By the end of this page you will have:
+
+- an AgentIM server on your machine;
+- a backend that signs your users in;
+- an AI agent that streams its replies;
+- a React page where a person chats with that agent.
+
+You need Node.js 22 or newer.
+
+<Steps>
+
+1. **Install and start the server.**
+
+   <Tabs syncKey="os">
+   <TabItem label="Linux, macOS">
+   ```sh
+   curl -fsSL https://github.com/wmkrfjnwvb-svg/agentim/releases/latest/download/install.sh | sh
+   ```
+   </TabItem>
+   <TabItem label="Windows">
+   ```powershell
+   irm https://github.com/wmkrfjnwvb-svg/agentim/releases/latest/download/install.ps1 | iex
+   ```
+   </TabItem>
+   <TabItem label="Docker">
+   ```sh
+   docker run -p 8080:8080 -v agentim:/var/lib/agentim ghcr.io/wmkrfjnwvb-svg/agentim --db /var/lib/agentim/agentim.db
+   ```
+   </TabItem>
+   </Tabs>
+
+   The install script puts `agentim` in `~/.agentim/bin`. It does not need root. It stops if the download's SHA-256 does not match.
+
+   <Aside type="caution" title="Before v0.1.0 is released">
+   There is no release to download yet. Build the server from source instead, with a current stable Rust (`rustup update`):
+   `git clone https://github.com/wmkrfjnwvb-svg/agentim && cd agentim/server && cargo build --release`.
+   The program is then at `target/release/agentim`.
+   </Aside>
+
+   Your React page will run on `http://localhost:5173`. Browsers send an `Origin` header, and the server only accepts the origins it is told about. Create a folder for the server, and in it write `agentim.toml`:
+
+   ```toml title="agentim.toml"
+   [storage]
+   control = "main"
+
+   [[storage.databases]]
+   name = "main"
+   url = "sqlite://agentim.db?mode=rwc"
+
+   [server]
+   allowed_origins = ["http://localhost:5173"]
+   ```
+
+   Then start the server from that folder:
+
+   ```sh
+   agentim --config agentim.toml
+   ```
+
+   ```text
+   AgentIM listening on http://127.0.0.1:8080
+   Created the master key agentim.db.key: back it up with the database. Without it the encrypted content cannot be read.
+   Set up the console (once, from this machine): http://127.0.0.1:8080/console/setup?token=setup_…
+   ```
+
+   Content is encrypted at rest from the start. Keep `agentim.db.key` together with `agentim.db`: without it the encrypted content cannot be read. The setup link opens the [console](/docs/operations/dashboard/). You don't need the console for this quick start.
+
+2. **Create two keys for your backend.** Run these in a second terminal, in the same folder (they work while the server runs):
+
+   ```sh
+   agentim --config agentim.toml signing-key create --name backend
+   agentim --config agentim.toml api-key create --name backend \
+     --scopes users:write,conversations:write,messages:write,agents:write
+   ```
+
+   - The **signing key** (`kid` and `secret`) signs your users' client tokens. Signing happens offline: your backend never calls AgentIM to log a user in.
+   - The **API key** (`ak_…`) is for the [open API](/docs/reference/open-api/). Your backend uses it to create users, agents and conversations.
+
+   Both secrets are shown only once. Keep them on the backend, never in an app.
+
+3. **Write the backend.** It creates a user `maya`, an agent `helper` that `maya` owns, and their direct conversation. It also serves `/token`, where the app gets a client token for `maya`.
+
+   ```sh
+   mkdir backend && cd backend && npm init -y && npm pkg set type=module && npm install @agentimhq/server
+   ```
+
+   ```js title="backend/server.js"
+   import { createServer } from 'node:http';
+   import { AgentIM, createUserToken } from '@agentimhq/server';
+
+   const im = new AgentIM({ baseUrl: 'http://127.0.0.1:8080', apiKey: process.env.AGENTIM_API_KEY });
+   const signingKey = { kid: process.env.AGENTIM_KID, secret: process.env.AGENTIM_SECRET };
+
+   // Your users keep your own ids; creating them again is harmless.
+   await im.upsertUser('maya', { display_name: 'Maya Chen' });
+   // An agent is a user too. Its key is returned only when the agent is created.
+   const agent = await im.upsertUser('helper', { kind: 'agent', owner: 'maya', display_name: 'Helper' });
+   if (agent.key) console.log(`AGENTIM_AGENT_KEY=${agent.key}`);
+   const conv = await im.createConversation({ as: 'system', kind: 'dm', title: 'Helper', owner: 'maya', members: ['helper'] });
+   console.log(`conversation: ${conv.id}`);
+
+   createServer((req, res) => {
+     // In your app: check your own session first, then sign for that user.
+     res.setHeader('access-control-allow-origin', 'http://localhost:5173');
+     res.end(createUserToken(signingKey, 'maya', { expiresIn: 3600 }));
+   }).listen(3000);
+   ```
+
+   ```sh
+   AGENTIM_API_KEY=ak_… AGENTIM_KID=sk_… AGENTIM_SECRET=sks_… node server.js
+   ```
+
+   Note the agent key and the conversation id it prints. The agent key is printed only on the first run, when the agent is created; running the backend again keeps the same users and the same direct conversation.
+
+   - A token is an ordinary HS256 JWT with `kid`, `sub`, `iat` and `exp`. Any JWT library can make one ([how tokens work](/docs/concepts/devices-and-login/)).
+   - A user id the server has not seen yet is created when that user first connects with a valid token. Creating users upfront, as here, is still useful: the agent's owner and the conversation's members must exist.
+
+4. **Run the agent.** The agent connects with its key and answers every message that wakes it. In a direct conversation, every message wakes it. In a group, only messages that mention it or address it do ([how agents are woken](/docs/concepts/agents/)).
+
+   ```sh
+   mkdir agent && cd agent && npm init -y && npm pkg set type=module && npm install @agentimhq/agent
+   ```
+
+   ```js title="agent/agent.js"
+   import { Agent } from '@agentimhq/agent';
+
+   const agent = new Agent({ url: 'http://127.0.0.1:8080', key: process.env.AGENTIM_AGENT_KEY });
+
+   agent.onMessage(async (msg, ctx) => {
+     // A real agent calls its model here and appends the tokens as they come.
+     const s = await ctx.stream();
+     for (const word of `You said: ${msg.content}`.split(' ')) await s.append(word + ' ');
+     await s.end();
+   });
+
+   await agent.start();
+   ```
+
+   ```sh
+   AGENTIM_AGENT_KEY=atk_… node agent.js
+   ```
+
+   Any MCP client can be the agent instead. The agent's record also has an MCP configuration for `POST /mcp` ([MCP tools](/docs/reference/mcp-tools/)).
+
+5. **Show the chat in React.**
+
+   ```sh
+   npm create vite@latest web -- --template react-ts && cd web
+   npm install @agentimhq/client-web @agentimhq/react
+   ```
+
+   ```tsx title="web/src/App.tsx"
+   import { useEffect, useState } from 'react';
+   import { AgentIMClient } from '@agentimhq/client-web';
+   import { AgentIM, Chat } from '@agentimhq/react';
+   import '@agentimhq/react/theme.css';
+
+   const CONV = 'c_…'; // the conversation id the backend printed
+
+   // One id per device, kept across runs: the server keeps sync positions per device.
+   const deviceId = (localStorage.deviceId ??= crypto.randomUUID());
+
+   export default function App() {
+     const [client, setClient] = useState<AgentIMClient>();
+     useEffect(() => {
+       let c: AgentIMClient | undefined;
+       AgentIMClient.create({
+         url: 'http://127.0.0.1:8080',
+         deviceId,
+         // Called whenever the client needs a token: first connect, reconnects, expiry.
+         tokenProvider: () => fetch('http://localhost:3000/token').then((r) => r.text()),
+       }).then((created) => {
+         c = created;
+         setClient(created);
+         created.connect();
+       });
+       return () => void c?.dispose();
+     }, []);
+     if (!client) return null;
+     return (
+       <AgentIM client={client}>
+         <Chat convId={CONV} title="Helper" />
+       </AgentIM>
+     );
+   }
+   ```
+
+   ```sh
+   npm run dev
+   ```
+
+   Open `http://localhost:5173` and say hello. The reply streams in word by word. It is marked as AI because the server knows `helper` is an agent: an agent cannot pose as a person.
+
+</Steps>
+
+## What just happened
+
+- **Your backend** owns the accounts. AgentIM only knows the ids your backend gives it, and trusts a token because your signing key signed it ([roles and entry points](/docs/concepts/overview/)).
+- **The client** stored the message before sending it. It shows the message at once and sends it once, in order, also after going offline or restarting. It keeps a local cache, so the conversation opens instantly next time ([sync and offline](/docs/concepts/sync-and-offline/)).
+- **The server** acknowledged the message only after it was durably committed. It gave the message the next sequence number in the conversation. It woke the agent because, in a direct conversation, every message is for it.
+- **The agent** streamed its reply. People in the conversation see the text as it arrives and can stop it ([streaming](/docs/concepts/streaming/)).
+
+## Next
+
+- Try the full demo: `agentim --demo`, then open `http://127.0.0.1:8080` and sign in as Alice, Bob or Carol. It shows approvals, takeover, guardrails, cards and agent-to-agent replies.
+- [Concepts](/docs/concepts/overview/): conversations, sync, agents, approvals and guardrails.
+- [Client SDKs](/docs/client-sdks/) for iOS, Android, Flutter, React Native, Unity and .NET.
+- [Before you go live](/docs/guides/launch-checklist/): TLS, PostgreSQL, backups, monitoring.

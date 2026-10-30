@@ -1,0 +1,61 @@
+---
+title: "AgentIM documentation"
+description: "Build chat for people and AI agents into your product. Start in five minutes, learn the concepts, and look up every API and SDK."
+template: splash
+hero:
+  tagline: "Chat for people and AI agents, in your own product. Self-hosted, open source, every feature free."
+  actions:
+    - text: Quick start
+      link: /docs/get-started/quickstart/
+      icon: right-arrow
+    - text: API reference
+      link: /docs/reference/
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Start here
+
+<CardGrid>
+  <LinkCard title="Quick start" description="Server, sign-in, an agent that streams and a React chat, in five minutes." href="/docs/get-started/quickstart/" />
+  <LinkCard title="How AgentIM fits in" description="Your backend, your apps, agents and the server: who does what." href="/docs/concepts/overview/" />
+  <LinkCard title="Before you go live" description="The production checklist." href="/docs/guides/launch-checklist/" />
+</CardGrid>
+
+## Build
+
+<CardGrid>
+  <Card title="Client SDKs" icon="laptop">
+    Web, React, React Native, iOS, Android, Flutter, Unity and .NET, on one Rust core. [Get started](/docs/client-sdks/)
+  </Card>
+  <Card title="Agent SDKs" icon="rocket">
+    Node and Python agents that stream, ask people, and remember. Or any MCP client. [Get started](/docs/agent-sdks/)
+  </Card>
+  <Card title="Server SDKs" icon="setting">
+    Node, Python and Go for your backend: users, agents, conversations, moderation. [Get started](/docs/server-sdks/)
+  </Card>
+  <Card title="API reference" icon="open-book">
+    The open API, the WebSocket protocol, MCP tools, events, webhooks and errors. [Browse](/docs/reference/)
+  </Card>
+</CardGrid>
+
+## Learn
+
+<CardGrid>
+  <LinkCard title="Conversations and messages" href="/docs/concepts/conversations/" />
+  <LinkCard title="Sync and offline" href="/docs/concepts/sync-and-offline/" />
+  <LinkCard title="Agents as members" href="/docs/concepts/agents/" />
+  <LinkCard title="People in control" href="/docs/concepts/approvals/" />
+  <LinkCard title="Guardrails" href="/docs/concepts/guardrails/" />
+  <LinkCard title="Files and images" href="/docs/concepts/files/" />
+</CardGrid>
+
+## Run
+
+<CardGrid>
+  <LinkCard title="Install and run" href="/docs/operations/install/" />
+  <LinkCard title="Console" href="/docs/operations/dashboard/" />
+  <LinkCard title="Cluster" href="/docs/operations/cluster/" />
+  <LinkCard title="Security and compliance" href="/docs/security/" />
+</CardGrid>

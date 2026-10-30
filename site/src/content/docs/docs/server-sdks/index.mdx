@@ -1,0 +1,98 @@
+---
+title: "Server SDKs"
+description: "Node, Python and Go clients for the open API, for your backend. Sign users in, manage users, agents and conversations, send as a user or as the system."
+sidebar:
+  order: 0
+---
+
+import { Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+The server SDKs are thin clients for the [open API](/docs/reference/open-api/), with no dependencies. Every client:
+
+- retries network errors, `429` and `503` with backoff, keeping the same `Idempotency-Key` on POSTs so a retry never does the work twice;
+- raises an error carrying the server's `code`, the same codes as the WebSocket protocol;
+- covers every endpoint. `GET /v1/openapi.json` is the full contract.
+
+| | Install |
+|---|---|
+| Node 18+ (types included) | `npm install @agentimhq/server` |
+| Python 3.9+ | `pip install agentim-server` |
+| Go 1.21+ | `go get github.com/wmkrfjnwvb-svg/agentim/sdk/go/agentim` |
+
+Create a key first: `agentim api-key create --name backend --scopes users:write,conversations:write,messages:write`.
+
+## Sign a user in
+
+No call to AgentIM is made: the token is signed with your signing key ([devices and login](/docs/concepts/devices-and-login/)).
+
+<Tabs syncKey="server">
+<TabItem label="Node">
+```js
+import { createUserToken } from '@agentimhq/server';
+const token = createUserToken({ kid, secret }, user.id, { expiresIn: 3600 });
+```
+</TabItem>
+<TabItem label="Python">
+```python
+from agentim import create_user_token
+token = create_user_token(kid, secret, user.id, expires_in=3600)
+```
+</TabItem>
+<TabItem label="Go">
+```go
+token, err := agentim.CreateUserToken(kid, secret, user.ID, time.Hour)
+```
+</TabItem>
+</Tabs>
+
+## Users, conversations, messages
+
+<Tabs syncKey="server">
+<TabItem label="Node">
+```js
+import { AgentIM } from '@agentimhq/server';
+const im = new AgentIM({ baseUrl: 'https://chat.example.com', apiKey: process.env.AGENTIM_API_KEY });
+
+await im.upsertUser('maya', { display_name: 'Maya Chen' });
+const conv = await im.createConversation({ as: 'system', kind: 'group', title: 'Launch', owner: 'maya', members: ['li', 'helper'] });
+await im.sendMessage(conv.id, { as: 'system', text: 'Maintenance tonight at 10 pm PT.' });
+await im.sendToUser('li', { as: 'maya', text: 'Can you review the launch plan?' });
+```
+</TabItem>
+<TabItem label="Python">
+```python
+from agentim import AgentIM
+im = AgentIM("https://chat.example.com", os.environ["AGENTIM_API_KEY"])
+
+im.upsert_user("maya", display_name="Maya Chen")
+conv = im.create_conversation("system", "group", "Launch", members=["li", "helper"], owner="maya")
+im.send_message(conv["id"], "system", "Maintenance tonight at 10 pm PT.")
+```
+</TabItem>
+<TabItem label="Go">
+```go
+im := agentim.New("https://chat.example.com", os.Getenv("AGENTIM_API_KEY"))
+
+_, err := im.UpsertUser(ctx, "maya", agentim.M{"display_name": "Maya Chen"})
+conv, err := im.CreateConversation(ctx, agentim.M{"as": "system", "kind": "group", "title": "Launch", "owner": "maya", "members": []string{"li", "helper"}})
+_, err = im.SendMessage(ctx, conv["id"].(string), agentim.M{"as": "system", "text": "Maintenance tonight at 10 pm PT."})
+```
+</TabItem>
+</Tabs>
+
+## Acting as someone
+
+Every call that acts in a conversation says who acts, with `as`:
+
+- **A user id**: the call follows that user's rules, exactly as their app would. They must be a member, blocks apply, deduplication is theirs, and the result syncs to all their devices.
+- **`system`**: create and manage any conversation, send system notices (shown as from the system), recall any message, dissolve. It cannot speak as a user.
+
+There is no mode that acts as a user while bypassing their rules. Every call is audited with the key and the identity.
+
+## Full API
+
+<CardGrid>
+  <LinkCard title="Node" href="/docs/server-sdks/server-node-api/" />
+  <LinkCard title="Python" href="/docs/server-sdks/server-python-api/" />
+  <LinkCard title="Go" href="/docs/server-sdks/server-go-api/" />
+</CardGrid>
