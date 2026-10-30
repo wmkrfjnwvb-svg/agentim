@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { clientOps, configSections } from './reference.mjs';
+import { clientOps, configSections, writeAll } from './reference.mjs';
 import { SDKS, members } from './sdk.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -24,6 +24,8 @@ for (const t of JSON.parse(readFileSync(join(core, 'mcp-tools.json'), 'utf8'))) 
 for (const s of configSections()) for (const f of s.fields) if (!f.doc) missing.push(`config ${s.path}.${f.name}: no doc comment (config.rs)`);
 for (const sdk of SDKS) for (const m of members(sdk)) if (!m.doc && !m.optional) missing.push(`SDK ${sdk.id}: ${m.owner ? `${m.owner}.` : ''}${m.name} (sdk/${m.file}:${m.line + 1}) has no doc comment`);
 
+// The generated pages (gitignored) are written first, so links to them count.
+writeAll();
 const docs = join(here, '../src/content/docs');
 const page = (href) => {
   const p = href.replace(/#.*$/, '').replace(/^\/|\/$/g, '');
