@@ -30,7 +30,8 @@ const page = (href) => {
   return ['.md', '.mdx', '/index.md', '/index.mdx'].some((x) => existsSync(join(docs, p + x)));
 };
 const home = readFileSync(join(here, '../src/pages/index.astro'), 'utf8');
-for (const [, href] of home.matchAll(/href="(\/docs[^"]*)"/g)) if (!page(href)) missing.push(`homepage link ${href}: no such page`);
+// Every /docs path in the source, also those in the data arrays.
+for (const href of new Set([...home.matchAll(/['"`](\/docs\/[^'"`#\s]*)/g)].map((m) => m[1]))) if (!page(href)) missing.push(`homepage link ${href}: no such page`);
 
 if (missing.length) {
   console.error(missing.join('\n'));

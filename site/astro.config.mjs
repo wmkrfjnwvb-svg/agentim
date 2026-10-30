@@ -20,7 +20,7 @@ export default defineConfig({
       favicon: '/favicon.svg',
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/wmkrfjnwvb-svg/agentim' }],
       editLink: { baseUrl: 'https://github.com/wmkrfjnwvb-svg/agentim/edit/main/site/' },
-      customCss: ['./src/styles/theme.css'],
+      customCss: ['@fontsource-variable/inter', './src/styles/theme.css'],
       lastUpdated: true,
       plugins: [links()],
       sidebar: [
