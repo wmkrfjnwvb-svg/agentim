@@ -19,8 +19,11 @@ npx --yes @react-native-community/cli@20.2.0 init AgentIMApp --version 0.87.1 \
   --skip-install --skip-git-init --install-pods false --directory app > init.log 2>&1 || { cat init.log; exit 1; }
 cd app
 npm install --no-audit --no-fund > install.log 2>&1 || { tail -50 install.log; exit 1; }
+# react-dom (a peer of @agentimhq/react) at the app's own react version: the
+# newest react-dom can need a newer react than the template pins.
+react=$(node -p "require('./package.json').dependencies.react")
 npm install --no-audit --no-fund "$tgz"/agentimhq-client-web-*.tgz "$tgz"/agentimhq-client-react-native-*.tgz \
-  "$tgz"/agentimhq-react-[0-9]*.tgz "$tgz"/agentimhq-react-native-ui-*.tgz
+  "$tgz"/agentimhq-react-[0-9]*.tgz "$tgz"/agentimhq-react-native-ui-*.tgz "react-dom@$react"
 sed "s/__PORT__/$port/" "$here/test/app/App.tsx" > App.tsx
 start_server() {
   "$AGENTIM_BIN" --demo --db "$work/a.db" --addr 127.0.0.1:$port > "$work/server.log" 2>&1 &

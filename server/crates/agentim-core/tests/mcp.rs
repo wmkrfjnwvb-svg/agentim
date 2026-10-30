@@ -189,8 +189,12 @@ async fn discovery_versions_and_headers(db: TestDb) {
     if std::env::var("UPDATE").is_ok_and(|u| u == "1") {
         std::fs::write(file, &now).unwrap();
     }
+    // Compared as JSON: a Windows checkout may have CRLF line endings.
+    let stored: Option<Value> = std::fs::read_to_string(file)
+        .ok()
+        .and_then(|f| serde_json::from_str(&f).ok());
     assert!(
-        std::fs::read_to_string(file).is_ok_and(|f| f == now),
+        stored.as_ref() == Some(&v["result"]["tools"]),
         "mcp-tools.json is out of date: run the test with UPDATE=1"
     );
     for t in tools {
