@@ -36,7 +36,14 @@ async fn start(demo: bool, metrics_token: Option<&str>) -> Server {
         demo_login: demo,
         metrics_token: metrics_token.map(String::from),
     };
-    tokio::spawn(async move { axum::serve(tcp, router(state)).await.unwrap() });
+    tokio::spawn(async move {
+        axum::serve(
+            tcp,
+            router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
     Server {
         addr,
         hub,
@@ -180,6 +187,102 @@ async fn metrics_require_the_token_when_configured() {
         http(&open.addr, "GET", "/metrics", "", "").await.0,
         200,
         "open when no token is set"
+    );
+}
+
+/// A refusal names its rule (docs/15) to open API callers and is counted
+/// by rule in `/metrics`; a request that is allowed is not counted.
+#[tokio::test]
+async fn refusals_name_their_rule_and_are_counted() {
+    let srv = start(false, None).await;
+    let hub = &srv.hub;
+    let alice = hub
+        .create_user("alice", UserKind::Human, None, None)
+        .await
+        .unwrap()
+        .0;
+    let bob = hub
+        .create_user("bob", UserKind::Human, None, None)
+        .await
+        .unwrap()
+        .0;
+    hub.create_user("eve", UserKind::Human, None, None)
+        .await
+        .unwrap();
+    let (s, _) = hub.connect(alice.clone());
+    let r: Value = serde_json::from_value(
+        s.handle_text(
+            &json!({"op": "create_conv", "kind": "group", "title": "g", "members": [bob.id]})
+                .to_string(),
+        )
+        .await,
+    )
+    .unwrap();
+    let conv = r["conv_id"].as_str().unwrap().to_string();
+    let (key, _) = hub
+        .create_api_key("t", &["messages:write".to_string()], None, None)
+        .await
+        .unwrap();
+    let auth = format!("Authorization: Bearer {key}\r\n");
+    let path = format!("/v1/conversations/{conv}/messages");
+    let (c, body) = http(
+        &srv.addr,
+        "POST",
+        &path,
+        &auth,
+        &json!({"as": "eve", "text": "hi"}).to_string(),
+    )
+    .await;
+    assert_eq!(c, 403, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        (v["code"].as_str(), v["rule"].as_str()),
+        (Some("forbidden"), Some("member.required")),
+        "{v}"
+    );
+    let (c, body) = http(
+        &srv.addr,
+        "POST",
+        &path,
+        &auth,
+        &json!({"as": "alice", "text": ""}).to_string(),
+    )
+    .await;
+    assert_eq!(c, 400, "{body}");
+    assert!(body.contains("\"rule\":\"msg.text_size\""), "{body}");
+    // An error that is not a business rule has none.
+    let (c, body) = http(
+        &srv.addr,
+        "POST",
+        "/v1/conversations/c_x/messages",
+        "Authorization: Bearer wrong\r\n",
+        "{}",
+    )
+    .await;
+    assert_eq!(c, 401);
+    assert!(!body.contains("\"rule\""), "{body}");
+    let (c, ok) = http(
+        &srv.addr,
+        "POST",
+        &path,
+        &auth,
+        &json!({"as": "alice", "text": "fine"}).to_string(),
+    )
+    .await;
+    assert_eq!(c, 201, "{ok}");
+    let (_, m) = http(&srv.addr, "GET", "/metrics", "", "").await;
+    let line = m
+        .lines()
+        .find(|l| l.starts_with("agentim_refusals_total") && l.contains("rule=\"member.required\""))
+        .unwrap_or_else(|| panic!("no refusal counted: {m}"));
+    assert!(
+        line.contains("code=\"forbidden\"") && line.contains("op=\"send\""),
+        "{line}"
+    );
+    assert!(
+        m.lines().any(
+            |l| l.starts_with("agentim_refusals_total") && l.contains("rule=\"msg.text_size\"")
+        )
     );
 }
 

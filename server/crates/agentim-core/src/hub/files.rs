@@ -182,11 +182,16 @@ impl Hub {
         };
         let thumb = if f.thumb_size > 0 {
             if kind != "image" {
-                return Err(err("bad_request", "a thumbnail is for images"));
+                return Err(rule!(
+                    "file.thumb_for_images",
+                    "bad_request",
+                    "a thumbnail is for images"
+                ));
             }
             let have = st.size(&f.conv_id, &f.file_id, "thumb").await?;
             if have != Some(f.thumb_size as u64) {
-                return Err(err(
+                return Err(rule!(
+                    "file.thumb_size_mismatch",
                     "bad_request",
                     "the thumbnail was not uploaded with its declared size",
                 ));
@@ -196,12 +201,19 @@ impl Hub {
                 .await?;
             let tm = match fs::sniff_image(&t) {
                 Some(m @ ("image/jpeg" | "image/png")) => m,
-                _ => return Err(err("bad_request", "a thumbnail is a JPEG or PNG")),
+                _ => {
+                    return Err(rule!(
+                        "file.thumb_format",
+                        "bad_request",
+                        "a thumbnail is a JPEG or PNG"
+                    ));
+                }
             };
             match fs::image_size(&t) {
                 Some((w, h)) if w.max(h) <= fs::THUMB_SIDE && w > 0 && h > 0 => {}
                 _ => {
-                    return Err(err(
+                    return Err(rule!(
+                        "file.thumb_dimensions",
                         "bad_request",
                         format!(
                             "a thumbnail is at most {} pixels on its longest side",
@@ -276,7 +288,8 @@ impl Hub {
         data: Vec<u8>,
     ) -> ApiResult<Value> {
         if data.len() > INGEST_MAX {
-            return Err(err(
+            return Err(rule!(
+                "file.ingest_size",
                 "bad_request",
                 format!("send files over {INGEST_MAX} bytes in parts (upload_start)"),
             ));

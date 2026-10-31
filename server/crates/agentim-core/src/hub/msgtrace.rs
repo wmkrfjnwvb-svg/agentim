@@ -14,7 +14,7 @@ const LISTED: usize = 100;
 impl Hub {
     pub async fn message_trace(&self, msg_id: &str) -> ApiResult<Value> {
         if msg_id.is_empty() || msg_id.len() > 128 {
-            return Err(err("not_found", "message"));
+            return Err(rule!("msg.unknown", "not_found", "message"));
         }
         let hooks: Vec<String> = self
             .inner
@@ -36,7 +36,7 @@ impl Hub {
                 break;
             }
         }
-        let (database, f) = found.ok_or_else(|| err("not_found", "message"))?;
+        let (database, f) = found.ok_or_else(|| rule!("msg.unknown", "not_found", "message"))?;
         let sh = &self.inner.sh;
         let name = |id: &str| {
             sh.user(id)

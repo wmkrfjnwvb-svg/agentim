@@ -19,7 +19,7 @@ const TEXT_MAX: usize = 4096;
 const VALUE_MAX: usize = 1000;
 
 fn bad(msg: impl Into<String>) -> ApiError {
-    err("bad_request", msg)
+    rule!("card.input", "bad_request", msg)
 }
 
 fn check_id(v: &Value, ids: &mut HashSet<String>) -> ApiResult<String> {
@@ -271,14 +271,22 @@ impl Ctx<'_, '_> {
         let card = msg.payload.clone().unwrap_or(Value::Null);
         check_response(&card, block_id, action.as_deref(), values.as_ref())?;
         if card["once"] == true && self.db.card_responses(msg_id).await? > 0 {
-            return Err(err("conflict", "this card took its one response"));
+            return Err(rule!(
+                "card.single_response",
+                "conflict",
+                "this card took its one response"
+            ));
         }
         if !self
             .db
             .put_card_response(msg_id, &msg.conv_id, &me.id)
             .await?
         {
-            return Err(err("conflict", "you already responded to this card"));
+            return Err(rule!(
+                "card.responded",
+                "conflict",
+                "you already responded to this card"
+            ));
         }
         let wake: Vec<String> = self
             .sh

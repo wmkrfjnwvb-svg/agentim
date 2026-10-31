@@ -58,6 +58,8 @@ jobs:
       AGENTIM_TEST_PG: postgres://postgres:agentim@127.0.0.1:5432
       AGENTIM_TEST_MYSQL: mysql://root:agentim@127.0.0.1:3306
       AGENTIM_TEST_S3: http://127.0.0.1:5055
+      # Every rule a test triggers is recorded here (docs/15).
+      AGENTIM_RULES_HIT: ${{ github.workspace }}/server/rules-hit.txt
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -84,6 +86,12 @@ jobs:
         run: cargo test -p agentim-cluster -- --nocapture 2>&1 | tee cluster.txt; test ${PIPESTATUS[0]} -eq 0
       - name: no cluster test may be silently skipped
         run: "! grep -q 'skipped:' cluster.txt"
+      - name: the other core tests, for rule coverage
+        run: |
+          args=$(for f in $(grep -L 'backend_tests!' crates/agentim-core/tests/*.rs); do n=$(basename "$f" .rs); [ "$n" = multidb ] || [ "$n" = rules ] || printf -- '--test %s ' "$n"; done)
+          cargo test -p agentim-core --lib $args
+      - name: every business rule is triggered by a test (docs/15, ci/rules-untested.txt)
+        run: cargo test -p agentim-core --test rules -- --ignored --nocapture
 
   client-core:
     name: Rust client core and native runtime (${{ matrix.os }})

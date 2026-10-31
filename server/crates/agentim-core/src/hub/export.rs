@@ -5,8 +5,8 @@
 
 use serde_json::{Map, Value, json};
 
+use super::Hub;
 use super::history::agent_view;
-use super::{Hub, err};
 use crate::logic::Op;
 use crate::model::*;
 
@@ -55,7 +55,7 @@ enum Origin {
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
-    err("bad_request", msg)
+    rule!("agent.import_input", "bad_request", msg)
 }
 
 impl Hub {
@@ -269,7 +269,8 @@ impl Hub {
             }
             Origin::Unverifiable if allow_unverified => false,
             Origin::Unverifiable => {
-                return Err(err(
+                return Err(rule!(
+                    "agent.import_unverified",
                     "forbidden",
                     "the package's source cannot be verified (unsigned, or signed by another deployment); import it with allow_unverified to accept it anyway",
                 ));
@@ -343,7 +344,8 @@ impl Hub {
         }
         let max = self.inner.cfg.agents.state_keys as usize;
         if writes.len() > max {
-            return Err(err(
+            return Err(rule!(
+                "agent.import_state_keys",
                 "rate_limited",
                 format!(
                     "{} keys; at most {max} per agent (agents.state_keys)",

@@ -25,7 +25,7 @@ pub fn terminal(state: &str) -> bool {
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
-    err("bad_request", msg)
+    rule!("task.input", "bad_request", msg)
 }
 
 impl Ctx<'_, '_> {
@@ -106,7 +106,8 @@ impl Ctx<'_, '_> {
         let next = state.clone().unwrap_or(current.clone());
         let in_charge = me.id == creator || is_manager(&mine.role);
         if assignee.is_some() && !in_charge {
-            return Err(err(
+            return Err(rule!(
+                "task.reassign_not_allowed",
                 "forbidden",
                 "only the creator or a manager reassigns a task",
             ));
@@ -114,10 +115,15 @@ impl Ctx<'_, '_> {
         if terminal(&current) && next != current {
             // Reopening is a person's decision.
             if me.kind != UserKind::Human {
-                return Err(err("conflict", format!("the task is {current}")));
+                return Err(rule!(
+                    "task.state",
+                    "conflict",
+                    format!("the task is {current}")
+                ));
             }
             if !in_charge {
-                return Err(err(
+                return Err(rule!(
+                    "task.reopen_not_allowed",
                     "forbidden",
                     "only the creator or a manager reopens a task",
                 ));
@@ -127,13 +133,18 @@ impl Ctx<'_, '_> {
             && next != current
             && !(in_charge || current_assignee.as_deref() == Some(me.id.as_str()))
         {
-            return Err(err(
+            return Err(rule!(
+                "task.end_not_allowed",
                 "forbidden",
                 "only the creator, a manager or the assignee ends a task",
             ));
         }
         if next == current && new_assignee == current_assignee {
-            return Err(err("conflict", format!("the task is already {current}")));
+            return Err(rule!(
+                "task.state",
+                "conflict",
+                format!("the task is already {current}")
+            ));
         }
         self.db
             .set_task(conv_id, &next, new_assignee.as_deref())
@@ -190,10 +201,11 @@ impl Ctx<'_, '_> {
         if let Some(s) = self.task_state(&msg.conv_id).await?
             && terminal(&s)
         {
-            return Err(err("conflict", format!("the task is {s}")));
+            return Err(rule!("task.state", "conflict", format!("the task is {s}")));
         }
         if let Some(by) = self.db.claim_of(msg_id).await? {
-            return Err(err(
+            return Err(rule!(
+                "task.claimed_already",
                 "conflict",
                 if by == me.id {
                     "you already claimed it".to_string()
@@ -227,9 +239,13 @@ impl Ctx<'_, '_> {
         self.own_conv(&msg.conv_id)?;
         self.require_member(&msg.conv_id, &me.id).await?;
         match self.db.claim_of(msg_id).await? {
-            None => return Err(err("not_found", "nobody claimed it")),
+            None => return Err(rule!("task.not_claimed", "not_found", "nobody claimed it")),
             Some(by) if by != me.id => {
-                return Err(err("forbidden", "claimed by someone else"));
+                return Err(rule!(
+                    "task.claimed_by_other",
+                    "forbidden",
+                    "claimed by someone else"
+                ));
             }
             Some(_) => {}
         }
@@ -259,7 +275,11 @@ impl Ctx<'_, '_> {
         self.own_conv(conv_id)?;
         let mine = self.require_member(conv_id, &me.id).await?;
         if !is_manager(&mine.role) {
-            return Err(err("forbidden", "only a manager gives the floor"));
+            return Err(rule!(
+                "task.floor_not_manager",
+                "forbidden",
+                "only a manager gives the floor"
+            ));
         }
         let ttl = ttl_secs.unwrap_or(FLOOR_TTL_DEFAULT);
         if !(FLOOR_TTL_MIN..=FLOOR_TTL_MAX).contains(&ttl) {
@@ -269,7 +289,7 @@ impl Ctx<'_, '_> {
         let target = members
             .iter()
             .find(|m| m.user_id == agent_id || m.name == agent_id)
-            .ok_or_else(|| err("not_found", "no such member"))?;
+            .ok_or_else(|| rule!("member.unknown", "not_found", "no such member"))?;
         if target.kind != UserKind::Agent {
             return Err(bad("the floor is for agents"));
         }
@@ -277,7 +297,7 @@ impl Ctx<'_, '_> {
         if let Some(s) = self.task_state(conv_id).await?
             && terminal(&s)
         {
-            return Err(err("conflict", format!("the task is {s}")));
+            return Err(rule!("task.state", "conflict", format!("the task is {s}")));
         }
         let previous = self.db.floor(conv_id).await?.map(|f| f.0);
         let expires_at = now_ms() + ttl * 1000;
@@ -303,10 +323,15 @@ impl Ctx<'_, '_> {
         self.own_conv(conv_id)?;
         let mine = self.require_member(conv_id, &me.id).await?;
         let Some((holder, _)) = self.db.floor(conv_id).await? else {
-            return Err(err("conflict", "nobody holds the floor"));
+            return Err(rule!(
+                "task.floor_free",
+                "conflict",
+                "nobody holds the floor"
+            ));
         };
         if holder != me.id && !is_manager(&mine.role) {
-            return Err(err(
+            return Err(rule!(
+                "task.floor_release_not_allowed",
                 "forbidden",
                 "only the holder or a manager releases the floor",
             ));
@@ -339,7 +364,7 @@ impl Ctx<'_, '_> {
         if let Some(s) = self.task_state(conv_id).await?
             && terminal(&s)
         {
-            return Err(err("conflict", format!("the task is {s}")));
+            return Err(rule!("task.state", "conflict", format!("the task is {s}")));
         }
         if member.trigger != Trigger::Coordinated {
             return Ok(());
@@ -359,7 +384,8 @@ impl Ctx<'_, '_> {
         {
             return Ok(());
         }
-        Err(err(
+        Err(rule!(
+            "task.floor_wait",
             "conflict",
             "waiting for the floor (coordinated); answer only what is addressed to you",
         ))

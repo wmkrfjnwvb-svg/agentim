@@ -13,7 +13,7 @@ const SIDE_SCAN: i64 = 5000;
 
 use serde_json::{Value, json};
 
-use super::{Hub, Session, err};
+use super::{Hub, Session};
 use crate::logic::{Ctx, Op};
 use crate::model::*;
 
@@ -60,7 +60,8 @@ impl Hub {
         let cfg = sh.cfg.sync.clone();
         let mut budget = limit.unwrap_or(SYNC_LIMIT);
         if !(1..=SYNC_LIMIT_MAX).contains(&budget) {
-            return Err(err(
+            return Err(rule!(
+                "sync.limit",
                 "bad_request",
                 format!("limit must be 1..{SYNC_LIMIT_MAX}"),
             ));
@@ -491,15 +492,24 @@ impl Hub {
     pub(super) async fn ack(&self, sess: &Session, acks: Vec<AckItem>) -> ApiResult<Value> {
         let sh = &self.inner.sh;
         if acks.is_empty() || acks.len() > 1000 {
-            return Err(err("bad_request", "1..1000 acks per call"));
+            return Err(rule!(
+                "sync.ack_count",
+                "bad_request",
+                "1..1000 acks per call"
+            ));
         }
         for a in &acks {
             if a.seq < 0 || a.side_seq < 0 {
-                return Err(err("bad_request", "positions are >= 0"));
+                return Err(rule!(
+                    "sync.ack_negative",
+                    "bad_request",
+                    "positions are >= 0"
+                ));
             }
             let (s, ss) = sh.reg.sync_delivered(sess.sid, &a.conv_id);
             if a.seq > s || a.side_seq > ss {
-                return Err(err(
+                return Err(rule!(
+                    "sync.ack_ahead",
                     "bad_request",
                     format!(
                         "{}: acknowledged more than this session was sent",
@@ -565,7 +575,8 @@ impl Hub {
     /// (unknown, not a member, gone) are left out, so nothing leaks.
     pub(super) async fn heads(&self, me: &User, conv_ids: &[String]) -> ApiResult<Value> {
         if conv_ids.len() > HEADS_MAX {
-            return Err(err(
+            return Err(rule!(
+                "sync.heads_max",
                 "bad_request",
                 format!("at most {HEADS_MAX} conversations"),
             ));

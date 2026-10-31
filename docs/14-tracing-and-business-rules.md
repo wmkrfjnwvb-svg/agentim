@@ -96,9 +96,10 @@
 
 ### 5.1 规则目录（D142）
 
-- 每一处业务检查改成用一个宏声明：`rule!(SEND_SILENCED, "forbidden", "silenced in this conversation until {}")`，规则编号形如 `send.silenced`、`member.add.not_admin`、`file.attach.other_conv`。错误码和现在一样（`forbidden`、`not_found`、`conflict`、`bad_request`、`blocked`、`rate_limited`……），返回给客户端的错误多一个 `rule` 字段，方便开发者按规则处理和查文档。
-- `docs/15-business-rules.md` 由测试从代码生成：按领域分组，每条有编号、错误码、说明、在哪个环节检查（③ 会话层 / ④ Webhook / ⑦ 写线程）。CI 检查文档和代码一致（像 openapi.json 和 MCP 工具清单那样）。
-- 现在的分布（从代码统计，2026-10-29）：
+- 每一处业务检查用一个宏声明：`rule!("member.silenced", "forbidden", format!("silenced in this conversation until {u}"))`，规则编号形如 `msg.edit_version`、`member.add_not_admin`、`file.other_conv`，意思相同的检查共用一个编号（例如各处的"不是成员"都是 `member.required`）。错误码和以前一样，返回给客户端的错误多一个 `rule` 字段（客户端协议的 `error.rule`、开放 API 的 `rule`、MCP 的 `structuredContent.error.rule`，经集群转发也带着），方便开发者按规则处理和查文档。
+- [docs/15-business-rules.md](15-business-rules.md) 由 `tests/rules.rs` 从代码生成：按领域分组，每条有编号、错误码、环节（③ 会话层 / ⑦ 写线程 / 文件存储）、报错文字和所在文件；测试检查文档和代码一致、同一个编号只对应一个错误码、`hub` 和 `logic` 里的拒绝都有编号。官网的 Business rules 页由 `site/scripts/reference.mjs` 从同样的代码生成。
+- 覆盖检查：设置 `AGENTIM_RULES_HIT` 时每次按规则拒绝都把编号记到这个文件；CI 在三种数据库的测试跑完后检查每条规则至少被一个测试触发过，暂时没有测试的列在 `server/ci/rules-untested.txt`（有测试触发了就必须从清单删掉）。
+- 2026-10-31 梳理时的分布（394 处拒绝，299 条规则），见 docs/15。以下是设计时（2026-10-29）的估计：
 
 | 领域 | 检查数 | 主要文件 |
 |---|---|---|
@@ -160,7 +161,7 @@ CI：三种数据库上的场景测试和并发测试跑完后都跑一遍校验
 | T1 | 链路上下文：`Op` 字段、集群转发和发布、写线程批次 link、日志字段、消息行 `trace_id`（schema v10）；客户端核心生成并持久化 `trace` | 单节点和三节点：一条消息的所有日志行 trace_id 相同；转发后的节点日志也有；重启后续传同一个 trace；不合法的 traceparent 新开；客户端的已采样标志被忽略 | 完成（`tests/tracing.rs`、集群 `the_trace_crosses_nodes`） |
 | T2 | 染色规则：管理 API、控制台、过期、审计、节点通知、按链路调日志级别、继承到 Webhook 和 Agent 回复 | 规则生效和过期；别的用户不受影响；跨节点继承；规则编号不出现在推送和 Webhook 里 | 完成（`tests/dye.rs`、集群 `dye_rules_reach_every_node_and_follow_the_request`） |
 | T3 | 消息轨迹接口和控制台页面 | 各种情况：已送达、部分设备离线、Webhook 失败、被 Agent 回复、撤回；无权限的角色 403；审计记录 | 完成（`tests/msgtrace.rs`、控制台冒烟测试） |
-| T4 | 规则宏、规则目录生成、错误里的 `rule` 字段、拒绝指标 | 目录和代码一致；每个规则至少一个测试触发它（覆盖检查） | 进行中 |
+| T4 | 规则宏、规则目录生成、错误里的 `rule` 字段、拒绝指标 | 目录和代码一致；每个规则至少一个测试触发它（覆盖检查） | 完成（`tests/rules.rs`、`tests/http.rs` 的拒绝指标、集群转发和 MCP 带 `rule`） |
 | T5 | 业务校验器 | 对故意改坏的数据库（变异）能找出每一类问题；场景和并发测试后零问题 |  |
 | T6 | OTLP 导出（可选）、Agent SDK 的 `ctx.trace`、Webhook `traceparent` | 导出到本地收集器看到完整链路；性能对比写进 README | Webhook `traceparent` 随 T2 完成 |
 

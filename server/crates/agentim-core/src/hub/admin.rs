@@ -37,7 +37,8 @@ fn check_name(name: &str) -> ApiResult<()> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "_-.@".contains(c))
     {
-        return Err(err(
+        return Err(rule!(
+            "admin.name",
             "bad_request",
             "admin names are 1..64 of A-Z a-z 0-9 _ - . @",
         ));
@@ -47,7 +48,8 @@ fn check_name(name: &str) -> ApiResult<()> {
 
 fn check_role(role: &str) -> ApiResult<()> {
     if !ROLES.contains(&role) {
-        return Err(err(
+        return Err(rule!(
+            "admin.role",
             "bad_request",
             "role is owner, developer, operator or moderator",
         ));
@@ -100,16 +102,25 @@ impl Hub {
         password: &str,
     ) -> ApiResult<(Admin, String)> {
         check_name(name)?;
-        crate::auth::check_password_policy(name, password).map_err(|m| err("bad_request", m))?;
+        crate::auth::check_password_policy(name, password)
+            .map_err(|m| rule!("admin.setup_input", "bad_request", m))?;
         {
             let mut s = self.inner.setup.lock().unwrap();
             if s.as_deref() != Some(crate::auth::hash(token).as_str()) {
-                return Err(err("forbidden", "unknown or used setup link"));
+                return Err(rule!(
+                    "admin.setup_link",
+                    "forbidden",
+                    "unknown or used setup link"
+                ));
             }
             *s = None;
         }
         if !self.admins().await?.is_empty() {
-            return Err(err("conflict", "the console is already set up"));
+            return Err(rule!(
+                "admin.setup_done",
+                "conflict",
+                "the console is already set up"
+            ));
         }
         let a = self.create_admin(name, "owner", password).await?;
         self.admin_session_for(&a).await
@@ -125,7 +136,8 @@ impl Hub {
     ) -> ApiResult<AdminRow> {
         check_name(name)?;
         check_role(role)?;
-        crate::auth::check_password_policy(name, password).map_err(|m| err("bad_request", m))?;
+        crate::auth::check_password_policy(name, password)
+            .map_err(|m| rule!("admin.input", "bad_request", m))?;
         let row = AdminRow {
             id: format!("adm_{}", crate::db::new_id()),
             name: name.to_string(),
@@ -154,9 +166,13 @@ impl Hub {
         let a = self
             .admin_by("name", name)
             .await?
-            .ok_or_else(|| err("not_found", "no such admin"))?;
+            .ok_or_else(|| rule!("admin.unknown", "not_found", "no such admin"))?;
         if role.is_none() && disabled.is_none() {
-            return Err(err("bad_request", "nothing to change"));
+            return Err(rule!(
+                "admin.update_nothing",
+                "bad_request",
+                "nothing to change"
+            ));
         }
         self.admin_op(AdminOp::Update {
             id: a.id.clone(),
@@ -166,7 +182,7 @@ impl Hub {
         .await?;
         self.admin_by("id", &a.id)
             .await?
-            .ok_or_else(|| err("not_found", "no such admin"))
+            .ok_or_else(|| rule!("admin.unknown", "not_found", "no such admin"))
     }
 
     /// An owner sets another admin's password; their sessions end.
@@ -174,7 +190,7 @@ impl Hub {
         let a = self
             .admin_by("name", name)
             .await?
-            .ok_or_else(|| err("not_found", "no such admin"))?;
+            .ok_or_else(|| rule!("admin.unknown", "not_found", "no such admin"))?;
         self.store_admin_password(&a, password).await?;
         self.admin_op(AdminOp::SessionsDelete {
             admin_id: Some(a.id.clone()),
@@ -185,7 +201,8 @@ impl Hub {
     }
 
     async fn store_admin_password(&self, a: &AdminRow, password: &str) -> ApiResult<()> {
-        crate::auth::check_password_policy(&a.name, password).map_err(|m| err("bad_request", m))?;
+        crate::auth::check_password_policy(&a.name, password)
+            .map_err(|m| rule!("admin.password", "bad_request", m))?;
         let pw = password.to_string();
         let hash = self
             .hash_job(move || crate::auth::hash_password(&pw))
@@ -206,7 +223,7 @@ impl Hub {
     ) -> ApiResult<(Admin, String)> {
         let invalid = || err("invalid_credentials", "wrong name, password or code");
         if name.len() > 255 || password.len() > 1024 {
-            return Err(err("bad_request", "too long"));
+            return Err(rule!("admin.login_input", "bad_request", "too long"));
         }
         let a = self.admin_by("name", name).await?;
         let mut c = match &a {
@@ -220,7 +237,8 @@ impl Hub {
         if let Some(until) = c.locked_until
             && until > now
         {
-            return Err(err(
+            return Err(rule!(
+                "admin.login_rate",
                 "rate_limited",
                 format!(
                     "too many failed logins; retry in {}s",
@@ -262,7 +280,11 @@ impl Hub {
             }
         }
         if a.disabled_at.is_some() {
-            return Err(err("forbidden", "the admin is disabled"));
+            return Err(rule!(
+                "admin.disabled",
+                "forbidden",
+                "the admin is disabled"
+            ));
         }
         self.cred(&a.id, CredChange::Succeeded { totp_step: step })
             .await
@@ -385,7 +407,7 @@ impl Hub {
         let row = self
             .admin_by("id", &a.id)
             .await?
-            .ok_or_else(|| err("not_found", "no such admin"))?;
+            .ok_or_else(|| rule!("admin.unknown", "not_found", "no such admin"))?;
         let c = self.credentials(&a.id).await?;
         let h = c.password_hash.unwrap_or_default();
         let cur = current.to_string();
@@ -395,7 +417,11 @@ impl Hub {
         {
             // Counted like a failed login: a session is not a free guess (B9).
             self.login_failed(&a.id).await?;
-            return Err(err("forbidden", "the current password is wrong"));
+            return Err(rule!(
+                "admin.wrong_password",
+                "forbidden",
+                "the current password is wrong"
+            ));
         }
         self.store_admin_password(&row, new).await?;
         self.admin_op(AdminOp::SessionsDelete {
@@ -408,7 +434,8 @@ impl Hub {
 
     pub async fn admin_totp_setup(&self, a: &Admin) -> ApiResult<Value> {
         if self.credentials(&a.id).await?.totp_secret.is_some() {
-            return Err(err(
+            return Err(rule!(
+                "admin.totp_on",
                 "conflict",
                 "two-factor login is already on; turn it off first",
             ));
@@ -424,10 +451,14 @@ impl Hub {
     pub async fn admin_totp_enable(&self, a: &Admin, code: &str) -> ApiResult<()> {
         let c = self.credentials(&a.id).await?;
         let Some(p) = c.totp_pending else {
-            return Err(err("conflict", "set up two-factor login first"));
+            return Err(rule!(
+                "admin.totp_setup_first",
+                "conflict",
+                "set up two-factor login first"
+            ));
         };
         let step = crate::auth::totp_check(&p, code, now_ms() / 1000)
-            .ok_or_else(|| err("bad_request", "wrong code"))?;
+            .ok_or_else(|| rule!("admin.totp_wrong_code", "bad_request", "wrong code"))?;
         self.cred(&a.id, CredChange::TotpEnable { step }).await?;
         Ok(())
     }
@@ -435,11 +466,15 @@ impl Hub {
     pub async fn admin_totp_disable(&self, a: &Admin, code: &str) -> ApiResult<()> {
         let c = self.credentials(&a.id).await?;
         let Some(s) = c.totp_secret else {
-            return Err(err("conflict", "two-factor login is off"));
+            return Err(rule!(
+                "admin.totp_off",
+                "conflict",
+                "two-factor login is off"
+            ));
         };
         let Some(step) = crate::auth::totp_check(&s, code, now_ms() / 1000) else {
             self.login_failed(&a.id).await?;
-            return Err(err("bad_request", "wrong code"));
+            return Err(rule!("admin.totp_wrong_code", "bad_request", "wrong code"));
         };
         self.cred(
             &a.id,
@@ -448,7 +483,13 @@ impl Hub {
             },
         )
         .await
-        .map_err(|_| err("bad_request", "this code was already used"))?;
+        .map_err(|_| {
+            rule!(
+                "admin.totp_code_used",
+                "bad_request",
+                "this code was already used"
+            )
+        })?;
         self.cred(&a.id, CredChange::TotpDisable).await?;
         Ok(())
     }
@@ -478,7 +519,11 @@ impl Hub {
         role: &str,
     ) -> ApiResult<(String, AdminKeyRow)> {
         if name.is_empty() || name.len() > 64 || name.contains('\0') {
-            return Err(err("bad_request", "a key name is 1..64 bytes"));
+            return Err(rule!(
+                "admin.key_name",
+                "bad_request",
+                "a key name is 1..64 bytes"
+            ));
         }
         check_role(role)?;
         let key_id = format!(
@@ -512,7 +557,11 @@ impl Hub {
             })
             .await?;
         if v["revoked"] != true {
-            return Err(err("not_found", "no such key in force"));
+            return Err(rule!(
+                "admin.unknown_key",
+                "not_found",
+                "no such key in force"
+            ));
         }
         Ok(())
     }
@@ -563,15 +612,20 @@ impl Hub {
     /// The app's defaults of what people may do in their client.
     pub async fn set_client_defaults(&self, v: &Value) -> ApiResult<crate::config::AllowConfig> {
         if !v.is_object() {
-            return Err(err("bad_request", "the client defaults are a JSON object"));
+            return Err(rule!(
+                "admin.client_defaults",
+                "bad_request",
+                "the client defaults are a JSON object"
+            ));
         }
-        let a: crate::config::AllowConfig =
-            serde_json::from_value(v.clone()).map_err(|e| err("bad_request", e.to_string()))?;
+        let a: crate::config::AllowConfig = serde_json::from_value(v.clone())
+            .map_err(|e| rule!("admin.client_defaults", "bad_request", e.to_string()))?;
         if [a.edit_minutes, a.recall_minutes]
             .iter()
             .any(|m| m.is_some_and(|m| !(0..=525_600).contains(&m)))
         {
-            return Err(err(
+            return Err(rule!(
+                "admin.client_windows",
                 "bad_request",
                 "edit_minutes and recall_minutes are 0..525600",
             ));
@@ -804,11 +858,15 @@ impl Hub {
     /// `agentim cluster status` / `drain` through the cluster crate.
     pub async fn cluster_admin(&self, cmd: crate::cli::ClusterCmd) -> ApiResult<Value> {
         let Some(f) = self.inner.cluster_query.get() else {
-            return Err(err("bad_request", "this server is not part of a cluster"));
+            return Err(rule!(
+                "admin.not_clustered",
+                "bad_request",
+                "this server is not part of a cluster"
+            ));
         };
         f(self.inner.cfg.clone(), cmd)
             .await
-            .map_err(|e| err("bad_request", e))
+            .map_err(|e| rule!("admin.cluster_input", "bad_request", e))
     }
 
     /// Lets the admin API reach the cluster crate's status and drain.

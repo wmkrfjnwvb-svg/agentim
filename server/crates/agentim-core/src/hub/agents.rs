@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Hub, err};
+use super::Hub;
 use crate::logic::Op;
 use crate::model::*;
 
@@ -37,10 +37,15 @@ impl Hub {
         checked: bool,
     ) -> ApiResult<Value> {
         if me.kind != UserKind::Human {
-            return Err(err("forbidden", "only people own agents"));
+            return Err(rule!(
+                "agent.people_own",
+                "forbidden",
+                "only people own agents"
+            ));
         }
         if !crate::open_api::valid_user_id(name) {
-            return Err(err(
+            return Err(rule!(
+                "agent.name",
                 "bad_request",
                 "agent names are 1..64 of A-Z a-z 0-9 _ - . @ : and do not start with _",
             ));
@@ -134,10 +139,14 @@ impl Hub {
         revoke_others: bool,
     ) -> ApiResult<Value> {
         if agent.kind != UserKind::Agent || self.is_destroyed(&agent.id) {
-            return Err(err("not_found", "no such agent"));
+            return Err(rule!("agent.unknown", "not_found", "no such agent"));
         }
         if self.is_deactivated(&agent.id) {
-            return Err(err("conflict", "the agent is deactivated"));
+            return Err(rule!(
+                "agent.deactivated",
+                "conflict",
+                "the agent is deactivated"
+            ));
         }
         let (key, row, revoked) = self
             .issue_token_with(
@@ -171,7 +180,7 @@ impl Hub {
             .iter()
             .any(|d| d.device_id == device_id)
         {
-            return Err(err("not_found", "no such key"));
+            return Err(rule!("agent.unknown_key", "not_found", "no such key"));
         }
         let n = self.revoke_tokens(&agent.id, Some(device_id)).await?;
         self.audit_user(
@@ -214,7 +223,8 @@ impl Hub {
         {
             return Ok(());
         }
-        Err(err(
+        Err(rule!(
+            "agent.contact_not_allowed",
             "forbidden",
             format!(
                 "an agent reaches only its owner, the owner's agents and those it already shares a conversation with; ask your owner to introduce {}",
@@ -248,9 +258,9 @@ impl Hub {
             .sh
             .user(agent_id)
             .filter(|u| u.kind == UserKind::Agent)
-            .ok_or_else(|| err("not_found", "no such agent"))?;
+            .ok_or_else(|| rule!("agent.unknown", "not_found", "no such agent"))?;
         if a.owner_id.as_deref() != Some(me.id.as_str()) {
-            return Err(err("forbidden", "not your agent"));
+            return Err(rule!("agent.not_owner", "forbidden", "not your agent"));
         }
         Ok(a)
     }

@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Hub, err};
+use super::Hub;
 use crate::model::*;
 
 const DEFAULT_BEFORE: i64 = 50;
@@ -24,7 +24,8 @@ fn anchor_of(v: Option<&Value>) -> ApiResult<Anchor> {
         Some(Value::String(s)) if s == "first_unread" => Ok(Anchor::FirstUnread),
         Some(v) => match v.as_i64() {
             Some(n) if n >= 0 => Ok(Anchor::Seq(n)),
-            _ => Err(err(
+            _ => Err(rule!(
+                "history.anchor",
                 "bad_request",
                 "anchor is a seq (>= 0), \"newest\" or \"first_unread\"",
             )),
@@ -45,13 +46,15 @@ impl Hub {
         let anchor = anchor_of(anchor)?;
         let (before, after) = (before.unwrap_or(DEFAULT_BEFORE), after.unwrap_or(0));
         if !(0..=cfg.page_max).contains(&before) || !(0..=cfg.page_max).contains(&after) {
-            return Err(err(
+            return Err(rule!(
+                "history.page_size",
                 "bad_request",
                 format!("before and after are 0..{}", cfg.page_max),
             ));
         }
         if before == 0 && after == 0 {
-            return Err(err(
+            return Err(rule!(
+                "history.page_direction",
                 "bad_request",
                 "ask for messages before or after the anchor",
             ));

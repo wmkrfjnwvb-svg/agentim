@@ -764,6 +764,14 @@ async fn tools_follow_the_business_rules(db: TestDb) {
             .await,
         "forbidden"
     );
+    // With the rule that refused it (docs/15).
+    let r = m
+        .tool(&key, "send_message", json!({"conv_id": conv, "text": "x"}))
+        .await;
+    assert_eq!(
+        r["structuredContent"]["error"]["rule"], "member.required",
+        "{r}"
+    );
 }
 
 async fn updates_arrive_once_in_order(db: TestDb) {

@@ -10,7 +10,11 @@ const NOTE_MAX: usize = 4096;
 
 fn check_note(note: &str) -> ApiResult<()> {
     if note.is_empty() || note.len() > NOTE_MAX || note.contains('\0') {
-        return Err(err("bad_request", "a note must be 1 byte..4KB"));
+        return Err(rule!(
+            "agent.note_size",
+            "bad_request",
+            "a note must be 1 byte..4KB"
+        ));
     }
     Ok(())
 }
@@ -26,7 +30,11 @@ impl Ctx<'_, '_> {
         note: &str,
     ) -> ApiResult<Value> {
         if me.kind != UserKind::Agent {
-            return Err(err("forbidden", "only agents hand off"));
+            return Err(rule!(
+                "agent.handoff_agents_only",
+                "forbidden",
+                "only agents hand off"
+            ));
         }
         self.require_member(conv_id, &me.id).await?;
         check_note(note)?;
@@ -35,11 +43,18 @@ impl Ctx<'_, '_> {
             Some(t) => members
                 .iter()
                 .find(|m| m.user_id == *t || m.name == *t)
-                .ok_or_else(|| err("bad_request", "hand off to a person in this conversation"))?,
+                .ok_or_else(|| {
+                    rule!(
+                        "agent.handoff_target",
+                        "bad_request",
+                        "hand off to a person in this conversation"
+                    )
+                })?,
             None => {
                 let owner = me.owner_id.clone().unwrap_or_default();
                 members.iter().find(|m| m.user_id == owner).ok_or_else(|| {
-                    err(
+                    rule!(
+                        "agent.handoff_owner_absent",
                         "bad_request",
                         "your owner is not in this conversation; name a person (to)",
                     )
@@ -47,11 +62,19 @@ impl Ctx<'_, '_> {
             }
         };
         if target.kind != UserKind::Human {
-            return Err(err("bad_request", "hand off to a person, not an agent"));
+            return Err(rule!(
+                "agent.handoff_to_person",
+                "bad_request",
+                "hand off to a person, not an agent"
+            ));
         }
         let target = target.user_id.clone();
         if let Some(by) = self.db.takeover(conv_id, &me.id).await? {
-            return Err(err("conflict", format!("already taken over by {by}")));
+            return Err(rule!(
+                "agent.taken_over",
+                "conflict",
+                format!("already taken over by {by}")
+            ));
         }
         let ids: Vec<String> = self
             .st
@@ -117,12 +140,17 @@ impl Ctx<'_, '_> {
             .sh
             .user(agent_id)
             .filter(|u| u.kind == UserKind::Agent)
-            .ok_or_else(|| err("not_found", "no such agent"))?;
+            .ok_or_else(|| rule!("agent.unknown", "not_found", "no such agent"))?;
         let Some(by) = self.db.takeover(conv_id, &agent.id).await? else {
-            return Err(err("conflict", "the agent is not handed off"));
+            return Err(rule!(
+                "agent.not_handed_off",
+                "conflict",
+                "the agent is not handed off"
+            ));
         };
         if me.id != by && agent.owner_id.as_deref() != Some(me.id.as_str()) {
-            return Err(err(
+            return Err(rule!(
+                "agent.handback_not_allowed",
                 "forbidden",
                 "only the person it was handed to or its owner hands it back",
             ));
@@ -176,29 +204,43 @@ impl Ctx<'_, '_> {
         data: Option<Value>,
     ) -> ApiResult<Value> {
         if me.kind != UserKind::Agent {
-            return Err(err("forbidden", "progress is for agents"));
+            return Err(rule!(
+                "agent.progress_agents_only",
+                "forbidden",
+                "progress is for agents"
+            ));
         }
         self.require_member(conv_id, &me.id).await?;
         if !PROGRESS_KINDS.contains(&kind) {
-            return Err(err(
+            return Err(rule!(
+                "agent.progress_kind",
                 "bad_request",
                 format!("kind is one of {}", PROGRESS_KINDS.join(", ")),
             ));
         }
         if text.is_empty() || text.len() > NOTE_MAX || text.contains('\0') {
-            return Err(err("bad_request", "text must be 1 byte..4KB"));
+            return Err(rule!(
+                "agent.progress_text",
+                "bad_request",
+                "text must be 1 byte..4KB"
+            ));
         }
         if data
             .as_ref()
             .is_some_and(|d| d.to_string().len() > DATA_MAX)
         {
-            return Err(err("bad_request", "data is at most 8KB"));
+            return Err(rule!(
+                "agent.progress_data",
+                "bad_request",
+                "data is at most 8KB"
+            ));
         }
         if let Some(m) = &msg_id {
             match self.db.message(m).await? {
                 Some(x) if x.conv_id == conv_id && x.sender_id == me.id => {}
                 _ => {
-                    return Err(err(
+                    return Err(rule!(
+                        "agent.progress_msg",
                         "bad_request",
                         "msg_id must be your own message in this conversation",
                     ));
@@ -215,7 +257,8 @@ impl Ctx<'_, '_> {
             *tokens = (*tokens + now.duration_since(*at).as_secs_f64() * rate).min(rate);
             *at = now;
             if *tokens < 1.0 {
-                return Err(err(
+                return Err(rule!(
+                    "agent.progress_rate",
                     "rate_limited",
                     format!(
                         "at most {rate} progress reports a second (agents.progress_per_second)"
@@ -262,20 +305,33 @@ impl Ctx<'_, '_> {
         self.own_conv(&msg.conv_id)?;
         self.require_member(&msg.conv_id, &me.id).await?;
         if msg.sender_type != UserKind::Agent || msg.state == "recalled" {
-            return Err(err("bad_request", "feedback is for agents' messages"));
+            return Err(rule!(
+                "msg.feedback_agents_only",
+                "bad_request",
+                "feedback is for agents' messages"
+            ));
         }
         if msg.sender_id == me.id {
-            return Err(err("bad_request", "one does not rate one's own message"));
+            return Err(rule!(
+                "msg.feedback_own",
+                "bad_request",
+                "one does not rate one's own message"
+            ));
         }
         if let Some(r) = &rating
             && !matches!(r.as_str(), "up" | "down")
         {
-            return Err(err("bad_request", "rating is up, down or null"));
+            return Err(rule!(
+                "msg.feedback_rating",
+                "bad_request",
+                "rating is up, down or null"
+            ));
         }
         if let Some(x) = &reason
             && (rating.is_none() || x.is_empty() || x.len() > REASON_MAX || x.contains('\0'))
         {
-            return Err(err(
+            return Err(rule!(
+                "msg.feedback_reason",
                 "bad_request",
                 "a reason (1..500 bytes) goes with a rating",
             ));
@@ -298,7 +354,7 @@ impl Ctx<'_, '_> {
         let agent = self
             .sh
             .user(&msg.sender_id)
-            .ok_or_else(|| err("not_found", "the agent is gone"))?;
+            .ok_or_else(|| rule!("agent.unknown", "not_found", "the agent is gone"))?;
         let audience = self.audience(&msg.conv_id, &agent).await?;
         let side = self
             .db

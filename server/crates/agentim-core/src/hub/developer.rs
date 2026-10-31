@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Hub, err, now_ms};
+use super::{Hub, now_ms};
 use crate::logic::Op;
 use crate::model::*;
 
@@ -18,7 +18,7 @@ impl Hub {
         self.user_by_name(id)
             .or_else(|| self.inner.sh.user(id))
             .filter(|u| u.kind == UserKind::Agent && !self.is_destroyed(&u.id))
-            .ok_or_else(|| err("not_found", "no such agent"))
+            .ok_or_else(|| rule!("agent.unknown", "not_found", "no such agent"))
     }
 
     pub async fn stop_agent_as(
@@ -31,17 +31,29 @@ impl Hub {
             .as_ref()
             .is_some_and(|n| n.is_empty() || n.len() > 500 || n.contains('\0'))
         {
-            return Err(err("bad_request", "reason must be 1..500 bytes"));
+            return Err(rule!(
+                "agent.stop_reason",
+                "bad_request",
+                "reason must be 1..500 bytes"
+            ));
         }
         if self.is_stopped(&agent.id) {
-            return Err(err("conflict", "the agent is already stopped"));
+            return Err(rule!(
+                "agent.already_stopped",
+                "conflict",
+                "the agent is already stopped"
+            ));
         }
         self.stop_agent_by(agent.clone(), by, note).await
     }
 
     pub async fn resume_agent_as(&self, agent: &User, by: &str) -> ApiResult<Value> {
         if !self.is_stopped(&agent.id) {
-            return Err(err("conflict", "the agent is not stopped"));
+            return Err(rule!(
+                "agent.not_stopped",
+                "conflict",
+                "the agent is not stopped"
+            ));
         }
         self.resume_agent_by(agent.clone(), by).await
     }
@@ -60,16 +72,28 @@ impl Hub {
         reason: Option<String>,
     ) -> ApiResult<Value> {
         if seconds.is_some_and(|s| !(1..=MAX_SILENCE_S).contains(&s)) {
-            return Err(err("bad_request", format!("seconds is 1..{MAX_SILENCE_S}")));
+            return Err(rule!(
+                "member.silence_seconds",
+                "bad_request",
+                format!("seconds is 1..{MAX_SILENCE_S}")
+            ));
         }
         if reason
             .as_ref()
             .is_some_and(|r| r.is_empty() || r.len() > 500 || r.contains('\0'))
         {
-            return Err(err("bad_request", "reason must be 1..500 bytes"));
+            return Err(rule!(
+                "member.silence_reason",
+                "bad_request",
+                "reason must be 1..500 bytes"
+            ));
         }
         if user.kind == UserKind::System {
-            return Err(err("bad_request", "the system user is not silenced"));
+            return Err(rule!(
+                "member.silence_system",
+                "bad_request",
+                "the system user is not silenced"
+            ));
         }
         let until = seconds.map(|s| now_ms() + s * 1000);
         let (c, u, b) = (conv_id.to_string(), user.id.clone(), by.to_string());
@@ -122,12 +146,16 @@ impl Hub {
     /// their connected devices are told.
     pub async fn set_permissions(&self, user: &User, change: &Value) -> ApiResult<Value> {
         if user.kind != UserKind::Human {
-            return Err(err("bad_request", "permissions are a person's"));
+            return Err(rule!(
+                "account.permissions_people_only",
+                "bad_request",
+                "permissions are a person's"
+            ));
         }
         let o = self
             .permission_overrides(&user.id)
             .apply(change)
-            .map_err(|m| err("bad_request", m))?;
+            .map_err(|m| rule!("account.permissions_value", "bad_request", m))?;
         self.control()
             .call(Op::SetPermissions {
                 user_id: user.id.clone(),
@@ -167,7 +195,8 @@ impl Hub {
         if ok {
             Ok(())
         } else {
-            Err(err(
+            Err(rule!(
+                "account.app_forbids",
                 "forbidden",
                 format!("the app does not allow this: {what}"),
             ))

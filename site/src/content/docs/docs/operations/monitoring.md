@@ -19,7 +19,7 @@ sidebar:
 | Area | Metrics |
 |---|---|
 | Connections | `agentim_ws_connections{kind}`, `agentim_ws_connects_total`, `agentim_ws_disconnects_total` |
-| Requests | `agentim_requests_total{op,result}`, `agentim_request_duration_seconds{op}`, `agentim_ack_latency_seconds`, `agentim_clients_total{protocol,client}` |
+| Requests | `agentim_requests_total{op,result}`, `agentim_refusals_total{op,code,rule}` (refusals by [business rule](/docs/reference/business-rules/)), `agentim_request_duration_seconds{op}`, `agentim_ack_latency_seconds`, `agentim_clients_total{protocol,client}` |
 | Writes | `agentim_commit_batch_size`, `agentim_commit_duration_seconds{database}`, `agentim_write_queue_depth{database}`, `agentim_write_rejected_total{reason}`, `agentim_messages_committed_total{sender_type}`, `agentim_dedup_hits_total` |
 | Pushes | `agentim_push_total`, `agentim_push_dropped_total`, `agentim_resync_total`, `agentim_stream_deltas_total` |
 | Streams | `agentim_streams_active`, `agentim_streams_finished_total{state,reason}` |

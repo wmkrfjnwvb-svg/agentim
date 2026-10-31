@@ -32,21 +32,31 @@ impl Hub {
         by: &str,
     ) -> ApiResult<DyeRule> {
         if !DYE_KINDS.contains(&kind) {
-            return Err(err(
+            return Err(rule!(
+                "dye.kind",
                 "bad_request",
                 format!("kind must be one of {}", DYE_KINDS.join(", ")),
             ));
         }
         if target.is_empty() || target.len() > 128 || target.chars().any(char::is_control) {
-            return Err(err("bad_request", "target must be 1..128 bytes"));
+            return Err(rule!(
+                "dye.target",
+                "bad_request",
+                "target must be 1..128 bytes"
+            ));
         }
         let reason = reason.trim();
         if reason.is_empty() || reason.len() > 500 {
-            return Err(err("bad_request", "a reason of 1..500 bytes is required"));
+            return Err(rule!(
+                "dye.reason",
+                "bad_request",
+                "a reason of 1..500 bytes is required"
+            ));
         }
         let minutes = minutes.unwrap_or(DYE_DEFAULT_MINUTES);
         if !(1..=DYE_MAX_MINUTES).contains(&minutes) {
-            return Err(err(
+            return Err(rule!(
+                "dye.minutes",
                 "bad_request",
                 format!("minutes must be 1..{DYE_MAX_MINUTES} (24 hours at most)"),
             ));
@@ -55,13 +65,17 @@ impl Hub {
         let who = || self.user(target).or_else(|| self.user_by_name(target));
         match kind {
             "user" if !who().is_some_and(|u| u.kind == UserKind::Human) => {
-                return Err(err("not_found", "no such person"));
+                return Err(rule!("dye.unknown_target", "not_found", "no such person"));
             }
             "agent" if !who().is_some_and(|u| u.kind == UserKind::Agent) => {
-                return Err(err("not_found", "no such agent"));
+                return Err(rule!("dye.unknown_target", "not_found", "no such agent"));
             }
             "conv" if self.inner.sh.dir_get(target).is_none() => {
-                return Err(err("not_found", "no such conversation"));
+                return Err(rule!(
+                    "dye.unknown_target",
+                    "not_found",
+                    "no such conversation"
+                ));
             }
             _ => {}
         }
@@ -70,7 +84,11 @@ impl Hub {
             .iter()
             .any(|r| r.kind == kind && r.target == target)
         {
-            return Err(err("conflict", "this target is already dyed"));
+            return Err(rule!(
+                "dye.duplicate",
+                "conflict",
+                "this target is already dyed"
+            ));
         }
         let now = now_ms();
         let rule = DyeRule {

@@ -216,6 +216,8 @@ async fn refusals_are_the_same_through_forwarding(db: TestDb) {
         let e = Conn::new(&nodes[i].0, &eve);
         let r = e.send(&conv, "not a member").await;
         assert_eq!(r["error"]["code"], "forbidden", "on node {i}: {r}");
+        // The rule id comes back too, from the node that holds it.
+        assert_eq!(r["error"]["rule"], "member.required", "on node {i}: {r}");
         let r = e.send("c_unknown", "nowhere").await;
         assert!(
             ["not_found", "forbidden"].contains(&r["error"]["code"].as_str().unwrap()),
@@ -226,6 +228,7 @@ async fn refusals_are_the_same_through_forwarding(db: TestDb) {
             .call(json!({"op": "send", "conv_id": conv, "client_msg_id": "x", "text": ""}))
             .await;
         assert_eq!(r["error"]["code"], "bad_request", "{r}");
+        assert_eq!(r["error"]["rule"], "msg.text_size", "{r}");
     }
     let log = Conn::new(&nodes[other].0, &alice).pull(&conv, 0).await;
     assert_eq!(seqs(&log).len(), base, "refusals leave no trace");

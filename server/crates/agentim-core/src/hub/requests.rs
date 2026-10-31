@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::{Hub, err};
+use super::Hub;
 use crate::db::Request;
 use crate::model::*;
 
@@ -24,7 +24,11 @@ impl Hub {
     ) -> ApiResult<Value> {
         let wait = wait_secs.unwrap_or(0);
         if !(0..=MAX_WAIT_SECS).contains(&wait) {
-            return Err(err("bad_request", "wait_secs must be 0..25"));
+            return Err(rule!(
+                "request.wait_secs",
+                "bad_request",
+                "wait_secs must be 0..25"
+            ));
         }
         let deadline = Instant::now() + Duration::from_secs(wait as u64);
         loop {
@@ -34,7 +38,7 @@ impl Hub {
                 && owner.as_deref() != Some(me.id.as_str())
                 && !assignees.contains(&me.id)
             {
-                return Err(err("forbidden", "not your request"));
+                return Err(rule!("request.not_yours", "forbidden", "not your request"));
             }
             if q.state != "pending" || Instant::now() >= deadline {
                 let mut v = q.view();
@@ -65,7 +69,7 @@ impl Hub {
                 return Ok(f);
             }
         }
-        Err(err("not_found", "request"))
+        Err(rule!("request.unknown", "not_found", "request"))
     }
 
     /// Requests waiting for me (assigned to me, or asked by my agents) and

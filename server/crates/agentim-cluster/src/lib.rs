@@ -1294,7 +1294,13 @@ impl Inner {
                 }
                 Ok(r) => match r.err {
                     Some(e) if e.code == "not_owner" => continue,
-                    Some(e) => return Err(ApiError::from_wire(&e.code, e.message)),
+                    Some(e) => {
+                        return Err(ApiError::from_wire_rule(
+                            &e.code,
+                            e.message,
+                            e.rule.as_deref(),
+                        ));
+                    }
                     None => return Ok(r.ok.unwrap_or(Value::Null)),
                 },
             }
@@ -1433,14 +1439,16 @@ impl peer::Serve for Handle {
         let i = self.0.clone();
         Box::pin(async move {
             let id = req.id;
-            let err = |code: &str, message: String| codec::ForwardResp {
+            let wire = |code: &str, message: String, rule: Option<&str>| codec::ForwardResp {
                 id,
                 ok: None,
                 err: Some(codec::WireError {
                     code: code.into(),
                     message,
+                    rule: rule.map(String::from),
                 }),
             };
+            let err = |code: &str, message: String| wire(code, message, None);
             let op: Op = match serde_json::from_value(req.op) {
                 Ok(op) => op,
                 Err(e) => return err("unsupported_op", e.to_string()),
@@ -1454,7 +1462,7 @@ impl peer::Serve for Handle {
             if let agentim_core::cluster::Route::Conv(c) = op.route()
                 && let Err(e) = hub.dir_ensure(&c).await
             {
-                return err(e.code, e.message);
+                return wire(e.code, e.message, e.rule);
             }
             // Only commands this node may run for the shard named.
             match tokio::time::timeout(FORWARD_WAIT, shard.call_local(op)).await {
@@ -1463,7 +1471,7 @@ impl peer::Serve for Handle {
                     ok: Some(v),
                     err: None,
                 },
-                Ok(Err(e)) => err(e.code, e.message),
+                Ok(Err(e)) => wire(e.code, e.message, e.rule),
                 Err(_) => err("unavailable", "the writer did not answer in time".into()),
             }
         })

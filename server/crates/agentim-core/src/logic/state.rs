@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Ctx, err};
+use super::Ctx;
 use crate::model::*;
 
 /// Older versions kept per key.
@@ -21,13 +21,15 @@ impl Ctx<'_, '_> {
     ) -> ApiResult<Value> {
         let head = self.db.state_head(agent_id, key).await?;
         if head != expected {
-            return Err(err(
+            return Err(rule!(
+                "state.version_conflict",
                 "conflict",
                 format!("{key} is at version {head}; read it and retry"),
             ));
         }
         if head == 0 && self.db.state_keys(agent_id).await? >= max_keys {
-            return Err(err(
+            return Err(rule!(
+                "state.key_limit",
                 "rate_limited",
                 format!("at most {max_keys} keys per agent (agents.state_keys)"),
             ));
@@ -46,10 +48,15 @@ impl Ctx<'_, '_> {
     ) -> ApiResult<Value> {
         let head = self.db.state_head(agent_id, key).await?;
         if head == 0 {
-            return Err(err("not_found", format!("no key {key}")));
+            return Err(rule!(
+                "state.unknown_key",
+                "not_found",
+                format!("no key {key}")
+            ));
         }
         if head != expected {
-            return Err(err(
+            return Err(rule!(
+                "state.version_conflict",
                 "conflict",
                 format!("{key} is at version {head}; read it and retry"),
             ));

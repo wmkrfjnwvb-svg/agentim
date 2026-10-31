@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Hub, err};
+use super::Hub;
 use crate::logic::Op;
 use crate::model::*;
 
@@ -17,7 +17,8 @@ pub const ARCHIVE: &str = "archive/";
 
 fn check_key(key: &str) -> ApiResult<()> {
     if key.is_empty() || key.len() > KEY_MAX || key.chars().any(char::is_control) {
-        return Err(err(
+        return Err(rule!(
+            "state.key",
             "bad_request",
             "a key is 1..255 bytes without control characters",
         ));
@@ -28,7 +29,11 @@ fn check_key(key: &str) -> ApiResult<()> {
 impl Hub {
     fn state_agent(me: &User) -> ApiResult<()> {
         if me.kind != UserKind::Agent {
-            return Err(err("forbidden", "checkpoints are for agents"));
+            return Err(rule!(
+                "state.agents_only",
+                "forbidden",
+                "checkpoints are for agents"
+            ));
         }
         Ok(())
     }
@@ -42,7 +47,11 @@ impl Hub {
         Self::state_agent(me)?;
         check_key(key)?;
         if version.is_some_and(|v| v < 1) {
-            return Err(err("bad_request", "version must be >= 1"));
+            return Err(rule!(
+                "state.version_min",
+                "bad_request",
+                "version must be >= 1"
+            ));
         }
         let (a, k) = (me.id.clone(), key.to_string());
         let r = self
@@ -51,7 +60,8 @@ impl Hub {
             })
             .await?;
         let (v, value, at, cur) = r.ok_or_else(|| {
-            err(
+            rule!(
+                "state.unknown_version",
                 "not_found",
                 match version {
                     Some(v) => format!("no version {v} of {key}"),
@@ -74,14 +84,26 @@ impl Hub {
         Self::state_agent(me)?;
         check_key(key)?;
         if key.starts_with(ARCHIVE) {
-            return Err(err("bad_request", "archive/ is read-only"));
+            return Err(rule!(
+                "state.archive_read_only",
+                "bad_request",
+                "archive/ is read-only"
+            ));
         }
         if version < 0 {
-            return Err(err("bad_request", "version must be >= 0 (0 creates)"));
+            return Err(rule!(
+                "state.version_min",
+                "bad_request",
+                "version must be >= 0 (0 creates)"
+            ));
         }
         let text = value.to_string();
         if text.len() > VALUE_MAX {
-            return Err(err("bad_request", "a value is at most 1 MiB as JSON"));
+            return Err(rule!(
+                "state.value_size",
+                "bad_request",
+                "a value is at most 1 MiB as JSON"
+            ));
         }
         self.control()
             .call(Op::StatePut {
@@ -103,10 +125,18 @@ impl Hub {
         Self::state_agent(me)?;
         check_key(key)?;
         if key.starts_with(ARCHIVE) {
-            return Err(err("bad_request", "archive/ is read-only"));
+            return Err(rule!(
+                "state.archive_read_only",
+                "bad_request",
+                "archive/ is read-only"
+            ));
         }
         if version < 1 {
-            return Err(err("bad_request", "version must be >= 1"));
+            return Err(rule!(
+                "state.version_min",
+                "bad_request",
+                "version must be >= 1"
+            ));
         }
         self.control()
             .call(Op::StateDelete {
@@ -127,12 +157,20 @@ impl Hub {
         Self::state_agent(me)?;
         let limit = limit.unwrap_or(LIST_DEFAULT);
         if !(1..=LIST_MAX).contains(&limit) {
-            return Err(err("bad_request", "limit must be 1..500"));
+            return Err(rule!(
+                "state.list_limit",
+                "bad_request",
+                "limit must be 1..500"
+            ));
         }
         let prefix = prefix.unwrap_or_default();
         let after = after.unwrap_or_default();
         if prefix.len() > KEY_MAX || after.len() > KEY_MAX {
-            return Err(err("bad_request", "prefix and after are at most 255 bytes"));
+            return Err(rule!(
+                "state.list_args",
+                "bad_request",
+                "prefix and after are at most 255 bytes"
+            ));
         }
         let a = me.id.clone();
         let (keys, more) = self

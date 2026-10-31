@@ -38,7 +38,8 @@ impl Hub {
     /// asked (the developer's backend decides, docs/04 §4.2).
     pub async fn delete_account(&self, user: &User, by: Option<&str>) -> ApiResult<Value> {
         if user.kind != UserKind::Human {
-            return Err(err(
+            return Err(rule!(
+                "account.delete_people_only",
                 "bad_request",
                 "only a person's account is deleted; agents are destroyed",
             ));
@@ -251,9 +252,13 @@ impl Hub {
         let send = |v: Value| {
             let tx = tx.clone();
             async move {
-                tx.send(line(v))
-                    .await
-                    .map_err(|_| err("bad_request", "the export was cancelled"))
+                tx.send(line(v)).await.map_err(|_| {
+                    rule!(
+                        "account.export_cancelled",
+                        "bad_request",
+                        "the export was cancelled"
+                    )
+                })
             }
         };
         let id = user.id.clone();
@@ -370,7 +375,8 @@ impl Hub {
         text: Option<&str>,
     ) -> ApiResult<Value> {
         let Some(cat) = CATEGORIES.iter().position(|c| *c == category) else {
-            return Err(err(
+            return Err(rule!(
+                "report.category",
                 "bad_request",
                 format!("category must be one of {}", CATEGORIES.join(", ")),
             ));
@@ -378,7 +384,11 @@ impl Hub {
         if let Some(t) = text
             && (t.chars().count() > REPORT_TEXT_MAX || t.contains('\0'))
         {
-            return Err(err("bad_request", "text must be at most 1000 characters"));
+            return Err(rule!(
+                "report.text_size",
+                "bad_request",
+                "text must be at most 1000 characters"
+            ));
         }
         let (conv_id, evidence) = match target_kind {
             "message" => {
@@ -391,7 +401,7 @@ impl Hub {
                         })
                     })
                     .await
-                    .map_err(|_| err("not_found", "no such message"))?;
+                    .map_err(|_| rule!("msg.unknown", "not_found", "no such message"))?;
                 let shard = self.conv_shard(&conv)?;
                 let (c, m, u) = (conv.clone(), id.clone(), me.id.clone());
                 let (msg, member) = self
@@ -401,14 +411,24 @@ impl Hub {
                         )
                     })
                     .await?;
-                let msg = msg.ok_or_else(|| err("not_found", "no such message"))?;
-                let member = member
-                    .ok_or_else(|| err("forbidden", "you are not a member of this conversation"))?;
+                let msg =
+                    msg.ok_or_else(|| rule!("msg.unknown", "not_found", "no such message"))?;
+                let member = member.ok_or_else(|| {
+                    rule!(
+                        "member.required",
+                        "forbidden",
+                        "you are not a member of this conversation"
+                    )
+                })?;
                 if msg.created_seq < member.visible_from {
-                    return Err(err("not_found", "no such message"));
+                    return Err(rule!("msg.unknown", "not_found", "no such message"));
                 }
                 if msg.sender_id == me.id {
-                    return Err(err("bad_request", "you cannot report your own message"));
+                    return Err(rule!(
+                        "report.own_message",
+                        "bad_request",
+                        "you cannot report your own message"
+                    ));
                 }
                 let sender = self.inner.sh.user(&msg.sender_id);
                 (
@@ -433,9 +453,13 @@ impl Hub {
                     .user_or_load(target_id)
                     .await?
                     .filter(|u| u.kind != UserKind::System)
-                    .ok_or_else(|| err("not_found", "no such user"))?;
+                    .ok_or_else(|| rule!("account.unknown_user", "not_found", "no such user"))?;
                 if u.id == me.id {
-                    return Err(err("bad_request", "you cannot report yourself"));
+                    return Err(rule!(
+                        "report.self",
+                        "bad_request",
+                        "you cannot report yourself"
+                    ));
                 }
                 let profile = self.user_profile(&u.id).await?.unwrap_or_default();
                 (
@@ -446,16 +470,18 @@ impl Hub {
             "conversation" => {
                 let shard = self
                     .conv_shard(target_id)
-                    .map_err(|_| err("not_found", "no such conversation"))?;
+                    .map_err(|_| rule!("conv.unknown", "not_found", "no such conversation"))?;
                 let (c, u) = (target_id.to_string(), me.id.clone());
                 let (row, member) = self
                     .read(shard, move |db| {
                         Box::pin(async move { Ok((db.conv(&c).await?, db.member(&c, &u).await?)) })
                     })
                     .await?;
-                let row = row.ok_or_else(|| err("not_found", "no such conversation"))?;
+                let row =
+                    row.ok_or_else(|| rule!("conv.unknown", "not_found", "no such conversation"))?;
                 if member.is_none() {
-                    return Err(err(
+                    return Err(rule!(
+                        "member.required",
                         "forbidden",
                         "you are not a member of this conversation",
                     ));
@@ -466,7 +492,8 @@ impl Hub {
                 )
             }
             _ => {
-                return Err(err(
+                return Err(rule!(
+                    "report.target_kind",
                     "bad_request",
                     "target_kind must be message, user or conversation",
                 ));
@@ -540,39 +567,62 @@ impl Hub {
         by: &str,
     ) -> ApiResult<Value> {
         if reason.trim().is_empty() || reason.chars().count() > 2000 {
-            return Err(err("bad_request", "reason must be 1..2000 characters"));
+            return Err(rule!(
+                "report.reason_size",
+                "bad_request",
+                "reason must be 1..2000 characters"
+            ));
         }
         let r = self
             .report_detail(id)
             .await?
-            .ok_or_else(|| err("not_found", "no such report"))?;
+            .ok_or_else(|| rule!("report.unknown", "not_found", "no such report"))?;
         let has_user = r["evidence"]["user_id"].is_string();
         let (suspend_until, ban) = match action {
             "none" => (None, false),
             "remove_content" => {
                 if r["target_kind"] != "message" {
-                    return Err(err("bad_request", "remove_content applies to a message"));
+                    return Err(rule!(
+                        "report.remove_needs_message",
+                        "bad_request",
+                        "remove_content applies to a message"
+                    ));
                 }
                 (None, false)
             }
             "suspend_user" => {
-                let d = days.ok_or_else(|| err("bad_request", "suspend_user needs days"))?;
+                let d = days.ok_or_else(|| {
+                    rule!(
+                        "report.suspend_needs_days",
+                        "bad_request",
+                        "suspend_user needs days"
+                    )
+                })?;
                 if !(1..=3650).contains(&d) {
-                    return Err(err("bad_request", "days must be 1..3650"));
+                    return Err(rule!("report.days", "bad_request", "days must be 1..3650"));
                 }
                 if !has_user {
-                    return Err(err("bad_request", "this report names no user"));
+                    return Err(rule!(
+                        "report.no_user",
+                        "bad_request",
+                        "this report names no user"
+                    ));
                 }
                 (Some(now_ms() + d * 86_400_000), false)
             }
             "ban_user" => {
                 if !has_user {
-                    return Err(err("bad_request", "this report names no user"));
+                    return Err(rule!(
+                        "report.no_user",
+                        "bad_request",
+                        "this report names no user"
+                    ));
                 }
                 (None, true)
             }
             _ => {
-                return Err(err(
+                return Err(rule!(
+                    "report.action",
                     "bad_request",
                     "action must be none, remove_content, suspend_user or ban_user",
                 ));

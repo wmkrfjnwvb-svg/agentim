@@ -382,7 +382,7 @@ fn tool_result(out: ApiResult<(String, Value)>) -> Value {
             let e = e.public();
             json!({
                 "content": [{"type": "text", "text": format!("{}: {}", e.code, e.message)}],
-                "structuredContent": {"error": {"code": e.code, "message": e.message}},
+                "structuredContent": {"error": e.to_json()},
                 "isError": true,
             })
         }

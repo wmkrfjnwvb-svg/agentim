@@ -724,7 +724,8 @@ impl Hub {
         *at = now;
         if *tokens < 1.0 {
             let wait = ((1.0 - *tokens) / rate * 1000.0).ceil() as u64;
-            return Err(err(
+            return Err(rule!(
+                "account.rate_limited",
                 "rate_limited",
                 format!("too many {kind} requests; retry in {wait} ms"),
             )
@@ -1148,7 +1149,8 @@ impl Hub {
 
     /// Re-wraps all data keys with a new master key (then restart with it).
     pub async fn rotate_master_key(&self, new_key: &str) -> ApiResult<Value> {
-        crate::crypto::Kek::from_base64(new_key).map_err(|e| err("bad_request", e))?;
+        crate::crypto::Kek::from_base64(new_key)
+            .map_err(|e| rule!("admin.master_key_invalid", "bad_request", e))?;
         let mut out = json!({});
         for s in &self.inner.shards {
             let v = s
@@ -1200,7 +1202,8 @@ impl Hub {
         let cap = 4 * self.hash_slot_count();
         if i.hash_callers.fetch_add(1, SeqCst) >= cap {
             i.hash_callers.fetch_sub(1, SeqCst);
-            return Err(err(
+            return Err(rule!(
+                "account.logins_busy",
                 "rate_limited",
                 "too many logins at once; retry shortly",
             ));
@@ -1245,24 +1248,40 @@ impl Hub {
         ip_allow: Option<Vec<String>>,
     ) -> ApiResult<(String, crate::db::ApiKeyRow)> {
         if name.is_empty() || name.len() > 64 {
-            return Err(err("bad_request", "name must be 1..64 bytes"));
+            return Err(rule!(
+                "apikey.name",
+                "bad_request",
+                "name must be 1..64 bytes"
+            ));
         }
         if scopes.is_empty() {
-            return Err(err("bad_request", "at least one scope"));
+            return Err(rule!(
+                "apikey.no_scope",
+                "bad_request",
+                "at least one scope"
+            ));
         }
         if let Some(s) = scopes
             .iter()
             .find(|s| !crate::open_api::SCOPES.contains(&s.as_str()))
         {
-            return Err(err("bad_request", format!("unknown scope {s}")));
+            return Err(rule!(
+                "apikey.unknown_scope",
+                "bad_request",
+                format!("unknown scope {s}")
+            ));
         }
         if let Some(ips) = &ip_allow
             && let Some(bad) = ips.iter().find(|i| crate::open_api::parse_net(i).is_none())
         {
-            return Err(err("bad_request", format!("bad address {bad}")));
+            return Err(rule!(
+                "apikey.bad_address",
+                "bad_request",
+                format!("bad address {bad}")
+            ));
         }
         if ttl_ms.is_some_and(|t| t <= 0) {
-            return Err(err("bad_request", "ttl must be positive"));
+            return Err(rule!("apikey.ttl", "bad_request", "ttl must be positive"));
         }
         // The whole id: its first half is a timestamp and repeats within a millisecond.
         let key_id = format!("k{}", new_id());
@@ -1373,7 +1392,11 @@ impl Hub {
         if self.inner.sh.deactivated.read().unwrap().contains(&user.id)
             && self.inner.sh.failpoints.hit(DELETED_CAN_SEND).await.is_ok()
         {
-            return Err(err("forbidden", "the user is deactivated"));
+            return Err(rule!(
+                "account.deactivated",
+                "forbidden",
+                "the user is deactivated"
+            ));
         }
         let sess = Session {
             hub: self.clone(),
@@ -1396,7 +1419,11 @@ impl Hub {
     /// user's client permissions do not apply, every other rule does.
     pub async fn act_for(&self, user: &User, msg: ClientMsg) -> ApiResult<Value> {
         if self.inner.sh.deactivated.read().unwrap().contains(&user.id) {
-            return Err(err("forbidden", "the user is deactivated"));
+            return Err(rule!(
+                "account.deactivated",
+                "forbidden",
+                "the user is deactivated"
+            ));
         }
         let sess = Session {
             hub: self.clone(),
@@ -1490,7 +1517,7 @@ impl Hub {
                 Box::pin(async move { Ok((db.conv(&c).await?, db.members(&c).await?)) })
             })
             .await?;
-        let row = row.ok_or_else(|| err("not_found", "conversation"))?;
+        let row = row.ok_or_else(|| rule!("conv.unknown", "not_found", "conversation"))?;
         let sh = &self.inner.sh;
         let members: Vec<Value> = members
             .iter()
@@ -1780,17 +1807,29 @@ impl Hub {
             .inner
             .sh
             .user(user_id)
-            .ok_or_else(|| err("not_found", "user"))?;
+            .ok_or_else(|| rule!("account.unknown_user", "not_found", "user"))?;
         if user.kind == UserKind::System {
-            return Err(err("bad_request", "the system user does not log in"));
+            return Err(rule!(
+                "account.system_no_login",
+                "bad_request",
+                "the system user does not log in"
+            ));
         }
         for (what, v) in [("device name", device_name), ("platform", platform)] {
             if v.is_some_and(|v| v.is_empty() || v.len() > 64 || v.contains('\0')) {
-                return Err(err("bad_request", format!("{what} must be 1..64 bytes")));
+                return Err(rule!(
+                    "account.device_field",
+                    "bad_request",
+                    format!("{what} must be 1..64 bytes")
+                ));
             }
         }
         if ttl_ms.is_some_and(|t| t <= 0) {
-            return Err(err("bad_request", "ttl must be positive"));
+            return Err(rule!(
+                "account.token_ttl",
+                "bad_request",
+                "ttl must be positive"
+            ));
         }
         let token = crate::auth::new_secret("atk");
         let now = now_ms();
@@ -1946,20 +1985,29 @@ impl Hub {
         owner_must_be_allowed: bool,
     ) -> ApiResult<(User, Option<String>)> {
         if team && (kind != UserKind::Agent || owner.is_none()) {
-            return Err(err(
+            return Err(rule!(
+                "agent.team_needs_owner",
                 "bad_request",
                 "only agents with an owner are team agents",
             ));
         }
         let unit = unit.unwrap_or(UNIT_DEFAULT).to_string();
         if unit != UNIT_DEFAULT && !self.inner.cfg.units.iter().any(|u| u.name == unit) {
-            return Err(err("bad_request", format!("unknown unit {unit}")));
+            return Err(rule!(
+                "account.unknown_unit",
+                "bad_request",
+                format!("unknown unit {unit}")
+            ));
         }
         if name.starts_with('_') {
-            return Err(err("bad_request", "names starting with _ are reserved"));
+            return Err(rule!(
+                "account.reserved_name",
+                "bad_request",
+                "names starting with _ are reserved"
+            ));
         }
         if self.inner.sh.user_by_name(name).is_some() {
-            return Err(err("conflict", "name taken"));
+            return Err(rule!("account.name_taken", "conflict", "name taken"));
         }
         let user = User {
             id: format!("u_{}", new_id()),
@@ -2153,7 +2201,7 @@ impl Hub {
             .inner
             .sh
             .dir_get(conv)
-            .ok_or_else(|| err("not_found", "conversation"))?;
+            .ok_or_else(|| rule!("conv.unknown", "not_found", "conversation"))?;
         Ok(&self.inner.shards[d.db])
     }
 
@@ -2197,7 +2245,7 @@ impl Hub {
                 return Ok(trace);
             }
         }
-        Err(err("not_found", "message"))
+        Err(rule!("msg.unknown", "not_found", "message"))
     }
 
     async fn find_conv_of<F>(&self, f: F) -> ApiResult<String>
@@ -2213,7 +2261,7 @@ impl Hub {
                 return Ok(c);
             }
         }
-        Err(err("not_found", "not found"))
+        Err(rule!("conv.unknown", "not_found", "not found"))
     }
 
     /// A request with its dye (docs/14 §4.2): a matching rule marks the
@@ -2230,11 +2278,21 @@ impl Hub {
             conv: conv.as_deref(),
             api_key: None,
         });
-        let Some(dye) = crate::trace::current_dye() else {
-            return Box::pin(self.dispatch_checked(sess, msg)).await;
-        };
+        let dye = crate::trace::current_dye();
         let t = Instant::now();
         let res = Box::pin(self.dispatch_checked(sess, msg)).await;
+        if let Err(ApiError {
+            code,
+            rule: Some(rule),
+            ..
+        }) = &res
+        {
+            metrics::counter!(m::REFUSALS, "op" => op, "code" => *code, "rule" => *rule)
+                .increment(1);
+        }
+        let Some(dye) = dye else {
+            return res;
+        };
         tracing::info!(
             dye,
             op,
@@ -2242,6 +2300,7 @@ impl Hub {
             device_id = sess.device_id.as_deref(),
             conv_id = conv.as_deref(),
             result = res.as_ref().err().map(|e| e.code).unwrap_or("ok"),
+            rule = res.as_ref().err().and_then(|e| e.rule),
             latency_ms = t.elapsed().as_secs_f64() * 1000.0,
             "dyed request"
         );
@@ -2252,7 +2311,8 @@ impl Hub {
         let me = &sess.user;
         // A stopped agent may still say hello and learn why nothing works.
         if !matches!(msg, ClientMsg::Hello { .. } | ClientMsg::Ping) && self.is_stopped(&me.id) {
-            return Err(err(
+            return Err(rule!(
+                "agent.stopped",
                 "conflict",
                 "your owner stopped you; wait until you are resumed",
             ));
@@ -2270,7 +2330,11 @@ impl Hub {
                     | ClientMsg::Feedback { .. }
             )
         {
-            return Err(err("forbidden", "this is for people"));
+            return Err(rule!(
+                "session.people_only",
+                "forbidden",
+                "this is for people"
+            ));
         }
         // What the app lets people do in their client (docs/13 §4.1); the
         // system user (the open API as "system") is not limited.
@@ -2329,7 +2393,7 @@ impl Hub {
                 };
                 found
                     .map(|u| json!({"user": {"id": u.id, "name": u.name, "kind": u.kind, "owner_id": u.owner_id}}))
-                    .ok_or_else(|| err("not_found", "user"))
+                    .ok_or_else(|| rule!("account.unknown_user", "not_found", "user"))
             }
             ClientMsg::Block { user_id } => self.set_block(me, &user_id, true).await,
             ClientMsg::Unblock { user_id } => self.set_block(me, &user_id, false).await,
@@ -2351,7 +2415,7 @@ impl Hub {
                 let user = self
                     .user_or_load(&user_id)
                     .await?
-                    .ok_or_else(|| err("not_found", "user"))?;
+                    .ok_or_else(|| rule!("account.unknown_user", "not_found", "user"))?;
                 self.remove_member(me, &conv_id, user).await
             }
             ClientMsg::Leave { conv_id } => self.remove_member(me, &conv_id, me.clone()).await,
@@ -2399,13 +2463,19 @@ impl Hub {
                 let user = self
                     .user_or_load(&user_id)
                     .await?
-                    .ok_or_else(|| err("not_found", "user"))?;
+                    .ok_or_else(|| rule!("account.unknown_user", "not_found", "user"))?;
                 if me.kind == UserKind::Agent {
                     let owner = me
                         .owner_id
                         .as_deref()
                         .and_then(|o| self.inner.sh.user(o))
-                        .ok_or_else(|| err("forbidden", "an agent without an owner adds nobody"))?;
+                        .ok_or_else(|| {
+                            rule!(
+                                "agent.ownerless_adds_nobody",
+                                "forbidden",
+                                "an agent without an owner adds nobody"
+                            )
+                        })?;
                     self.agent_may_contact(me, &owner, &user).await?;
                 }
                 let _members = self.member_lock(&conv_id).await;
@@ -2442,7 +2512,8 @@ impl Hub {
                 self.pull_as(me, &conv_id, after_seq, limit.unwrap_or(200), as_agent)
                     .await
             }
-            ClientMsg::Pull { .. } | ClientMsg::PullSide { .. } => Err(err(
+            ClientMsg::Pull { .. } | ClientMsg::PullSide { .. } => Err(rule!(
+                "sync.no_pull_by_seq",
                 "bad_request",
                 "reading history by seq was replaced by sync and ack",
             )),
@@ -2552,7 +2623,7 @@ impl Hub {
                         })
                     })
                     .await
-                    .map_err(|_| err("not_found", "request"))?;
+                    .map_err(|_| rule!("request.unknown", "not_found", "request"))?;
                 self.on_conv(sess, &conv, msg).await
             }
             ClientMsg::GetRequest {
@@ -2572,7 +2643,8 @@ impl Hub {
             } => {
                 if me.kind == UserKind::Human {
                     if after_seq.is_some() || before_seq.is_some() || limit.is_some() {
-                        return Err(err(
+                        return Err(rule!(
+                            "history.people_page_args",
                             "bad_request",
                             "people page with anchor, before and after (docs/08 §2.8)",
                         ));
@@ -2581,7 +2653,8 @@ impl Hub {
                         .await
                 } else {
                     if anchor.is_some() || before.is_some() || after.is_some() {
-                        return Err(err(
+                        return Err(rule!(
+                            "history.agent_read_args",
                             "bad_request",
                             "agents read with after_seq, before_seq and limit",
                         ));
@@ -2629,7 +2702,11 @@ impl Hub {
                 text,
             } => {
                 if me.kind != UserKind::Human {
-                    return Err(err("forbidden", "only people file reports"));
+                    return Err(rule!(
+                        "report.people_only",
+                        "forbidden",
+                        "only people file reports"
+                    ));
                 }
                 self.report(me, &target_kind, &target_id, &category, text.as_deref())
                     .await
@@ -2652,7 +2729,7 @@ impl Hub {
                         })
                     })
                     .await
-                    .map_err(|_| err("not_found", "message"))?;
+                    .map_err(|_| rule!("msg.unknown", "not_found", "message"))?;
                 self.on_conv(sess, &conv, msg).await
             }
             ClientMsg::StreamAppend { ref msg_id, .. }
@@ -2666,7 +2743,7 @@ impl Hub {
                     .unwrap()
                     .get(msg_id)
                     .cloned()
-                    .ok_or_else(|| err("not_found", "no active stream"))?;
+                    .ok_or_else(|| rule!("stream.unknown", "not_found", "no active stream"))?;
                 self.inner.shards[idx]
                     .call(Op::Client {
                         sess: SessCtx {
@@ -2689,7 +2766,7 @@ impl Hub {
                         })
                     })
                     .await
-                    .map_err(|_| err("not_found", "draft"))?;
+                    .map_err(|_| rule!("draft.unknown", "not_found", "draft"))?;
                 self.on_conv(sess, &conv, msg).await
             }
             ClientMsg::ListDrafts => {
@@ -2741,7 +2818,7 @@ impl Hub {
                     .iter()
                     .any(|d| d.device_id == device_id)
                 {
-                    return Err(err("not_found", "device"));
+                    return Err(rule!("account.unknown_device", "not_found", "device"));
                 }
                 let n = self.log_out(&me.id, Some(&device_id)).await?;
                 Ok(json!({"revoked": n}))
@@ -2789,7 +2866,11 @@ impl Hub {
                 return Ok(msg);
             }
             if !member {
-                return Err(err("forbidden", "not a member of this conversation"));
+                return Err(rule!(
+                    "member.required",
+                    "forbidden",
+                    "not a member of this conversation"
+                ));
             }
         }
         let ClientMsg::Send {
@@ -2873,17 +2954,21 @@ impl Hub {
             .await?
         };
         let Some(conv) = conv else {
-            return Err(err("not_found", "conversation"));
+            return Err(rule!("conv.unknown", "not_found", "conversation"));
         };
         if !members.iter().any(|m| m.user_id == me.id) {
-            return Err(err("forbidden", "not a member"));
+            return Err(rule!("member.required", "forbidden", "not a member"));
         }
         if conv.kind == "dm"
             && members
                 .iter()
                 .any(|m| m.user_id != me.id && self.inner.sh.blocked_either(&m.user_id, &me.id))
         {
-            return Err(err("blocked", "you cannot message this user"));
+            return Err(rule!(
+                "block.blocked",
+                "blocked",
+                "you cannot message this user"
+            ));
         }
         let frame = json!({"type": "signal", "conv_id": conv_id, "kind": kind, "from": me.id, "data": data});
         let outs: Vec<Out> = members
@@ -2913,11 +2998,15 @@ impl Hub {
                     .inner
                     .sh
                     .user(a)
-                    .ok_or_else(|| err("not_found", "agent"))?;
+                    .ok_or_else(|| rule!("agent.unknown", "not_found", "agent"))?;
                 if agent.kind != UserKind::Agent
                     || agent.owner_id.as_deref() != Some(me.id.as_str())
                 {
-                    return Err(err("forbidden", "you do not own this agent"));
+                    return Err(rule!(
+                        "agent.not_owner",
+                        "forbidden",
+                        "you do not own this agent"
+                    ));
                 }
                 agent.id
             }
@@ -2942,9 +3031,19 @@ impl Hub {
             })
             .await?;
         if !owner_in {
-            return Err(err("forbidden", "not a member of this conversation"));
+            return Err(rule!(
+                "member.required",
+                "forbidden",
+                "not a member of this conversation"
+            ));
         }
-        m.ok_or_else(|| err("forbidden", "not a member of this conversation"))
+        m.ok_or_else(|| {
+            rule!(
+                "member.required",
+                "forbidden",
+                "not a member of this conversation"
+            )
+        })
     }
 
     /// Server-side reads by seq for the open API, tests and owners
@@ -3027,7 +3126,7 @@ impl Hub {
             })
             .await?;
         if !members.iter().any(|m| m.user_id == me.id) {
-            return Err(err("forbidden", "no access"));
+            return Err(rule!("member.side_no_access", "forbidden", "no access"));
         }
         let c = conv.to_string();
         let me_id = me.id.clone();
@@ -3120,9 +3219,13 @@ impl Hub {
         let t = sh
             .user(target)
             .or_else(|| sh.user_by_name(target))
-            .ok_or_else(|| err("not_found", "user"))?;
+            .ok_or_else(|| rule!("account.unknown_user", "not_found", "user"))?;
         if t.id == me.id {
-            return Err(err("bad_request", "you cannot block yourself"));
+            return Err(rule!(
+                "block.self",
+                "bad_request",
+                "you cannot block yourself"
+            ));
         }
         self.control()
             .call(Op::SetBlock {
@@ -3180,27 +3283,50 @@ impl Hub {
                 me.owner_id
                     .as_deref()
                     .and_then(|o| self.inner.sh.user(o))
-                    .ok_or_else(|| err("forbidden", "an agent without an owner starts nothing"))?,
+                    .ok_or_else(|| {
+                        rule!(
+                            "agent.ownerless_starts_nothing",
+                            "forbidden",
+                            "an agent without an owner starts nothing"
+                        )
+                    })?,
             ),
             UserKind::System => {
-                return Err(err(
+                return Err(rule!(
+                    "conv.system_via_open_api",
                     "forbidden",
                     "the system creates conversations through the open API",
                 ));
             }
         };
         if !matches!(kind, "dm" | "group" | "task") {
-            return Err(err("bad_request", "kind must be dm, group or task"));
+            return Err(rule!(
+                "conv.kind",
+                "bad_request",
+                "kind must be dm, group or task"
+            ));
         }
         if assignee.is_some() && kind != "task" {
-            return Err(err("bad_request", "only a task has an assignee"));
+            return Err(rule!(
+                "conv.assignee_only_task",
+                "bad_request",
+                "only a task has an assignee"
+            ));
         }
         let cap = self.inner.cfg.clients.max_group_members;
         if members.len() + 1 > cap {
-            return Err(err("bad_request", format!("at most {cap} members")));
+            return Err(rule!(
+                "conv.too_many_members",
+                "bad_request",
+                format!("at most {cap} members")
+            ));
         }
         if title.is_empty() || title.len() > 255 || title.contains('\0') {
-            return Err(err("bad_request", "title must be 1..255 bytes"));
+            return Err(rule!(
+                "conv.title",
+                "bad_request",
+                "title must be 1..255 bytes"
+            ));
         }
         let sh = &self.inner.sh;
         let mut users: Vec<User> = vec![];
@@ -3208,14 +3334,15 @@ impl Hub {
             let u = self
                 .user_or_load(k)
                 .await?
-                .ok_or_else(|| err("not_found", format!("user {k}")))?;
+                .ok_or_else(|| rule!("account.unknown_user", "not_found", format!("user {k}")))?;
             // The creator and repeated entries are not added twice.
             if u.id != me.id && !users.iter().any(|x| x.id == u.id) {
                 users.push(u);
             }
         }
         if kind == "dm" && users.len() != 1 {
-            return Err(err(
+            return Err(rule!(
+                "conv.dm_one_other",
                 "bad_request",
                 "a direct conversation has exactly one other member",
             ));
@@ -3230,13 +3357,18 @@ impl Hub {
             }
         }
         if let Some(u) = users.iter().find(|u| sh.blocked(&u.id, &me.id)) {
-            return Err(err(
+            return Err(rule!(
+                "block.refuses_conversations",
                 "blocked",
                 format!("{} does not accept conversations from you", u.name),
             ));
         }
         if kind == "dm" && sh.blocked(&me.id, &users[0].id) {
-            return Err(err("blocked", "unblock this user first"));
+            return Err(rule!(
+                "block.unblock_first",
+                "blocked",
+                "unblock this user first"
+            ));
         }
         let id = format!("c_{}", new_id());
         // One direct conversation per pair: creating it again returns it.
@@ -3267,13 +3399,18 @@ impl Hub {
                     .find(|u| u.id == k || u.name == k)
                     .cloned()
                     .ok_or_else(|| {
-                        err("bad_request", "the assignee must be a member of the task")
+                        rule!(
+                            "conv.assignee_not_member",
+                            "bad_request",
+                            "the assignee must be a member of the task"
+                        )
                     })?,
             ),
         };
         // Opening an existing direct conversation (above) costs nothing.
         if agent_owner.is_some() && !self.agent_conversation_allowed(&me.id, false) {
-            return Err(err(
+            return Err(rule!(
+                "conv.create_rate",
                 "rate_limited",
                 "too many new conversations (agents.conversations_per_hour)",
             ));
@@ -3497,12 +3634,18 @@ impl Hub {
         let sh = &self.inner.sh;
         let info = sh
             .dir_get(conv)
-            .ok_or_else(|| err("not_found", "conversation"))?;
+            .ok_or_else(|| rule!("conv.unknown", "not_found", "conversation"))?;
         let dst = sh
             .db_names
             .iter()
             .position(|n| n == target)
-            .ok_or_else(|| err("bad_request", format!("unknown database {target}")))?;
+            .ok_or_else(|| {
+                rule!(
+                    "conv.unknown_database",
+                    "bad_request",
+                    format!("unknown database {target}")
+                )
+            })?;
         if info.db == dst {
             return Ok(json!({"conv_id": conv, "moved": false}));
         }

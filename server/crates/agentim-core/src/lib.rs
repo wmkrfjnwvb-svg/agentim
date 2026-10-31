@@ -1,5 +1,14 @@
 #![recursion_limit = "512"]
 
+/// A refusal by a named business rule (docs/14 §5.1): `rule!("msg.edit_version",
+/// "conflict", message)`. The id is stable and listed in
+/// docs/15-business-rules.md, which is generated from these calls.
+macro_rules! rule {
+    ($id:literal, $code:literal, $msg:expr $(,)?) => {
+        $crate::model::ApiError::rule($id, $code, $msg)
+    };
+}
+
 pub mod admin_api;
 pub mod admin_cli;
 pub mod auth;

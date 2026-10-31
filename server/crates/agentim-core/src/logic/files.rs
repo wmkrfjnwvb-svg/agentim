@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Ctx, err, not_silenced};
+use super::{Ctx, not_silenced};
 use crate::db::FileRow;
 use crate::filestore as fs;
 use crate::model::*;
@@ -25,25 +25,35 @@ pub fn check_payload(kind: &str, payload: &Option<Value>) -> ApiResult<()> {
         .as_ref()
         .and_then(|p| p.as_object())
         .ok_or_else(|| {
-            err(
+            rule!(
+                "file.payload_needs_file",
                 "bad_request",
                 format!("a {kind} message needs payload {{file_id}}"),
             )
         })?;
     if !p.get("file_id").is_some_and(|f| f.is_string()) {
-        return Err(err("bad_request", "payload.file_id is required"));
+        return Err(rule!(
+            "file.payload_file_id",
+            "bad_request",
+            "payload.file_id is required"
+        ));
     }
     if let Some(c) = p.get("caption") {
         let ok = c.as_str().is_some_and(|c| c.len() <= CAPTION_MAX);
         if !ok {
-            return Err(err(
+            return Err(rule!(
+                "file.payload_caption",
                 "bad_request",
                 "payload.caption is text of at most 4096 bytes",
             ));
         }
     }
     if p.keys().any(|k| k != "file_id" && k != "caption") {
-        return Err(err("bad_request", "payload takes file_id and caption"));
+        return Err(rule!(
+            "file.payload_fields",
+            "bad_request",
+            "payload takes file_id and caption"
+        ));
     }
     Ok(())
 }
@@ -68,7 +78,11 @@ impl Ctx<'_, '_> {
     async fn may_post(&mut self, conv_id: &str, me: &User) -> ApiResult<()> {
         self.own_conv(conv_id)?;
         if self.sh.deactivated.read().unwrap().contains(&me.id) {
-            return Err(err("forbidden", "the account is deactivated"));
+            return Err(rule!(
+                "account.deactivated",
+                "forbidden",
+                "the account is deactivated"
+            ));
         }
         let member = self.require_member(conv_id, &me.id).await?;
         not_silenced(&member)?;
@@ -92,16 +106,18 @@ impl Ctx<'_, '_> {
         self.may_post(conv_id, me).await?;
         let cfg = &self.sh.files_cfg;
         if !cfg.usable(self.sh.cluster.get().is_some()) {
-            return Err(err(
+            return Err(rule!(
+                "file.storage_not_shared",
                 "conflict",
                 "files are off in this cluster: set files.storage = \"s3\" or a shared folder (files.shared)",
             ));
         }
         if size == 0 {
-            return Err(err("bad_request", "the file is empty"));
+            return Err(rule!("file.empty", "bad_request", "the file is empty"));
         }
         if size > cfg.max_bytes {
-            return Err(err(
+            return Err(rule!(
+                "file.max_bytes",
                 "bad_request",
                 format!(
                     "files are at most {} bytes (files.max_bytes)",
@@ -111,20 +127,23 @@ impl Ctx<'_, '_> {
         }
         let thumb = thumb_size.unwrap_or(0);
         if thumb > fs::THUMB_MAX_BYTES {
-            return Err(err(
+            return Err(rule!(
+                "file.thumb_max_bytes",
                 "bad_request",
                 format!("a thumbnail is at most {} bytes", fs::THUMB_MAX_BYTES),
             ));
         }
         let (open, today) = self.db.file_usage(&me.id, now_ms() - 86_400_000).await?;
         if open >= cfg.max_open_per_user as i64 {
-            return Err(err(
+            return Err(rule!(
+                "file.open_uploads",
                 "rate_limited",
                 format!("at most {} uploads open at once", cfg.max_open_per_user),
             ));
         }
         if cfg.daily_bytes_per_user > 0 && today as u64 + size > cfg.daily_bytes_per_user {
-            return Err(err(
+            return Err(rule!(
+                "file.daily_bytes",
                 "rate_limited",
                 "the daily upload allowance is used up (files.daily_bytes_per_user)",
             ));
@@ -186,8 +205,12 @@ impl Ctx<'_, '_> {
         self.own_conv(conv_id)?;
         match self.db.file(file_id).await? {
             Some(f) if f.conv_id == conv_id && f.uploader_id == me.id => Ok(f),
-            Some(f) if f.conv_id == conv_id => Err(err("forbidden", "another member's upload")),
-            _ => Err(err("not_found", "no such upload")),
+            Some(f) if f.conv_id == conv_id => Err(rule!(
+                "file.upload_not_yours",
+                "forbidden",
+                "another member's upload"
+            )),
+            _ => Err(rule!("file.unknown_upload", "not_found", "no such upload")),
         }
     }
 
@@ -200,12 +223,20 @@ impl Ctx<'_, '_> {
     ) -> ApiResult<Value> {
         let f = self.open_upload(me, conv_id, file_id).await?;
         if f.state != "pending" {
-            return Err(err("conflict", "the upload is complete"));
+            return Err(rule!(
+                "file.upload_complete",
+                "conflict",
+                "the upload is complete"
+            ));
         }
         let total = fs::parts_of(f.size as u64, f.part_size as u64);
         let from = from.unwrap_or(1);
         if from == 0 || from > total {
-            return Err(err("bad_request", format!("parts are 1..={total}")));
+            return Err(rule!(
+                "file.part_range",
+                "bad_request",
+                format!("parts are 1..={total}")
+            ));
         }
         Ok(self.upload_answer(&f, from, from == 1))
     }
@@ -244,7 +275,7 @@ impl Ctx<'_, '_> {
             .db
             .file(file_id)
             .await?
-            .ok_or_else(|| err("not_found", "no such upload"))?;
+            .ok_or_else(|| rule!("file.unknown_upload", "not_found", "no such upload"))?;
         Ok(file_view(&f))
     }
 
@@ -273,23 +304,48 @@ impl Ctx<'_, '_> {
         let file_id = payload["file_id"].as_str().unwrap_or_default();
         let f = match self.db.file(file_id).await? {
             Some(f) if f.conv_id == conv_id => f,
-            Some(_) => return Err(err("forbidden", "the file belongs to another conversation")),
-            None => return Err(err("not_found", "no such file (expired or never uploaded)")),
+            Some(_) => {
+                return Err(rule!(
+                    "file.other_conv",
+                    "forbidden",
+                    "the file belongs to another conversation"
+                ));
+            }
+            None => {
+                return Err(rule!(
+                    "file.unknown",
+                    "not_found",
+                    "no such file (expired or never uploaded)"
+                ));
+            }
         };
         if f.uploader_id != me.id {
-            return Err(err("forbidden", "another member's file"));
+            return Err(rule!(
+                "file.not_yours",
+                "forbidden",
+                "another member's file"
+            ));
         }
         if f.state != "ready" {
-            return Err(err("not_found", "the upload is not complete"));
+            return Err(rule!(
+                "file.upload_incomplete",
+                "not_found",
+                "the upload is not complete"
+            ));
         }
         if kind == "image" && f.kind != "image" {
-            return Err(err(
+            return Err(rule!(
+                "file.not_image",
                 "bad_request",
                 "the file is not an image; send it as kind file",
             ));
         }
         if !self.db.file_take(file_id, ref_id, None).await? {
-            return Err(err("conflict", "another message already carries this file"));
+            return Err(rule!(
+                "file.used",
+                "conflict",
+                "another message already carries this file"
+            ));
         }
         let mut p = file_view(&f);
         if let Some(c) = payload.get("caption") {
@@ -351,14 +407,19 @@ impl Ctx<'_, '_> {
         self.own_conv(conv_id)?;
         let variant = variant.unwrap_or("original");
         if variant != "original" && variant != "thumb" {
-            return Err(err("bad_request", "variant is thumb or original"));
+            return Err(rule!(
+                "file.variant",
+                "bad_request",
+                "variant is thumb or original"
+            ));
         }
         let f = match self.db.file(file_id).await? {
             Some(f) if f.conv_id == conv_id && f.state == "ready" => f,
-            _ => return Err(err("not_found", "no such file")),
+            _ => return Err(rule!("file.unknown", "not_found", "no such file")),
         };
         if !self.may_read_file(me, &f).await? {
-            return Err(err(
+            return Err(rule!(
+                "file.not_visible",
                 "forbidden",
                 "you cannot see the message with this file",
             ));

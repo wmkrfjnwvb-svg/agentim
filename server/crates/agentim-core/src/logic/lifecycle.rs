@@ -5,14 +5,15 @@
 
 use serde_json::{Value, json};
 
-use super::{Ctx, err};
+use super::Ctx;
 use crate::model::*;
 
 impl Ctx<'_, '_> {
     /// A stopped agent does nothing until it is resumed.
     pub(super) fn agent_running(&self, me: &User) -> ApiResult<()> {
         if me.kind == UserKind::Agent && self.sh.stopped.read().unwrap().contains(&me.id) {
-            return Err(err(
+            return Err(rule!(
+                "agent.stopped",
                 "conflict",
                 "your owner stopped you; wait until you are resumed",
             ));
@@ -27,7 +28,8 @@ impl Ctx<'_, '_> {
         by: &str,
     ) -> ApiResult<Value> {
         if !self.db.set_stopped(agent_id, on).await? {
-            return Err(err(
+            return Err(rule!(
+                "agent.already_stopped",
                 "conflict",
                 if on {
                     "the agent is already stopped"
@@ -126,7 +128,7 @@ impl Ctx<'_, '_> {
 
     pub(super) async fn destroy(&mut self, agent_id: &str, by: &str) -> ApiResult<Value> {
         if !self.db.destroy_agent(agent_id).await? {
-            return Err(err("not_found", "the agent is gone"));
+            return Err(rule!("agent.unknown", "not_found", "the agent is gone"));
         }
         self.db
             .audit(Some(by), "agent.destroyed", None, Some(agent_id), json!({}))

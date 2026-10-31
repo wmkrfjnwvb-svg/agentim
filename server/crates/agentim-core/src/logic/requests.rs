@@ -36,7 +36,7 @@ pub struct Ask {
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
-    err("bad_request", msg)
+    rule!("request.input", "bad_request", msg)
 }
 
 fn text_ok(t: &str, max: usize) -> bool {
@@ -47,12 +47,19 @@ impl Ctx<'_, '_> {
     pub(super) async fn request_human(&mut self, me: &User, a: Ask) -> ApiResult<Value> {
         self.own_conv(&a.conv_id)?;
         if me.kind != UserKind::Agent {
-            return Err(err("forbidden", "only agents ask for a decision"));
+            return Err(rule!(
+                "request.agents_only",
+                "forbidden",
+                "only agents ask for a decision"
+            ));
         }
-        let owner = me
-            .owner_id
-            .clone()
-            .ok_or_else(|| err("forbidden", "an agent without an owner asks nobody"))?;
+        let owner = me.owner_id.clone().ok_or_else(|| {
+            rule!(
+                "request.ownerless",
+                "forbidden",
+                "an agent without an owner asks nobody"
+            )
+        })?;
         self.require_member(&a.conv_id, &me.id).await?;
         if !text_ok(&a.client_req_id, 128) {
             return Err(bad("client_req_id must be 1..128 bytes"));
@@ -60,7 +67,8 @@ impl Ctx<'_, '_> {
         // A retry returns the original request.
         if let Some(q) = self.db.request_by_client(&me.id, &a.client_req_id).await? {
             if q.conv_id != a.conv_id {
-                return Err(err(
+                return Err(rule!(
+                    "request.id_other_conv",
                     "conflict",
                     "client_req_id already used in another conversation",
                 ));
@@ -112,7 +120,9 @@ impl Ctx<'_, '_> {
                         .sh
                         .user(&k)
                         .or_else(|| self.sh.user_by_name(&k))
-                        .ok_or_else(|| err("not_found", format!("user {k}")))?;
+                        .ok_or_else(|| {
+                            rule!("account.unknown_user", "not_found", format!("user {k}"))
+                        })?;
                     if u.kind != UserKind::Human {
                         return Err(bad("only people decide"));
                     }
@@ -129,7 +139,8 @@ impl Ctx<'_, '_> {
             }
         }
         if self.db.pending_request_count(&me.id).await? >= MAX_PENDING {
-            return Err(err(
+            return Err(rule!(
+                "request.too_many",
                 "rate_limited",
                 "too many requests waiting for a decision",
             ));
@@ -192,13 +203,25 @@ impl Ctx<'_, '_> {
         self.own_conv(&q.conv_id)?;
         let (owner, assignees) = self.deciders(&q).await?;
         if me.id != owner && !assignees.contains(&me.id) {
-            return Err(err("forbidden", "this request is not yours to decide"));
+            return Err(rule!(
+                "request.not_decider",
+                "forbidden",
+                "this request is not yours to decide"
+            ));
         }
         if q.state != "pending" {
-            return Err(err("conflict", format!("the request is {}", q.state)));
+            return Err(rule!(
+                "request.state",
+                "conflict",
+                format!("the request is {}", q.state)
+            ));
         }
         if now_ms() >= q.expires_at {
-            return Err(err("conflict", "the request has expired"));
+            return Err(rule!(
+                "request.expired",
+                "conflict",
+                "the request has expired"
+            ));
         }
         let (state, response) = match (q.kind.as_str(), decision) {
             (_, "reject") => {
@@ -249,7 +272,11 @@ impl Ctx<'_, '_> {
             .finish_request(&q, state, Some(&me.id), Some(&response))
             .await?
         {
-            return Err(err("conflict", "the request was already decided"));
+            return Err(rule!(
+                "request.decided",
+                "conflict",
+                "the request was already decided"
+            ));
         }
         self.request_finished(&q, state, Some(&me.id), Some(response), &owner, &assignees)
             .await
@@ -263,10 +290,18 @@ impl Ctx<'_, '_> {
             .ok_or_else(|| err("conv_moved", "request not in this database"))?;
         self.own_conv(&q.conv_id)?;
         if q.agent_id != me.id {
-            return Err(err("forbidden", "only the agent that asked cancels"));
+            return Err(rule!(
+                "request.cancel_not_asker",
+                "forbidden",
+                "only the agent that asked cancels"
+            ));
         }
         if q.state != "pending" {
-            return Err(err("conflict", format!("the request is {}", q.state)));
+            return Err(rule!(
+                "request.state",
+                "conflict",
+                format!("the request is {}", q.state)
+            ));
         }
         let (owner, assignees) = self.deciders(&q).await?;
         if !self
@@ -274,7 +309,11 @@ impl Ctx<'_, '_> {
             .finish_request(&q, "cancelled", Some(&me.id), None)
             .await?
         {
-            return Err(err("conflict", "the request was already decided"));
+            return Err(rule!(
+                "request.decided",
+                "conflict",
+                "the request was already decided"
+            ));
         }
         self.request_finished(&q, "cancelled", Some(&me.id), None, &owner, &assignees)
             .await

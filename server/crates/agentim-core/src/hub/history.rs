@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use super::{Hub, err};
+use super::Hub;
 use crate::db::Db;
 use crate::logic::{Ctx, Shared};
 use crate::model::*;
@@ -82,12 +82,20 @@ fn check_filter(f: &SearchFilter) -> ApiResult<()> {
         && t != "human"
         && t != "agent"
     {
-        return Err(err("bad_request", "sender_type must be human or agent"));
+        return Err(rule!(
+            "history.sender_type",
+            "bad_request",
+            "sender_type must be human or agent"
+        ));
     }
     if let (Some(a), Some(b)) = (f.since, f.until)
         && a > b
     {
-        return Err(err("bad_request", "since is after until"));
+        return Err(rule!(
+            "history.since_after_until",
+            "bad_request",
+            "since is after until"
+        ));
     }
     for (name, v) in [
         ("sender_id", &f.sender_id),
@@ -96,7 +104,11 @@ fn check_filter(f: &SearchFilter) -> ApiResult<()> {
         ("topic", &f.topic),
     ] {
         if v.as_ref().is_some_and(|v| v.is_empty() || v.len() > 64) {
-            return Err(err("bad_request", format!("{name} must be 1..64 bytes")));
+            return Err(rule!(
+                "history.filter_size",
+                "bad_request",
+                format!("{name} must be 1..64 bytes")
+            ));
         }
     }
     Ok(())
@@ -149,7 +161,8 @@ fn excerpt(text: &str, needle: &str) -> Option<String> {
 impl Hub {
     fn agents_only(me: &User) -> ApiResult<()> {
         if me.kind != UserKind::Agent {
-            return Err(err(
+            return Err(rule!(
+                "history.agents_only",
                 "forbidden",
                 "reading history is for agents; people sync (docs/08)",
             ));
@@ -171,7 +184,8 @@ impl Hub {
         *tokens = (*tokens + now.duration_since(*at).as_secs_f64() * n / 60.0).min(n);
         *at = now;
         if *tokens < 1.0 {
-            return Err(err(
+            return Err(rule!(
+                "history.rate",
                 "rate_limited",
                 format!("too many {kind} reads (at most {n} a minute)"),
             ));
@@ -275,17 +289,26 @@ impl Hub {
         Self::agents_only(me)?;
         let limit = limit.unwrap_or(HISTORY_DEFAULT);
         if !(1..=HISTORY_MAX).contains(&limit) {
-            return Err(err("bad_request", "limit must be 1..200"));
+            return Err(rule!(
+                "history.limit",
+                "bad_request",
+                "limit must be 1..200"
+            ));
         }
         let from = match (after_seq, before_seq) {
             (Some(_), Some(_)) => {
-                return Err(err("bad_request", "give after_seq or before_seq, not both"));
+                return Err(rule!(
+                    "history.after_or_before",
+                    "bad_request",
+                    "give after_seq or before_seq, not both"
+                ));
             }
             (Some(a), None) if a >= 0 => From::After(a),
             (None, Some(b)) if b >= 1 => From::Before(b),
             (None, None) => From::Before(i64::MAX),
             _ => {
-                return Err(err(
+                return Err(rule!(
+                    "history.seq_range",
                     "bad_request",
                     "after_seq must be >= 0 and before_seq >= 1",
                 ));
@@ -317,7 +340,11 @@ impl Hub {
         Self::agents_only(me)?;
         let budget = max_tokens.unwrap_or(CONTEXT_DEFAULT);
         if !(CONTEXT_MIN..=CONTEXT_MAX).contains(&budget) {
-            return Err(err("bad_request", "max_tokens must be 256..200000"));
+            return Err(rule!(
+                "history.max_tokens",
+                "bad_request",
+                "max_tokens must be 256..200000"
+            ));
         }
         let m = self.reader_member(me, conv_id, None).await?;
         self.read_allowed(&me.id, "history")?;
@@ -368,11 +395,19 @@ impl Hub {
         check_filter(filter)?;
         let limit = limit.unwrap_or(SEARCH_DEFAULT);
         if !(1..=SEARCH_MAX).contains(&limit) {
-            return Err(err("bad_request", "limit must be 1..50"));
+            return Err(rule!(
+                "history.search_limit",
+                "bad_request",
+                "limit must be 1..50"
+            ));
         }
         let q = query.trim();
         if q.len() < 2 || q.len() > 200 || q.contains('\0') {
-            return Err(err("bad_request", "query must be 2..200 bytes"));
+            return Err(rule!(
+                "history.search_query",
+                "bad_request",
+                "query must be 2..200 bytes"
+            ));
         }
         let needle = q.to_lowercase();
         let mut convs: Vec<(String, Member)> = vec![];

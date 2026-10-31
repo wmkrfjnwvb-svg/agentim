@@ -738,14 +738,30 @@ async fn progress_goes_on_the_side(db: TestDb) {
     let hub = open(slow).await;
     let g = Conn::new(&hub, &bot);
     let mut b = Conn::new(&hub, &bob);
-    g.ok(p("step", "one")).await;
-    assert_eq!(code(&g.call(p("step", "two")).await), "rate_limited");
+    // "At once" means within the second: on a slow machine the two calls
+    // can be further apart, then the pair is tried again.
+    let mut accepted = 0;
+    for round in 0.. {
+        let t = std::time::Instant::now();
+        g.ok(p("step", "one")).await;
+        accepted += 1;
+        let r = g.call(p("step", "two")).await;
+        if t.elapsed() < std::time::Duration::from_millis(900) {
+            assert_eq!(code(&r), "rate_limited", "{r}");
+            break;
+        }
+        assert!(round < 5, "never two calls within a second");
+        if code(&r).is_empty() {
+            accepted += 1;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    }
     let got = b
         .drain()
         .into_iter()
         .filter(|f| f["type"] == "side" && f["event"]["type"] == "progress")
         .count();
-    assert_eq!(got, 1);
+    assert_eq!(got, accepted, "a refused report sends nothing");
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     g.ok(p("step", "three")).await;
 }

@@ -53,6 +53,8 @@ pub struct Problem {
     pub status: StatusCode,
     pub code: String,
     pub detail: String,
+    /// The business rule that refused the request (docs/15).
+    pub rule: Option<&'static str>,
 }
 
 impl Problem {
@@ -61,6 +63,7 @@ impl Problem {
             status,
             code: code.into(),
             detail: detail.into(),
+            rule: None,
         }
     }
 }
@@ -89,20 +92,25 @@ impl From<ApiError> for Problem {
         } else {
             e.message
         };
-        Problem::new(status_of(e.code), e.code, detail)
+        let mut p = Problem::new(status_of(e.code), e.code, detail);
+        p.rule = e.rule;
+        p
     }
 }
 
 impl IntoResponse for Problem {
     fn into_response(self) -> Response {
         let title = self.status.canonical_reason().unwrap_or("Error");
-        let body = json!({
+        let mut body = json!({
             "type": format!("https://agentim.dev/errors/{}", self.code),
             "title": title,
             "status": self.status.as_u16(),
             "detail": self.detail,
             "code": self.code,
         });
+        if let Some(r) = self.rule {
+            body["rule"] = json!(r);
+        }
         let mut r = (self.status, body.to_string()).into_response();
         r.headers_mut().insert(
             header::CONTENT_TYPE,

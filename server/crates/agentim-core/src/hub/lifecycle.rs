@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Hub, err};
+use super::Hub;
 use crate::logic::Op;
 use crate::model::*;
 
@@ -46,7 +46,7 @@ impl Hub {
     pub(super) fn live_agent(&self, me: &User, agent_id: &str) -> ApiResult<User> {
         let a = self.owned_agent(me, agent_id)?;
         if self.inner.sh.destroyed.read().unwrap().contains(&a.id) {
-            return Err(err("not_found", "the agent is gone"));
+            return Err(rule!("agent.unknown", "not_found", "the agent is gone"));
         }
         Ok(a)
     }
@@ -70,7 +70,11 @@ impl Hub {
             .as_ref()
             .is_some_and(|n| n.is_empty() || n.len() > NOTE_MAX || n.contains('\0'))
         {
-            return Err(err("bad_request", "reason must be 1..500 bytes"));
+            return Err(rule!(
+                "agent.stop_reason",
+                "bad_request",
+                "reason must be 1..500 bytes"
+            ));
         }
         self.stop_agent_by(agent, &me.id, note).await
     }
@@ -162,9 +166,10 @@ impl Hub {
             .user_or_load(agent_id)
             .await?
             .filter(|u| u.kind == UserKind::Agent && !self.is_destroyed(&u.id))
-            .ok_or_else(|| err("not_found", "agent"))?;
+            .ok_or_else(|| rule!("agent.unknown", "not_found", "agent"))?;
         if !a.team {
-            return Err(err(
+            return Err(rule!(
+                "agent.transfer_team_only",
                 "bad_request",
                 "only team agents change owner; a person's assistant stays theirs",
             ));
@@ -173,15 +178,20 @@ impl Hub {
             .user_or_load(new_owner)
             .await?
             .filter(|u| u.kind == UserKind::Human && !self.is_deactivated(&u.id))
-            .ok_or_else(|| err("not_found", "no such person"))?;
+            .ok_or_else(|| rule!("account.unknown_user", "not_found", "no such person"))?;
         if o.unit_id != a.unit_id {
-            return Err(err(
+            return Err(rule!(
+                "agent.transfer_unit",
                 "bad_request",
                 "the new owner must be in the agent's unit",
             ));
         }
         if a.owner_id.as_deref() == Some(o.id.as_str()) {
-            return Err(err("conflict", "the agent already belongs to them"));
+            return Err(rule!(
+                "agent.transfer_same_owner",
+                "conflict",
+                "the agent already belongs to them"
+            ));
         }
         let v = self
             .control()
@@ -250,7 +260,8 @@ impl Hub {
     ) -> ApiResult<Value> {
         let agent = self.live_agent(me, agent_id)?;
         if confirm != agent.name {
-            return Err(err(
+            return Err(rule!(
+                "agent.destroy_confirm",
                 "bad_request",
                 "confirm with the agent's name: destroying cannot be undone",
             ));
@@ -361,7 +372,11 @@ impl Hub {
         let agent = self.live_agent(me, agent_id)?;
         let limit = limit.unwrap_or(20);
         if !(1..=100).contains(&limit) {
-            return Err(err("bad_request", "limit must be 1..100"));
+            return Err(rule!(
+                "agent.feedback_limit",
+                "bad_request",
+                "limit must be 1..100"
+            ));
         }
         let (mut up, mut down, mut items) = (0, 0, vec![]);
         for s in &self.inner.shards {

@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Ctx, err};
+use super::Ctx;
 use crate::model::*;
 
 /// Summaries kept per agent per conversation.
@@ -20,12 +20,20 @@ impl Ctx<'_, '_> {
         text: &str,
     ) -> ApiResult<Value> {
         if me.kind != UserKind::Agent {
-            return Err(err("forbidden", "summaries are for agents"));
+            return Err(rule!(
+                "history.summary_agents_only",
+                "forbidden",
+                "summaries are for agents"
+            ));
         }
         self.own_conv(conv_id)?;
         let mine = self.require_member(conv_id, &me.id).await?;
         if text.is_empty() || text.len() > TEXT_MAX || text.contains('\0') {
-            return Err(err("bad_request", "text must be 1 byte..64KB"));
+            return Err(rule!(
+                "history.summary_text",
+                "bad_request",
+                "text must be 1 byte..64KB"
+            ));
         }
         let last = self
             .db
@@ -34,13 +42,15 @@ impl Ctx<'_, '_> {
             .map(|c| c.last_seq)
             .unwrap_or(0);
         if from_seq < 1 || from_seq > to_seq || to_seq > last {
-            return Err(err(
+            return Err(rule!(
+                "history.summary_range",
                 "bad_request",
                 format!("need 1 <= from_seq <= to_seq <= {last}"),
             ));
         }
         if from_seq < mine.visible_from {
-            return Err(err(
+            return Err(rule!(
+                "history.summary_not_visible",
                 "forbidden",
                 format!(
                     "you can see this conversation from seq {}",

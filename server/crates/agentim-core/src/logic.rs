@@ -40,7 +40,11 @@ pub const MAX_FIELDS_BYTES: usize = 4 * 1024;
 
 pub fn check_title(t: &str) -> ApiResult<()> {
     if t.is_empty() || t.len() > 255 || t.contains('\0') {
-        return Err(err("bad_request", "title must be 1..255 bytes"));
+        return Err(rule!(
+            "conv.title",
+            "bad_request",
+            "title must be 1..255 bytes"
+        ));
     }
     Ok(())
 }
@@ -1074,10 +1078,18 @@ pub fn check_client_msg_id(id: &str) -> ApiResult<()> {
 /// Message text: 1..64KB, and no NUL (PostgreSQL cannot store it).
 pub fn check_text(text: &str) -> ApiResult<()> {
     if text.is_empty() || text.len() > MAX_MESSAGE_BYTES {
-        return Err(err("bad_request", "text must be 1..64KB"));
+        return Err(rule!(
+            "msg.text_size",
+            "bad_request",
+            "text must be 1..64KB"
+        ));
     }
     if text.contains('\0') {
-        return Err(err("bad_request", "text must not contain NUL"));
+        return Err(rule!(
+            "msg.text_nul",
+            "bad_request",
+            "text must not contain NUL"
+        ));
     }
     Ok(())
 }
@@ -1093,13 +1105,18 @@ pub fn check_custom_kind(kind: &str) -> ApiResult<()> {
     };
     let ok = kind.len() <= 64 && kind.split('.').count() >= 2 && kind.split('.').all(seg_ok);
     if !ok {
-        return Err(err(
+        return Err(rule!(
+            "msg.kind_namespace",
             "bad_request",
             "custom kinds are namespaced like com.example.order (a-z, 0-9, _ and -, at most 64 bytes)",
         ));
     }
     if kind.starts_with("agentim.") {
-        return Err(err("bad_request", "the agentim. namespace is reserved"));
+        return Err(rule!(
+            "msg.kind_reserved",
+            "bad_request",
+            "the agentim. namespace is reserved"
+        ));
     }
     Ok(())
 }
@@ -1107,10 +1124,15 @@ pub fn check_custom_kind(kind: &str) -> ApiResult<()> {
 /// A JSON object of at most `max` serialized bytes.
 pub fn check_json_object(v: &Value, what: &str, max: usize) -> ApiResult<()> {
     if !v.is_object() {
-        return Err(err("bad_request", format!("{what} must be a JSON object")));
+        return Err(rule!(
+            "msg.json_object",
+            "bad_request",
+            format!("{what} must be a JSON object")
+        ));
     }
     if v.to_string().len() > max {
-        return Err(err(
+        return Err(rule!(
+            "msg.json_size",
             "bad_request",
             format!("{what} is larger than {max} bytes"),
         ));
@@ -1124,7 +1146,11 @@ pub fn check_kind(kind: Option<String>, payload: &Option<Value>) -> ApiResult<St
     match kind.as_deref() {
         None | Some("text") => {
             if payload.is_some() {
-                return Err(err("bad_request", "payload needs a custom kind"));
+                return Err(rule!(
+                    "msg.payload_needs_kind",
+                    "bad_request",
+                    "payload needs a custom kind"
+                ));
             }
             Ok("text".into())
         }
@@ -1133,11 +1159,13 @@ pub fn check_kind(kind: Option<String>, payload: &Option<Value>) -> ApiResult<St
             Ok(k.to_string())
         }
         Some(cards::KIND) => {
-            cards::check_card(
-                payload
-                    .as_ref()
-                    .ok_or_else(|| err("bad_request", "a card needs a payload"))?,
-            )?;
+            cards::check_card(payload.as_ref().ok_or_else(|| {
+                rule!(
+                    "msg.card_needs_payload",
+                    "bad_request",
+                    "a card needs a payload"
+                )
+            })?)?;
             Ok(cards::KIND.to_string())
         }
         Some(k) => {
@@ -1692,7 +1720,11 @@ impl Ctx<'_, '_> {
                         if let Some(s) = totp_step {
                             // A code is single-use, also between racing logins.
                             if c.totp_last_step.is_some_and(|l| s <= l) {
-                                return Err(err("conflict", "this code was already used"));
+                                return Err(rule!(
+                                    "admin.totp_code_replayed",
+                                    "conflict",
+                                    "this code was already used"
+                                ));
                             }
                             c.totp_last_step = Some(s);
                         }
@@ -1706,7 +1738,11 @@ impl Ctx<'_, '_> {
                     }
                     CredChange::TotpEnable { step } => {
                         let Some(p) = c.totp_pending.take() else {
-                            return Err(err("conflict", "run totp_setup first"));
+                            return Err(rule!(
+                                "admin.totp_setup_first",
+                                "conflict",
+                                "run totp_setup first"
+                            ));
                         };
                         c.totp_secret = Some(p);
                         c.totp_last_step = Some(step);
@@ -1734,8 +1770,8 @@ impl Ctx<'_, '_> {
                 Ok(json!({"changed": n}))
             }
             Op::RewrapKeys { new_key } => {
-                let k =
-                    crate::crypto::Kek::from_base64(&new_key).map_err(|e| err("bad_request", e))?;
+                let k = crate::crypto::Kek::from_base64(&new_key)
+                    .map_err(|e| rule!("admin.master_key_invalid", "bad_request", e))?;
                 let n = self.db.rewrap_keys(&k).await?;
                 Ok(json!({"rewrapped": n}))
             }
@@ -2120,11 +2156,19 @@ impl Ctx<'_, '_> {
             } => {
                 self.require_member(&conv_id, &me.id).await?;
                 if !["none", "all", "mentions"].contains(&mode.as_str()) {
-                    return Err(err("bad_request", "mode must be none, all or mentions"));
+                    return Err(rule!(
+                        "member.mute_mode",
+                        "bad_request",
+                        "mode must be none, all or mentions"
+                    ));
                 }
                 let until = if mode == "none" { None } else { until };
                 if until.is_some_and(|u| u <= now_ms()) {
-                    return Err(err("bad_request", "until must be in the future"));
+                    return Err(rule!(
+                        "member.mute_until",
+                        "bad_request",
+                        "until must be in the future"
+                    ));
                 }
                 self.db.set_mute(&conv_id, &me.id, &mode, until).await?;
                 self.st.members.remove(&conv_id);
@@ -2203,9 +2247,9 @@ impl Ctx<'_, '_> {
                     .st
                     .streams
                     .get(&msg_id)
-                    .ok_or_else(|| err("not_found", "no active stream"))?;
+                    .ok_or_else(|| rule!("stream.unknown", "not_found", "no active stream"))?;
                 if st.sender.id != me.id {
-                    return Err(err("forbidden", "not your stream"));
+                    return Err(rule!("stream.not_yours", "forbidden", "not your stream"));
                 }
                 self.finish_stream(&msg_id, "complete", None, &me.id)
                     .await?;
@@ -2356,13 +2400,18 @@ impl Ctx<'_, '_> {
             } => {
                 let mine = self.require_member(&conv_id, &me.id).await?;
                 if !is_manager(&mine.role) {
-                    return Err(err(
+                    return Err(rule!(
+                        "conv.update_not_admin",
                         "forbidden",
                         "only the owner or an admin changes the conversation",
                     ));
                 }
                 if title.is_none() && fields.is_none() {
-                    return Err(err("bad_request", "nothing to change"));
+                    return Err(rule!(
+                        "conv.update_nothing",
+                        "bad_request",
+                        "nothing to change"
+                    ));
                 }
                 if let Some(t) = &title {
                     check_title(t)?;
@@ -2371,7 +2420,11 @@ impl Ctx<'_, '_> {
                     check_json_object(f, "fields", MAX_FIELDS_BYTES)?;
                 }
                 if self.is_dm(&conv_id).await? && title.is_some() {
-                    return Err(err("bad_request", "a direct conversation has no title"));
+                    return Err(rule!(
+                        "conv.dm_no_title",
+                        "bad_request",
+                        "a direct conversation has no title"
+                    ));
                 }
                 self.db
                     .update_conv(&conv_id, title.as_deref(), fields.as_ref())
@@ -2397,7 +2450,11 @@ impl Ctx<'_, '_> {
                 let agent = self.policy_agent(me, &agent_id, &conv_id).await?;
                 self.require_member(&conv_id, &agent.id).await?;
                 if self.st.guards.is_tripped(&agent.id, &conv_id).is_none() {
-                    return Err(err("conflict", "the agent's guard is not tripped"));
+                    return Err(rule!(
+                        "agent.guard_not_tripped",
+                        "conflict",
+                        "the agent's guard is not tripped"
+                    ));
                 }
                 let ev = self
                     .db
@@ -2422,7 +2479,8 @@ impl Ctx<'_, '_> {
                 self.emit(ev).await?;
                 Ok(json!({}))
             }
-            other => Err(err(
+            other => Err(rule!(
+                "session.wrong_writer",
                 "bad_request",
                 format!("{} is not handled by a conversation writer", other.name()),
             )),
@@ -2443,7 +2501,7 @@ impl Ctx<'_, '_> {
             )),
             Some(d) if d.db == self.idx => Ok(()),
             Some(_) => Err(err("conv_moved", "conversation moved to another database")),
-            None => Err(err("not_found", "conversation")),
+            None => Err(rule!("conv.unknown", "not_found", "conversation")),
         }
     }
 
@@ -2460,7 +2518,7 @@ impl Ctx<'_, '_> {
         if user_id == SYSTEM_ID {
             return match self.db.conv(conv_id).await? {
                 Some(_) => Ok(system_member()),
-                None => Err(err("not_found", "conversation")),
+                None => Err(rule!("conv.unknown", "not_found", "conversation")),
             };
         }
         self.members(conv_id)
@@ -2468,16 +2526,26 @@ impl Ctx<'_, '_> {
             .iter()
             .find(|m| m.user_id == user_id)
             .cloned()
-            .ok_or_else(|| err("forbidden", "not a member of this conversation"))
+            .ok_or_else(|| {
+                rule!(
+                    "member.required",
+                    "forbidden",
+                    "not a member of this conversation"
+                )
+            })
     }
 
     fn owned_agent(&self, me: &User, agent_id: &str) -> ApiResult<User> {
         let a = self
             .sh
             .user(agent_id)
-            .ok_or_else(|| err("not_found", "agent"))?;
+            .ok_or_else(|| rule!("agent.unknown", "not_found", "agent"))?;
         if a.kind != UserKind::Agent || a.owner_id.as_deref() != Some(me.id.as_str()) {
-            return Err(err("forbidden", "you do not own this agent"));
+            return Err(rule!(
+                "agent.not_owner",
+                "forbidden",
+                "you do not own this agent"
+            ));
         }
         Ok(a)
     }
@@ -2486,7 +2554,7 @@ impl Ctx<'_, '_> {
         self.sh
             .user(key)
             .or_else(|| self.sh.user_by_name(key))
-            .ok_or_else(|| err("not_found", format!("user {key}")))
+            .ok_or_else(|| rule!("account.unknown_user", "not_found", format!("user {key}")))
     }
 
     /// The caller's agent, to act on it in a conversation: the owner has
@@ -2538,7 +2606,8 @@ impl Ctx<'_, '_> {
     async fn approvers(&mut self, conv_id: &str, agent: &User) -> ApiResult<Vec<String>> {
         let a = self.audience(conv_id, agent).await?;
         if a.len() < 2 {
-            return Err(err(
+            return Err(rule!(
+                "draft.no_approver",
                 "conflict",
                 "nobody here can approve this agent's messages: its owner is not a member",
             ));
@@ -2740,13 +2809,16 @@ impl Ctx<'_, '_> {
         let explicit = causation_id.or_else(|| reply_to.clone());
         let cause = match explicit {
             Some(id) => {
-                let msg = self
-                    .db
-                    .message(&id)
-                    .await?
-                    .ok_or_else(|| err("bad_request", "unknown causation message"))?;
+                let msg = self.db.message(&id).await?.ok_or_else(|| {
+                    rule!(
+                        "msg.causation_unknown",
+                        "bad_request",
+                        "unknown causation message"
+                    )
+                })?;
                 if msg.conv_id != conv_id {
-                    return Err(err(
+                    return Err(rule!(
+                        "msg.causation_other_conv",
                         "bad_request",
                         "causation message is in another conversation",
                     ));
@@ -2838,7 +2910,8 @@ impl Ctx<'_, '_> {
         self.own_conv(conv_id)?;
         let cfg = &self.sh.cfg.sync;
         if history.is_some_and(|n| !(0..=cfg.share_max).contains(&n)) {
-            return Err(err(
+            return Err(rule!(
+                "member.add_history",
                 "bad_request",
                 format!("history must be 0..{}", cfg.share_max),
             ));
@@ -2846,16 +2919,18 @@ impl Ctx<'_, '_> {
         let mine = self.require_member(conv_id, &me.id).await?;
         let own_agent = u.owner_id.as_deref() == Some(me.id.as_str());
         if !is_manager(&mine.role) && !own_agent {
-            return Err(err(
+            return Err(rule!(
+                "member.add_not_admin",
                 "forbidden",
                 "only the owner or an admin can add members",
             ));
         }
         if self.sh.deactivated.read().unwrap().contains(&u.id) {
-            return Err(err("not_found", "no such user"));
+            return Err(rule!("account.unknown_user", "not_found", "no such user"));
         }
         if self.blocked_now(&u.id, &me.id).await? {
-            return Err(err(
+            return Err(rule!(
+                "block.refuses_invitations",
                 "blocked",
                 "this user does not accept invitations from you",
             ));
@@ -2864,16 +2939,18 @@ impl Ctx<'_, '_> {
             .db
             .conv(conv_id)
             .await?
-            .ok_or_else(|| err("not_found", "conversation"))?;
+            .ok_or_else(|| rule!("conv.unknown", "not_found", "conversation"))?;
         if conv.kind == "dm" {
-            return Err(err(
+            return Err(rule!(
+                "conv.dm_fixed_members",
                 "bad_request",
                 "a direct conversation has fixed members",
             ));
         }
         let members = self.members(conv_id).await?;
         if members.len() >= cap && !members.iter().any(|m| m.user_id == u.id) {
-            return Err(err(
+            return Err(rule!(
+                "member.group_full",
                 "conflict",
                 format!("the group is full ({cap} members)"),
             ));
@@ -2955,7 +3032,11 @@ impl Ctx<'_, '_> {
         }
         let dm = self.db.conv(conv_id).await?.is_some_and(|c| c.kind == "dm");
         if dm {
-            return Err(err("blocked", "you cannot message this user"));
+            return Err(rule!(
+                "block.blocked",
+                "blocked",
+                "you cannot message this user"
+            ));
         }
         Ok(())
     }
@@ -2969,23 +3050,32 @@ impl Ctx<'_, '_> {
             .iter()
             .find(|m| m.user_id == u.id)
             .cloned()
-            .ok_or_else(|| err("not_found", "not a member of this conversation"))?;
+            .ok_or_else(|| {
+                rule!(
+                    "member.unknown",
+                    "not_found",
+                    "not a member of this conversation"
+                )
+            })?;
         if self.is_dm(conv_id).await? {
-            return Err(err(
+            return Err(rule!(
+                "conv.dm_fixed_members",
                 "bad_request",
                 "a direct conversation has fixed members; dissolve it instead",
             ));
         }
         let leaving = me.id == u.id;
         if me.kind == UserKind::System && target.role == "owner" {
-            return Err(err(
+            return Err(rule!(
+                "member.remove_owner",
                 "conflict",
                 "transfer ownership before removing the owner",
             ));
         }
         if leaving {
             if target.role == "owner" {
-                return Err(err(
+                return Err(rule!(
+                    "member.owner_leaves",
                     "conflict",
                     "the owner must transfer ownership or dissolve the conversation",
                 ));
@@ -2998,7 +3088,11 @@ impl Ctx<'_, '_> {
                 _ => false,
             } || (own_agent && target.role != "owner");
             if !allowed {
-                return Err(err("forbidden", "you cannot remove this member"));
+                return Err(rule!(
+                    "member.remove_not_allowed",
+                    "forbidden",
+                    "you cannot remove this member"
+                ));
             }
         }
         // The person holds their agents' keys: their assistants leave with
@@ -3109,25 +3203,48 @@ impl Ctx<'_, '_> {
         role: &str,
     ) -> ApiResult<Value> {
         if role != "admin" && role != "member" {
-            return Err(err("bad_request", "role must be admin or member"));
+            return Err(rule!(
+                "member.role_value",
+                "bad_request",
+                "role must be admin or member"
+            ));
         }
         if self.is_dm(conv_id).await? {
-            return Err(err("bad_request", "a direct conversation has no roles"));
+            return Err(rule!(
+                "conv.dm_no_roles",
+                "bad_request",
+                "a direct conversation has no roles"
+            ));
         }
         let mine = self.require_member(conv_id, &me.id).await?;
         if mine.role != "owner" {
-            return Err(err("forbidden", "only the owner changes roles"));
+            return Err(rule!(
+                "member.role_not_owner",
+                "forbidden",
+                "only the owner changes roles"
+            ));
         }
         let u = self.resolve_user(user_id)?;
-        let target = self
-            .require_member(conv_id, &u.id)
-            .await
-            .map_err(|_| err("not_found", "not a member of this conversation"))?;
+        let target = self.require_member(conv_id, &u.id).await.map_err(|_| {
+            rule!(
+                "member.unknown",
+                "not_found",
+                "not a member of this conversation"
+            )
+        })?;
         if target.role == "owner" {
-            return Err(err("conflict", "use transfer_owner to change the owner"));
+            return Err(rule!(
+                "member.role_use_transfer",
+                "conflict",
+                "use transfer_owner to change the owner"
+            ));
         }
         if target.kind != UserKind::Human {
-            return Err(err("bad_request", "only people can be admins"));
+            return Err(rule!(
+                "member.admin_is_person",
+                "bad_request",
+                "only people can be admins"
+            ));
         }
         self.db.set_role(conv_id, &u.id, role).await?;
         let ev = self
@@ -3159,12 +3276,15 @@ impl Ctx<'_, '_> {
     ) -> ApiResult<Value> {
         self.own_conv(conv_id)?;
         if self.db.conv(conv_id).await?.is_none() {
-            return Err(err("not_found", "conversation"));
+            return Err(rule!("conv.unknown", "not_found", "conversation"));
         }
-        let target = self
-            .require_member(conv_id, user_id)
-            .await
-            .map_err(|_| err("not_found", "not a member of this conversation"))?;
+        let target = self.require_member(conv_id, user_id).await.map_err(|_| {
+            rule!(
+                "member.unknown",
+                "not_found",
+                "not a member of this conversation"
+            )
+        })?;
         let now = now_ms();
         let was = target.silenced_until.filter(|u| *u > now);
         if was.is_none() && until.is_none() {
@@ -3215,7 +3335,8 @@ impl Ctx<'_, '_> {
             return Ok(());
         }
         match minutes {
-            Some(m) if now_ms() - msg.created_at > m * 60_000 => Err(err(
+            Some(m) if now_ms() - msg.created_at > m * 60_000 => Err(rule!(
+                "msg.app_window",
                 "forbidden",
                 format!("the app does not allow this: messages are {what} within {m} minutes"),
             )),
@@ -3231,24 +3352,40 @@ impl Ctx<'_, '_> {
     ) -> ApiResult<Value> {
         let mine = self.require_member(conv_id, &me.id).await?;
         if mine.role != "owner" {
-            return Err(err("forbidden", "only the owner transfers ownership"));
+            return Err(rule!(
+                "conv.transfer_not_owner",
+                "forbidden",
+                "only the owner transfers ownership"
+            ));
         }
         if self.is_dm(conv_id).await? {
-            return Err(err(
+            return Err(rule!(
+                "conv.dm_no_owner",
                 "bad_request",
                 "a direct conversation has no owner to transfer",
             ));
         }
         let u = self.resolve_user(user_id)?;
-        let target = self
-            .require_member(conv_id, &u.id)
-            .await
-            .map_err(|_| err("not_found", "not a member of this conversation"))?;
+        let target = self.require_member(conv_id, &u.id).await.map_err(|_| {
+            rule!(
+                "member.unknown",
+                "not_found",
+                "not a member of this conversation"
+            )
+        })?;
         if target.user_id == me.id {
-            return Err(err("conflict", "you are already the owner"));
+            return Err(rule!(
+                "conv.transfer_self",
+                "conflict",
+                "you are already the owner"
+            ));
         }
         if target.kind != UserKind::Human {
-            return Err(err("bad_request", "only a person can own a conversation"));
+            return Err(rule!(
+                "conv.owner_is_person",
+                "bad_request",
+                "only a person can own a conversation"
+            ));
         }
         self.db.set_role(conv_id, &u.id, "owner").await?;
         // The system is not a member: the previous owner becomes an admin.
@@ -3297,7 +3434,11 @@ impl Ctx<'_, '_> {
         let mine = self.require_member(conv_id, &me.id).await?;
         // A direct conversation can be deleted by either person in it.
         if mine.role != "owner" && !(self.is_dm(conv_id).await? && me.kind == UserKind::Human) {
-            return Err(err("forbidden", "only the owner dissolves a conversation"));
+            return Err(rule!(
+                "conv.dissolve_not_owner",
+                "forbidden",
+                "only the owner dissolves a conversation"
+            ));
         }
         let members: Vec<String> = self
             .members(conv_id)
@@ -3395,7 +3536,11 @@ impl Ctx<'_, '_> {
                 .await
                 .is_ok()
         {
-            return Err(err("forbidden", "the account is deactivated"));
+            return Err(rule!(
+                "account.deactivated",
+                "forbidden",
+                "the account is deactivated"
+            ));
         }
         let member = self.require_member(conv_id, &me.id).await?;
         not_silenced(&member)?;
@@ -3403,7 +3548,8 @@ impl Ctx<'_, '_> {
         let kind = check_kind(kind, &payload)?;
         let envelope = self.envelope(conv_id, envelope).await?;
         if envelope.is_some() && to_user.is_some() {
-            return Err(err(
+            return Err(rule!(
+                "msg.envelope_not_directed",
                 "bad_request",
                 "an envelope is for messages in the conversation, not to_user",
             ));
@@ -3411,7 +3557,11 @@ impl Ctx<'_, '_> {
         if let Some(o) = &on_behalf_of {
             // Community rule: an agent may only speak on behalf of its owner.
             if me.kind != UserKind::Agent || me.owner_id.as_deref() != Some(o.as_str()) {
-                return Err(err("forbidden", "on_behalf_of must be the agent's owner"));
+                return Err(rule!(
+                    "msg.on_behalf_not_owner",
+                    "forbidden",
+                    "on_behalf_of must be the agent's owner"
+                ));
             }
         }
         let (causation_id, hop) = self.causation(conv_id, me, causation_id, &reply_to).await?;
@@ -3442,14 +3592,15 @@ impl Ctx<'_, '_> {
                 )
                 .await?;
                 self.commit_on_error = true;
-                return Err(err("policy_blocked", reason));
+                return Err(rule!("msg.policy", "policy_blocked", reason));
             }
         }
 
         self.check_dm_block(conv_id, &me.id).await?;
         let has_file = files::KINDS.contains(&kind.as_str());
         if has_file && to_user.is_some() {
-            return Err(err(
+            return Err(rule!(
+                "msg.files_not_directed",
                 "bad_request",
                 "files go to the conversation, not to_user",
             ));
@@ -3459,7 +3610,11 @@ impl Ctx<'_, '_> {
             let t = self.resolve_user(&target)?;
             self.require_member(conv_id, &t.id).await?;
             if self.blocked_now(&t.id, &me.id).await? || self.blocked_now(&me.id, &t.id).await? {
-                return Err(err("blocked", "you cannot message this user"));
+                return Err(rule!(
+                    "block.blocked",
+                    "blocked",
+                    "you cannot message this user"
+                ));
             }
             let mut audience = self.audience(conv_id, me).await?;
             if !audience.contains(&t.id) {
@@ -3643,17 +3798,26 @@ impl Ctx<'_, '_> {
             .ok_or_else(|| err("conv_moved", "message not in this database"))?;
         self.own_conv(&msg.conv_id)?;
         if !self.can_modify(me, &msg, false).await? {
-            return Err(err("forbidden", "cannot edit this message"));
+            return Err(rule!(
+                "msg.edit_not_allowed",
+                "forbidden",
+                "cannot edit this message"
+            ));
         }
         if let Ok(m) = self.require_member(&msg.conv_id, &me.id).await {
             not_silenced(&m)?;
         }
         self.within_window(me, &msg, self.sh.allowed(me).edit_minutes, "edited")?;
         if msg.state == "streaming" || msg.state == "recalled" {
-            return Err(err("conflict", format!("message is {}", msg.state)));
+            return Err(rule!(
+                "msg.edit_state",
+                "conflict",
+                format!("message is {}", msg.state)
+            ));
         }
         if base_version.is_some_and(|v| v != msg.version) {
-            return Err(err(
+            return Err(rule!(
+                "msg.edit_version",
                 "conflict",
                 format!("the message changed since (now version {})", msg.version),
             ));
@@ -3665,7 +3829,8 @@ impl Ctx<'_, '_> {
                 files::check_payload(&msg.kind, &Some(p.clone()))?;
                 let old = msg.payload.clone().unwrap_or_default();
                 if p["file_id"] != old["file_id"] {
-                    return Err(err(
+                    return Err(rule!(
+                        "msg.edit_file",
                         "bad_request",
                         "the file of a message cannot be changed; send a new one",
                     ));
@@ -3685,7 +3850,11 @@ impl Ctx<'_, '_> {
         };
         if let Some(p) = &payload {
             if msg.kind == "text" {
-                return Err(err("bad_request", "text messages have no payload"));
+                return Err(rule!(
+                    "msg.edit_text_payload",
+                    "bad_request",
+                    "text messages have no payload"
+                ));
             }
             check_json_object(p, "payload", MAX_PAYLOAD_BYTES)?;
             if msg.kind == cards::KIND {
@@ -3696,7 +3865,7 @@ impl Ctx<'_, '_> {
         if me.kind == UserKind::Agent
             && let Some((_, reason)) = self.sh.policy.outbound(&scan_text(text, scanned))
         {
-            return Err(err("policy_blocked", reason));
+            return Err(rule!("msg.policy", "policy_blocked", reason));
         }
         if payload.is_some() {
             self.db.set_payload(msg_id, payload.as_ref()).await?;
@@ -3757,11 +3926,19 @@ impl Ctx<'_, '_> {
             .ok_or_else(|| err("conv_moved", "message not in this database"))?;
         self.own_conv(&msg.conv_id)?;
         if !self.can_modify(me, &msg, true).await? {
-            return Err(err("forbidden", "cannot recall this message"));
+            return Err(rule!(
+                "msg.recall_not_allowed",
+                "forbidden",
+                "cannot recall this message"
+            ));
         }
         self.within_window(me, &msg, self.sh.allowed(me).recall_minutes, "recalled")?;
         if msg.state == "recalled" {
-            return Err(err("conflict", "message is already recalled"));
+            return Err(rule!(
+                "msg.recall_done",
+                "conflict",
+                "message is already recalled"
+            ));
         }
         if msg.state == "streaming" {
             self.finish_stream(msg_id, "cancelled", Some("recalled"), &me.id)
@@ -3827,7 +4004,11 @@ impl Ctx<'_, '_> {
         causation_id: Option<String>,
     ) -> ApiResult<Value> {
         if me.kind != UserKind::Agent {
-            return Err(err("forbidden", "only agents stream"));
+            return Err(rule!(
+                "stream.agents_only",
+                "forbidden",
+                "only agents stream"
+            ));
         }
         if let Some(prev) = self.duplicate(conv_id, &me.id, client_msg_id).await? {
             return Ok(prev);
@@ -3841,7 +4022,8 @@ impl Ctx<'_, '_> {
             .filter(|s| s.sender.id == me.id && s.conv_id == conv_id)
             .count();
         if active >= 2 {
-            return Err(err(
+            return Err(rule!(
+                "stream.concurrent",
                 "rate_limited",
                 "too many concurrent streams in this conversation",
             ));
@@ -3946,15 +4128,19 @@ impl Ctx<'_, '_> {
             .st
             .streams
             .get_mut(msg_id)
-            .ok_or_else(|| err("not_found", "no active stream"))?;
+            .ok_or_else(|| rule!("stream.unknown", "not_found", "no active stream"))?;
         if st.sender.id != me.id {
-            return Err(err("forbidden", "not your stream"));
+            return Err(rule!("stream.not_yours", "forbidden", "not your stream"));
         }
         if idx < st.next_idx {
             return Ok(json!({"duplicate": true}));
         }
         if text.contains('\0') {
-            return Err(err("bad_request", "text must not contain NUL"));
+            return Err(rule!(
+                "msg.text_nul",
+                "bad_request",
+                "text must not contain NUL"
+            ));
         }
         if idx > st.next_idx {
             return Err(err(
@@ -3987,7 +4173,11 @@ impl Ctx<'_, '_> {
             self.finish_stream(msg_id, "cancelled", Some("budget_exceeded"), &me.id)
                 .await?;
             self.commit_on_error = true;
-            return Err(err("budget_exceeded", "daily agent budget exhausted"));
+            return Err(rule!(
+                "agent.daily_budget",
+                "budget_exceeded",
+                "daily agent budget exhausted"
+            ));
         }
         // Streaming filter: check the accumulated text chunk by chunk.
         if let Some((hook, reason)) = self.sh.policy.outbound(&buf) {
@@ -4003,7 +4193,7 @@ impl Ctx<'_, '_> {
                 .await?;
             self.moderate_stream(msg_id, &reason).await?;
             self.commit_on_error = true;
-            return Err(err("policy_blocked", reason));
+            return Err(rule!("msg.policy", "policy_blocked", reason));
         }
         Ok(json!({}))
     }
@@ -4013,14 +4203,18 @@ impl Ctx<'_, '_> {
             .st
             .streams
             .get(msg_id)
-            .ok_or_else(|| err("not_found", "no active stream"))?;
+            .ok_or_else(|| rule!("stream.unknown", "not_found", "no active stream"))?;
         let sender = st.sender.clone();
         let conv_id = st.conv_id.clone();
         let is_owner = sender.owner_id.as_deref() == Some(me.id.as_str());
         let human_member =
             me.kind == UserKind::Human && self.require_member(&conv_id, &me.id).await.is_ok();
         if sender.id != me.id && !is_owner && !human_member {
-            return Err(err("forbidden", "cannot interrupt this stream"));
+            return Err(rule!(
+                "stream.cancel_not_allowed",
+                "forbidden",
+                "cannot interrupt this stream"
+            ));
         }
         let reason = format!("cancelled_by:{}", me.name);
         self.finish_stream(msg_id, "cancelled", Some(&reason), &me.id)
@@ -4388,16 +4582,18 @@ impl Ctx<'_, '_> {
         self.own_conv(&d.conv_id)?;
         let agent = self.owned_agent_in(me, &d.agent_id, &d.conv_id).await?;
         if d.state != "pending" {
-            return Err(err("conflict", "draft already decided"));
+            return Err(rule!("draft.decided", "conflict", "draft already decided"));
         }
         if self.db.takeover(&d.conv_id, &agent.id).await?.is_some() {
-            return Err(err(
+            return Err(rule!(
+                "draft.agent_taken_over",
                 "conflict",
                 "the agent is taken over; release it before publishing its drafts",
             ));
         }
         if self.sh.stopped.read().unwrap().contains(&agent.id) {
-            return Err(err(
+            return Err(rule!(
+                "draft.agent_stopped",
                 "conflict",
                 "the agent is stopped; resume it before publishing its drafts",
             ));
@@ -4406,7 +4602,8 @@ impl Ctx<'_, '_> {
         if let Ok(m) = self.require_member(&d.conv_id, &agent.id).await
             && m.silenced_until.is_some_and(|u| u > now_ms())
         {
-            return Err(err(
+            return Err(rule!(
+                "draft.agent_silenced",
                 "conflict",
                 "the agent is silenced in this conversation; its drafts wait",
             ));
@@ -4416,7 +4613,7 @@ impl Ctx<'_, '_> {
         if let Some(st) = self.task_state(&d.conv_id).await?
             && tasks::terminal(&st)
         {
-            return Err(err("conflict", format!("the task is {st}")));
+            return Err(rule!("task.state", "conflict", format!("the task is {st}")));
         }
         if let Some(t) = &text {
             check_text(t)?;
@@ -4573,7 +4770,8 @@ impl Ctx<'_, '_> {
         self.require_member(conv_id, &agent.id).await?;
         let current = self.db.takeover(conv_id, &agent.id).await?;
         if on == current.is_some() {
-            return Err(err(
+            return Err(rule!(
+                "agent.taken_over",
                 "conflict",
                 if on {
                     "already taken over"
@@ -4621,14 +4819,18 @@ impl Ctx<'_, '_> {
         match op {
             AdminOp::Create(row) => {
                 if self.db.admin_by("name", &row.name).await?.is_some() {
-                    return Err(err("conflict", "an admin with this name exists"));
+                    return Err(rule!(
+                        "admin.name_taken",
+                        "conflict",
+                        "an admin with this name exists"
+                    ));
                 }
                 self.db.insert_admin(&row).await?;
                 Ok(json!({}))
             }
             AdminOp::Update { id, role, disabled } => {
                 let Some(cur) = self.db.admin_by("id", &id).await? else {
-                    return Err(err("not_found", "no such admin"));
+                    return Err(rule!("admin.unknown", "not_found", "no such admin"));
                 };
                 // The last active owner stays an active owner.
                 let demoted =
@@ -4642,7 +4844,8 @@ impl Ctx<'_, '_> {
                         .filter(|a| a.role == "owner" && a.disabled_at.is_none())
                         .count();
                     if owners <= 1 {
-                        return Err(err(
+                        return Err(rule!(
+                            "admin.last_owner",
                             "conflict",
                             "the last owner cannot be demoted or disabled",
                         ));
@@ -4689,7 +4892,8 @@ impl Ctx<'_, '_> {
             AdminOp::DyeAdd(rule) => {
                 let mut rules = self.dye_rules().await?;
                 if rules.len() >= crate::trace::DYE_MAX_RULES {
-                    return Err(err(
+                    return Err(rule!(
+                        "dye.limit",
                         "rate_limited",
                         format!(
                             "at most {} dye rules at once; remove one first",
@@ -4706,7 +4910,11 @@ impl Ctx<'_, '_> {
                 let before = rules.len();
                 rules.retain(|r| r.id != id);
                 if rules.len() == before {
-                    return Err(err("not_found", "no such dye rule (it may have expired)"));
+                    return Err(rule!(
+                        "dye.unknown",
+                        "not_found",
+                        "no such dye rule (it may have expired)"
+                    ));
                 }
                 self.save_dye_rules(rules).await?;
                 Ok(json!({"removed": id}))
@@ -4755,7 +4963,8 @@ impl Ctx<'_, '_> {
 /// Refuses a member silenced by moderation in the conversation.
 fn not_silenced(m: &Member) -> ApiResult<()> {
     match m.silenced_until {
-        Some(u) if u > now_ms() => Err(err(
+        Some(u) if u > now_ms() => Err(rule!(
+            "member.silenced",
             "forbidden",
             format!("silenced in this conversation until {u} (ms since 1970)"),
         )),

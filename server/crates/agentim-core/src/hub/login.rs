@@ -81,7 +81,11 @@ impl Hub {
     /// A new signing key; the secret is returned once.
     pub async fn create_signing_key(&self, name: &str) -> ApiResult<Value> {
         if name.is_empty() || name.len() > 64 || name.contains('\0') {
-            return Err(err("bad_request", "a key name is 1..64 bytes"));
+            return Err(rule!(
+                "signing.name",
+                "bad_request",
+                "a key name is 1..64 bytes"
+            ));
         }
         let (kid, secret) = crate::auth::new_signing_key();
         let crypto = self.control().crypto.clone();
@@ -130,7 +134,11 @@ impl Hub {
             .call(Op::RevokeSigningKey { kid: kid.into() })
             .await?;
         if v["revoked"] != true {
-            return Err(err("not_found", "no such signing key in force"));
+            return Err(rule!(
+                "signing.unknown",
+                "not_found",
+                "no such signing key in force"
+            ));
         }
         Ok(())
     }
@@ -139,7 +147,8 @@ impl Hub {
     /// backend would (the `token sign` command, the demo, tests).
     pub fn sign_token(&self, user_id: &str, ttl_s: i64) -> ApiResult<String> {
         if ttl_s <= 0 || ttl_s > self.max_token_s() {
-            return Err(err(
+            return Err(rule!(
+                "signing.ttl",
                 "bad_request",
                 format!("ttl is 1..{} seconds", self.max_token_s()),
             ));
@@ -147,7 +156,8 @@ impl Hub {
         let keys = self.inner.sh.signing.read().unwrap();
         let Some((kid, (secret, _))) = keys.iter().max_by_key(|(k, (_, at))| (*at, (*k).clone()))
         else {
-            return Err(err(
+            return Err(rule!(
+                "signing.none",
                 "conflict",
                 "no signing key: create one with `agentim signing-key create`",
             ));
@@ -231,13 +241,15 @@ impl Hub {
         }
         let claims = claims.map_err(|e| refused(e.as_str()))?;
         let Some(device) = device.filter(|d| valid_device(d)) else {
-            return Err(err(
+            return Err(rule!(
+                "account.device_id",
                 "bad_request",
                 "connect with device=<the id this app chose for the device, 1..64 of A-Z a-z 0-9 _ ->",
             ));
         };
         if !valid_label(device_name) || !valid_label(platform) {
-            return Err(err(
+            return Err(rule!(
+                "account.device_field",
                 "bad_request",
                 "device_name and platform are 1..64 bytes",
             ));
@@ -255,7 +267,11 @@ impl Hub {
         // A valid token of someone the developer turned off: the app
         // should stop retrying (403, not 401, docs/08 §2.9).
         if self.is_deactivated(&user.id) {
-            return Err(err("forbidden", "this person is deactivated"));
+            return Err(rule!(
+                "account.deactivated",
+                "forbidden",
+                "this person is deactivated"
+            ));
         }
         let device_id = device_id_of(&user.id, device);
         if self.cut_off(&user.id, &device_id, claims.iat) {

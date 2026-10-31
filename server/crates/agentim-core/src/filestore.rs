@@ -401,7 +401,8 @@ impl Store {
                         let p = base.join("parts").join(n.to_string());
                         let len = tokio::fs::metadata(&p).await.map(|m| m.len()).ok();
                         if len != Some(part_len(size, part, n)) {
-                            return Err(err(
+                            return Err(rule!(
+                                "file.part_missing",
                                 "bad_request",
                                 format!("part {n} is missing or has the wrong size"),
                             ));
@@ -434,7 +435,8 @@ impl Store {
                     if tags.len() != total as usize
                         || tags.iter().enumerate().any(|(i, t)| t.0 != i as u32 + 1)
                     {
-                        return Err(err(
+                        return Err(rule!(
+                            "file.parts_etags",
                             "bad_request",
                             format!("give the ETag of each of the {total} parts"),
                         ));
@@ -461,7 +463,8 @@ impl Store {
                         && self.size(conv, file, "original").await?.is_some();
                     if !(status.is_success() && !text.contains("<Error>")) && !done {
                         if status.is_client_error() || text.contains("<Error>") {
-                            return Err(err(
+                            return Err(rule!(
+                                "file.parts_unjoinable",
                                 "bad_request",
                                 "the parts could not be joined (missing or wrong ETags)",
                             ));
@@ -473,11 +476,16 @@ impl Store {
         }
         match self.size(conv, file, "original").await? {
             Some(s) if s == size => Ok(()),
-            Some(s) => Err(err(
+            Some(s) => Err(rule!(
+                "file.size_mismatch",
                 "bad_request",
                 format!("the file has {s} bytes, not the {size} declared"),
             )),
-            None => Err(err("bad_request", "nothing was uploaded")),
+            None => Err(rule!(
+                "file.nothing_uploaded",
+                "bad_request",
+                "nothing was uploaded"
+            )),
         }
     }
 

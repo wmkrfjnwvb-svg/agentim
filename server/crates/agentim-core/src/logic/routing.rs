@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Ctx, err};
+use super::Ctx;
 use crate::model::*;
 
 /// Agents one event may wake; more must use topics or a coordinator.
@@ -44,7 +44,7 @@ pub fn valid_topic(t: &str) -> bool {
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
-    err("bad_request", msg)
+    rule!("msg.sources", "bad_request", msg)
 }
 
 const MAX_SOURCES: usize = 20;
@@ -248,7 +248,8 @@ impl Ctx<'_, '_> {
                 .await?;
             self.commit_on_error = true;
         }
-        Err(err(
+        Err(rule!(
+            "agent.root_budget",
             "rate_limited",
             format!(
                 "root budget: {limit} agent messages since the last human message; wait for a person"
@@ -305,10 +306,11 @@ impl Ctx<'_, '_> {
                     .db
                     .conv(conv_id)
                     .await?
-                    .ok_or_else(|| err("not_found", "conversation"))?;
+                    .ok_or_else(|| rule!("conv.unknown", "not_found", "conversation"))?;
                 let agents = members.iter().filter(|m| m.kind == UserKind::Agent).count();
                 if conv.kind != "dm" && agents > MAX_AGENTS_FOR_ALL {
-                    return Err(err(
+                    return Err(rule!(
+                        "agent.trigger_all",
                         "conflict",
                         format!(
                             "all is for direct conversations or at most {MAX_AGENTS_FOR_ALL} agents; use addressed or topics"

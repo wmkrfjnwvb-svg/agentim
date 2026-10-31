@@ -1017,6 +1017,8 @@ pub struct ApiError {
     /// For temporary refusals (`rate_limited`, `overloaded`, …): how long
     /// the caller should wait before trying again (docs/08 §2.9).
     pub retry_after_ms: Option<u64>,
+    /// The business rule that refused the request (`rule!`, docs/15).
+    pub rule: Option<&'static str>,
 }
 
 impl ApiError {
@@ -1025,6 +1027,34 @@ impl ApiError {
             code,
             message: message.into(),
             retry_after_ms: None,
+            rule: None,
+        }
+    }
+
+    /// A refusal by a named rule; see `rule!`. With `AGENTIM_RULES_HIT` set
+    /// (tests), the rule's id is appended to that file, so CI can check that
+    /// every rule is triggered by some test.
+    pub fn rule(id: &'static str, code: &'static str, message: impl Into<String>) -> Self {
+        static HIT: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> =
+            std::sync::OnceLock::new();
+        let hit = HIT.get_or_init(|| {
+            let path = std::env::var_os("AGENTIM_RULES_HIT")?;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+                .map(std::sync::Mutex::new)
+        });
+        if let Some(f) = hit {
+            use std::io::Write;
+            let _ = writeln!(f.lock().unwrap_or_else(|e| e.into_inner()), "{id}");
+        }
+        ApiError {
+            code,
+            message: message.into(),
+            retry_after_ms: None,
+            rule: Some(id),
         }
     }
 
@@ -1043,6 +1073,7 @@ impl ApiError {
                 code: self.code,
                 message: "the request could not be completed; retry".into(),
                 retry_after_ms: self.retry_after_ms,
+                rule: None,
             },
             _ => self.clone(),
         }
@@ -1053,6 +1084,9 @@ impl ApiError {
         if let Some(ms) = self.retry_after_ms {
             v["retry_after_ms"] = serde_json::json!(ms);
         }
+        if let Some(r) = self.rule {
+            v["rule"] = serde_json::json!(r);
+        }
         v
     }
 
@@ -1060,6 +1094,18 @@ impl ApiError {
     /// program's codes (codes are a closed set; anything unknown is
     /// `unavailable`, the retryable answer).
     pub fn from_wire(code: &str, message: String) -> Self {
+        Self::from_wire_rule(code, message, None)
+    }
+
+    /// Like `from_wire`, with the rule the other node named (interned the
+    /// same way: rule ids are a closed set too).
+    pub fn from_wire_rule(code: &str, message: String, rule: Option<&str>) -> Self {
+        let mut e = Self::from_wire_code(code, message);
+        e.rule = rule.and_then(intern_rule);
+        e
+    }
+
+    fn from_wire_code(code: &str, message: String) -> Self {
         static CODES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
         let mut known = CODES.lock().unwrap_or_else(|e| e.into_inner());
         let code = match known.iter().find(|c| **c == code) {
@@ -1077,6 +1123,25 @@ impl ApiError {
         };
         ApiError::new(code, message)
     }
+}
+
+/// A rule id from another node as a `&'static str` (at most 1024 kept).
+fn intern_rule(r: &str) -> Option<&'static str> {
+    static RULES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut known = RULES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(r) = known.iter().find(|k| **k == r) {
+        return Some(*r);
+    }
+    let ok = known.len() < 1024
+        && !r.is_empty()
+        && r.len() <= 64
+        && r.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.');
+    ok.then(|| {
+        let s: &'static str = Box::leak(r.to_string().into_boxed_str());
+        known.push(s);
+        s
+    })
 }
 
 impl From<sqlx::Error> for ApiError {

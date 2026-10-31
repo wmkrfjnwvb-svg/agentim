@@ -92,6 +92,9 @@ pub struct WireError {
     pub code: String,
     #[serde(default)]
     pub message: String,
+    /// The business rule that refused it (docs/15); absent from older nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
 }
 
 /// One frame: header and body.

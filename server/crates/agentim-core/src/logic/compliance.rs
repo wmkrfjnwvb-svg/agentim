@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use super::{Ctx, err};
+use super::Ctx;
 use crate::db::{AUTH_EPOCH, ERASE_BATCH};
 use crate::model::*;
 use crate::registry::Out;
@@ -184,7 +184,11 @@ impl Ctx<'_, '_> {
             .await?
             >= per_hour as i64
         {
-            return Err(err("rate_limited", "too many reports; try again later"));
+            return Err(rule!(
+                "report.rate",
+                "rate_limited",
+                "too many reports; try again later"
+            ));
         }
         let id = self
             .db
@@ -213,15 +217,23 @@ impl Ctx<'_, '_> {
             .db
             .report(report_id)
             .await?
-            .ok_or_else(|| err("not_found", "no such report"))?;
+            .ok_or_else(|| rule!("report.unknown", "not_found", "no such report"))?;
         if r["state"] != "open" {
-            return Err(err("conflict", "this report was already resolved"));
+            return Err(rule!(
+                "report.resolved",
+                "conflict",
+                "this report was already resolved"
+            ));
         }
         let kind = r["target_kind"].as_str().unwrap_or_default().to_string();
         let target = r["target_id"].as_str().unwrap_or_default().to_string();
         let ids = self.db.reports_resolve(&kind, &target, decision).await?;
         if ids.is_empty() {
-            return Err(err("conflict", "this report was already resolved"));
+            return Err(rule!(
+                "report.resolved",
+                "conflict",
+                "this report was already resolved"
+            ));
         }
         let user = r["evidence"]["user_id"].as_str().map(str::to_string);
         if (suspend_until.is_some() || ban)

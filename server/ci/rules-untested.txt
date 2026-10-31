@@ -1,0 +1,28 @@
+# Business rules no test triggers yet (docs/15). CI fails when a rule is
+# missing from tests and from this list, or when a listed rule is now tested.
+# Shrink it: add a test, then remove the line.
+account.export_cancelled
+account.logins_busy
+account.permissions_people_only
+account.token_ttl
+admin.cluster_input
+admin.setup_done
+admin.totp_off
+agent.ownerless_adds_nobody
+agent.ownerless_starts_nothing
+conv.system_via_open_api
+conv.unknown_database
+file.daily_bytes
+file.ingest_size
+file.nothing_uploaded
+file.parts_etags
+file.parts_unjoinable
+file.size_mismatch
+file.upload_incomplete
+member.silence_system
+msg.feedback_own
+report.no_user
+request.decided
+request.ownerless
+session.wrong_writer
+signing.ttl

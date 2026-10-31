@@ -13,9 +13,12 @@ Errors have the same `code` everywhere: on the WebSocket protocol, in the client
   "title": "Forbidden",
   "status": 403,
   "code": "forbidden",
-  "detail": "not a member of this conversation"
+  "detail": "not a member of this conversation",
+  "rule": "member.required"
 }
 ```
+
+A refusal by a business rule also names the rule: `rule` in problem details, `error.rule` on the WebSocket and in MCP results. Rule ids are stable, so your app can branch on them (for example show "you were removed from this group" for `member.required`); the message text is not. Every rule is listed in [Business rules](/docs/reference/business-rules/).
 
 **A refused request leaves no trace**: nothing is written, no event is sent, nothing is counted against limits.
 
