@@ -227,7 +227,15 @@ pub async fn deliver_loop(
                                 );
                                 metrics::counter!(m::WEBHOOK_DROPPED, "webhook" => wh.name.clone())
                                     .increment(1);
-                                dropped.push(wid.clone());
+                                let b: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                                dropped.push((
+                                    wid.clone(),
+                                    b["data"]["conv_id"]
+                                        .as_str()
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    b["data"]["seq"].as_i64().unwrap_or(0),
+                                ));
                                 break;
                             }
                             // Record progress before waiting, so a restart
@@ -305,7 +313,13 @@ async fn outbox_page(
 }
 
 /// Moves the cursor through the writer (retrying until it sticks).
-async fn ack(shard: &Shard, name: &str, upto: i64, dropped: &[String], all: &[String]) -> i64 {
+async fn ack(
+    shard: &Shard,
+    name: &str,
+    upto: i64,
+    dropped: &[(String, String, i64)],
+    all: &[String],
+) -> i64 {
     loop {
         let r = shard
             .call(Op::WebhookAck {

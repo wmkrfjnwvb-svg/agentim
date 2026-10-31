@@ -8,6 +8,7 @@ import { api, can, setCsrf, whenLoggedOut, type Me, type Role } from './api';
 import { Account, Login, Setup } from './auth';
 import { Agents, Audit, ClientSettings, Conversations, Keys, Overview, Reports, Users, Webhooks } from './app';
 import { Admins, Cluster, DyeRules, Status } from './deploy';
+import { MessageTrace } from './trace';
 import '@fontsource-variable/inter';
 import logoLight from './assets/logo-light.svg?raw';
 import logoDark from './assets/logo-dark.svg?raw';
@@ -19,6 +20,7 @@ const ICONS: Record<string, string> = {
   users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.8c2 .8 3.2 2.6 3.5 5.2"/>',
   conversations: '<path d="M4 5h16v11H9l-5 4z"/>',
   agents: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01M9 16h6"/>',
+  trace: '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h7a3 3 0 0 1 0 6h-4a3 3 0 0 0 0 6h7"/>',
   reports: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
   keys: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/>',
   webhooks: '<path d="M10 14a4 4 0 1 1 2-7.5M14 10a4 4 0 1 1-2 7.5M8 18h8"/>',
@@ -46,8 +48,9 @@ interface Route {
 const ROUTES: Route[] = [
   { path: 'overview', label: 'Overview', area: 'App', allowed: can.appRead, page: () => <Overview /> },
   { path: 'users', label: 'People', area: 'App', allowed: can.appRead, page: (me) => <Users me={me} /> },
-  { path: 'conversations', label: 'Conversations', area: 'App', allowed: can.appRead, page: () => <Conversations /> },
+  { path: 'conversations', label: 'Conversations', area: 'App', allowed: can.appRead, page: (me) => <Conversations canTrace={can.trace(me.admin.role)} /> },
   { path: 'agents', label: 'Agents', area: 'App', allowed: can.app, page: () => <Agents /> },
+  { path: 'trace', label: 'Message trace', area: 'App', allowed: can.trace, page: () => <MessageTrace /> },
   { path: 'reports', label: 'Reports', area: 'App', allowed: can.appRead, page: () => <Reports /> },
   { path: 'keys', label: 'Keys', area: 'App', allowed: can.app, page: () => <Keys /> },
   { path: 'webhooks', label: 'Webhooks', area: 'App', allowed: can.app, page: () => <Webhooks /> },

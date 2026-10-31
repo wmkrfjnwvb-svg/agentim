@@ -15,8 +15,10 @@ use crate::storage::{Dialect, TABLES, Ty};
 pub mod admin;
 mod compliance;
 mod files;
+mod msgtrace;
 pub use compliance::ERASE_BATCH;
 pub use files::{FileRow, TrashRow};
+pub use msgtrace::MsgFacts;
 
 /// Escapes a user's text for `LIKE … ESCAPE '!'`.
 fn like_escape(s: &str) -> String {

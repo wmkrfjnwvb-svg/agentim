@@ -299,7 +299,7 @@ export function writeAll() {
 
   const ops = clientOps();
   let t = fm('Client protocol', 'Every request of the WebSocket protocol: what it does and its fields.', 20);
-  t += 'Clients send JSON frames `{"op": …, "rid": …, …fields}` over `/ws` and get `{"type": "res", "rid", "ok", …}` back; pushes are described in [Events](/docs/reference/events/). The client SDKs send these for you. Errors use the [error codes](/docs/reference/errors/).\n\n';
+  t += 'Clients send JSON frames `{"op": …, "rid": …, …fields}` over `/ws` and get `{"type": "res", "rid", "ok", …}` back; pushes are described in [Events](/docs/reference/events/). The client SDKs send these for you. Errors use the [error codes](/docs/reference/errors/).\n\nAny request may carry `"trace": "00-<trace id>-<parent id>-<flags>"` ([W3C traceparent](https://www.w3.org/TR/trace-context/)). Agents\' traces are continued; a person\'s app gets a new server trace that links to theirs ([Tracing](/docs/operations/tracing/)).\n\n';
   for (const op of ops) {
     t += `## \`${op.name}\`\n\n${op.doc || ''}\n\n`;
     if (op.fields.length) {

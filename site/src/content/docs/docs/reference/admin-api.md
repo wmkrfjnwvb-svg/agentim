@@ -33,11 +33,13 @@ Passwords are hashed with Argon2id. Repeated failures lock the account (`auth.ma
 | `GET /admin/v1/app/conversations/{id}/messages?reason=…` | Read content. `reason` (1–500 bytes) is required and every read is audited |
 | `GET`, `POST /admin/v1/app/agents`; `POST`, `DELETE …/{id}`; `POST …/{id}/keys` | Create, stop, resume, transfer and destroy agents; issue keys |
 | `GET /admin/v1/app/reports`, `GET`, `POST …/{id}` | The report queue and resolving reports |
+| `GET /admin/v1/messages/{msg_id}/trace` | What happened to one message, from stored data: who could see it, which devices have it, agents' replies and drafts, webhook states, edits, recalls, reports, files. No content. `owner`, `operator` and `moderator`; every look is audited ([tracing](/docs/operations/tracing/)) |
 | `GET /admin/v1/app/webhooks` | Configured webhooks and their delivery state (read-only) |
 | `GET /admin/v1/app/audit` | The audit log |
 | `GET`, `PUT /admin/v1/app/settings/clients` | The app's default [client permissions](/docs/concepts/permissions/) |
 | `GET /admin/v1/deploy/status` | Databases (type, replication, encryption, writers), connections, version |
 | `GET /admin/v1/deploy/cluster`, `POST …/nodes/{node}` | Cluster nodes; drain one |
+| `GET`, `POST /admin/v1/deploy/dye-rules`; `DELETE …/{id}` | Dye rules: log one person's, agent's, device's, conversation's or API key's requests in full, for up to 24 hours. `kind`, `target`, `reason` and `minutes`; audited |
 | `GET`, `POST /admin/v1/deploy/admins`, `…/admin-keys` | Admin accounts and admin keys (`owner` only) |
 | `GET /admin/v1/me`, `POST …/me/password`, `POST …/me/{totp action}` | The signed-in admin |
 

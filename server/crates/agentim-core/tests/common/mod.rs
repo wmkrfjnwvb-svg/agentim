@@ -194,6 +194,7 @@ pub fn single(url: &str) -> Config {
         moderation: Default::default(),
         history: test_history(),
         files: Default::default(),
+        tracing: Default::default(),
         cluster: Default::default(),
     }
 }
@@ -239,6 +240,7 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
         moderation: Default::default(),
         history: test_history(),
         files: Default::default(),
+        tracing: Default::default(),
         cluster: Default::default(),
     }
 }

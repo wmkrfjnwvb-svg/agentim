@@ -168,3 +168,8 @@ td.small { word-break: break-all; max-width: 360px; }
 .steps a { font-weight: 650; text-decoration: none; }
 .steps a:hover { text-decoration: underline; }
 .card-logo { margin-bottom: 20px; } .card-logo svg { height: 30px; width: auto; display: block; }
+
+/* Label / value pairs (message trace). */
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }

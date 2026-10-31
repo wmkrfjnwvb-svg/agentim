@@ -34,6 +34,7 @@ mod developer;
 mod dye;
 mod export;
 mod files;
+mod msgtrace;
 pub use files::INGEST_MAX;
 mod history;
 mod lifecycle;

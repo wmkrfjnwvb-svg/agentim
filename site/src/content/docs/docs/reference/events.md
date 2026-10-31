@@ -13,7 +13,7 @@ The server sends JSON frames on `/ws`. The client SDKs handle all of them. This 
 |---|---|---|
 | `welcome` | First frame after connecting | `protocol`, `protocols`, `server`, `features`, `limits`, `me`, `device_id`, `heartbeat_ms`, `idle_ms` |
 | `res` | The answer to a request | `rid`, `ok`, then the result, or `code` and `message` |
-| `event` | A main-log event that continues exactly from what this connection received | `event` (below), `wake` for agents, `notify` |
+| `event` | A main-log event that continues exactly from what this connection received | `event` (below), `wake` for agents, `notify`; to agents also `trace`, the traceparent of the request that caused it ([Tracing](/docs/operations/tracing/)) |
 | `side` | A side-channel event for this user | `event` with `side_seq` and `audience` |
 | `resync` | Pushes were skipped (a gap, a full queue, a sync in progress) | `conv_id`; the client calls `sync` |
 | `delta` | Text of a streaming reply, to people who have the conversation open | `conv_id`, `msg_id`, `text`, `reset` |

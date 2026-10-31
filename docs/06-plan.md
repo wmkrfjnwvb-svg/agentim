@@ -7,7 +7,7 @@
 
 **方向**（2026-10-18 确认）：只服务开发者；一个产品、一个程序 `agentim`，全部功能免费；已做完的 Agent 能力全部保留，没开始的 Agent 中间件不做；下一阶段做开发者体验闭环：发现 → 5 分钟跑起来 → 30 分钟嵌进自己的应用 → 用开发者控制台管理 → 付费（托管云或支持服务，D102）。
 
-**当前位置**：消息核心、开发者接入、AI 部分（L1–L7）和集群（C0–C4）已经完成。§3 第 1–4 步（合并 Lite、A4 合规基础、入口按角色划分、A5 管理 API 和控制台、A7 客户端 SDK）已完成；A7 里需要 macOS、Android、Unity 工具链的部分（打包、模拟器、Unity 里跑）没做，和发布一起放到 A9，待定事项见 §1.1 D120–D123。每一项都先写设计、你确认后再写代码；开发者体验的设计见 [12](12-developer-experience.md)。
+**当前位置**：消息核心、开发者接入、AI 部分（L1–L7）和集群（C0–C4）已经完成。§3 第 1–4 步（合并 Lite、A4 合规基础、入口按角色划分、A5 管理 API 和控制台、A7 客户端 SDK）已完成；A7 里需要 macOS、Android、Unity 工具链的部分（打包、模拟器、Unity 里跑）没做，和发布一起放到 A9，待定事项见 §1.1 D120–D123。文件和图片（A6）、文档站和控制台的视觉改版已完成；**现在在做消息链路染色和业务规则**（D138–D143，[14](14-tracing-and-business-rules.md)）：T1 链路编号、T2 染色规则、T3 消息轨迹已完成，接下来 T4 规则编号和规则目录、T5 业务校验器 `agentim verify`、T6 OTLP 导出和 Agent SDK 的 `ctx.trace`。每一项都先写设计、你确认后再写代码；开发者体验的设计见 [12](12-developer-experience.md)。
 
 **测试**：全部通过。CI 每次推送跑：Linux 和 Windows 上 SQLite、PostgreSQL、MySQL 的全部测试，多节点集群测试，真实数据库主从和切主测试，Docker 镜像和三节点 Compose 冒烟，浏览器冒烟，压测，服务端和 Agent SDK 的端到端；规模测试夜间跑。
 
@@ -34,12 +34,12 @@
 | **客户端 SDK（P2）** | ✅ | Rust 核心、原生运行层和 C ABI、浏览器、Swift、Kotlin、C#（含 Unity）、Dart、React Native；各平台的包在 CI 构建，按应用的样子在三种桌面系统、Android 模拟器、iOS 模拟器里对着真实服务端跑过（[12 §2.12.1](12-developer-experience.md)，2026-10-25） | Unity 编辑器测试（要许可）、真机 |
 | **界面组件和演示端（P3）** | ✅ | 美式清爽现代的视觉语言（[12 §3](12-developer-experience.md)，2026-10-26）：U1 Web 组件 ✅（tokens 和对比度检查、分组、日期、未读线、回到最新、搜索、编辑删除、时间线提示）；U2 演示端 ✅（用 P2 + P3 重写、英文、嵌进程序、25 项浏览器检查）；U3 React Native 组件 ✅（`@agentimhq/react-native-ui`，同一套 tokens 和规则，19 项组件测试，测试应用里渲染）；U4 截图对比 ✅（8 张，CI 的 Playwright 镜像里比较） | 真机 |
 | **开发者控制台（P4）** | ✅ | 管理 API `/admin/v1`（应用、部署两块，四种角色）、管理员账号（一次性初始化、密码 + TOTP、会话和 CSRF）、管理密钥、`agentim admin`、内置在 `agentim` 里的控制台 `/console`（[12 §4](12-developer-experience.md)） | Webhook、发送前拦截、审核时限搬进"应用设置"（现在只读） |
-| **文档站和示例（P5）** | 🔧 | 设计已确认（D135、D136，[12 §5](12-developer-experience.md)），开发中 | 首页、英文文档（每个 API 和 SDK 方法）、三个示例应用、Agent 框架模板 |
+| **文档站和示例（P5）** | 🔧 | 官网首页、英文文档站（每个开放 API、管理 API、客户端协议、事件、错误码、每个 SDK 的每个方法，配置参考从代码生成；CI 检查不缺页）、各平台快速开始、控制台改版；Pages 部署流程已在 main（[12 §5](12-developer-experience.md)） | 上线要你开通 Pages 和域名（D145）；三个示例应用、Agent 框架模板 |
 | 托管云（P6） | ⏳ | 先不做（2026-10-19） | 注册即用、免费额度、按合并后的消息计费 |
 | GDPR 和内容治理 | ✅ | 拉黑、Agent 加入告知、AI 标记、日志不含内容、保留期；导出、删除账号、举报、审核队列（A4，2026-10-20） | — |
 | CLI | ✅ | `agentim` 一个程序里有服务和本机运维命令（api-key、signing-key、admin-key、token、encryption、migrate、cluster）；`agentim admin …` 走管理 API（缩小后的 D63） | — |
-| 文件和图片 | 🔧 | 设计已确认（D132–D134，[02 §2.7](02-architecture.md)），开发中 | 本机或 S3 直传、客户端缩略图、文件图标 |
-| 监控 | 🔧 | Prometheus 指标、集群告警规则、日志默认不含内容 | OpenTelemetry 导出、面板（以后） |
+| 文件和图片 | ✅ | 本机或 S3、分片直传、客户端缩略图和去 GPS、一条消息一个文件、读权限、后台删除；Web 和 React Native 组件（图片气泡、查看器、文件卡片、附件按钮）（[02 §2.7](02-architecture.md)） | 本机文件夹的应用层加密（先用磁盘加密） |
+| 监控和链路 | 🔧 | Prometheus 指标、集群告警规则、日志默认不含内容；W3C 链路编号贯穿客户端、写线程、集群和 Webhook（T1）；染色规则（T2）；消息轨迹接口和控制台页（T3）（[14](14-tracing-and-business-rules.md)） | T4 规则编号、错误里的 `rule`、拒绝指标；T5 `agentim verify`；T6 OTLP 导出、Agent SDK `ctx.trace`、性能对比 |
 | 性能 | 🔧 | 单机和多节点数据在 README | 写入优化 A–D（目标每节点 1 万条/秒） |
 | 生态 | 🔧 | MCP 服务、Agent SDK | ChatKit 桥、Vercel Chat SDK、Agno、AG-UI（以后） |
 | 业务验证 | ⏳ | — | 设计伙伴（§4） |
@@ -76,6 +76,7 @@
 | D137 | 上传中的文件挡不挡住同一会话后面的消息（[02 §2.7](02-architecture.md)） | **不挡**（已这样实现）：后面写的消息照常发出，文件消息在上传完成时排进顺序。Matrix 的 Rust SDK 是挡住的，它自己的提案 MSC2246 把这列为问题；挡住的话一个几 GB 的文件会让整个会话几分钟发不出消息 |
 | D144 | 安全漏洞的报告方式和答复时限（文档站 Security › Reporting） | 用 GitHub 的私密漏洞报告（仓库要打开 Private vulnerability reporting）；先不写答复时限，等你定了再写（常见是 3 个工作日内确认、90 天内公开）。另外加一个 `SECURITY.md` |
 | D145 | 发布 agentim.dev（`.github/workflows/site.yml` 已在 main 上部署到 GitHub Pages，`site/public/CNAME` 是 `agentim.dev`） | 需要你做两件事：仓库 Settings → Pages → Source 选 GitHub Actions；域名 agentim.dev 的 DNS 指向 GitHub Pages（apex 的 4 条 A 记录 185.199.108–111.153，或 ALIAS/ANAME 到 `wmkrfjnwvb-svg.github.io`），然后在 Pages 设置里勾选 Enforce HTTPS。按版本分开的文档（`/docs/v0.1/`）等第一个版本发布时再做 |
+| D146 | 管理员的两步验证码被重复使用时错误码不一致：写线程返回 `conflict`，关闭两步验证的路径（`hub/admin.rs`）把它改成 `bad_request`（梳理规则编号时发现，[14 §5.1](14-tracing-and-business-rules.md)） | 统一成 `conflict`（验证码本身合法，是状态不允许再用一次）；现在两处是两个规则编号 `admin.totp_code_replayed` 和 `admin.totp_code_used`，定了以后合并 |
 
 ### 1.2 已确认
 
@@ -154,7 +155,8 @@
 |---|---|---|---|
 | A4 | 合规的基础部分：用户导出自己的数据、删除账号、基础保留期、举报、基础审核队列 | — | ✅ 2026-10-20（[04 §4.2](04-security-compliance.md)） |
 | A5 | `agentim admin` 和管理 API（缩小后的 D63），和开发者控制台一起 | D63 | ✅ 2026-10-21（[12 §4](12-developer-experience.md)） |
-| A6 | 文件和图片 | 你的设计 | 🔧 设计已确认（[02 §2.7](02-architecture.md)）。服务端 2026-10-28 做完：本机或 S3、分片直传、检查、一条消息一个文件、读权限、丢弃和后台删除、开放 API、Agent 和 MCP 整传。还剩：客户端 SDK 的 `send_file`（缩略图、去 GPS）、界面组件、本机存储的应用层加密 |
+| A6 | 文件和图片 | 你的设计 | ✅ 2026-10-29（[02 §2.7](02-architecture.md)）：服务端（本机或 S3、分片直传、检查、一条消息一个文件、读权限、丢弃和后台删除、开放 API、Agent 和 MCP 整传）、客户端 SDK 的 `send_file`（缩略图、去 GPS）、Web 和 React Native 组件。还剩：本机存储的应用层加密 |
+| T | 消息链路染色和业务规则（D138–D143） | — | 🔧 [14 §6](14-tracing-and-business-rules.md)：T1 链路编号 ✅、T2 染色规则 ✅、T3 消息轨迹 ✅（2026-10-31）；T4 规则编号和规则目录（docs/15）进行中；T5 业务校验器、T6 OTLP 导出和 Agent SDK `ctx.trace` 待做 |
 | A7 | 客户端 SDK（P2） | D104 | ✅ 2026-10-24，本环境能做的部分（[12 §2.14](12-developer-experience.md)）；平台打包和模拟器归 A9 |
 | A9 | 安装和发布（P1） | — | ✅ 2026-10-25（[12 §1、§2.12.1](12-developer-experience.md)）：第一次运行、服务端发布流程（程序、签名、镜像、Chart）、安装脚本、依赖扫描、CHANGELOG、README 快速开始；客户端各包（D123）在 CI 构建、签名，并按应用的样子测过：NuGet 三种系统、Dart 三种系统、XCFramework 和 Swift 场景、AAR / Flutter / React Native 在 Android 模拟器、React Native 在 iOS 模拟器。打 `sdk-v*` 标签发布。各注册表要你先开通（见 §1.2 和 `sdk-release.yml`） |
 
@@ -169,7 +171,7 @@
 
 **C. 之后**
 
-用户收件箱和大群模式；写入性能优化（目标每节点 1 万条/秒）；数据倒退的恢复（D100）；WASM 插件；OIDC；OpenTelemetry 导出；生态桥（ChatKit、Vercel Chat SDK、Agno、AG-UI）。
+用户收件箱和大群模式；写入性能优化（目标每节点 1 万条/秒）；数据倒退的恢复（D100）；WASM 插件；OIDC；生态桥（ChatKit、Vercel Chat SDK、Agno、AG-UI）。
 
 ## 3. MVP 顺序（2026-10-20 更新）
 
@@ -182,8 +184,9 @@
 | 4 | ✅ A7 客户端 SDK（2026-10-24）：服务端配合（历史、心跳、重连提示）、Rust 核心、浏览器、Swift、Kotlin、C#（Unity、.NET）、Flutter、React Native、React 组件（[12 §2.14](12-developer-experience.md) S0–S7） |
 | 5 | ✅ A9 安装和发布（P1，2026-10-25） |
 | 6 | B 类已知问题（B2 ✅、B9） |
-| 7 | 官网、文档站、README、示例应用；生态接入（D107）：Claude Agent SDK、Codex SDK 等 Agent 框架的接入包、npm 包 |
-| 8 | 文件和图片（等你的设计） |
+| 7 | 🔧 官网、文档站、README ✅（上线等 D145）；示例应用；生态接入（D107）：Claude Agent SDK、Codex SDK 等 Agent 框架的接入包、npm 包 |
+| 8 | ✅ 文件和图片（2026-10-29） |
+| 8.5 | 🔧 消息链路染色和业务规则（D138–D143）：T1–T3 ✅，T4–T6 进行中 |
 | 9 | 离线推送 APNs、FCM（D119） |
 | 以后 | P6 托管云（2026-10-19：先不做） |
 

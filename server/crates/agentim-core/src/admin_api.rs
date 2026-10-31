@@ -74,6 +74,9 @@ const APP: &[&str] = &["owner", "developer"];
 const APP_READ: &[&str] = &["owner", "developer", "moderator"];
 const DEPLOY: &[&str] = &["owner", "operator"];
 const OWNER: &[&str] = &["owner"];
+/// A message's trace: the operator and the moderator look at why a
+/// message did not arrive (docs/14 §4.3).
+const TRACE: &[&str] = &["owner", "operator", "moderator"];
 
 async fn audit(hub: &Hub, a: &Admin, action: &str, target: Option<&str>, detail: Value) {
     let _ = hub
@@ -197,6 +200,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
             "/admin/v1/app/reports/{id}",
             get(get_report).post(report_action),
         )
+        .route("/admin/v1/messages/{id}/trace", get(message_trace))
         .route("/admin/v1/app/webhooks", get(webhooks))
         .route("/admin/v1/app/audit", get(audit_log))
         .route(
@@ -778,6 +782,21 @@ async fn read_messages(
         "conversations.read",
         Some(&id),
         json!({"reason": reason, "after_seq": after}),
+    )
+    .await;
+    ok(v)
+}
+
+/// What happened to a message, from stored data; metadata only, audited.
+async fn message_trace(State(st): State<AppState>, Extension(a): A, Path(id): Path<String>) -> R {
+    need(&a, TRACE)?;
+    let v = st.hub.message_trace(&id).await?;
+    audit(
+        &st.hub,
+        &a,
+        "messages.trace",
+        Some(&id),
+        json!({"conv_id": v["message"]["conv_id"]}),
     )
     .await;
     ok(v)

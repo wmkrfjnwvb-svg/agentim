@@ -68,4 +68,5 @@ export const can = {
   appRead: (r: Role) => r === 'owner' || r === 'developer' || r === 'moderator',
   deploy: (r: Role) => r === 'owner' || r === 'operator',
   owner: (r: Role) => r === 'owner',
+  trace: (r: Role) => r === 'owner' || r === 'operator' || r === 'moderator',
 };

@@ -2,7 +2,7 @@
 title: "Backups and upgrades"
 description: "What to back up, how to restore, and how to upgrade a single server or a cluster."
 sidebar:
-  order: 8
+  order: 9
 ---
 
 ## What to back up

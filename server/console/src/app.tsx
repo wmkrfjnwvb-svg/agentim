@@ -220,7 +220,7 @@ function UserDetail({ id, me, onClose }: { id: string; me: Me; onClose: () => vo
   );
 }
 
-export function Conversations() {
+export function Conversations({ canTrace = false }: { canTrace?: boolean }) {
   const [q, setQ] = useState('');
   const [after, setAfter] = useState<string[]>([]);
   const [open, setOpen] = useState<string | null>(null);
@@ -264,12 +264,12 @@ export function Conversations() {
           Next
         </button>
       </div>
-      {open && <ConversationDetail id={open} onClose={() => setOpen(null)} />}
+      {open && <ConversationDetail id={open} canTrace={canTrace} onClose={() => setOpen(null)} />}
     </Page>
   );
 }
 
-function ConversationDetail({ id, onClose }: { id: string; onClose: () => void }) {
+function ConversationDetail({ id, canTrace, onClose }: { id: string; canTrace: boolean; onClose: () => void }) {
   const [c, err] = useLoad(() => api('GET', `/app/conversations/${enc(id)}`), [id]);
   const [reason, setReason] = useState('');
   const [msgs, setMsgs] = useState<any[] | null>(null);
@@ -322,6 +322,12 @@ function ConversationDetail({ id, onClose }: { id: string; onClose: () => void }
                   <div className="message" key={i}>
                     <span className="muted">
                       #{m.seq} {m.type} {m.msg?.sender_name ?? ''} · {time(m.created_at)}
+                      {canTrace && m.msg?.msg_id && (
+                        <>
+                          {' '}
+                          · <a href={`/console/trace?id=${enc(m.msg.msg_id)}`}>trace</a>
+                        </>
+                      )}
                     </span>
                     <div>{text(m)}</div>
                   </div>

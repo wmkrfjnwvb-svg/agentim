@@ -495,7 +495,8 @@ pub enum Op {
     WebhookAck {
         name: String,
         upto: i64,
-        dropped: Vec<String>,
+        /// Events given up on: (webhook id, conversation, seq).
+        dropped: Vec<(String, String, i64)>,
         /// Every configured webhook, to clean up rows all of them handled.
         all: Vec<String>,
     },
@@ -1251,14 +1252,14 @@ impl Ctx<'_, '_> {
                 dropped,
                 all,
             } => {
-                for id in &dropped {
+                for (id, conv, seq) in &dropped {
                     self.db
                         .audit(
                             None,
                             "webhook.dropped",
-                            None,
+                            Some(conv).filter(|c| !c.is_empty()).map(String::as_str),
                             Some(id),
-                            json!({"webhook": name}),
+                            json!({"webhook": name, "seq": seq}),
                         )
                         .await?;
                 }

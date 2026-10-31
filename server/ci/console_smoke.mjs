@@ -131,7 +131,15 @@ try {
   await page.waitForSelector('.drawer .message');
   check((await page.locator('.drawer .messages').innerText()).includes('cheap pills'), 'content after giving a reason');
   await page.screenshot({ path: `${out}/console-conversation.png` });
-  await page.click('.drawer button:has-text("Close")');
+
+  // The message's trace (docs/14 §4.3): from the message, metadata only.
+  await page.click('.drawer .message a:has-text("trace")');
+  await page.waitForSelector('h2:has-text("Delivery")');
+  const traced = await page.locator('.page').innerText();
+  check(traced.includes(msgId) || traced.includes('alice'), 'the trace shows the message');
+  check(!traced.includes('cheap pills'), 'the trace shows no content');
+  check(traced.includes('spam'), "the trace lists bob's report");
+  await page.screenshot({ path: `${out}/console-trace.png` });
 
   // Reports: decide with a statement of reasons.
   await page.click('nav a:has-text("Reports")');
@@ -161,6 +169,7 @@ try {
   const audit = await page.locator('table').innerText();
   check(audit.includes('report from bob'), 'the read is audited with its reason');
   check(audit.includes('admin.reports.resolve') && audit.includes('admin.settings.clients'), 'decisions are audited');
+  check(audit.includes('admin.messages.trace'), 'looking at a trace is audited');
   await page.screenshot({ path: `${out}/console-audit.png` });
 
   // Deployment status and the admins page.
@@ -195,6 +204,7 @@ try {
   await page.waitForSelector('nav');
   const nav = await page.locator('nav').innerText();
   check(nav.includes('Reports') && !nav.includes('Keys') && !nav.includes('Status'), 'a moderator sees reports, not keys or deployment');
+  check(nav.includes('Message trace'), 'and message traces');
 } catch (e) {
   console.log('FAIL', e.message);
   failures++;

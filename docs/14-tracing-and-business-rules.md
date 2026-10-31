@@ -68,19 +68,21 @@
 
 ### 4.3 消息轨迹（不依赖链路系统，D141）
 
-`GET /admin/v1/messages/{msg_id}/trace`（控制台"消息"页一个按钮；只给 owner、operator、moderator 角色，审计）。从已经存在的持久数据拼出来，所以没有开导出、没有染色也能用：
+`GET /admin/v1/messages/{msg_id}/trace`（控制台"消息轨迹"页，读会话内容时每条消息旁有 trace 链接；只给 owner、operator、moderator 角色，每次查看审计为 `admin.messages.trace`）。从已经存在的持久数据拼出来，所以没有开导出、没有染色也能用；只有元数据，不含内容：
 
-| 环节 | 来源 |
+| 环节 | 来源（已实现） |
 |---|---|
-| 接收 | trace_id、哪个入口、哪个节点、`client_msg_id`、是否是重试（去重命中） |
-| 提交 | 数据库、seq、提交时间；被 before_send 改写过没有 |
-| 可见的人 | 那个 seq 时的成员数、侧信道的受众（只给数量，不列内容） |
-| 送达 | 每台设备的确认位置是否已经过了这个 seq（同步位置表，[08](08-sync-and-client.md)）：已送达 N 台、未送达 M 台（离线多久） |
-| Webhook | 发件箱里这条的投递状态（已投递、重试中、已丢弃） |
-| Agent | 被它唤醒的 Agent、它们的回复（`causation_id`）、熔断或被停 |
-| 之后 | 编辑、撤回（谁、什么时候）、举报、文件状态、保留期到期时间 |
+| 接收 | `trace_id`（消息行）、`client_msg_id`（去重记录，去重窗口内） |
+| 提交 | 数据库、seq、提交时间、状态和版本、`causation_id` |
+| 可见的人 | 现在能看到它的成员（`visible_from` ≤ seq，含之后加入但共享了历史的人）加上之后被移出、当时看得到的人（`past_members`），按人和 Agent 计数；挂在这个 seq 上的侧信道事件数 |
+| 送达 | 这些人的每台设备（令牌表里的设备，加上令牌已删但有同步位置的设备）的确认位置是否过了这个 seq（`device_cursors`，[08](08-sync-and-client.md)）：已送达 N 台、未送达 M 台，未送达的逐台列出位置和最后在线时间（最多 100 台） |
+| Webhook | 这条消息的每个事件 × 每个订阅了它的 Webhook：发件箱还有这行且该 Webhook 的位置没过它 → `pending`（带前面还排着几条）；放弃的有审计记录 `webhook.dropped`（现在带会话和 seq）→ `dropped`；其余 → `delivered`；发件箱已清掉而消息被撤回过，创建事件可能是被撤回收回的（D91）→ `delivered_or_withdrawn` |
+| Agent | 能看到它的 Agent（触发方式、是否被停、设备送达情况），`causation_id` 指向它的回复和待审批草稿 |
+| 之后 | 事件历史（创建、修改、撤回……谁、什么时候）、举报（控制库）、引用的文件状态、保留期到期时间 |
 
-如果有链路后端，再附上链路的链接（`trace_ui_url` 模板，例如 Jaeger 的地址）。
+没有存下来、所以不显示的：哪个入口、哪个节点接的请求，before_send 是否改写过——按 `trace_id` 查日志。熔断状态只在内存里，也不显示。
+
+配置了 `[tracing] trace_ui_url`（例如 `https://jaeger.example.com/trace/{trace_id}`）时附上链路的链接。
 
 ### 4.4 被拒绝的请求
 
@@ -153,14 +155,14 @@ CI：三种数据库上的场景测试和并发测试跑完后都跑一遍校验
 
 ## 6. 计划和测试
 
-| 步骤 | 内容 | 测试 |
-|---|---|---|
-| T1 | 链路上下文：`Op` 字段、集群转发和发布、写线程批次 link、日志字段、消息行 `trace_id`（schema v10）；客户端核心生成并持久化 `trace` | 单节点和三节点：一条消息的所有日志行 trace_id 相同；转发后的节点日志也有；重启后续传同一个 trace；不合法的 traceparent 新开；客户端的已采样标志被忽略 |
-| T2 | 染色规则：管理 API、控制台、过期、审计、节点通知、按链路调日志级别、继承到 Webhook 和 Agent 回复 | 规则生效和过期；别的用户不受影响；跨节点继承；规则编号不出现在推送和 Webhook 里 |
-| T3 | 消息轨迹接口和控制台页面 | 各种情况：已送达、部分设备离线、Webhook 失败、被 Agent 回复、撤回；无权限的角色 403；审计记录 |
-| T4 | 规则宏、规则目录生成、错误里的 `rule` 字段、拒绝指标 | 目录和代码一致；每个规则至少一个测试触发它（覆盖检查） |
-| T5 | 业务校验器 | 对故意改坏的数据库（变异）能找出每一类问题；场景和并发测试后零问题 |
-| T6 | OTLP 导出（可选）、Agent SDK 的 `ctx.trace`、Webhook `traceparent` | 导出到本地收集器看到完整链路；性能对比写进 README |
+| 步骤 | 内容 | 测试 | 状态 |
+|---|---|---|---|
+| T1 | 链路上下文：`Op` 字段、集群转发和发布、写线程批次 link、日志字段、消息行 `trace_id`（schema v10）；客户端核心生成并持久化 `trace` | 单节点和三节点：一条消息的所有日志行 trace_id 相同；转发后的节点日志也有；重启后续传同一个 trace；不合法的 traceparent 新开；客户端的已采样标志被忽略 | 完成（`tests/tracing.rs`、集群 `the_trace_crosses_nodes`） |
+| T2 | 染色规则：管理 API、控制台、过期、审计、节点通知、按链路调日志级别、继承到 Webhook 和 Agent 回复 | 规则生效和过期；别的用户不受影响；跨节点继承；规则编号不出现在推送和 Webhook 里 | 完成（`tests/dye.rs`、集群 `dye_rules_reach_every_node_and_follow_the_request`） |
+| T3 | 消息轨迹接口和控制台页面 | 各种情况：已送达、部分设备离线、Webhook 失败、被 Agent 回复、撤回；无权限的角色 403；审计记录 | 完成（`tests/msgtrace.rs`、控制台冒烟测试） |
+| T4 | 规则宏、规则目录生成、错误里的 `rule` 字段、拒绝指标 | 目录和代码一致；每个规则至少一个测试触发它（覆盖检查） | 进行中 |
+| T5 | 业务校验器 | 对故意改坏的数据库（变异）能找出每一类问题；场景和并发测试后零问题 |  |
+| T6 | OTLP 导出（可选）、Agent SDK 的 `ctx.trace`、Webhook `traceparent` | 导出到本地收集器看到完整链路；性能对比写进 README | Webhook `traceparent` 随 T2 完成 |
 
 依赖：`opentelemetry`、`opentelemetry-otlp`、`tracing-opentelemetry`（发布满两周的版本），只在开了导出时初始化。
 

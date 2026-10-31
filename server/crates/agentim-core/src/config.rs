@@ -67,6 +67,19 @@ pub struct Config {
     /// Files and images (docs/02-architecture.md §2.7).
     #[serde(default)]
     pub files: FilesConfig,
+    /// Request tracing (docs/14 §4.1).
+    #[serde(default)]
+    pub tracing: TracingConfig,
+}
+
+/// `[tracing]`: request traces outside the server (docs/14 §4.1).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TracingConfig {
+    /// A link to the trace in your tracing UI, with `{trace_id}` in it
+    /// (for example `https://jaeger.example.com/trace/{trace_id}`); shown
+    /// in a message's trace.
+    pub trace_ui_url: Option<String>,
 }
 
 /// `[files]`: where files go and their limits.
@@ -1110,6 +1123,7 @@ impl Config {
             moderation: Default::default(),
             history: Default::default(),
             files: Default::default(),
+            tracing: Default::default(),
             cluster: Default::default(),
         }
     }
@@ -1413,6 +1427,7 @@ mod tests {
             moderation: Default::default(),
             history: Default::default(),
             files: Default::default(),
+            tracing: Default::default(),
             cluster: Default::default(),
         }
     }

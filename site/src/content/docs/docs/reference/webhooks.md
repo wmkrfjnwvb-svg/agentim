@@ -28,7 +28,7 @@ timeout_ms = 5000
 | **No loss** | The delivery is written to an outbox in the same transaction as the event. What was not committed is never sent; what was committed is sent |
 | **Order** | One delivery task per webhook per database sends events one at a time, in commit order. The next waits until the previous one succeeded |
 | **At least once** | The position moves only after a 2xx answer, and survives restarts. Deduplicate with the `webhook-id` header |
-| **Retries** | Exponential backoff, up to 5 minutes apart. After `max_attempts` the event is skipped, audited as `webhook.dropped` and counted in `agentim_webhook_dropped_total`. Fill the gap from the history endpoint |
+| **Retries** | Exponential backoff, up to 5 minutes apart. After `max_attempts` the event is skipped, audited as `webhook.dropped` (with its conversation and seq, shown in the [message's trace](/docs/operations/tracing/#a-messages-trace)) and counted in `agentim_webhook_dropped_total`. Fill the gap from the history endpoint |
 
 ## Request
 
@@ -37,11 +37,14 @@ POST /agentim/webhook
 webhook-id: msg_2Ksl…
 webhook-timestamp: 1792503600
 webhook-signature: v1,K5oZfzN95Z9UVu1EsfQmfVNQhnkZ2pj9o9NDN/H/pI4=
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00
 content-type: application/json
 
 {"type": "msg.created", "timestamp": 1792503600123, "database": "main",
  "data": {"conv_id": "c_…", "seq": 42, "event": { … }}}
 ```
+
+`traceparent` is the trace of the write that produced the event ([Tracing](/docs/operations/tracing/)); pass it on to your own services to see the whole chain. It is not part of the signature.
 
 The signature is the [Standard Webhooks](https://www.standardwebhooks.com/) scheme: `base64(HMAC-SHA256(secret, id + "." + timestamp + "." + body))`. For a `whsec_` secret the HMAC key is the base64-decoded part after the prefix. The official libraries verify it:
 
