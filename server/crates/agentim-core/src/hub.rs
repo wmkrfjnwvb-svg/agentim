@@ -31,6 +31,7 @@ mod compliance;
 pub use compliance::{CATEGORIES as REPORT_CATEGORIES, DELETED_CAN_SEND, ERASURE_STEP};
 pub mod admin;
 mod developer;
+mod dye;
 mod export;
 mod files;
 pub use files::INGEST_MAX;
@@ -215,6 +216,7 @@ impl Hub {
             signing: Default::default(),
             cutoffs: Default::default(),
             allow: std::sync::RwLock::new(cfg.clients.allow.clone()),
+            dyes: std::sync::RwLock::new(Vec::new()),
             perms: Default::default(),
             deactivated: Default::default(),
             stopped: Default::default(),
@@ -2115,7 +2117,13 @@ impl Hub {
         } else {
             crate::trace::Caller::Trusted
         };
-        let t = crate::trace::Trace::incoming(env.trace.as_deref(), caller);
+        let mut t = crate::trace::Trace::incoming(env.trace.as_deref(), caller);
+        // An agent continuing a dyed trace pushed to it keeps the dye.
+        if t.parent.is_some()
+            && let Some(rule) = self.inner.sh.reg.dyed_trace(&t.trace_id)
+        {
+            t = t.dyed(&rule);
+        }
         let res = crate::trace::scope(t, self.request(sess, env.rid, env.msg)).await;
         match res {
             Ok(mut v) => {
@@ -2201,7 +2209,39 @@ impl Hub {
         Err(err("not_found", "not found"))
     }
 
+    /// A request with its dye (docs/14 §4.2): a matching rule marks the
+    /// current trace, and a dyed request is logged with its outcome at INFO
+    /// (no content: ids, operation, result).
     async fn dispatch(&self, sess: &Session, msg: ClientMsg) -> ApiResult<Value> {
+        let me = &sess.user;
+        let op = msg.name();
+        let conv = msg.conv_id().map(String::from);
+        self.dye_request(&crate::trace::Subject {
+            user: Some((&me.id, &me.name)),
+            agent: me.kind == UserKind::Agent,
+            device: sess.device_id.as_deref(),
+            conv: conv.as_deref(),
+            api_key: None,
+        });
+        let Some(dye) = crate::trace::current_dye() else {
+            return self.dispatch_checked(sess, msg).await;
+        };
+        let t = Instant::now();
+        let res = self.dispatch_checked(sess, msg).await;
+        tracing::info!(
+            dye,
+            op,
+            user_id = me.id,
+            device_id = sess.device_id.as_deref(),
+            conv_id = conv.as_deref(),
+            result = res.as_ref().err().map(|e| e.code).unwrap_or("ok"),
+            latency_ms = t.elapsed().as_secs_f64() * 1000.0,
+            "dyed request"
+        );
+        res
+    }
+
+    async fn dispatch_checked(&self, sess: &Session, msg: ClientMsg) -> ApiResult<Value> {
         let me = &sess.user;
         // A stopped agent may still say hello and learn why nothing works.
         if !matches!(msg, ClientMsg::Hello { .. } | ClientMsg::Ping) && self.is_stopped(&me.id) {

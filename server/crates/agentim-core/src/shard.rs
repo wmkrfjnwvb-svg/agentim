@@ -1054,13 +1054,21 @@ async fn queue_outbox(
             }
         }
     }
+    // Each with the trace of the write (docs/14 §4.1).
+    let mut traces = vec![];
     let rows: Vec<std::borrow::Cow<crate::model::Event>> = outs
         .iter()
         .filter_map(|o| match o {
-            Out::Event { ev, .. } if crate::webhook::matches(patterns, &ev.kind) => Some(ev),
+            Out::Event { ev, trace, .. } if crate::webhook::matches(patterns, &ev.kind) => {
+                Some((ev, trace))
+            }
             _ => None,
         })
-        .filter(|ev| ev.kind == "conv.dissolved" || !dissolved.contains(ev.conv_id.as_str()))
+        .filter(|(ev, _)| ev.kind == "conv.dissolved" || !dissolved.contains(ev.conv_id.as_str()))
+        .map(|(ev, trace)| {
+            traces.push(trace.as_ref().and_then(|t| serde_json::to_string(t).ok()));
+            ev
+        })
         .map(|ev| match &ev.msg {
             Some(m) if ev.kind != "msg.recalled" && recalled.contains(m.msg_id.as_str()) => {
                 let mut ev = ev.clone();
@@ -1105,10 +1113,11 @@ async fn queue_outbox(
         }
     }
     let mut bodies = bodies.into_iter();
+    let mut traces = traces.into_iter();
     for chunk in rows.chunks(200) {
-        let marks = vec!["(?, ?, ?, ?, ?)"; chunk.len()].join(", ");
+        let marks = vec!["(?, ?, ?, ?, ?, ?)"; chunk.len()].join(", ");
         let sql = format!(
-            "INSERT INTO webhook_outbox (id, conv_id, type, body, created_at) VALUES {marks}"
+            "INSERT INTO webhook_outbox (id, conv_id, type, body, created_at, trace) VALUES {marks}"
         );
         let mut q = sqlx::query(dialect.q(&sql));
         for ev in chunk {
@@ -1117,7 +1126,8 @@ async fn queue_outbox(
                 .bind(ev.conv_id.clone())
                 .bind(ev.kind.clone())
                 .bind(bodies.next().unwrap())
-                .bind(now);
+                .bind(now)
+                .bind(traces.next().flatten());
             *next += 1;
         }
         if let Err(e) = q.execute(&mut *tx).await {

@@ -7,7 +7,7 @@ import { createRoot } from 'react-dom/client';
 import { api, can, setCsrf, whenLoggedOut, type Me, type Role } from './api';
 import { Account, Login, Setup } from './auth';
 import { Agents, Audit, ClientSettings, Conversations, Keys, Overview, Reports, Users, Webhooks } from './app';
-import { Admins, Cluster, Status } from './deploy';
+import { Admins, Cluster, DyeRules, Status } from './deploy';
 import '@fontsource-variable/inter';
 import logoLight from './assets/logo-light.svg?raw';
 import logoDark from './assets/logo-dark.svg?raw';
@@ -27,6 +27,7 @@ const ICONS: Record<string, string> = {
   status: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
   cluster: '<rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/>',
   admins: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+  dye: '<path d="M12 3c3 4.5 6 7.6 6 11a6 6 0 0 1-12 0c0-3.4 3-6.5 6-11z"/><path d="M9.5 15a2.5 2.5 0 0 0 2.5 2.5"/>',
   account: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/>',
 };
 const Icon = ({ name }: { name: string }) => (
@@ -54,6 +55,7 @@ const ROUTES: Route[] = [
   { path: 'settings', label: 'Client permissions', area: 'App', allowed: can.app, page: () => <ClientSettings /> },
   { path: 'status', label: 'Status', area: 'Deployment', allowed: can.deploy, page: () => <Status /> },
   { path: 'cluster', label: 'Cluster', area: 'Deployment', allowed: can.deploy, page: () => <Cluster /> },
+  { path: 'dye', label: 'Dye rules', area: 'Deployment', allowed: can.deploy, page: () => <DyeRules /> },
   { path: 'admins', label: 'Admins', area: 'Deployment', allowed: can.owner, page: () => <Admins /> },
   { path: 'account', label: 'My account', area: '', allowed: () => true, page: (me, refresh) => <Account me={me} refresh={refresh} /> },
 ];

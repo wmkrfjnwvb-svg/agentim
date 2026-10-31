@@ -165,27 +165,132 @@ impl Default for Trace {
 }
 
 tokio::task_local! {
-    static CURRENT: Trace;
+    // A cell: the dye is known only once the caller is (after the trace
+    // started), and it is set on the trace already current.
+    static CURRENT: std::cell::RefCell<Trace>;
 }
 
 /// Runs `fut` with `t` as the current trace.
 pub async fn scope<F: Future>(t: Trace, fut: F) -> F::Output {
-    CURRENT.scope(t, fut).await
+    CURRENT.scope(std::cell::RefCell::new(t), fut).await
 }
 
 /// The trace of the request this task is running, if any.
 pub fn current() -> Option<Trace> {
-    CURRENT.try_with(|t| t.clone()).ok()
+    CURRENT.try_with(|t| t.borrow().clone()).ok()
 }
 
 /// The current trace id (for logs and the message row).
 pub fn current_id() -> Option<String> {
-    CURRENT.try_with(|t| t.trace_id.clone()).ok()
+    CURRENT.try_with(|t| t.borrow().trace_id.clone()).ok()
 }
 
-/// Whether the current request is dyed (docs/14 §4.2).
+/// The dye rule of the current request (docs/14 §4.2).
+pub fn current_dye() -> Option<String> {
+    CURRENT.try_with(|t| t.borrow().dye.clone()).ok().flatten()
+}
+
+/// Whether the current request is dyed.
 pub fn current_dyed() -> bool {
-    CURRENT.try_with(|t| t.dye.is_some()).unwrap_or(false)
+    CURRENT
+        .try_with(|t| t.try_borrow().is_ok_and(|t| t.dye.is_some()))
+        .unwrap_or(false)
+}
+
+/// Dyes the current request by `rule` (a first match wins); false when no
+/// trace is current.
+pub fn dye(rule: &str) -> bool {
+    CURRENT
+        .try_with(|t| {
+            let mut t = t.borrow_mut();
+            if t.dye.is_none() {
+                t.dye = Some(rule.to_string());
+                t.sampled = true;
+            }
+        })
+        .is_ok()
+}
+
+/// The log filter: `env` (RUST_LOG, default INFO) for everything, and
+/// DEBUG and up for dyed requests on every node (docs/14 §4.2).
+pub fn log_filter<S>(
+    env: tracing_subscriber::EnvFilter,
+) -> impl tracing_subscriber::layer::Filter<S>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    use tracing_subscriber::filter::{FilterExt, dynamic_filter_fn};
+    // Decided for every event, not cached per call site: the same line is
+    // logged for a dyed request and skipped for others.
+    env.or(dynamic_filter_fn(|m, _| {
+        // The request spans always: whatever is logged in them, at any
+        // level, carries the trace id.
+        (m.is_span() && matches!(m.name(), "req" | "op" | "http"))
+            || (current_dyed() && *m.level() <= tracing::Level::DEBUG)
+    }))
+}
+
+// ------------------------------------------------------------ dye rules
+
+/// What a dye rule marks (docs/14 §4.2, D140).
+pub const DYE_KINDS: &[&str] = &["user", "device", "conv", "agent", "api_key"];
+/// Longest a rule may last, and the default.
+pub const DYE_MAX_MINUTES: i64 = 24 * 60;
+pub const DYE_DEFAULT_MINUTES: i64 = 60;
+/// Rules in force at once.
+pub const DYE_MAX_RULES: usize = 100;
+
+/// One dye rule: requests of its target are recorded in full until it
+/// expires.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DyeRule {
+    pub id: String,
+    pub kind: String,
+    pub target: String,
+    pub reason: String,
+    /// Who added it (`admin:<name>` or `admin:key:<name>`).
+    pub by: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+
+/// Who a request comes from and what it is about, for matching rules.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Subject<'a> {
+    /// The user acting (a person or, with `agent`, an agent): their id and
+    /// their developer-facing name both match.
+    pub user: Option<(&'a str, &'a str)>,
+    pub agent: bool,
+    pub device: Option<&'a str>,
+    pub conv: Option<&'a str>,
+    pub api_key: Option<&'a str>,
+}
+
+impl DyeRule {
+    pub fn active(&self, now_ms: i64) -> bool {
+        self.expires_at > now_ms
+    }
+
+    pub fn matches(&self, s: &Subject) -> bool {
+        let t = self.target.as_str();
+        match self.kind.as_str() {
+            "user" => s
+                .user
+                .is_some_and(|(id, name)| !s.agent && (id == t || name == t)),
+            "agent" => s
+                .user
+                .is_some_and(|(id, name)| s.agent && (id == t || name == t)),
+            "device" => s.device == Some(t),
+            "conv" => s.conv == Some(t),
+            "api_key" => s.api_key == Some(t),
+            _ => false,
+        }
+    }
+}
+
+/// The first rule in force that matches.
+pub fn matching<'a>(rules: &'a [DyeRule], s: &Subject, now_ms: i64) -> Option<&'a DyeRule> {
+    rules.iter().find(|r| r.active(now_ms) && r.matches(s))
 }
 
 #[cfg(test)]
@@ -274,6 +379,72 @@ mod tests {
         assert!(is_hex(&a.trace_id, 32) && is_hex(&a.span_id, 16));
         assert_ne!(a.trace_id, b.trace_id);
         assert!(parse(&a.traceparent()).is_some());
+    }
+
+    fn rule(kind: &str, target: &str, expires_at: i64) -> DyeRule {
+        DyeRule {
+            id: format!("dye_{kind}"),
+            kind: kind.into(),
+            target: target.into(),
+            reason: "r".into(),
+            by: "admin:a".into(),
+            created_at: 0,
+            expires_at,
+        }
+    }
+
+    #[test]
+    fn rules_match_their_kind_only_while_in_force() {
+        let person = Subject {
+            user: Some(("u_1", "maya")),
+            device: Some("phone"),
+            conv: Some("c_1"),
+            ..Default::default()
+        };
+        let agent = Subject {
+            user: Some(("u_2", "helper")),
+            agent: true,
+            conv: Some("c_1"),
+            ..Default::default()
+        };
+        let key = Subject {
+            api_key: Some("k_1"),
+            ..Default::default()
+        };
+        assert!(rule("user", "maya", 10).matches(&person));
+        assert!(rule("user", "u_1", 10).matches(&person));
+        assert!(
+            !rule("user", "helper", 10).matches(&agent),
+            "an agent is not a user rule"
+        );
+        assert!(rule("agent", "helper", 10).matches(&agent));
+        assert!(!rule("agent", "maya", 10).matches(&person));
+        assert!(rule("device", "phone", 10).matches(&person));
+        assert!(rule("conv", "c_1", 10).matches(&agent));
+        assert!(!rule("conv", "c_2", 10).matches(&agent));
+        assert!(rule("api_key", "k_1", 10).matches(&key));
+        assert!(!rule("api_key", "k_1", 10).matches(&person));
+        assert!(!rule("nonsense", "maya", 10).matches(&person));
+        let rules = [rule("user", "bob", 10), rule("user", "maya", 5)];
+        assert_eq!(
+            matching(&rules, &person, 4).map(|r| r.id.as_str()),
+            Some("dye_user")
+        );
+        assert!(matching(&rules, &person, 5).is_none(), "expired");
+    }
+
+    #[tokio::test]
+    async fn dyeing_marks_the_current_trace() {
+        assert!(!dye("x"), "no trace current");
+        let (dyed, first) = scope(Trace::new(), async {
+            assert!(!current_dyed());
+            assert!(dye("dye_a"));
+            dye("dye_b");
+            (current().unwrap(), current_dye())
+        })
+        .await;
+        assert_eq!(first.as_deref(), Some("dye_a"), "the first match wins");
+        assert!(dyed.sampled);
     }
 
     #[tokio::test]

@@ -951,6 +951,8 @@ pub const TABLES: &[Table] = &[
             c("type", Id),
             c("body", Text),
             c("created_at", Big),
+            // v10: the trace of the write (docs/14 §4.1), delivered in it.
+            n("trace", Text),
         ],
         pk: &["id"],
         indexes: &[],
@@ -1250,11 +1252,17 @@ pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 10,
         compat: 1,
-        about: "message tracing: the trace of each message; dye rules (new table)",
-        steps: &[Step::AddColumn {
-            table: "messages",
-            column: "trace_id",
-        }],
+        about: "message tracing: the trace of each message and webhook delivery",
+        steps: &[
+            Step::AddColumn {
+                table: "messages",
+                column: "trace_id",
+            },
+            Step::AddColumn {
+                table: "webhook_outbox",
+                column: "trace",
+            },
+        ],
     },
 ];
 

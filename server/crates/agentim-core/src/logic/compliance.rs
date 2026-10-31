@@ -28,6 +28,7 @@ impl Ctx<'_, '_> {
                 created_at: now_ms(),
             },
             recips: Arc::new(vec![]),
+            trace: crate::trace::current().map(|t| t.child()),
         });
     }
 

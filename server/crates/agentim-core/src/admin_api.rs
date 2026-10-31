@@ -226,6 +226,14 @@ pub fn routes(state: AppState) -> Router<AppState> {
             "/admin/v1/deploy/admin-keys/{id}",
             axum::routing::delete(revoke_admin_key),
         )
+        .route(
+            "/admin/v1/deploy/dye-rules",
+            get(list_dye_rules).post(add_dye_rule),
+        )
+        .route(
+            "/admin/v1/deploy/dye-rules/{id}",
+            axum::routing::delete(remove_dye_rule),
+        )
         .route_layer(middleware::from_fn_with_state(state, guard));
     Router::new()
         .route("/admin/v1/setup", get(setup_state).post(setup))
@@ -533,6 +541,49 @@ async fn revoke_signing_key(
     st.hub.revoke_signing_key(&kid).await?;
     audit(&st.hub, &a, "signing_keys.revoke", Some(&kid), json!({})).await;
     ok(json!({"revoked": kid}))
+}
+
+// ------------------------------------------------------------ dye rules
+
+async fn list_dye_rules(State(st): State<AppState>, Extension(a): A) -> R {
+    need(&a, DEPLOY)?;
+    ok(json!({"rules": st.hub.dye_rules(), "max": crate::trace::DYE_MAX_RULES}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DyeReq {
+    kind: String,
+    target: String,
+    reason: String,
+    minutes: Option<i64>,
+}
+
+/// Dyes a user, device, conversation, agent or API key (docs/14 §4.2):
+/// with a reason, audited, for at most 24 hours.
+async fn add_dye_rule(State(st): State<AppState>, Extension(a): A, b: Bytes) -> R {
+    need(&a, DEPLOY)?;
+    let r: DyeReq = body(&b)?;
+    let rule = st
+        .hub
+        .add_dye_rule(&r.kind, &r.target, &r.reason, r.minutes, &a.actor())
+        .await?;
+    audit(
+        &st.hub,
+        &a,
+        "dye_rules.add",
+        Some(&rule.id),
+        json!({"kind": rule.kind, "target": rule.target, "reason": rule.reason, "expires_at": rule.expires_at}),
+    )
+    .await;
+    created(json!(rule))
+}
+
+async fn remove_dye_rule(State(st): State<AppState>, Extension(a): A, Path(id): Path<String>) -> R {
+    need(&a, DEPLOY)?;
+    st.hub.remove_dye_rule(&id).await?;
+    audit(&st.hub, &a, "dye_rules.remove", Some(&id), json!({})).await;
+    ok(json!({"removed": id}))
 }
 
 #[derive(Deserialize, Default)]

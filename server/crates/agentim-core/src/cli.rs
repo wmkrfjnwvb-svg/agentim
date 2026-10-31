@@ -205,22 +205,33 @@ enum KeyCmd {
 }
 
 fn init_logging(format: &str) {
-    let filter =
+    use tracing_subscriber::prelude::*;
+    let env =
         tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    // A dyed request (docs/14 §4.2) is logged from DEBUG up on every node,
+    // whatever the configured level; other requests are not affected.
+    let filter = crate::trace::log_filter(env);
     if format == "json" {
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .json()
-            .flatten_event(true)
-            // The request's span carries trace_id and span_id (docs/14 §4.1).
-            .with_current_span(true)
-            .with_span_list(false)
-            .with_writer(std::io::stderr)
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .flatten_event(true)
+                    // The request's span carries trace_id and span_id
+                    // (docs/14 §4.1).
+                    .with_current_span(true)
+                    .with_span_list(false)
+                    .with_writer(std::io::stderr)
+                    .with_filter(filter),
+            )
             .init();
     } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_writer(std::io::stderr)
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .with_filter(filter),
+            )
             .init();
     }
 }

@@ -333,6 +333,11 @@ async fn guard_inner(st: AppState, req: Request, next: Next) -> Result<Response,
             .into_response());
         }
     }
+    // A dye rule on this key marks the request's trace (docs/14 §4.2).
+    hub.dye_request(&crate::trace::Subject {
+        api_key: Some(&key.key_id),
+        ..Default::default()
+    });
     let policy = format!("\"default\";q={};w=1", cfg.burst as u64);
     let remaining = match take(&key.key_id, cfg.rate_per_second, cfg.burst) {
         Ok(r) => r,

@@ -17,6 +17,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use std::time::{Duration, Instant};
+
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
@@ -32,6 +34,10 @@ pub enum Out {
     Event {
         ev: Event,
         recips: Arc<Vec<Recip>>,
+        /// The trace of the request that wrote it (docs/14 §4.1): pushed to
+        /// agents, its dye kept on every node. Never pushed to people.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace: Option<crate::trace::Trace>,
     },
     Side(SideEvent),
     ToUser {
@@ -101,6 +107,10 @@ pub enum Out {
     /// The app's defaults of client permissions changed (the console).
     AllowDefaults {
         allow: crate::config::AllowConfig,
+    },
+    /// The dye rules changed (docs/14 §4.2), for every node.
+    DyeRules {
+        rules: Vec<crate::trace::DyeRule>,
     },
     /// A person's client permissions changed (docs/13 §4.1).
     Perms {
@@ -234,7 +244,14 @@ struct Inner {
     sessions: HashMap<u64, Entry>,
     by_user: HashMap<String, Vec<u64>>,
     by_focus: HashMap<String, HashSet<u64>>,
+    /// Dyed traces pushed to agents on this node: trace id → dye rule, so
+    /// an agent's reply in the same trace keeps the dye (docs/14 §4.2).
+    dyed: HashMap<String, (String, Instant)>,
 }
+
+/// Dyed traces remembered per node, and for how long.
+const DYED_MAX: usize = 10_000;
+const DYED_FOR: Duration = Duration::from_secs(3600);
 
 pub struct Registry {
     inner: Mutex<Inner>,
@@ -253,6 +270,15 @@ impl Registry {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The dye of a trace pushed to an agent here, if it was dyed.
+    pub fn dyed_trace(&self, trace_id: &str) -> Option<String> {
+        let g = self.lock();
+        g.dyed
+            .get(trace_id)
+            .filter(|(_, at)| at.elapsed() < DYED_FOR)
+            .map(|(r, _)| r.clone())
     }
 
     /// Session ids of this process start at `slot << 32`, so that ids named
@@ -541,7 +567,9 @@ impl Registry {
         let mut g = self.lock();
         for o in outs {
             match o {
-                Out::Event { ev, recips } => deliver_event(&mut g, &ev, &recips),
+                Out::Event { ev, recips, trace } => {
+                    deliver_event(&mut g, &ev, &recips, trace.as_ref())
+                }
                 Out::Side(side) => {
                     let f: Frame = json!({"type": "side", "event": side}).to_string().into();
                     for u in &side.audience {
@@ -606,7 +634,8 @@ impl Registry {
                 | Out::KeyRevoked { .. }
                 | Out::ApiKeys
                 | Out::Perms { .. }
-                | Out::AllowDefaults { .. } => {}
+                | Out::AllowDefaults { .. }
+                | Out::DyeRules { .. } => {}
                 Out::Tokens { kick, .. } => {
                     for (user_id, device_id) in kick {
                         for sid in g.by_user.get(&user_id).into_iter().flatten() {
@@ -736,7 +765,12 @@ fn send(g: &mut Inner, sid: u64, f: Frame, resync_conv: Option<&str>) -> bool {
     false
 }
 
-fn deliver_event(g: &mut Inner, full: &Event, recips: &[Recip]) {
+fn deliver_event(
+    g: &mut Inner,
+    full: &Event,
+    recips: &[Recip],
+    trace: Option<&crate::trace::Trace>,
+) {
     // Everyone but the sender gets it without the sender's client_msg_id.
     let public = full.for_reader("");
     let quiet: Frame = json!({"type": "event", "event": public, "notify": false})
@@ -758,6 +792,21 @@ fn deliver_event(g: &mut Inner, full: &Event, recips: &[Recip]) {
             if let Some((trust, flags)) = &r.trust {
                 v["trust"] = json!(trust);
                 v["flags"] = json!(flags);
+            }
+            // The trace it was written in, so the agent's work and reply
+            // join it (docs/14 §4.1); the dye stays here.
+            if let Some(t) = trace {
+                v["trace"] = json!(t.traceparent());
+                if let Some(rule) = &t.dye {
+                    if g.dyed.len() >= DYED_MAX {
+                        g.dyed.retain(|_, (_, at)| at.elapsed() < DYED_FOR);
+                        if g.dyed.len() >= DYED_MAX {
+                            g.dyed.clear();
+                        }
+                    }
+                    g.dyed
+                        .insert(t.trace_id.clone(), (rule.clone(), Instant::now()));
+                }
             }
             v.to_string().into()
         } else if own {
@@ -823,13 +872,18 @@ mod tests {
             reg.deliver(vec![Out::Event {
                 ev: ev(s),
                 recips: recips.clone(),
+                trace: None,
             }]);
         }
         let got: Vec<String> = std::iter::from_fn(|| rx.rx.try_recv().ok())
             .map(|f| f.to_string())
             .collect();
         assert_eq!(got.len(), 2, "queue is bounded");
-        reg.deliver(vec![Out::Event { ev: ev(6), recips }]);
+        reg.deliver(vec![Out::Event {
+            ev: ev(6),
+            recips,
+            trace: None,
+        }]);
         let next = rx.try_recv().unwrap();
         assert!(
             next.contains("resync"),
@@ -854,6 +908,7 @@ mod tests {
             reg.deliver(vec![Out::Event {
                 ev: ev(s),
                 recips: recips.clone(),
+                trace: None,
             }]);
         }
         // Nothing else is pushed: the client still learns about the gap,
@@ -903,6 +958,7 @@ mod sync_tests {
                 notify: false,
                 wake: false,
             }]),
+            trace: None,
         }]);
     }
 

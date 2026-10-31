@@ -104,6 +104,12 @@ async fn post(
         .header("webhook-id", id)
         .header("webhook-timestamp", ts.to_string())
         .header("webhook-signature", sign(secret, id, ts, body))
+        // The trace of the write it reports (docs/14 §4.1); no tracestate,
+        // so a dye never leaves the server.
+        .header(
+            "traceparent",
+            crate::trace::current().unwrap_or_default().traceparent(),
+        )
         .body(body.to_string())
         .send()
         .await
@@ -162,7 +168,7 @@ pub async fn deliver_loop(
             cursor = read_cursor().await;
         }
         let rows = outbox_page(&shard, cursor).await;
-        let rows: Vec<(i64, String, String)> = match rows {
+        let rows: Vec<(i64, String, String, Option<crate::trace::Trace>)> = match rows {
             Ok(rows) => rows,
             Err(_) => {
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -176,8 +182,10 @@ pub async fn deliver_loop(
         }
         let mut upto = cursor;
         let mut dropped = vec![];
-        for (id, kind, body) in rows {
+        for (id, kind, body, trace) in rows {
             if matches(&wh.events, &kind) {
+                // Delivered in the write's trace, as a child (a dye kept).
+                let t = trace.map(|t| t.child()).unwrap_or_default();
                 let wid = format!("evt_{}_{id}", shard.name);
                 let mut attempt = 0;
                 loop {
@@ -187,7 +195,23 @@ pub async fn deliver_loop(
                     if !still_queued(&shard, id).await {
                         break;
                     }
-                    match post(&http, &wh.url, &wh.secret, &wid, &body, timeout).await {
+                    let sent = crate::trace::scope(t.clone(), async {
+                        let sent = post(&http, &wh.url, &wh.secret, &wid, &body, timeout).await;
+                        if t.dye.is_some() {
+                            tracing::info!(
+                                dye = t.dye.as_deref(),
+                                trace_id = %t.trace_id,
+                                webhook = wh.name,
+                                id = wid,
+                                attempt,
+                                ok = sent.is_ok(),
+                                "dyed webhook delivery"
+                            );
+                        }
+                        sent
+                    })
+                    .await;
+                    match sent {
                         Ok(_) => {
                             metrics::counter!(m::WEBHOOK_DELIVERIES, "webhook" => wh.name.clone(), "result" => "ok").increment(1);
                             break;
@@ -240,20 +264,23 @@ async fn still_queued(shard: &Shard, id: i64) -> bool {
 }
 
 /// The next undelivered outbox rows, decrypted.
-async fn outbox_page(shard: &Shard, cursor: i64) -> ApiResult<Vec<(i64, String, String)>> {
+#[allow(clippy::type_complexity)]
+async fn outbox_page(
+    shard: &Shard,
+    cursor: i64,
+) -> ApiResult<Vec<(i64, String, String, Option<crate::trace::Trace>)>> {
     let mut c = shard
         .read
         .acquire()
         .await
         .map_err(|e| ApiError::new("storage_unavailable", e.to_string()))?;
-    let rows = sqlx::query(
-        shard
-            .dialect
-            .q("SELECT id, type, body FROM webhook_outbox WHERE id > ? ORDER BY id LIMIT 100"),
-    )
-    .bind(cursor)
-    .fetch_all(&mut *c)
-    .await?;
+    let rows =
+        sqlx::query(shard.dialect.q(
+            "SELECT id, type, body, trace FROM webhook_outbox WHERE id > ? ORDER BY id LIMIT 100",
+        ))
+        .bind(cursor)
+        .fetch_all(&mut *c)
+        .await?;
     let mut db = crate::db::Db {
         c: &mut c,
         d: shard.dialect,
@@ -270,7 +297,9 @@ async fn outbox_page(shard: &Shard, cursor: i64) -> ApiResult<Vec<(i64, String, 
                 .crypto
                 .open(&format!("webhook_outbox.body:{id}"), &body)
                 .map_err(|e| ApiError::new("storage", e))?;
-            Ok((id, r.try_get(1)?, body))
+            let trace: Option<String> = r.try_get(3)?;
+            let trace = trace.and_then(|t| serde_json::from_str(&t).ok());
+            Ok((id, r.try_get(1)?, body, trace))
         })
         .collect()
 }

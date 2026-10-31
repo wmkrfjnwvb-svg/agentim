@@ -32,6 +32,7 @@ cluster_tests!(
     leaving_hands_shards_over_at_once,
     start_up_refuses_bad_setups,
     the_trace_crosses_nodes,
+    dye_rules_reach_every_node_and_follow_the_request,
 );
 
 async fn requests_are_forwarded_and_pushes_reach_every_node(db: TestDb) {
@@ -496,5 +497,59 @@ async fn the_trace_crosses_nodes(db: TestDb) {
             h.message_trace_id(id).await.unwrap().as_deref(),
             Some(trace)
         );
+    }
+}
+
+/// docs/14 §4.2: a rule added on one node is in force on all; a dyed
+/// request forwarded to the holder keeps its dye, and the event published
+/// to a third node reaches the agent there sampled.
+async fn dye_rules_reach_every_node_and_follow_the_request(db: TestDb) {
+    let nodes = cluster(&db, 3).await;
+    let maya = user(&nodes[0].0, "maya", UserKind::Human, None).await;
+    let bot = user(&nodes[0].0, "bot", UserKind::Agent, Some(&maya)).await;
+    let rule = nodes[0]
+        .0
+        .add_dye_rule("user", "maya", "ticket", None, "admin:t")
+        .await
+        .unwrap();
+    for (h, _) in &nodes {
+        let h = h.clone();
+        let id = rule.id.clone();
+        wait_for(
+            "the rule on every node",
+            Duration::from_secs(10),
+            move || h.dye_rules().iter().any(|r| r.id == id),
+        )
+        .await;
+    }
+    let m = Conn::new(&nodes[1].0, &maya);
+    let conv = conv_held_by(&nodes, 2, &m, &[&bot]).await;
+    let mut g = Conn::new(&nodes[0].0, &bot);
+    g.drain();
+    let r = m.send(&conv, "@bot hi").await;
+    assert_eq!(r["ok"], true, "{r}");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut trace = None;
+    while trace.is_none() && Instant::now() < deadline {
+        for f in g.drain() {
+            if f["type"] == "event" && f["event"]["msg"]["msg_id"] == r["msg_id"] {
+                trace = f["trace"].as_str().map(String::from);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let trace = trace.expect("pushed with its trace");
+    assert!(trace.ends_with("-01"), "dyed, so sampled: {trace}");
+    assert!(!trace.contains(&rule.id));
+    // Removed on one node, gone on all.
+    nodes[2].0.remove_dye_rule(&rule.id).await.unwrap();
+    for (h, _) in &nodes {
+        let h = h.clone();
+        wait_for(
+            "the rule gone everywhere",
+            Duration::from_secs(10),
+            move || h.dye_rules().is_empty(),
+        )
+        .await;
     }
 }

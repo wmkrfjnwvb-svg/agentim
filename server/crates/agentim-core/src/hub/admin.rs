@@ -545,6 +545,14 @@ impl Hub {
         if let Some(a) = v.and_then(|v| serde_json::from_value(v).ok()) {
             *self.inner.sh.allow.write().unwrap() = a;
         }
+        let dyes = self
+            .read(self.control(), |db| {
+                Box::pin(async move { db.app_setting("default", "dye.rules").await })
+            })
+            .await?;
+        *self.inner.sh.dyes.write().unwrap() = dyes
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
         Ok(())
     }
 

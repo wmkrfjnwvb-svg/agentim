@@ -168,6 +168,17 @@ try {
   await page.waitForSelector('td:has-text("sqlite")');
   check(true, 'the deployment status lists the database');
   await page.screenshot({ path: `${out}/console-status.png` });
+  // A dye rule (docs/14 §4.2): added with a reason, listed, removed.
+  await page.click('nav a:has-text("Dye rules")');
+  await page.fill('input[placeholder=Target]', 'alice');
+  await page.fill('input[placeholder^="Reason"]', 'support ticket 42');
+  await page.click('button:has-text("Add rule")');
+  await page.waitForSelector('td:has-text("support ticket 42")');
+  check(true, 'a dye rule is added and listed');
+  await page.screenshot({ path: `${out}/console-dye.png` });
+  await page.click('tr:has-text("support ticket 42") button:has-text("Remove")');
+  await page.waitForSelector('td:has-text("No rules")');
+  check(true, 'and removed');
   await page.click('nav a:has-text("Admins")');
   await page.fill('.card >> nth=0 >> input[placeholder=Name]', 'mod');
   await page.fill('input[placeholder="Initial password"]', 'another long password');

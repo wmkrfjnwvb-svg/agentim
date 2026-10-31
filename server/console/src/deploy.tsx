@@ -226,3 +226,100 @@ export function Admins() {
     </Page>
   );
 }
+
+/// Dye rules (docs/14 §4.2): requests of a person, device, conversation,
+/// agent or API key are logged in full on every node until the rule
+/// expires. A reason is required and recorded in the audit log.
+export function DyeRules() {
+  const [v, err, reload] = useLoad(() => api('GET', '/deploy/dye-rules'), []);
+  const [kind, setKind] = useState('user');
+  const [target, setTarget] = useState('');
+  const [reason, setReason] = useState('');
+  const [minutes, setMinutes] = useState(60);
+  const a = useAction();
+  const kinds: Record<string, string> = {
+    user: 'Person (user id)',
+    agent: 'Agent (id)',
+    conv: 'Conversation (id)',
+    device: 'Device (device id)',
+    api_key: 'API key (key id)',
+  };
+  return (
+    <Page title="Dye rules" actions={<button onClick={reload}>Refresh</button>}>
+      <Err text={err ?? a.err} />
+      <div className="card">
+        <h2>Trace someone's requests</h2>
+        <p className="muted">
+          Everything they do is logged from DEBUG up on every node, with its trace id, until the rule expires (24 hours at most). Message content is never logged.
+        </p>
+        <form
+          className="toolbar"
+          onSubmit={(e) => {
+            e.preventDefault();
+            a.run(async () => {
+              await api('POST', '/deploy/dye-rules', { kind, target, reason, minutes });
+              setTarget('');
+              setReason('');
+              reload();
+            });
+          }}
+        >
+          <select aria-label="What to dye" value={kind} onChange={(e) => setKind(e.target.value)}>
+            {Object.entries(kinds).map(([k, label]) => (
+              <option key={k} value={k}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <input placeholder="Target" value={target} onChange={(e) => setTarget(e.target.value)} required />
+          <input placeholder="Reason (required, audited)" value={reason} onChange={(e) => setReason(e.target.value)} required size={32} />
+          <label className="inline">
+            for
+            <input type="number" min={1} max={1440} value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} style={{ width: 80 }} />
+            minutes
+          </label>
+          <button disabled={a.busy}>Add rule</button>
+        </form>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>What</th>
+            <th>Target</th>
+            <th>Reason</th>
+            <th>By</th>
+            <th>Expires</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {v?.rules.length === 0 && (
+            <tr>
+              <td colSpan={6} className="muted">
+                No rules. {v.max} at most at once.
+              </td>
+            </tr>
+          )}
+          {v?.rules.map((r: any) => (
+            <tr key={r.id}>
+              <td>
+                <span className="badge">{r.kind}</span>
+              </td>
+              <td>
+                <code>{r.target}</code>
+              </td>
+              <td>{r.reason}</td>
+              <td className="muted small">{r.by}</td>
+              <td>{time(r.expires_at)}</td>
+              <td className="row-actions">
+                <button className="danger" onClick={() => a.run(async () => (await api('DELETE', `/deploy/dye-rules/${enc(r.id)}`), reload()))}>
+                  Remove
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Page>
+  );
+}

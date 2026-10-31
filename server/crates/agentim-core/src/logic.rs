@@ -161,6 +161,13 @@ pub enum AdminOp {
         key: String,
         value: Value,
     },
+    /// Adds a dye rule (docs/14 §4.2): in the writer, so two admins adding
+    /// at once cannot lose one, and the limit holds.
+    DyeAdd(crate::trace::DyeRule),
+    /// Removes a dye rule.
+    DyeRemove {
+        id: String,
+    },
 }
 
 pub struct Shared {
@@ -176,6 +183,8 @@ pub struct Shared {
     /// What people may do in their client: the app's defaults and each
     /// person's overrides (docs/13 §4.1).
     pub allow: std::sync::RwLock<crate::config::AllowConfig>,
+    /// Dye rules in force (docs/14 §4.2), the same on every node.
+    pub dyes: std::sync::RwLock<Vec<crate::trace::DyeRule>>,
     pub perms: std::sync::RwLock<HashMap<String, Overrides>>,
     /// Users that may not log in or act (open API deactivation).
     pub deactivated: std::sync::RwLock<HashSet<String>>,
@@ -237,6 +246,9 @@ impl Shared {
                 }
                 Out::AllowDefaults { allow } => {
                     *self.allow.write().unwrap_or_else(|e| e.into_inner()) = allow.clone();
+                }
+                Out::DyeRules { rules } => {
+                    *self.dyes.write().unwrap_or_else(|e| e.into_inner()) = rules.clone();
                 }
                 Out::Perms { user_id, overrides } => {
                     let mut p = self.perms.write().unwrap_or_else(|e| e.into_inner());
@@ -2659,7 +2671,8 @@ impl Ctx<'_, '_> {
             metrics::counter!(m::MESSAGES_COMMITTED, "sender_type" => msg.sender_type.as_str())
                 .increment(1);
         }
-        self.out.push(Out::Event { ev, recips });
+        let trace = crate::trace::current().map(|t| t.child());
+        self.out.push(Out::Event { ev, recips, trace });
         Ok(())
     }
 
@@ -4668,6 +4681,31 @@ impl Ctx<'_, '_> {
             AdminOp::KeyRevoke { key_id } => {
                 Ok(json!({"revoked": self.db.revoke_admin_key(&key_id).await?}))
             }
+            AdminOp::DyeAdd(rule) => {
+                let mut rules = self.dye_rules().await?;
+                if rules.len() >= crate::trace::DYE_MAX_RULES {
+                    return Err(err(
+                        "rate_limited",
+                        format!(
+                            "at most {} dye rules at once; remove one first",
+                            crate::trace::DYE_MAX_RULES
+                        ),
+                    ));
+                }
+                rules.push(rule.clone());
+                self.save_dye_rules(rules).await?;
+                Ok(json!(rule))
+            }
+            AdminOp::DyeRemove { id } => {
+                let mut rules = self.dye_rules().await?;
+                let before = rules.len();
+                rules.retain(|r| r.id != id);
+                if rules.len() == before {
+                    return Err(err("not_found", "no such dye rule (it may have expired)"));
+                }
+                self.save_dye_rules(rules).await?;
+                Ok(json!({"removed": id}))
+            }
             AdminOp::Setting { tenant, key, value } => {
                 self.db.set_app_setting(&tenant, &key, &value).await?;
                 // Other processes on the same databases reload it.
@@ -4680,6 +4718,32 @@ impl Ctx<'_, '_> {
                 Ok(json!({}))
             }
         }
+    }
+}
+
+impl Ctx<'_, '_> {
+    /// The dye rules still in force, as stored (expired ones dropped).
+    async fn dye_rules(&mut self) -> ApiResult<Vec<crate::trace::DyeRule>> {
+        let now = now_ms();
+        Ok(self
+            .db
+            .app_setting("default", "dye.rules")
+            .await?
+            .and_then(|v| serde_json::from_value::<Vec<crate::trace::DyeRule>>(v).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.active(now))
+            .collect())
+    }
+
+    async fn save_dye_rules(&mut self, rules: Vec<crate::trace::DyeRule>) -> ApiResult<()> {
+        self.db
+            .set_app_setting("default", "dye.rules", &json!(rules))
+            .await?;
+        // Every node applies it after commit; others reload on the epoch.
+        self.db.bump_meta(crate::db::AUTH_EPOCH).await?;
+        self.out.push(Out::DyeRules { rules });
+        Ok(())
     }
 }
 
