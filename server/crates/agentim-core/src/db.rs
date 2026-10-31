@@ -2269,7 +2269,7 @@ impl Db<'_> {
             )
             .await?;
         sqlx::query(self.d.q(&format!(
-            "INSERT INTO messages ({MSG_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO messages ({MSG_COLS}, trace_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )))
         .bind(&view.msg_id)
         .bind(&view.conv_id)
@@ -2292,6 +2292,8 @@ impl Db<'_> {
         .bind(sealed_payload)
         .bind(sealed_envelope)
         .bind(&view.root_id)
+        // The request's trace, for the message trace (docs/14 §4.3).
+        .bind(crate::trace::current_id())
         .execute(&mut *self.c)
         .await?;
         if let Some(cid) = m.client_msg_id {
@@ -2503,6 +2505,21 @@ impl Db<'_> {
             })
             .collect::<sqlx::Result<_>>()
             .map_err(Into::into)
+    }
+
+    /// The trace a message was created in (docs/14 §4.3), and its
+    /// conversation; None for an unknown message.
+    pub async fn msg_trace(&mut self, msg_id: &str) -> ApiResult<Option<(String, Option<String>)>> {
+        let r = sqlx::query(
+            self.d
+                .q("SELECT conv_id, trace_id FROM messages WHERE msg_id = ?"),
+        )
+        .bind(msg_id)
+        .fetch_optional(&mut *self.c)
+        .await?;
+        r.map(|r| Ok((r.try_get(0)?, r.try_get(1)?)))
+            .transpose()
+            .map_err(|e: sqlx::Error| e.into())
     }
 
     pub async fn msg_conv(&mut self, msg_id: &str) -> ApiResult<Option<String>> {

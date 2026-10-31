@@ -31,4 +31,5 @@ pub mod server;
 pub mod shard;
 pub mod storage;
 pub mod tls;
+pub mod trace;
 pub mod webhook;

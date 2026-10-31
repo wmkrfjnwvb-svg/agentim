@@ -212,7 +212,9 @@ fn init_logging(format: &str) {
             .with_env_filter(filter)
             .json()
             .flatten_event(true)
-            .with_current_span(false)
+            // The request's span carries trace_id and span_id (docs/14 §4.1).
+            .with_current_span(true)
+            .with_span_list(false)
             .with_writer(std::io::stderr)
             .init();
     } else {

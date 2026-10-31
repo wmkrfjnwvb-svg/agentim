@@ -5,7 +5,7 @@ mod common;
 
 use agentim_client_core::*;
 use common::*;
-use serde_json::json;
+use serde_json::{Value, json};
 
 fn conn_events(w: &World) -> Vec<(String, Option<String>)> {
     w.emitted("connection")
@@ -680,6 +680,112 @@ fn a_message_that_arrives_before_its_answer_replaces_the_local_copy_at_once() {
         "{ch}"
     );
     w.assert_converged();
+}
+
+fn trace_parts(r: &Value) -> (String, String) {
+    let t = r["trace"].as_str().expect("every attempt has a trace");
+    let p: Vec<&str> = t.split('-').collect();
+    assert_eq!(p.len(), 4, "{t}");
+    assert_eq!(
+        (p[0], p[1].len(), p[2].len(), p[3]),
+        ("00", 32, 16, "00"),
+        "{t}"
+    );
+    assert!(
+        p[1].bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+        "{t}"
+    );
+    (p[1].to_string(), p[2].to_string())
+}
+
+#[test]
+fn every_attempt_of_an_operation_carries_its_trace() {
+    let mut w = World::new(1);
+    w.server.conv("c1");
+    w.connected();
+    // The answer is lost twice: three attempts.
+    w.lose_answers = 2;
+    w.ask(json!({"cmd": "send", "conv_id": "c1", "text": "x", "client_msg_id": "cmT"}))
+        .unwrap();
+    w.run(60_000);
+    let sends: Vec<(String, String)> = w
+        .server
+        .requests
+        .iter()
+        .filter(|r| r["op"] == "send")
+        .map(trace_parts)
+        .collect();
+    assert!(sends.len() >= 2, "{sends:?}");
+    // One trace id; a new span each attempt.
+    assert!(sends.iter().all(|s| s.0 == sends[0].0), "{sends:?}");
+    let spans: std::collections::HashSet<&String> = sends.iter().map(|s| &s.1).collect();
+    assert_eq!(spans.len(), sends.len(), "{sends:?}");
+    assert_eq!(w.server.applied_cms, ["cmT"]);
+    // Another operation, another trace; pings carry none.
+    w.ask(json!({"cmd": "send", "conv_id": "c1", "text": "y", "client_msg_id": "cmU"}))
+        .unwrap();
+    w.run(2_000);
+    let other = w
+        .server
+        .requests
+        .iter()
+        .rev()
+        .find(|r| r["op"] == "send")
+        .unwrap();
+    assert_ne!(trace_parts(other).0, sends[0].0);
+    assert!(
+        w.server
+            .requests
+            .iter()
+            .filter(|r| r["op"] == "ping")
+            .all(|r| r.get("trace").is_none())
+    );
+    w.assert_converged();
+}
+
+#[test]
+fn a_queued_operation_keeps_its_trace_across_a_restart() {
+    let mut w = World::new(1);
+    w.server.conv("c1");
+    w.start();
+    w.ask(json!({"cmd": "send", "conv_id": "c1", "text": "x", "client_msg_id": "cmR"}))
+        .unwrap();
+    let stored = w.store.ops.values().next().unwrap()["trace"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(stored.len(), 32);
+    w.restart(7);
+    w.cmd(json!({"cmd": "connect"}));
+    w.run(2_000);
+    let sent = w
+        .server
+        .requests
+        .iter()
+        .find(|r| r["op"] == "send")
+        .unwrap();
+    assert_eq!(trace_parts(sent).0, stored);
+    // An operation stored by an older version (no trace) gets one.
+    let mut w = World::new(3);
+    w.server.conv("c1");
+    w.start();
+    w.ask(json!({"cmd": "send", "conv_id": "c1", "text": "x", "client_msg_id": "cmO"}))
+        .unwrap();
+    for v in w.store.ops.values_mut() {
+        v.as_object_mut().unwrap().remove("trace");
+    }
+    w.restart(4);
+    w.cmd(json!({"cmd": "connect"}));
+    w.run(2_000);
+    let sent = w
+        .server
+        .requests
+        .iter()
+        .find(|r| r["op"] == "send")
+        .unwrap();
+    trace_parts(sent);
+    assert_eq!(w.server.applied_cms, ["cmO"]);
 }
 
 #[test]

@@ -451,6 +451,10 @@ impl ShardState {
 pub struct SessCtx {
     pub sid: u64,
     pub user: User,
+    /// The request's trace (docs/14 §4.1), so the writer, another node and
+    /// the message row see the same one. Absent from older nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<crate::trace::Trace>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1202,7 +1206,19 @@ impl Ctx<'_, '_> {
                 | Op::SetMemberOwner { .. }
                 | Op::UpdateUser { .. }
         );
-        let r = self.run_op(op).await;
+        // The request's trace is current while the writer runs it, here or
+        // on another node (docs/14 §4.1).
+        let trace = match &op {
+            Op::Client { sess, .. } => sess.trace.clone(),
+            _ => None,
+        };
+        let r = match trace {
+            Some(t) => {
+                let span = tracing::info_span!("op", trace_id = %t.trace_id, span_id = %t.span_id);
+                crate::trace::scope(t, tracing::Instrument::instrument(self.run_op(op), span)).await
+            }
+            None => self.run_op(op).await,
+        };
         if r.is_ok() && invalidates {
             self.db.bump_meta(crate::db::AUTH_EPOCH).await?;
             self.out.push(Out::Invalidate);

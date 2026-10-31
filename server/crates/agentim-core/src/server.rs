@@ -48,7 +48,23 @@ pub fn router(state: AppState) -> Router {
         .route("/metrics", get(metrics))
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readyz))
+        .layer(axum::middleware::from_fn(trace_http))
         .with_state(state)
+}
+
+/// Every HTTP request runs in a trace (docs/14 §4.1): the caller's
+/// `traceparent` is continued. Only trusted callers use these routes (the
+/// developer's backend, agents, admins); end users' apps use `/ws`, whose
+/// frames get their own trace per request.
+async fn trace_http(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    use tracing::Instrument;
+    let header = req
+        .headers()
+        .get("traceparent")
+        .and_then(|v| v.to_str().ok());
+    let t = crate::trace::Trace::incoming(header, crate::trace::Caller::Trusted);
+    let span = tracing::info_span!("http", trace_id = %t.trace_id, span_id = %t.span_id);
+    crate::trace::scope(t, next.run(req).instrument(span)).await
 }
 
 /// `scheme://host[:port]` with nothing after it.

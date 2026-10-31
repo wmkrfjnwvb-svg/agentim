@@ -77,18 +77,9 @@
 | D144 | 安全漏洞的报告方式和答复时限（文档站 Security › Reporting） | 用 GitHub 的私密漏洞报告（仓库要打开 Private vulnerability reporting）；先不写答复时限，等你定了再写（常见是 3 个工作日内确认、90 天内公开）。另外加一个 `SECURITY.md` |
 | D145 | 发布 agentim.dev（`.github/workflows/site.yml` 已在 main 上部署到 GitHub Pages，`site/public/CNAME` 是 `agentim.dev`） | 需要你做两件事：仓库 Settings → Pages → Source 选 GitHub Actions；域名 agentim.dev 的 DNS 指向 GitHub Pages（apex 的 4 条 A 记录 185.199.108–111.153，或 ALIAS/ANAME 到 `wmkrfjnwvb-svg.github.io`），然后在 Pages 设置里勾选 Enforce HTTPS。按版本分开的文档（`/docs/v0.1/`）等第一个版本发布时再做 |
 
-**D. 消息链路染色和业务规则**（2026-10-29 负责人提出，设计在 [14](14-tracing-and-business-rules.md)，确认前不写代码）
-
-| # | 事项 | 我的建议 |
-|---|---|---|
-| D138 | 链路编号的格式 | W3C `traceparent`；WebSocket 帧里用可选字段 `trace`，HTTP 用标准头 |
-| D139 | 终端用户客户端传来的链路 | 服务端另开自己的链路，只做 link，不理会它的"已采样"标志（防止任何人让服务端为他全量记录）；开发者后端和 Agent 直接接上 |
-| D140 | 染色的对象和限制 | 用户、设备、会话、Agent、API 密钥；必须填原因、写审计、最长 24 小时；只在服务端内部传播，不给 Webhook 和客户端 |
-| D141 | 消息轨迹 | 按消息 ID 从持久数据拼出接收、提交、送达设备、Webhook、Agent 回复、编辑撤回；不依赖链路系统；消息行加 `trace_id` |
-| D142 | 规则编号和规则目录 | 每条业务检查一个固定编号，错误里多一个 `rule` 字段；`docs/15-business-rules.md` 从代码生成，CI 检查一致 |
-| D143 | 业务校验器 | `agentim verify` 回放日志检查不变量（顺序、成员、修改权限、去重、Agent、文件、侧信道、回放等于状态）；CI 在三种数据库上跑 |
-
 ### 1.2 已确认
+
+- **2026-10-31 负责人确认消息链路染色和业务规则**（D138–D143，设计在 [14](14-tracing-and-business-rules.md)）：W3C `traceparent`、WebSocket 帧的 `trace` 字段（D138）；终端用户客户端的链路只做关联、不接续、不理会采样标志（D139）；按用户、设备、会话、Agent、API 密钥染色，要原因、审计、最长 24 小时，只在服务端内部传播（D140）；消息轨迹从持久数据拼出、消息行加 `trace_id`（D141）；规则编号和规则目录（D142）；业务校验器 `agentim verify`（D143）。
 
 - **2026-10-27 负责人确认文件和图片、文档站和首页**（D132–D136）：
   - D132：用 S3 时客户端直接传到 S3，用本机文件夹时经过服务端；图片由客户端先生成缩略图，缩略图和原图各传一次。

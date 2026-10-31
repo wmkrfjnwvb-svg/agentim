@@ -12,7 +12,7 @@ use crate::model::{ApiError, ApiResult};
 
 /// Version of the schema in `TABLES`. Bump it together with a new entry in
 /// `MIGRATIONS` (docs/02-architecture.md §5.3).
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -611,6 +611,8 @@ pub const TABLES: &[Table] = &[
             // and the source of the chain it belongs to (docs/03-agents.md §6).
             n("envelope", Text),
             n("root_id", Id),
+            // v10: the trace of the request that created it (docs/14 §4.3).
+            n("trace_id", Id),
         ],
         pk: &["msg_id"],
         indexes: &[
@@ -1244,6 +1246,15 @@ pub const MIGRATIONS: &[Migration] = &[
         compat: 1,
         about: "files and images: files, file_trash (new tables only)",
         steps: &[],
+    },
+    Migration {
+        version: 10,
+        compat: 1,
+        about: "message tracing: the trace of each message; dye rules (new table)",
+        steps: &[Step::AddColumn {
+            table: "messages",
+            column: "trace_id",
+        }],
     },
 ];
 

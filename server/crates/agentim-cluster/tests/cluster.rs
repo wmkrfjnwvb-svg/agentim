@@ -31,6 +31,7 @@ cluster_tests!(
     a_joining_node_gets_its_share_while_traffic_flows,
     leaving_hands_shards_over_at_once,
     start_up_refuses_bad_setups,
+    the_trace_crosses_nodes,
 );
 
 async fn requests_are_forwarded_and_pushes_reach_every_node(db: TestDb) {
@@ -469,4 +470,31 @@ async fn start_up_refuses_bad_setups(db: TestDb) {
     })
     .await;
     assert_eq!(n2.slot(), n.slot(), "a node keeps its slot");
+}
+
+/// docs/14 §4.1: a request forwarded to the holder keeps its trace; the
+/// writer on the other node stores it with the message.
+async fn the_trace_crosses_nodes(db: TestDb) {
+    let nodes = cluster(&db, 3).await;
+    let alice = user(&nodes[0].0, "alice", UserKind::Human, None).await;
+    let bot = user(&nodes[0].0, "bot", UserKind::Agent, Some(&alice)).await;
+    let a = Conn::new(&nodes[0].0, &alice);
+    let conv = conv_held_by(&nodes, 2, &a, &[&bot]).await;
+    let g = Conn::new(&nodes[0].0, &bot);
+    let trace = "4bf92f3577b34da6a3ce929d0e0e4736";
+    let r = g
+        .call(
+            json!({"op": "send", "conv_id": conv, "text": "forwarded", "client_msg_id": "t1",
+            "trace": format!("00-{trace}-00f067aa0ba902b7-01")}),
+        )
+        .await;
+    assert_eq!(r["ok"], true, "{r}");
+    let id = r["msg_id"].as_str().unwrap();
+    // Read from every node: the same stored trace.
+    for (h, _) in &nodes {
+        assert_eq!(
+            h.message_trace_id(id).await.unwrap().as_deref(),
+            Some(trace)
+        );
+    }
 }

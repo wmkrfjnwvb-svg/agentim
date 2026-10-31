@@ -659,6 +659,7 @@ mod tests {
         done.insert(1, "\"e1\"".to_string());
         done.insert(12, String::new());
         let op = Op {
+            trace: String::new(),
             id: "o1".into(),
             conv_id: "c".into(),
             kind: Kind::Send {

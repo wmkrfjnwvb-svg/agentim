@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tracing::Instrument;
 
 use serde_json::{Value, json};
 
@@ -2043,8 +2044,20 @@ impl Hub {
         }
     }
 
-    /// One client request with metrics and logging (WebSocket, MCP).
+    /// One client request with metrics and logging (WebSocket, MCP), in the
+    /// current trace or a new one (docs/14 §4.1).
     pub async fn request(
+        &self,
+        sess: &Session,
+        rid: Option<u64>,
+        msg: ClientMsg,
+    ) -> ApiResult<Value> {
+        let t = crate::trace::current().unwrap_or_default();
+        let span = tracing::info_span!("req", trace_id = %t.trace_id, span_id = %t.span_id);
+        crate::trace::scope(t, self.request_traced(sess, rid, msg).instrument(span)).await
+    }
+
+    async fn request_traced(
         &self,
         sess: &Session,
         rid: Option<u64>,
@@ -2095,7 +2108,15 @@ impl Hub {
     }
 
     pub async fn handle(&self, sess: &Session, env: Envelope) -> Value {
-        let res = self.request(sess, env.rid, env.msg).await;
+        // An end user's trace is linked, not continued (D139); agents are
+        // trusted.
+        let caller = if sess.user.kind == UserKind::Human {
+            crate::trace::Caller::Client
+        } else {
+            crate::trace::Caller::Trusted
+        };
+        let t = crate::trace::Trace::incoming(env.trace.as_deref(), caller);
+        let res = crate::trace::scope(t, self.request(sess, env.rid, env.msg)).await;
         match res {
             Ok(mut v) => {
                 if !v.is_object() {
@@ -2131,6 +2152,7 @@ impl Hub {
                     sess: SessCtx {
                         sid: sess.sid,
                         user: sess.user.clone(),
+                        trace: crate::trace::current(),
                     },
                     conv: conv.to_string(),
                     msg: msg.clone(),
@@ -2145,6 +2167,22 @@ impl Hub {
             "conv_migrating",
             "conversation is being moved; retry shortly",
         ))
+    }
+
+    /// The trace id a message was created in (docs/14 §4.3).
+    pub async fn message_trace_id(&self, msg_id: &str) -> ApiResult<Option<String>> {
+        for s in &self.inner.shards {
+            let id = msg_id.to_string();
+            let found = self
+                .read(s, move |db| {
+                    Box::pin(async move { db.msg_trace(&id).await })
+                })
+                .await?;
+            if let Some((_, trace)) = found {
+                return Ok(trace);
+            }
+        }
+        Err(err("not_found", "message"))
     }
 
     async fn find_conv_of<F>(&self, f: F) -> ApiResult<String>
@@ -2587,6 +2625,7 @@ impl Hub {
                         sess: SessCtx {
                             sid: sess.sid,
                             user: me.clone(),
+                            trace: crate::trace::current(),
                         },
                         conv,
                         msg,

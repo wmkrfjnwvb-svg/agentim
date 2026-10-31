@@ -90,6 +90,10 @@ pub struct Op {
     pub in_flight: Option<u64>,
     #[serde(default)]
     pub not_before: Option<i64>,
+    /// The W3C trace id of this operation (docs/14 §4.1): the same for every
+    /// attempt, also after a restart; each attempt is a new span.
+    #[serde(default)]
+    pub trace: String,
 }
 
 impl Op {
@@ -116,6 +120,29 @@ fn local(cm: &str) -> String {
 }
 
 impl Core {
+    /// A new W3C trace id: 32 lowercase hex characters, not all zero.
+    pub(crate) fn trace_id(&mut self) -> String {
+        format!("{:016x}{:016x}", self.rng.next() | 1, self.rng.next())
+    }
+
+    /// The request of operation `i` with its `trace`: the operation's trace
+    /// id (an operation stored by an older version gets one now) and a new
+    /// span for this attempt.
+    fn traced(&mut self, i: usize, mut args: Value) -> Value {
+        if self.ops[i].trace.len() != 32 {
+            self.ops[i].trace = self.trace_id();
+            self.save_op(i);
+        }
+        let span = self.rng.next() | 1;
+        if let Some(o) = args.as_object_mut() {
+            o.insert(
+                "trace".into(),
+                json!(format!("00-{}-{span:016x}-00", self.ops[i].trace)),
+            );
+        }
+        args
+    }
+
     fn push_op(&mut self, conv: &str, kind: Kind) -> String {
         self.op_n += 1;
         let op = Op {
@@ -128,6 +155,7 @@ impl Core {
             failed: None,
             in_flight: None,
             not_before: None,
+            trace: self.trace_id(),
         };
         self.batch.put_ops.push(op.to_json());
         let id = op.id.clone();
@@ -526,6 +554,7 @@ impl Core {
                 );
                 continue;
             };
+            let args = self.traced(i, args);
             let rid = self.request(name, args, Purpose::Op(self.ops[i].id.clone()));
             self.ops[i].in_flight = Some(rid);
             in_flight += 1;

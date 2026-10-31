@@ -352,6 +352,9 @@ pub struct SearchFilter {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Envelope {
     pub rid: Option<u64>,
+    /// The caller's W3C `traceparent` (docs/14 §4.1, D138).
+    #[serde(default)]
+    pub trace: Option<String>,
     #[serde(flatten)]
     pub msg: ClientMsg,
 }
