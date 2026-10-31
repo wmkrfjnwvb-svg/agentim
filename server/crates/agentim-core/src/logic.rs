@@ -1228,7 +1228,11 @@ impl Ctx<'_, '_> {
         let r = match trace {
             Some(t) => {
                 let span = tracing::info_span!("op", trace_id = %t.trace_id, span_id = %t.span_id);
-                crate::trace::scope(t, tracing::Instrument::instrument(self.run_op(op), span)).await
+                crate::trace::scope(
+                    t,
+                    tracing::Instrument::instrument(Box::pin(self.run_op(op)), span),
+                )
+                .await
             }
             None => self.run_op(op).await,
         };

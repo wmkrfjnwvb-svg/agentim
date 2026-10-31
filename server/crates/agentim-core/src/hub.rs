@@ -2057,7 +2057,13 @@ impl Hub {
     ) -> ApiResult<Value> {
         let t = crate::trace::current().unwrap_or_default();
         let span = tracing::info_span!("req", trace_id = %t.trace_id, span_id = %t.span_id);
-        crate::trace::scope(t, self.request_traced(sess, rid, msg).instrument(span)).await
+        // Boxed: the request's future is large, and every wrapper would
+        // otherwise carry it inline (stack overflows in debug builds).
+        crate::trace::scope(
+            t,
+            Box::pin(self.request_traced(sess, rid, msg)).instrument(span),
+        )
+        .await
     }
 
     async fn request_traced(
@@ -2125,7 +2131,7 @@ impl Hub {
         {
             t = t.dyed(&rule);
         }
-        let res = crate::trace::scope(t, self.request(sess, env.rid, env.msg)).await;
+        let res = crate::trace::scope(t, Box::pin(self.request(sess, env.rid, env.msg))).await;
         match res {
             Ok(mut v) => {
                 if !v.is_object() {
@@ -2225,10 +2231,10 @@ impl Hub {
             api_key: None,
         });
         let Some(dye) = crate::trace::current_dye() else {
-            return self.dispatch_checked(sess, msg).await;
+            return Box::pin(self.dispatch_checked(sess, msg)).await;
         };
         let t = Instant::now();
-        let res = self.dispatch_checked(sess, msg).await;
+        let res = Box::pin(self.dispatch_checked(sess, msg)).await;
         tracing::info!(
             dye,
             op,
