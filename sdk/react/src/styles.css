@@ -534,3 +534,40 @@ textarea.aim-input { resize: vertical; line-height: var(--aim-line); }
 @media (prefers-reduced-motion: reduce) {
   .aim-image img, .aim-progress-bar, .aim-file-bar > span { transition: none; }
 }
+
+/* Threads, reactions and pinned messages (docs/en/design/messaging.md). */
+.aim-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; align-items: center; }
+.aim-row[data-mine] .aim-reactions { justify-content: flex-end; }
+.aim-reaction { display: inline-flex; align-items: center; gap: 4px; min-height: 26px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--aim-border); background: var(--aim-surface); color: var(--aim-fg); font: inherit; font-size: var(--aim-font-size-small); cursor: pointer; }
+.aim-reaction[aria-pressed='true'] { border-color: var(--aim-accent); background: var(--aim-accent-soft); }
+.aim-reaction:disabled { cursor: default; }
+.aim-reaction-count { font-variant-numeric: tabular-nums; color: var(--aim-muted); }
+.aim-react { position: relative; display: inline-flex; }
+.aim-react-add { min-width: 26px; min-height: 26px; border-radius: 999px; border: 1px solid transparent; background: transparent; color: var(--aim-muted); cursor: pointer; opacity: 0; }
+.aim-row:hover .aim-react-add, .aim-react-add:focus-visible, .aim-react-add[aria-expanded='true'], .aim-reactions:not([data-empty]) .aim-react-add { opacity: 1; }
+.aim-react-pick { position: absolute; bottom: 100%; z-index: 5; display: flex; gap: 2px; padding: 4px; border-radius: 999px; border: 1px solid var(--aim-border); background: var(--aim-surface); box-shadow: 0 4px 16px rgb(0 0 0 / 12%); }
+.aim-react-pick button { width: 32px; height: 32px; border: 0; border-radius: 999px; background: transparent; font-size: 18px; cursor: pointer; }
+.aim-react-pick button:hover, .aim-react-pick button:focus-visible { background: var(--aim-accent-soft); }
+.aim-thread-link { margin-top: 4px; padding: 0; border: 0; background: none; color: var(--aim-accent); font: inherit; font-size: var(--aim-font-size-small); font-weight: 600; cursor: pointer; }
+.aim-thread-link[data-unread]::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--aim-accent); vertical-align: middle; }
+.aim-thread { display: flex; flex-direction: column; height: 100%; }
+.aim-thread-header { display: flex; justify-content: space-between; align-items: center; padding: var(--aim-space-2) var(--aim-space-3); border-bottom: 1px solid var(--aim-border); font-weight: 600; }
+.aim-thread-header button { border: 0; background: none; font-size: 20px; color: var(--aim-muted); cursor: pointer; }
+.aim-thread-body { flex: 1; overflow: auto; padding: var(--aim-space-3); display: flex; flex-direction: column; gap: var(--aim-space-2); }
+.aim-thread-root { padding-bottom: var(--aim-space-2); border-bottom: 1px solid var(--aim-border); }
+.aim-thread-count { font-size: var(--aim-font-size-tiny); color: var(--aim-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.aim-thread-msg { display: flex; flex-direction: column; gap: 2px; }
+.aim-thread-msg[data-state='recalled'] .aim-text { color: var(--aim-muted); font-style: italic; }
+.aim-thread-sender { font-size: var(--aim-font-size-small); font-weight: 600; }
+.aim-thread-composer { display: flex; flex-wrap: wrap; gap: var(--aim-space-2); align-items: center; padding: var(--aim-space-2) var(--aim-space-3); border-top: 1px solid var(--aim-border); }
+.aim-thread-composer input[type='text'], .aim-thread-composer > input { flex: 1 1 200px; min-height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--aim-border); background: var(--aim-surface); color: var(--aim-fg); font: inherit; }
+.aim-thread-also { display: flex; gap: 6px; align-items: center; font-size: var(--aim-font-size-small); color: var(--aim-muted); }
+.aim-pinned { display: flex; align-items: center; gap: var(--aim-space-2); width: 100%; padding: 6px var(--aim-space-3); border: 0; border-bottom: 1px solid var(--aim-border); background: var(--aim-surface); color: var(--aim-fg); font: inherit; text-align: start; cursor: pointer; }
+.aim-pinned-label { font-size: var(--aim-font-size-tiny); font-weight: 700; color: var(--aim-accent); text-transform: uppercase; letter-spacing: 0.06em; }
+.aim-pinned-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--aim-font-size-small); }
+.aim-pinned-count { font-size: var(--aim-font-size-tiny); color: var(--aim-muted); }
+@media (prefers-reduced-motion: no-preference) { .aim-react-add { transition: opacity 0.15s; } }
+/* No reactions yet: the add button floats beside the bubble and takes no room. */
+.aim-reactions[data-empty] { position: relative; height: 0; margin: 0; }
+.aim-reactions[data-empty] .aim-react { position: absolute; top: -28px; inset-inline-end: -30px; }
+.aim-row[data-mine] .aim-reactions[data-empty] .aim-react { inset-inline-end: auto; inset-inline-start: -30px; }

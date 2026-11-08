@@ -15,6 +15,7 @@ import { Card, type CardBlockProps, type FormFieldProps } from './cards.js';
 import { DefaultSteps, type StepsProps } from './steps.js';
 import { useSteps, type InboxItem } from './logic.js';
 import { InboxCount, InboxPanel, type InboxDetailProps } from './inbox.js';
+import { onlyInThread, PinnedBar, Reactions, ThreadPanel, ThreadSummary } from './social.js';
 
 export { defaultStrings, type Strings };
 
@@ -51,6 +52,10 @@ export interface MessageProps {
   onRecall?(): void;
   /** Set while an agent's reply streams: interrupt it. */
   onStop?(): void;
+  /** Adds (`on`) or removes my reaction (docs/en/design/messaging.md). */
+  onReact?(key: string, on: boolean): void;
+  /** Set when the app shows threads: opens this message's thread. */
+  onOpenThread?(): void;
 }
 
 /**
@@ -290,7 +295,7 @@ function EditBox({ text, strings, onSave, onCancel }: { text: string; strings: S
   );
 }
 
-function DefaultMessage({ message: m, convId, mine, first, last, time, strings, onRetry, onDiscard, onFeedback, onRespond, onEdit, onRecall, onStop }: MessageProps) {
+function DefaultMessage({ message: m, convId, mine, first, last, time, strings, onRetry, onDiscard, onFeedback, onRespond, onEdit, onRecall, onStop, onReact, onOpenThread }: MessageProps) {
   const [editing, setEditing] = useState(false);
   const ui = useUi();
   if (m.state === 'recalled')
@@ -352,6 +357,8 @@ function DefaultMessage({ message: m, convId, mine, first, last, time, strings, 
           </div>
         ) : null}
       </div>
+      {m.state !== 'recalled' ? <Reactions message={m} strings={strings} onReact={onReact} /> : null}
+      {(m as any).thread?.replies ? <ThreadSummary message={m} strings={strings} onOpen={onOpenThread} /> : null}
       {last || failed || m.status === 'sending' || notes.length || feedback || actions ? (
         <div className="aim-meta" data-mine={mine || undefined} data-float={(!last && !failed && m.status !== 'sending' && !notes.length && !onStop) || undefined}>
           {notes.map((n) => (
@@ -433,10 +440,12 @@ function reducedMotion(): boolean {
  * "New messages" where the unread ones started; scrolled to the newest,
  * keeps its place when older ones load, and offers a way back down.
  */
-export function MessageList({ convId, notices = [] }: { convId: string; notices?: Notice<ReactNode>[] }) {
+export function MessageList({ convId, notices = [], onOpenThread }: { convId: string; notices?: Notice<ReactNode>[]; onOpenThread?(threadId: string): void }) {
   const client = useClient();
   const { strings, components, me, when } = useUi();
-  const { messages, hasOlder, olderEnd, loadingOlder, loadOlder } = useMessages(convId);
+  const { messages: everything, hasOlder, olderEnd, loadingOlder, loadOlder } = useMessages(convId);
+  // A reply only in a thread is shown in its thread, not here (docs/en/design/messaging.md).
+  const messages = useMemo(() => everything.filter((m) => !onlyInThread(m)), [everything]);
   const conv = useConversations().find((c) => c.conv_id === convId);
   const box = useRef<HTMLDivElement>(null);
   const top = useRef<HTMLDivElement>(null);
@@ -628,6 +637,8 @@ export function MessageList({ convId, notices = [] }: { convId: string; notices?
                     onEdit={sent && m.state === 'committed' && (m.kind ?? 'text') === 'text' ? (t) => void client.edit(convId, target, t).catch(() => {}) : undefined}
                     onRecall={sent && m.state !== 'streaming' ? () => void client.recall(convId, target).catch(() => {}) : undefined}
                     onStop={m.state === 'streaming' && agent ? () => void client.call('stream_cancel', { msg_id: m.msg_id }).catch(() => {}) : undefined}
+                    onReact={m.msg_id && !m.key.startsWith('local:') ? (k, on) => void client.call(on ? 'react' : 'unreact', { conv_id: convId, msg_id: m.msg_id, key: k }).catch(() => {}) : undefined}
+                    onOpenThread={onOpenThread && m.msg_id ? () => onOpenThread(m.msg_id) : undefined}
                   />
                 </div>
               </div>
@@ -959,8 +970,25 @@ export function ConversationSteps({ convId }: { convId: string }) {
   return <ReplySteps convId={convId} />;
 }
 
+/**
+ * A conversation's thread, beside or over the messages (docs/en/design/messaging.md): its root,
+ * its replies and a composer that answers in it.
+ */
+export function Thread({ convId, threadId, onClose }: { convId: string; threadId: string; onClose?(): void }) {
+  const { strings } = useUi();
+  return <ThreadPanel convId={convId} threadId={threadId} strings={strings} onClose={onClose} />;
+}
+
+/** The pinned messages of a conversation: the latest one and how many. */
+export function PinnedMessages({ convId, onOpen }: { convId: string; onOpen?(pins: any[]): void }) {
+  const { strings } = useUi();
+  return <PinnedBar convId={convId} strings={strings} onOpen={onOpen} />;
+}
+
 /** A whole chat window (the customer-service widget): header, status, messages, typing, composer. */
 export function Chat({ convId, title, subtitle }: { convId: string; title?: ReactNode; subtitle?: ReactNode }) {
+  const [thread, setThread] = useState<string | null>(null);
+  if (thread) return <Thread convId={convId} threadId={thread} onClose={() => setThread(null)} />;
   return (
     <section className="aim-root aim-chat">
       {title ? (
@@ -971,7 +999,8 @@ export function Chat({ convId, title, subtitle }: { convId: string; title?: Reac
       ) : null}
       <ConnectionBanner />
       <HandoffNotice convId={convId} />
-      <MessageList convId={convId} />
+      <PinnedMessages convId={convId} />
+      <MessageList convId={convId} onOpenThread={setThread} />
       <ConversationSteps convId={convId} />
       <ApprovalCards convId={convId} />
       <TypingIndicator convId={convId} />
