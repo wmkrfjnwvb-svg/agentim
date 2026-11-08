@@ -30,6 +30,7 @@
 | UI-12 | 主题 | 设计 token（`tokens.json` → CSS 变量 `--aim-*` 和 React Native 的值）、亮色和暗色，测试检查对比度。文档站的实时主题预览生成 CSS |
 | UI-13 | 扩展口子 | `components.cardBlocks`、`components.formFields`（也能重画内置类型）、`components.Steps`、`useSteps`、`useInbox`、`useCardAnswers`、`<Inbox extraItems renderItem types onOpen>`、`strings` |
 | UI-14 | Agent 的工具 | 内置助手：`show_card`、`ask_form`、每次工具调用一个步骤。Agent SDK：`ctx.showCard`、`ctx.askForm`（等待回答）、`ctx.steps` |
+| UI-15 | 话题、回应、置顶 | 消息下方的回应（自己的高亮，常用表情选择器）和话题根下方的"N 条回复"；只在话题里的回复不进消息列表；`Thread` 显示一个话题和它自己的输入框（"同时发到会话"）；`PinnedMessages` 显示最新的置顶和数量。React 和 React Native（回应和回复数）（[messaging](messaging.md)，MSG-19 至 MSG-21） |
 
 ## 3. 设计
 
@@ -139,6 +140,7 @@
 | UI-11, UI-12 | `sdk/react/test/components.test.tsx` (components); `sdk/react/test/format.test.ts` and `scripts/tokens.mjs` (contrast of every token pair); `sdk/react/test/e2e.mjs` (against a real server); `sdk/react/test/screens.mjs` (screenshots in light, dark, phone, RTL compared with baselines in CI) |
 | React Native | `sdk/react-native-ui/test/chat-components.test.tsx`: data cards, form cards, own blocks and fields, steps, inbox and badge; `components.test.tsx` |
 | UI-14 (SDKs) | `sdk/agent-node/e2e.mjs`, `sdk/agent-python/e2e.py`: `showCard`, `askForm` with answers, `steps` |
+| UI-15 | `sdk/react/test/social.test.tsx`: all 7 tests; `sdk/react-native-ui/test/components.test.tsx`: `keeps thread-only replies out, shows the reply count and toggles reactions` |
 | End to end | `examples/test/e2e.mjs`: the after-sales example (order card, refund form, steps, approvals in the chat and in the inbox, hand-off) and the advisor example (drafts in the inbox) |
 
 

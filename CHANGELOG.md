@@ -12,6 +12,32 @@ notes are taken from it.
 
 ## [Unreleased]
 
+### Added
+
+- Threads: reply to a message in its own thread (`thread_id`), optionally
+  also in the conversation; the root carries a summary; members follow
+  threads, which have their own read position and unread count; only
+  followers and mentioned people are notified. Agents answer in the thread
+  they were asked in, and `context` can be limited to a thread.
+- Reactions: one emoji (or one of the app's `:names:`) per message, person
+  and key; limits per message and per person, a single-reaction mode, and
+  optionally a 👍/👎 counted as feedback on an agent. Agents hear of
+  reactions to their own messages.
+- Pinned messages: up to 100 per conversation; everyone or only the owner
+  and admins pin (`pin_policy`).
+- All three in the client protocol, the open API
+  (`/v1/conversations/{id}/threads`, `…/reactions/{key}`, `…/pins`),
+  webhooks, MCP (`react`, `unreact`, `get_thread`, `list_pins`), the client
+  core and every client SDK, the agent SDKs (`ctx.react`, `onReaction`),
+  the server SDKs, the React and React Native components (reactions,
+  "N replies", `Thread`, `PinnedMessages`) and `agentim verify`. Schema
+  version 20 (migrated at start).
+
+### Fixed
+
+- Passwords build with argon2 0.6; hashes stored before still verify.
+- CI uses the runner image's Swift (setup-swift failed on ubuntu-24.04).
+
 ## [0.1.0] - 2026-11-08
 
 ### Added
