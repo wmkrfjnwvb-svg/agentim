@@ -281,9 +281,10 @@ class AgentIM:
         """A conversation: kind, title, members, custom fields."""
         return self.request("GET", f"/v1/conversations/{_q(id)}")
 
-    def update_conversation(self, id, as_, title=None, fields=None):
-        """Renames a conversation or replaces its custom fields."""
-        return self.request("PATCH", f"/v1/conversations/{_q(id)}", {"as": as_, "title": title, "fields": fields})
+    def update_conversation(self, id, as_, title=None, fields=None, pin_policy=None):
+        """Renames a conversation, replaces its custom fields, or sets who pins (``members`` or ``admins``)."""
+        return self.request("PATCH", f"/v1/conversations/{_q(id)}",
+                            {"as": as_, "title": title, "fields": fields, "pin_policy": pin_policy})
 
     def dissolve_conversation(self, id, as_):
         """Dissolves a conversation: everyone loses access and the content is deleted."""
@@ -304,10 +305,11 @@ class AgentIM:
     # ---- messages
     @staticmethod
     def _msg(as_, text, kind=None, payload=None, client_msg_id=None, reply_to=None, to_user=None,
-             to=None, topics=None, intent=None, refs=None, sources=None):
+             to=None, topics=None, intent=None, refs=None, sources=None, thread_id=None, also_in_conv=None):
         return {"as": as_, "text": text, "kind": kind, "payload": payload,
                 "client_msg_id": client_msg_id, "reply_to": reply_to, "to_user": to_user,
-                "to": to, "topics": topics, "intent": intent, "refs": refs, "sources": sources}
+                "to": to, "topics": topics, "intent": intent, "refs": refs, "sources": sources,
+                "thread_id": thread_id, "also_in_conv": also_in_conv}
 
     def upload_file(self, conv_id, as_, name, data, mime=None):
         """Uploads a whole file (at most 64 MiB); the server removes EXIF and
@@ -369,6 +371,47 @@ class AgentIM:
     def mark_read(self, conv_id, as_, seq):
         """Marks a conversation read up to `seq` for a user."""
         return self.request("POST", f"/v1/conversations/{_q(conv_id)}/read", {"as": as_, "seq": seq})
+
+    # ---- threads, reactions and pins (docs/en/design/messaging.md)
+
+    def list_threads(self, conv_id, as_=None, before=None, limit=None):
+        """Threads of a conversation, latest reply first (with ``as_``: the ones that user follows)."""
+        q = {k: v for k, v in {"as": as_, "before": before, "limit": limit}.items() if v is not None}
+        return self.request("GET", f"/v1/conversations/{_q(conv_id)}/threads?{urllib.parse.urlencode(q)}")
+
+    def get_thread(self, conv_id, thread_id, after_seq=0, limit=None):
+        """A thread's root, summary and replies."""
+        q = {k: v for k, v in {"after_seq": after_seq, "limit": limit}.items() if v is not None}
+        return self.request("GET", f"/v1/conversations/{_q(conv_id)}/threads/{_q(thread_id)}?{urllib.parse.urlencode(q)}")
+
+    def add_reaction(self, conv_id, msg_id, key, as_):
+        """Adds a member's reaction; adding it again changes nothing."""
+        return self.request("PUT", f"/v1/conversations/{_q(conv_id)}/messages/{_q(msg_id)}/reactions/{_q(key)}",
+                            {"as": as_})
+
+    def remove_reaction(self, conv_id, msg_id, key, as_):
+        """Removes a member's reaction."""
+        return self.request(
+            "DELETE", f"/v1/conversations/{_q(conv_id)}/messages/{_q(msg_id)}/reactions/{_q(key)}?as={_q(as_)}")
+
+    def list_reactions(self, conv_id, msg_id, key, after_seq=0, limit=None):
+        """Who reacted with a key, oldest first."""
+        q = {k: v for k, v in {"after_seq": after_seq, "limit": limit}.items() if v is not None}
+        return self.request(
+            "GET", f"/v1/conversations/{_q(conv_id)}/messages/{_q(msg_id)}/reactions/{_q(key)}?{urllib.parse.urlencode(q)}")
+
+    def list_pins(self, conv_id, before_seq=None, limit=None):
+        """Pinned messages, latest pin first."""
+        q = {k: v for k, v in {"before_seq": before_seq, "limit": limit}.items() if v is not None}
+        return self.request("GET", f"/v1/conversations/{_q(conv_id)}/pins?{urllib.parse.urlencode(q)}")
+
+    def pin_message(self, conv_id, msg_id, as_):
+        """Pins a message as a member; pinning it again changes nothing."""
+        return self.request("PUT", f"/v1/conversations/{_q(conv_id)}/pins/{_q(msg_id)}", {"as": as_})
+
+    def unpin_message(self, conv_id, msg_id, as_):
+        """Unpins a message as a member."""
+        return self.request("DELETE", f"/v1/conversations/{_q(conv_id)}/pins/{_q(msg_id)}?as={_q(as_)}")
 
 
 def _backoff(attempt: int) -> float:

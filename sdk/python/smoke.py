@@ -59,6 +59,24 @@ assert [r["ok"] for r in im.batch_send(b, [a, "nobody"], "promo")["results"]] ==
 h = im.history(conv["id"], limit=200)
 assert any(e.get("msg") and e["msg"]["content"] == "hello!" for e in h["events"])
 im.mark_read(dm["conv_id"], b, 1)
+# Threads, reactions and pins (docs/en/design/messaging.md).
+reply = im.send_message(conv["id"], b, "in a thread", thread_id=sent["msg_id"])
+assert im.get_thread(conv["id"], sent["msg_id"])["replies"][0]["msg_id"] == reply["msg_id"]
+assert im.list_threads(conv["id"])["threads"][0]["thread_id"] == sent["msg_id"]
+assert im.list_threads(conv["id"], as_=a)["threads"][0]["following"] is True
+assert im.add_reaction(conv["id"], sent["msg_id"], "👍", b)["changed"] is True
+assert im.add_reaction(conv["id"], sent["msg_id"], "👍", b)["changed"] is False
+assert im.list_reactions(conv["id"], sent["msg_id"], "👍")["users"][0]["user_id"] == b
+assert im.remove_reaction(conv["id"], sent["msg_id"], "👍", b)["changed"] is True
+assert im.pin_message(conv["id"], sent["msg_id"], a)["changed"] is True
+assert im.list_pins(conv["id"])["pins"][0]["msg_id"] == sent["msg_id"]
+im.update_conversation(conv["id"], a, pin_policy="admins")
+try:
+    im.unpin_message(conv["id"], sent["msg_id"], b)
+    raise AssertionError("a member unpinned under admins")
+except AgentIMError as e:
+    assert e.code == "forbidden", e
+assert im.unpin_message(conv["id"], sent["msg_id"], a)["changed"] is True
 # Files: an image and a file, read back through a short-lived link.
 png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 img = im.send_file(conv["id"], a, "dot.png", png, caption="a dot")

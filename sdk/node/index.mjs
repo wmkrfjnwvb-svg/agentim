@@ -164,8 +164,8 @@ export class AgentIM {
   // ---- conversations (`as` is a user id or "system")
   createConversation(c) { return this.request("POST", "/v1/conversations", c); }
   getConversation(id) { return this.request("GET", `/v1/conversations/${enc(id)}`); }
-  updateConversation(id, { as, title, fields }) {
-    return this.request("PATCH", `/v1/conversations/${enc(id)}`, { as, title, fields });
+  updateConversation(id, { as, title, fields, pinPolicy }) {
+    return this.request("PATCH", `/v1/conversations/${enc(id)}`, { as, title, fields, pin_policy: pinPolicy });
   }
   dissolveConversation(id, as) {
     return this.request("DELETE", `/v1/conversations/${enc(id)}?as=${enc(as)}`);
@@ -221,10 +221,44 @@ export class AgentIM {
   markRead(convId, as, seq) {
     return this.request("POST", `/v1/conversations/${enc(convId)}/read`, { as, seq });
   }
+
+  // ---- threads, reactions and pins (docs/en/design/messaging.md)
+  /** Threads of a conversation, latest reply first (with `as`: the ones that user follows). */
+  listThreads(convId, { as, before, limit } = {}) {
+    const q = new URLSearchParams({ ...(as ? { as } : {}), ...(before ? { before: String(before) } : {}), ...(limit ? { limit: String(limit) } : {}) });
+    return this.request("GET", `/v1/conversations/${enc(convId)}/threads?${q}`);
+  }
+  /** A thread's root, summary and replies. */
+  getThread(convId, threadId, { afterSeq = 0, limit } = {}) {
+    const q = new URLSearchParams({ after_seq: String(afterSeq), ...(limit ? { limit: String(limit) } : {}) });
+    return this.request("GET", `/v1/conversations/${enc(convId)}/threads/${enc(threadId)}?${q}`);
+  }
+  /** Adds a member's reaction; adding it again changes nothing. */
+  addReaction(convId, msgId, key, as) {
+    return this.request("PUT", `/v1/conversations/${enc(convId)}/messages/${enc(msgId)}/reactions/${enc(key)}`, { as });
+  }
+  /** Removes a member's reaction. */
+  removeReaction(convId, msgId, key, as) {
+    return this.request("DELETE", `/v1/conversations/${enc(convId)}/messages/${enc(msgId)}/reactions/${enc(key)}?as=${enc(as)}`);
+  }
+  /** Who reacted with a key, oldest first. */
+  listReactions(convId, msgId, key, { afterSeq = 0, limit } = {}) {
+    const q = new URLSearchParams({ after_seq: String(afterSeq), ...(limit ? { limit: String(limit) } : {}) });
+    return this.request("GET", `/v1/conversations/${enc(convId)}/messages/${enc(msgId)}/reactions/${enc(key)}?${q}`);
+  }
+  /** Pinned messages, latest pin first. */
+  listPins(convId, { beforeSeq, limit } = {}) {
+    const q = new URLSearchParams({ ...(beforeSeq ? { before_seq: String(beforeSeq) } : {}), ...(limit ? { limit: String(limit) } : {}) });
+    return this.request("GET", `/v1/conversations/${enc(convId)}/pins?${q}`);
+  }
+  /** Pins a message as a member; pinning it again changes nothing. */
+  pinMessage(convId, msgId, as) { return this.request("PUT", `/v1/conversations/${enc(convId)}/pins/${enc(msgId)}`, { as }); }
+  /** Unpins a message as a member. */
+  unpinMessage(convId, msgId, as) { return this.request("DELETE", `/v1/conversations/${enc(convId)}/pins/${enc(msgId)}?as=${enc(as)}`); }
 }
 
-function msg({ as, text, kind, payload, clientMsgId, replyTo, toUser, to, topics, intent, refs, sources }) {
-  return { as, text, kind, payload, client_msg_id: clientMsgId, reply_to: replyTo, to_user: toUser, to, topics, intent, refs, sources };
+function msg({ as, text, kind, payload, clientMsgId, replyTo, toUser, to, topics, intent, refs, sources, threadId, alsoInConv }) {
+  return { as, text, kind, payload, client_msg_id: clientMsgId, reply_to: replyTo, to_user: toUser, to, topics, intent, refs, sources, thread_id: threadId, also_in_conv: alsoInConv };
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

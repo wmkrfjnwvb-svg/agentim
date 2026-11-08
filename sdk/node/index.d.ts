@@ -28,6 +28,10 @@ export interface Message {
   clientMsgId?: string;
   /** The message it replies to. */
   replyTo?: string;
+  /** Replies in the thread of this root message (docs/en/design/messaging.md). */
+  threadId?: string;
+  /** A thread reply that also shows in the conversation. */
+  alsoInConv?: boolean;
   /** Shows it only to this member (an ephemeral notice): not stored in the conversation's history. */
   toUser?: string;
   /** Routing envelope (docs/en/design/agents.md–§6.3): members this asks to act, topics, intent, references. */
@@ -180,7 +184,7 @@ export class AgentIM {
   /** A conversation: kind, title, members, custom fields. */
   getConversation(id: string): Promise<any>;
   /** Renames a conversation or replaces its custom fields. */
-  updateConversation(id: string, c: { as: As; title?: string; fields?: Record<string, unknown> }): Promise<any>;
+  updateConversation(id: string, c: { as: As; title?: string; fields?: Record<string, unknown>; pinPolicy?: 'members' | 'admins' }): Promise<any>;
   /** Dissolves a conversation: everyone loses access and the content is deleted. */
   dissolveConversation(id: string, as: As): Promise<any>;
   /** Adds users to a conversation; one result per user. */
@@ -215,6 +219,22 @@ export class AgentIM {
   history(convId: string, opts?: { afterSeq?: number; limit?: number }): Promise<{ events: any[]; next_after_seq: number; has_more: boolean }>;
   /** Marks a conversation read up to `seq` for a user. */
   markRead(convId: string, as: As, seq: number): Promise<{}>;
+  /** Threads of a conversation, latest reply first (with `as`: the ones that user follows, with unread counts). */
+  listThreads(convId: string, opts?: { as?: string; before?: number; limit?: number }): Promise<{ threads: any[]; more: boolean; unread_threads: number }>;
+  /** A thread's root, summary and replies. */
+  getThread(convId: string, threadId: string, opts?: { afterSeq?: number; limit?: number }): Promise<{ root: any; thread: any; replies: any[]; more: boolean }>;
+  /** Adds a member's reaction; adding it again changes nothing. */
+  addReaction(convId: string, msgId: string, key: string, as: string): Promise<{ changed: boolean; seq: number | null }>;
+  /** Removes a member's reaction. */
+  removeReaction(convId: string, msgId: string, key: string, as: string): Promise<{ changed: boolean; seq: number | null }>;
+  /** Who reacted with a key, oldest first. */
+  listReactions(convId: string, msgId: string, key: string, opts?: { afterSeq?: number; limit?: number }): Promise<{ users: { user_id: string; name?: string; seq: number; at: number }[]; more: boolean }>;
+  /** Pinned messages, latest pin first. */
+  listPins(convId: string, opts?: { beforeSeq?: number; limit?: number }): Promise<{ pins: any[]; more: boolean; count: number; pin_policy: string }>;
+  /** Pins a message as a member; pinning it again changes nothing. */
+  pinMessage(convId: string, msgId: string, as: string): Promise<{ changed: boolean; seq: number | null }>;
+  /** Unpins a message as a member. */
+  unpinMessage(convId: string, msgId: string, as: string): Promise<{ changed: boolean; seq: number | null }>;
 }
 
 /** A stored file (docs/en/design/messaging.md). */

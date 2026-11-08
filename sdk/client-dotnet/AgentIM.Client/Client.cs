@@ -495,8 +495,13 @@ namespace AgentIM.Client
         public Task<JsonNode?> LogoutAsync() => Cmd("logout");
 
         /// <summary>Returns <c>{client_msg_id, key}</c> once the message is queued and shown.</summary>
-        public Task<JsonNode?> SendAsync(string convId, string text, string? clientMsgId = null, string? replyTo = null) =>
-            Cmd("send", new JsonObject { ["conv_id"] = convId, ["text"] = text, ["client_msg_id"] = clientMsgId, ["reply_to"] = replyTo });
+        public Task<JsonNode?> SendAsync(string convId, string text, string? clientMsgId = null, string? replyTo = null,
+            string? threadId = null, bool alsoInConv = false) =>
+            Cmd("send", new JsonObject
+            {
+                ["conv_id"] = convId, ["text"] = text, ["client_msg_id"] = clientMsgId, ["reply_to"] = replyTo,
+                ["thread_id"] = threadId, ["also_in_conv"] = alsoInConv ? true : null,
+            });
 
         /// <summary>Sends a file or a photo from a path: shown at once as uploading, sent when it
         /// is up. A photo loses its EXIF and GPS (unless <paramref name="keepMetadata"/>) and gets a
@@ -532,6 +537,50 @@ namespace AgentIM.Client
         /// <summary>Drops a failed or waiting message from the queue.</summary>
         public Task<JsonNode?> DiscardAsync(string convId, string clientMsgId) =>
             Cmd("discard", new JsonObject { ["conv_id"] = convId, ["client_msg_id"] = clientMsgId });
+
+        /// <summary>Adds a reaction (one emoji, or one of the app's <c>:names:</c>); adding it twice changes nothing.</summary>
+        public Task<JsonNode?> ReactAsync(string convId, string msgId, string key) =>
+            CallAsync("react", new JsonObject { ["conv_id"] = convId, ["msg_id"] = msgId, ["key"] = key });
+
+        /// <summary>Removes my reaction; removing one that is not there changes nothing.</summary>
+        public Task<JsonNode?> UnreactAsync(string convId, string msgId, string key) =>
+            CallAsync("unreact", new JsonObject { ["conv_id"] = convId, ["msg_id"] = msgId, ["key"] = key });
+
+        /// <summary>Pins a message to the conversation; pinning it again changes nothing.</summary>
+        public Task<JsonNode?> PinAsync(string convId, string msgId) =>
+            CallAsync("pin", new JsonObject { ["conv_id"] = convId, ["msg_id"] = msgId });
+
+        /// <summary>Unpins a message.</summary>
+        public Task<JsonNode?> UnpinAsync(string convId, string msgId) =>
+            CallAsync("unpin", new JsonObject { ["conv_id"] = convId, ["msg_id"] = msgId });
+
+        /// <summary>The conversation's pinned messages, latest pin first.</summary>
+        public Task<JsonNode?> ListPinsAsync(string convId) =>
+            CallAsync("list_pins", new JsonObject { ["conv_id"] = convId });
+
+        /// <summary>A thread's root and its replies after <paramref name="afterSeq"/>.</summary>
+        public Task<JsonNode?> PullThreadAsync(string convId, string threadId, long afterSeq = 0) =>
+            CallAsync("pull_thread", new JsonObject { ["conv_id"] = convId, ["thread_id"] = threadId, ["after_seq"] = afterSeq });
+
+        /// <summary>The threads I follow (in one conversation, or all), latest reply first, with unread counts.</summary>
+        public Task<JsonNode?> ListThreadsAsync(string? convId = null) =>
+            CallAsync("list_threads", convId is null ? new JsonObject() : new JsonObject { ["conv_id"] = convId });
+
+        /// <summary>Marks a thread read up to <paramref name="seq"/> on all my devices.</summary>
+        public Task<JsonNode?> ReadThreadAsync(string convId, string threadId, long seq) =>
+            CallAsync("read_thread", new JsonObject { ["conv_id"] = convId, ["thread_id"] = threadId, ["seq"] = seq });
+
+        /// <summary>Follows a thread (its replies notify me) or stops following it.</summary>
+        public Task<JsonNode?> FollowThreadAsync(string convId, string threadId, bool follow = true) =>
+            CallAsync(follow ? "follow_thread" : "unfollow_thread", new JsonObject { ["conv_id"] = convId, ["thread_id"] = threadId });
+
+        /// <summary>The thread summary, reactions and pin of up to 100 messages (for messages loaded from history).</summary>
+        public Task<JsonNode?> MsgSummaryAsync(string convId, IEnumerable<string> msgIds)
+        {
+            var ids = new JsonArray();
+            foreach (var m in msgIds) ids.Add(m);
+            return CallAsync("msg_summary", new JsonObject { ["conv_id"] = convId, ["msg_ids"] = ids });
+        }
 
         /// <summary>A request that needs the server now (approvals, decisions, queries).</summary>
         public Task<JsonNode?> CallAsync(string op, JsonObject? args = null) =>

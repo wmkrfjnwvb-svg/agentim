@@ -419,13 +419,16 @@ class AgentIMClient {
   /// Sends a text, optionally as a reply: shown at once as sending, sent when the connection
   /// allows, in order. Returns the `client_msg_id` and the local key; a retry with the same
   /// `client_msg_id` is the same message.
-  Future<Map<String, dynamic>> send(String convId, String text, {String? clientMsgId, String? replyTo}) async =>
+  Future<Map<String, dynamic>> send(String convId, String text,
+          {String? clientMsgId, String? replyTo, String? threadId, bool alsoInConv = false}) async =>
       ((await command({
                 'cmd': 'send',
                 'conv_id': convId,
                 'text': text,
                 if (clientMsgId != null) 'client_msg_id': clientMsgId,
                 if (replyTo != null) 'reply_to': replyTo,
+                if (threadId != null) 'thread_id': threadId,
+                if (alsoInConv) 'also_in_conv': true,
               }))
               as Map)
           .cast<String, dynamic>();
@@ -445,6 +448,39 @@ class AgentIMClient {
 
   /// Drops a failed or waiting message from the queue.
   Future<void> discard(String convId, String clientMsgId) => command({'cmd': 'discard', 'conv_id': convId, 'client_msg_id': clientMsgId});
+
+  /// Adds a reaction (one emoji, or one of the app's `:names:`); adding it twice changes nothing.
+  Future<Object?> react(String convId, String msgId, String key) => call('react', {'conv_id': convId, 'msg_id': msgId, 'key': key});
+
+  /// Removes my reaction; removing one that is not there changes nothing.
+  Future<Object?> unreact(String convId, String msgId, String key) => call('unreact', {'conv_id': convId, 'msg_id': msgId, 'key': key});
+
+  /// Pins a message to the conversation; pinning it again changes nothing.
+  Future<Object?> pin(String convId, String msgId) => call('pin', {'conv_id': convId, 'msg_id': msgId});
+
+  /// Unpins a message.
+  Future<Object?> unpin(String convId, String msgId) => call('unpin', {'conv_id': convId, 'msg_id': msgId});
+
+  /// The conversation's pinned messages, latest pin first.
+  Future<Object?> listPins(String convId) => call('list_pins', {'conv_id': convId});
+
+  /// A thread's root and its replies after `afterSeq`.
+  Future<Object?> pullThread(String convId, String threadId, {int afterSeq = 0}) =>
+      call('pull_thread', {'conv_id': convId, 'thread_id': threadId, 'after_seq': afterSeq});
+
+  /// The threads I follow (in one conversation, or all), latest reply first, with unread counts.
+  Future<Object?> listThreads({String? convId}) => call('list_threads', {if (convId != null) 'conv_id': convId});
+
+  /// Marks a thread read up to `seq` on all my devices.
+  Future<Object?> readThread(String convId, String threadId, int seq) =>
+      call('read_thread', {'conv_id': convId, 'thread_id': threadId, 'seq': seq});
+
+  /// Follows a thread (its replies notify me) or stops following it.
+  Future<Object?> followThread(String convId, String threadId, {bool follow = true}) =>
+      call(follow ? 'follow_thread' : 'unfollow_thread', {'conv_id': convId, 'thread_id': threadId});
+
+  /// The thread summary, reactions and pin of up to 100 messages (for messages loaded from history).
+  Future<Object?> msgSummary(String convId, List<String> msgIds) => call('msg_summary', {'conv_id': convId, 'msg_ids': msgIds});
 
   /// A request that needs the server now (approvals, decisions, queries).
   Future<Object?> call(String op, [Map<String, Object?> args = const {}]) => command({'cmd': 'call', 'op': op, 'args': args});

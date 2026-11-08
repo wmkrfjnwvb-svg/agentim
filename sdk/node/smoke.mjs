@@ -55,6 +55,21 @@ const h = await im.history(conv.id, { limit: 200 });
 assert.ok(h.events.some((e) => e.msg?.content === "hello!"));
 assert.ok(h.events.some((e) => e.msg?.sender_id === "_system"));
 await im.markRead(dm.conv_id, b, 1);
+// Threads, reactions and pins (docs/en/design/messaging.md).
+const reply = await im.sendMessage(conv.id, { as: b, text: "in a thread", threadId: sent.msg_id });
+const thread = await im.getThread(conv.id, sent.msg_id);
+assert.equal(thread.replies[0].msg_id, reply.msg_id);
+assert.equal((await im.listThreads(conv.id)).threads[0].thread_id, sent.msg_id);
+assert.equal((await im.listThreads(conv.id, { as: a })).threads[0].following, true);
+assert.equal((await im.addReaction(conv.id, sent.msg_id, "👍", b)).changed, true);
+assert.equal((await im.addReaction(conv.id, sent.msg_id, "👍", b)).changed, false);
+assert.equal((await im.listReactions(conv.id, sent.msg_id, "👍")).users[0].user_id, b);
+assert.equal((await im.removeReaction(conv.id, sent.msg_id, "👍", b)).changed, true);
+assert.equal((await im.pinMessage(conv.id, sent.msg_id, a)).changed, true);
+assert.equal((await im.listPins(conv.id)).pins[0].msg_id, sent.msg_id);
+await im.updateConversation(conv.id, { as: a, pinPolicy: "admins" });
+await assert.rejects(im.unpinMessage(conv.id, sent.msg_id, b), (e) => e.code === "forbidden");
+assert.equal((await im.unpinMessage(conv.id, sent.msg_id, a)).changed, true);
 // Files: an image and a file, read back through a short-lived link.
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
 const img = await im.sendFile(conv.id, { as: a, name: "dot.png", data: png, caption: "a dot" });

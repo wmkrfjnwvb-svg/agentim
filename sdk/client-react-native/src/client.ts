@@ -235,8 +235,8 @@ export class AgentIMClient {
    * connection allows, in order. Returns the `client_msg_id` and the local key; a retry with the
    * same `client_msg_id` is the same message.
    */
-  send(convId: string, text: string, opts: { kind?: string; payload?: unknown; replyTo?: string; clientMsgId?: string } = {}) {
-    return this.command({ cmd: 'send', conv_id: convId, text, kind: opts.kind, payload: opts.payload, reply_to: opts.replyTo, client_msg_id: opts.clientMsgId });
+  send(convId: string, text: string, opts: { kind?: string; payload?: unknown; replyTo?: string; clientMsgId?: string; threadId?: string; alsoInConv?: boolean } = {}) {
+    return this.command({ cmd: 'send', conv_id: convId, text, kind: opts.kind, payload: opts.payload, reply_to: opts.replyTo, client_msg_id: opts.clientMsgId, thread_id: opts.threadId, also_in_conv: opts.alsoInConv });
   }
   /**
    * Sends a file or a photo from a path (`file://` URIs work): shown at once
@@ -275,6 +275,50 @@ export class AgentIMClient {
   /** Rates an agent's message up or down, with an optional reason. */
   feedback(convId: string, msgId: string, rating: 'up' | 'down', reason?: string) {
     return this.command({ cmd: 'feedback', conv_id: convId, msg_id: msgId, rating, reason });
+  }
+  /** Adds a reaction (one emoji, or one of the app's `:names:`); adding it twice changes nothing. */
+  react(convId: string, msgId: string, key: string): Promise<{ changed: boolean; seq?: number }> {
+    return this.call('react', { conv_id: convId, msg_id: msgId, key });
+  }
+  /** Removes my reaction; removing one that is not there changes nothing. */
+  unreact(convId: string, msgId: string, key: string): Promise<{ changed: boolean; seq?: number }> {
+    return this.call('unreact', { conv_id: convId, msg_id: msgId, key });
+  }
+  /** Who reacted to a message with a key, oldest first. */
+  listReactions(convId: string, msgId: string, key: string, opts: { afterSeq?: number; limit?: number } = {}) {
+    return this.call('list_reactions', { conv_id: convId, msg_id: msgId, key, after_seq: opts.afterSeq ?? 0, limit: opts.limit });
+  }
+  /** Pins a message to the conversation; pinning it again changes nothing. */
+  pin(convId: string, msgId: string): Promise<{ changed: boolean; seq?: number }> {
+    return this.call('pin', { conv_id: convId, msg_id: msgId });
+  }
+  /** Unpins a message. */
+  unpin(convId: string, msgId: string): Promise<{ changed: boolean; seq?: number }> {
+    return this.call('unpin', { conv_id: convId, msg_id: msgId });
+  }
+  /** The conversation's pinned messages, latest pin first. */
+  listPins(convId: string, opts: { beforeSeq?: number; limit?: number } = {}) {
+    return this.call('list_pins', { conv_id: convId, before_seq: opts.beforeSeq, limit: opts.limit });
+  }
+  /** A thread's root and its replies after `afterSeq`. */
+  pullThread(convId: string, threadId: string, opts: { afterSeq?: number; limit?: number } = {}) {
+    return this.call('pull_thread', { conv_id: convId, thread_id: threadId, after_seq: opts.afterSeq ?? 0, limit: opts.limit });
+  }
+  /** The threads I follow (in one conversation, or all), latest reply first, with unread counts. */
+  listThreads(opts: { convId?: string; before?: number; limit?: number } = {}) {
+    return this.call('list_threads', { conv_id: opts.convId, before: opts.before, limit: opts.limit });
+  }
+  /** Marks a thread read up to `seq` on all my devices. */
+  readThread(convId: string, threadId: string, seq: number) {
+    return this.call('read_thread', { conv_id: convId, thread_id: threadId, seq });
+  }
+  /** Follows a thread (its replies notify me) or stops following it. */
+  followThread(convId: string, threadId: string, follow = true) {
+    return this.call(follow ? 'follow_thread' : 'unfollow_thread', { conv_id: convId, thread_id: threadId });
+  }
+  /** The thread summary, reactions and pin of up to 100 messages (for messages loaded from history). */
+  msgSummary(convId: string, msgIds: string[]) {
+    return this.call('msg_summary', { conv_id: convId, msg_ids: msgIds });
   }
   /** Answers a card: a button (`action`) or a filled form (`values`). */
   respond(convId: string, msgId: string, blockId: string, r: { action?: string; values?: Record<string, unknown> }) {

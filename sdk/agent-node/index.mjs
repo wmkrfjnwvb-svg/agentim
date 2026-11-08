@@ -118,19 +118,23 @@ class Ctx {
   get config() { return this.agent.config; }
   /** Its role (name, description, instructions, ...), or null. */
   get role() { return this.agent.config?.role ?? null; }
-  /** Replies to the message (or just sends in the conversation), in its trace. */
+  /** The thread the message is in (its root's id), or null: replies go there too. */
+  get threadId() { return this.msg?.thread_id ?? null; }
+  /** Replies to the message (or just sends in the conversation), in its trace and its thread. */
   reply(text, opts = {}) {
-    return this.agent.send(this.convId, text, { replyTo: this.msg?.msg_id, trace: childTrace(this.trace), ...opts });
+    return this.agent.send(this.convId, text, { replyTo: this.msg?.msg_id, threadId: this.threadId ?? undefined, trace: childTrace(this.trace), ...opts });
   }
   /** A streamed reply: `await s.append(text)`, then `await s.end()`. */
-  stream() { return this.agent.stream(this.convId, { replyTo: this.msg?.msg_id, trace: childTrace(this.trace) }); }
+  stream() { return this.agent.stream(this.convId, { replyTo: this.msg?.msg_id, threadId: this.threadId ?? undefined, trace: childTrace(this.trace) }); }
+  /** Reacts to the message being handled (e.g. 👀 when starting, ✅ when done). */
+  react(key, msgId) { return this.agent.react(this.convId, msgId ?? this.msg?.msg_id, key); }
   progress(kind, text, data) { return this.agent.progress(this.convId, kind, text, { data, trace: childTrace(this.trace) }); }
   /**
    * Shows data as a card in reply (docs/en/design/chat-components.md): `blocks` are text, facts,
    * table, list or your own `x-…` blocks.
    */
   showCard(title, blocks, opts = {}) {
-    return this.agent.sendCard(this.convId, opts.text ?? title, { title, blocks }, { replyTo: this.msg?.msg_id });
+    return this.agent.sendCard(this.convId, opts.text ?? title, { title, blocks }, { replyTo: this.msg?.msg_id, threadId: this.threadId ?? undefined });
   }
   /**
    * Asks the person who wrote with a form card only they can fill in, and
@@ -138,7 +142,7 @@ class Ctx {
    * field id. `opts`: `intro`, `submit`, `to` (other people), `timeoutMs`.
    */
   askForm(title, fields, opts = {}) {
-    return this.agent.askForm(this.convId, title, fields, { replyTo: this.msg?.msg_id, to: opts.to ?? (this.msg ? [this.msg.sender_id] : undefined), ...opts });
+    return this.agent.askForm(this.convId, title, fields, { replyTo: this.msg?.msg_id, threadId: this.threadId ?? undefined, to: opts.to ?? (this.msg ? [this.msg.sender_id] : undefined), ...opts });
   }
   /**
    * Steps people see next to the reply (docs/en/design/chat-components.md): `const s = await
@@ -164,7 +168,7 @@ export class Agent {
     this.key = key;
     this.clientName = name;
     this.log = log;
-    this.handlers = { message: [], event: [], card: [], handback: [], config: [] };
+    this.handlers = { message: [], event: [], card: [], handback: [], config: [], reaction: [] };
     /** The configuration from the server, kept current (docs/en/design/agents.md). */
     this.config = null;
     this.waiting = new Map(); // request_id -> resolve
@@ -181,6 +185,8 @@ export class Agent {
   onEvent(fn) { this.handlers.event.push(fn); return this; }
   onCardResponse(fn) { this.handlers.card.push(fn); return this; }
   onHandback(fn) { this.handlers.handback.push(fn); return this; }
+  /** Called when someone reacts to (or un-reacts from) one of the agent's messages: `(data, ctx)`, `data.added`. */
+  onReaction(fn) { this.handlers.reaction.push(fn); return this; }
   /** Called with the new configuration when it arrives or changes. */
   onConfig(fn) { this.handlers.config.push(fn); return this; }
 
@@ -413,6 +419,11 @@ export class Agent {
     this.lastSeq.set(ev.conv_id, ev.seq);
     const what = `${ev.type} ${ev.conv_id}#${ev.seq}`;
     for (const h of this.handlers.event) await this.#run(() => h(ev, item), what);
+    // Reactions to its messages arrive without waking it.
+    if ((ev.type === 'reaction.added' || ev.type === 'reaction.removed') && ev.data?.msg_sender === this.me.id) {
+      const ctx = new Ctx(this, ev, item.trace);
+      for (const h of this.handlers.reaction) await this.#run(() => h({ ...ev.data, added: ev.type === 'reaction.added' }, ctx), what);
+    }
     if (!item.wake) return;
     const ctx = new Ctx(this, ev, item.trace);
     if (ev.msg && ev.msg.sender_id !== this.me.id && (ev.type === 'msg.created' || ev.type === 'msg.updated')) {
@@ -441,14 +452,23 @@ export class Agent {
   /** Any protocol operation (docs/en/testing.md). */
   call(op, args) { return this.conn.call(op, args); }
 
-  /** Sends a message; `opts`: replyTo, to, topics, intent, refs, sources, clientMsgId, trace. */
+  /** Sends a message; `opts`: replyTo, threadId, to, topics, intent, refs, sources, clientMsgId, trace. */
   send(convId, text, opts = {}) {
     return this.conn.call('send', {
       conv_id: convId, text, client_msg_id: opts.clientMsgId ?? uid(),
-      reply_to: opts.replyTo, to: opts.to, topics: opts.topics, intent: opts.intent, refs: opts.refs, sources: opts.sources,
+      reply_to: opts.replyTo, thread_id: opts.threadId, to: opts.to, topics: opts.topics, intent: opts.intent, refs: opts.refs, sources: opts.sources,
       trace: opts.trace,
     });
   }
+
+  /** Adds a reaction (one emoji); adding it twice changes nothing. */
+  react(convId, msgId, key) { return this.conn.call('react', { conv_id: convId, msg_id: msgId, key }); }
+  /** Removes the agent's reaction. */
+  unreact(convId, msgId, key) { return this.conn.call('unreact', { conv_id: convId, msg_id: msgId, key }); }
+  /** A thread's root and replies (`opts`: afterSeq, limit). */
+  thread(convId, threadId, opts = {}) { return this.conn.call('pull_thread', { conv_id: convId, thread_id: threadId, after_seq: opts.afterSeq ?? 0, limit: opts.limit }); }
+  /** The conversation's pinned messages, latest pin first. */
+  pins(convId) { return this.conn.call('list_pins', { conv_id: convId }); }
 
   /**
    * Sends a form card and waits for the answers (docs/en/design/chat-components.md). `opts`:
@@ -456,12 +476,12 @@ export class Agent {
    * `submit`, `replyTo`, `timeoutMs` (default 30 minutes). Resolves to the
    * values; rejects on timeout.
    */
-  async askForm(convId, title, fields, { to, intro, submit = 'Send', replyTo, timeoutMs = 30 * 60_000 } = {}) {
+  async askForm(convId, title, fields, { to, intro, submit = 'Send', replyTo, threadId, timeoutMs = 30 * 60_000 } = {}) {
     const blocks = [];
     if (intro) blocks.push({ type: 'text', text: intro });
     blocks.push({ type: 'form', id: 'form', submit, fields });
     const card = { title, once: true, blocks, ...(to ? { to } : {}) };
-    const sent = await this.sendCard(convId, `${title} (please fill in the form)`, card, { replyTo });
+    const sent = await this.sendCard(convId, `${title} (please fill in the form)`, card, { replyTo, threadId });
     return new Promise((resolve, reject) => {
       const t = setTimeout(() => { this.forms.delete(sent.msg_id); reject(new Error(`no answer to the form ${title}`)); }, timeoutMs);
       this.forms.set(sent.msg_id, (d) => { clearTimeout(t); resolve(d.values ?? {}); });
@@ -470,7 +490,7 @@ export class Agent {
 
   /** Sends a card (docs/en/design/agents.md); `text` is what clients without cards show. */
   sendCard(convId, text, card, opts = {}) {
-    return this.conn.call('send', { conv_id: convId, text, kind: 'agentim.card', payload: card, client_msg_id: opts.clientMsgId ?? uid(), reply_to: opts.replyTo });
+    return this.conn.call('send', { conv_id: convId, text, kind: 'agentim.card', payload: card, client_msg_id: opts.clientMsgId ?? uid(), reply_to: opts.replyTo, thread_id: opts.threadId });
   }
 
   /**
@@ -512,8 +532,8 @@ export class Agent {
   }
 
   /** A streamed reply; cancelled if `end` is never called before `fail`. */
-  async stream(convId, { replyTo, trace } = {}) {
-    const r = await this.conn.call('stream_start', { conv_id: convId, client_msg_id: uid(), reply_to: replyTo, trace });
+  async stream(convId, { replyTo, threadId, trace } = {}) {
+    const r = await this.conn.call('stream_start', { conv_id: convId, client_msg_id: uid(), reply_to: replyTo, thread_id: threadId, trace });
     const id = r.msg_id;
     let idx = 0;
     return {

@@ -442,10 +442,12 @@ public final class AgentIMClient: @unchecked Sendable {
 
     /// Returns `client_msg_id` and `key` once the message is queued and shown.
     @discardableResult
-    public func send(_ convId: String, _ text: String, clientMsgId: String? = nil, replyTo: String? = nil) async throws -> JSONObject {
+    public func send(_ convId: String, _ text: String, clientMsgId: String? = nil, replyTo: String? = nil, threadId: String? = nil, alsoInConv: Bool = false) async throws -> JSONObject {
         var c: JSONObject = ["cmd": "send", "conv_id": convId, "text": text]
         c["client_msg_id"] = clientMsgId
         c["reply_to"] = replyTo
+        c["thread_id"] = threadId
+        if alsoInConv { c["also_in_conv"] = true }
         return try await command(c) as? JSONObject ?? [:]
     }
 
@@ -493,6 +495,62 @@ public final class AgentIMClient: @unchecked Sendable {
     /// Drops a failed or waiting message from the queue.
     public func discard(_ convId: String, clientMsgId: String) async throws {
         try await command(["cmd": "discard", "conv_id": convId, "client_msg_id": clientMsgId])
+    }
+
+    /// Adds a reaction (one emoji, or one of the app's `:names:`); adding it twice changes nothing.
+    @discardableResult
+    public func react(_ convId: String, msgId: String, key: String) async throws -> JSONObject {
+        try await call("react", ["conv_id": convId, "msg_id": msgId, "key": key]) as? JSONObject ?? [:]
+    }
+
+    /// Removes my reaction; removing one that is not there changes nothing.
+    @discardableResult
+    public func unreact(_ convId: String, msgId: String, key: String) async throws -> JSONObject {
+        try await call("unreact", ["conv_id": convId, "msg_id": msgId, "key": key]) as? JSONObject ?? [:]
+    }
+
+    /// Pins a message to the conversation; pinning it again changes nothing.
+    @discardableResult
+    public func pin(_ convId: String, msgId: String) async throws -> JSONObject {
+        try await call("pin", ["conv_id": convId, "msg_id": msgId]) as? JSONObject ?? [:]
+    }
+
+    /// Unpins a message.
+    @discardableResult
+    public func unpin(_ convId: String, msgId: String) async throws -> JSONObject {
+        try await call("unpin", ["conv_id": convId, "msg_id": msgId]) as? JSONObject ?? [:]
+    }
+
+    /// The conversation's pinned messages, latest pin first.
+    public func listPins(_ convId: String) async throws -> JSONObject {
+        try await call("list_pins", ["conv_id": convId]) as? JSONObject ?? [:]
+    }
+
+    /// A thread's root and its replies after `afterSeq`.
+    public func pullThread(_ convId: String, threadId: String, afterSeq: Int64 = 0) async throws -> JSONObject {
+        try await call("pull_thread", ["conv_id": convId, "thread_id": threadId, "after_seq": afterSeq]) as? JSONObject ?? [:]
+    }
+
+    /// The threads I follow (in one conversation, or all), latest reply first, with unread counts.
+    public func listThreads(convId: String? = nil) async throws -> JSONObject {
+        var a: JSONObject = [:]
+        a["conv_id"] = convId
+        return try await call("list_threads", a) as? JSONObject ?? [:]
+    }
+
+    /// Marks a thread read up to `seq` on all my devices.
+    public func readThread(_ convId: String, threadId: String, seq: Int64) async throws {
+        try await call("read_thread", ["conv_id": convId, "thread_id": threadId, "seq": seq])
+    }
+
+    /// Follows a thread (its replies notify me) or stops following it.
+    public func followThread(_ convId: String, threadId: String, follow: Bool = true) async throws {
+        try await call(follow ? "follow_thread" : "unfollow_thread", ["conv_id": convId, "thread_id": threadId])
+    }
+
+    /// The thread summary, reactions and pin of up to 100 messages (for messages loaded from history).
+    public func msgSummary(_ convId: String, msgIds: [String]) async throws -> JSONObject {
+        try await call("msg_summary", ["conv_id": convId, "msg_ids": msgIds]) as? JSONObject ?? [:]
     }
 
     /// A request that needs the server now (approvals, decisions, queries).

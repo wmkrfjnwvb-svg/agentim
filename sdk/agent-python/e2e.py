@@ -233,6 +233,17 @@ async def main():
             await ctx.reply(f"trace {ctx.trace_id}")
         elif "sources" in t:
             await ctx.reply("see the docs", sources=[{"title": "Docs", "url": "https://example.com/docs"}])
+        elif "in the thread" in t:
+            # Asked in a thread: the reply goes there, and a reaction says it is on it.
+            await ctx.react("👀")
+            th = await bot.thread(ctx.conv_id, ctx.thread_id)
+            await ctx.reply(f"thread {ctx.thread_id == th['root']['msg_id']} {len(th['replies'])}")
+
+    reacted = []
+
+    @bot.on_reaction
+    async def on_reaction(d, ctx):
+        reacted.append(("+" if d["added"] else "-") + d["key"])
 
     @bot.on_card_response
     async def card(r, ctx):
@@ -341,6 +352,24 @@ async def main():
     await alice.say(conv, "@pybot sources")
     r = await alice.reply(a, "see the docs")
     check(r["msg"]["envelope"]["sources"][0]["title"] == "Docs", "sources travel with the reply")
+
+    # Threads and reactions (docs/en/design/messaging.md).
+    root = await alice.say(conv, "refund policy?")
+    await alice.conn.call("send", conv_id=conv, client_msg_id=str(uuid.uuid4()),
+                          text="@pybot answer in the thread", thread_id=root["msg_id"])
+    ans = await alice.reply(a, "thread ")
+    check(ans["msg"].get("thread_id") == root["msg_id"] and ans["msg"]["content"] == "thread True 1",
+          "ctx.reply answers in the thread it was asked in")
+    eyes = await alice.wait(lambda e: e.get("type") == "reaction.added" and e["data"].get("user_id") == a
+                            and e["data"].get("key") == "👀", "the agent reacts")
+    check(eyes["data"]["msg_id"] != root["msg_id"], "ctx.react reacts to the message being handled")
+    await alice.conn.call("react", conv_id=conv, msg_id=ans["msg"]["msg_id"], key="🙏")
+    await alice.conn.call("unreact", conv_id=conv, msg_id=ans["msg"]["msg_id"], key="🙏")
+    for _ in range(100):
+        if len(reacted) >= 2:
+            break
+        await asyncio.sleep(0.05)
+    check(reacted == ["+🙏", "-🙏"], f"on_reaction hears reactions to its messages ({reacted})")
 
     # The agent gets the trace of the message that woke it, and its reply is
     # stored in that trace (docs/en/design/tracing.md), as the admin API shows.
