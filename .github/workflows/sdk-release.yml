@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   version:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
@@ -49,7 +49,7 @@ jobs:
 
   github-release:
     needs: [version, build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       id-token: write
@@ -101,7 +101,7 @@ jobs:
   npm:
     needs: github-release
     if: vars.SDK_NPM == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write
@@ -121,7 +121,7 @@ jobs:
   nuget:
     needs: github-release
     if: vars.NUGET_USER != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write
@@ -138,7 +138,7 @@ jobs:
   pub:
     needs: github-release
     if: vars.SDK_PUB == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write
@@ -153,7 +153,7 @@ jobs:
   swift:
     needs: github-release
     if: vars.SWIFT_REPO != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: {name: swift-package, path: swift-package}
@@ -176,7 +176,7 @@ jobs:
 
   maven:
     needs: github-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       HAVE: ${{ secrets.CENTRAL_TOKEN != '' && secrets.MAVEN_GPG_KEY != '' && secrets.MAVEN_GROUP != '' }}
     steps:

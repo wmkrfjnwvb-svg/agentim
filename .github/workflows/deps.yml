@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   cargo-deny:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -46,7 +46,7 @@ jobs:
       - run: cargo-deny --manifest-path ${{ matrix.workspace }}/Cargo.toml --config deny.toml check
 
   npm-audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:

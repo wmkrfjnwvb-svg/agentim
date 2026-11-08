@@ -32,17 +32,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
         scenario: [connections, biggroup, slow]
         include:
           # Linux: several local source addresses get past one address's port range.
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             scenario: connections
             args: --users LINUX_CONNECTIONS --rate 200 --storm --sources 4
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             scenario: biggroup
             args: --users 2000 --rate 50 --max-p99-ms 2000
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             scenario: slow
             args: --users 500 --rate 300 --payload 2000 --max-p99-ms 2000
           - os: windows-latest

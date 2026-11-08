@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
     steps:
       - uses: actions/checkout@v4
       # The runner's preinstalled Android SDK, Haskell and CodeQL (~20 GB)
@@ -49,7 +49,7 @@ jobs:
 
   databases:
     name: tests on PostgreSQL 16 and MySQL 8.4
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # every test on three databases, then cluster and rule coverage
     timeout-minutes: 50
     services:
@@ -116,7 +116,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -147,7 +147,7 @@ jobs:
 
   client-web:
     name: browser SDK, React components and React Native
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -203,7 +203,7 @@ jobs:
 
   client-wrappers:
     name: client SDK wrappers (C#, Kotlin/JVM, Swift, Dart) against the server
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -257,7 +257,7 @@ jobs:
 
   client-flutter:
     name: Flutter (a Linux app with the core from the build hook, against the server)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -279,7 +279,7 @@ jobs:
 
   replicas:
     name: database replicas and failover (PostgreSQL 16, MySQL 8.4)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -297,7 +297,7 @@ jobs:
 
   deploy:
     name: docker image and three-node compose cluster
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     defaults:
       run:
@@ -344,7 +344,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
         name: [fanout, write-path]
         include:
           - name: fanout
@@ -352,10 +352,10 @@ jobs:
           - name: write-path
             args: --solo --clients 50 --messages 200
           # Performance gates on Linux only (runner disks differ a lot on Windows).
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             name: fanout
             gate: --min-throughput 300 --max-p99-ms 1000
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             name: write-path
             gate: --min-throughput 400 --max-p99-ms 500
     steps:
@@ -387,7 +387,7 @@ jobs:
   # shots (and diffs) are uploaded.
   screens:
     name: screenshot comparison (web and React Native components)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     container: mcr.microsoft.com/playwright:v1.56.1-noble
     defaults:
@@ -419,7 +419,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -461,7 +461,7 @@ jobs:
 
   sdk:
     name: server SDK smoke tests (Node, Python, Go)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -489,7 +489,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

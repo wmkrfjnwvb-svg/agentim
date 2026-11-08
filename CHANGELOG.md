@@ -12,6 +12,8 @@ notes are taken from it.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-08
+
 ### Added
 
 - A built-in library of 12 roles (order support, booking, IT and HR

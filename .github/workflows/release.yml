@@ -39,7 +39,7 @@ env:
 
 jobs:
   version:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
@@ -55,7 +55,7 @@ jobs:
     uses: ./.github/workflows/deps.yml
 
   console:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
@@ -69,7 +69,7 @@ jobs:
   # The demo (docs/en/design/developer-experience.md): the browser SDK with its wasm core, the React
   # components and the app; embedded like the console.
   demo:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
@@ -92,8 +92,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {target: x86_64-unknown-linux-musl, os: ubuntu-latest, zig: true}
-          - {target: aarch64-unknown-linux-musl, os: ubuntu-latest, zig: true}
+          - {target: x86_64-unknown-linux-musl, os: ubuntu-24.04, zig: true}
+          - {target: aarch64-unknown-linux-musl, os: ubuntu-24.04, zig: true}
           - {target: x86_64-apple-darwin, os: macos-latest}
           - {target: aarch64-apple-darwin, os: macos-latest}
           - {target: x86_64-pc-windows-msvc, os: windows-latest}
@@ -153,7 +153,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: ubuntu-latest, target: x86_64-unknown-linux-musl}
+          - {os: ubuntu-24.04, target: x86_64-unknown-linux-musl}
           - {os: macos-latest, target: aarch64-apple-darwin}
           - {os: windows-latest, target: x86_64-pc-windows-msvc}
     steps:
@@ -177,7 +177,7 @@ jobs:
 
   image:
     needs: [version, build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -261,7 +261,7 @@ jobs:
 
   helm:
     needs: [version, image]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -296,7 +296,7 @@ jobs:
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [version, deps, install, image, helm]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       id-token: write

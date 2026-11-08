@@ -249,6 +249,11 @@ async fn managers_require_approval(db: TestDb) {
             .await;
         assert_eq!(rule_of(&r), "approval.managers_only", "{r}");
     }
+    // A required rule names an agent, not a person.
+    let mut p = policy(&w, "required_approval", json!({"mode": "all"}));
+    p["agent_id"] = json!(w.bob.id);
+    let r = k.call(p).await;
+    assert_eq!(rule_of(&r), "agent.not_agent", "{r}");
     k.ok(policy(
         &w,
         "required_approval",
