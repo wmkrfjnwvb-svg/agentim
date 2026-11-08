@@ -33,11 +33,6 @@ notes are taken from it.
   "N replies", `Thread`, `PinnedMessages`) and `agentim verify`. Schema
   version 20 (migrated at start).
 
-### Fixed
-
-- Passwords build with argon2 0.6; hashes stored before still verify.
-- CI uses the runner image's Swift (setup-swift failed on ubuntu-24.04).
-
 ## [0.1.0] - 2026-11-08
 
 ### Added
