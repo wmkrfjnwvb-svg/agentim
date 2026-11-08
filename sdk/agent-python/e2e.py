@@ -20,6 +20,9 @@ import uuid
 import struct
 import zlib
 
+# Checks print emoji; a Windows console defaults to a code page without them.
+sys.stdout.reconfigure(encoding="utf-8")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "python"))
