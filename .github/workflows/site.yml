@@ -31,8 +31,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm ci
@@ -46,7 +46,7 @@ jobs:
           npx --prefix ../server/ci playwright install --with-deps chromium
       - name: layout at 390, 820 and 1440 px, light and dark
         run: PLAYWRIGHT="$PWD/../server/ci/node_modules/playwright" OUT=screenshots node scripts/layout.mjs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: site-screenshots
