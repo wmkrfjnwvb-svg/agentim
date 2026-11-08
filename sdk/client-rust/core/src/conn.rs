@@ -433,6 +433,7 @@ impl Core {
             }
             "resync" => self.request_sync(),
             "read" | "mute" => self.on_own_change(&f),
+            "thread_read" | "thread_follow" => self.on_thread_change(&f),
             "goaway" => self.goaway_wait = f["retry_after_ms"].as_i64(),
             // Something a newer server sends.
             _ => {}

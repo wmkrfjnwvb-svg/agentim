@@ -25,6 +25,9 @@ pub const FEATURES: &[&str] = &[
     "signals",
     "devices",
     "files",
+    "threads",
+    "reactions",
+    "pins",
 ];
 
 /// Every operation of protocol v1, so an unknown one can be told apart from
@@ -122,6 +125,18 @@ pub const OPS: &[&str] = &[
     "progress",
     "feedback",
     "list_feedback",
+    "read_thread",
+    "follow_thread",
+    "unfollow_thread",
+    "list_threads",
+    "pull_thread",
+    "react",
+    "unreact",
+    "list_reactions",
+    "pin",
+    "unpin",
+    "list_pins",
+    "msg_summary",
 ];
 
 pub const MAX_CLIENT_FEATURES: usize = 100;

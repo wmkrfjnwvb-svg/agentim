@@ -83,7 +83,7 @@ bench/single-node.sh                                  # 性能
 
 | 板块 | 功能点 | 页面 |
 |---|---|---|
-| 消息 | MSG-01 … MSG-18 | [messaging](design/messaging.md#6-测试) |
+| 消息 | MSG-01 … MSG-21 | [messaging](design/messaging.md#6-测试) |
 | 同步和客户端 | SYN-01 … SYN-12、CLI-01 … CLI-11 | [sync-and-clients](design/sync-and-clients.md#6-测试) |
 | Agent | AGT-01 … AGT-19 | [agents](design/agents.md#6-测试) |
 | 审批 | APR-01 … APR-16 | [approvals](design/approvals.md#6-测试) |

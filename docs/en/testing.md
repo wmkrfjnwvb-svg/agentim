@@ -83,7 +83,7 @@ The cluster suite uses them to prove the lease and fencing rules. Each guard has
 
 | Area | Feature points | Page |
 |---|---|---|
-| Messaging | MSG-01 … MSG-18 | [messaging](design/messaging.md#6-tests) |
+| Messaging | MSG-01 … MSG-21 | [messaging](design/messaging.md#6-tests) |
 | Sync and clients | SYN-01 … SYN-12, CLI-01 … CLI-11 | [sync-and-clients](design/sync-and-clients.md#6-tests) |
 | Agents | AGT-01 … AGT-19 | [agents](design/agents.md#6-tests) |
 | Approvals | APR-01 … APR-16 | [approvals](design/approvals.md#6-tests) |

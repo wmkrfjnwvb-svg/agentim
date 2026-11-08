@@ -43,8 +43,19 @@ impl Core {
         {
             return;
         }
-        // Streaming text received so far stays until the final version.
+        // Streaming text received so far stays until the final version;
+        // what events added to the message (its thread, reactions and pin)
+        // stays with every new version of it.
         let mut m = m;
+        if let Some(old) = c.msgs.get(&seq) {
+            for k in ["thread", "reactions", "pinned"] {
+                if m.get(k).is_none()
+                    && let Some(v) = old.get(k)
+                {
+                    m[k] = v.clone();
+                }
+            }
+        }
         if m["state"] == "streaming"
             && let Some(s) = c.msgs.get(&seq).and_then(|o| o.get("streamed")).cloned()
         {
@@ -87,6 +98,7 @@ impl Core {
                 reply_to,
                 sent,
                 upload,
+                thread,
                 ..
             } = &op.kind
             else {
@@ -117,6 +129,12 @@ impl Core {
                 }
                 m["payload"] = p;
                 m["upload"] = json!({"sent": if u.file.is_some() { u.size } else { u.sent() }, "size": u.size});
+            }
+            if let Some(t) = thread {
+                m["thread_id"] = t["thread_id"].clone();
+                if t["also_in_conv"] == true {
+                    m["thread_shown"] = json!(true);
+                }
             }
             if let Some(e) = &op.failed {
                 m["error"] = e.to_json();

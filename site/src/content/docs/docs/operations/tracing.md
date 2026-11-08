@@ -79,5 +79,8 @@ Replays each conversation's log against its stored state and prints what breaks 
 | `file.ref` | A file is carried by a message of its conversation sent by its uploader |
 | `stream.stuck` | No reply has been streaming for more than an hour |
 | `side.audience` | Side-channel events went only to members |
+| `thread.root`, `thread.summary` | A thread reply's root is a message of the conversation that is not itself a reply; each thread's reply count and latest reply match its replies |
+| `reaction.state`, `reaction.after_recall` | Replaying the reactions (with recalls and erasures) gives the stored ones; none is added after a recall |
+| `pin.state` | Replaying the pins (with recalls and erasures) gives the stored ones |
 
 Conversations whose start retention has deleted are checked from what is left, where that is enough. AgentIM's own tests run the verifier on every database they leave behind.

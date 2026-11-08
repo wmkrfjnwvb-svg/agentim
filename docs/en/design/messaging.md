@@ -1,8 +1,8 @@
 # Messaging
 
-Conversations, the event log, messages, members, files, extensions and storage.
+Conversations, the event log, messages, members, threads, reactions, pinned messages, files, extensions and storage.
 
-Code: `server/crates/agentim-core/src/logic.rs` and `logic/` (business logic in the writer), `hub.rs` (session layer), `db.rs` (SQL), `storage.rs` (databases and schema), `filestore.rs` and `hub/files.rs` (files).
+Code: `server/crates/agentim-core/src/logic.rs` and `logic/` (business logic in the writer), `hub.rs` (session layer), `db.rs` (SQL), `storage.rs` (databases and schema), `filestore.rs` and `hub/files.rs` (files), `logic/social.rs`, `hub/social.rs` and `db/social.rs` (threads, reactions and pins).
 
 ## 1. Purpose
 
@@ -30,6 +30,9 @@ Messaging is the core every other area builds on. It keeps one record per conver
 | MSG-16 | Retention | Per-app retention period: old events are deleted, and devices behind them start over |
 | MSG-17 | Several databases | A unit of the organisation can have its own database. Conversations move between databases online |
 | MSG-18 | Durability | ACK only after a durable commit; a failed commit acknowledges nothing and stops writes; the server checks the databases' durability settings at start |
+| MSG-19 | Threads | A reply names its root message with `thread_id` and is an ordinary message of the log. One level (no thread in a thread). The root carries a summary: replies, the latest, who took part. Members follow threads; only followers and mentioned people are notified; each thread has its own read position and unread count; the conversation's unread count leaves thread replies out unless they are also shown in the conversation (`also_in_conv`) |
+| MSG-20 | Reactions | One per message, person and key; the key is one emoji or one of the app's `:names:`. Adding one twice or removing one that is not there changes nothing. Limits per message (50 keys) and per person (20); `single` mode keeps one per person. No unread count, no notification; agents hear of reactions to their own messages; optionally a 👍/👎 counts as feedback on an agent |
+| MSG-21 | Pinned messages | Up to 100 per conversation; pinning twice changes nothing. In groups everyone pins (`pin_policy = members`, the default) or only the owner and admins (`admins`); someone else's pin only the owner and admins unpin. Agents pin only when the app allows it. A recall unpins |
 
 ## 3. Design
 
@@ -102,7 +105,50 @@ Agents, MCP and backends can also upload a whole file of up to 64 MiB in one req
 | Expiry | A file no message references after 24 hours is deleted. `files.retention_days` sets a separate retention |
 | Limits | `files.max_bytes`, `files.daily_bytes_per_user`, `files.max_open_per_user` (10 open uploads) |
 
-### 3.6 Storage
+### 3.6 Threads
+
+A thread is a root message and the replies that name it with `thread_id`. Replies are messages of the same log: they take a `conv_seq`, so order, sync, retries, restart, the cluster and the verifier treat them like any message.
+
+| Aspect | Rule |
+|---|---|
+| Root | A message of the main log of the same conversation: not a side-channel message, not a system message, not recalled, not itself a reply (one level). A member who joined after the root sees the later replies and may answer; the root stays hidden from them |
+| Reply | `send`, `stream_start` and an agent's draft take `thread_id`; `reply_to` may still quote any message. `also_in_conv: true` shows the reply in the conversation too (`thread_shown` on the message) |
+| Summary | `threads` (replies, the latest seq, time and sender) is written with each reply, in the same transaction; a recalled reply leaves it. Clients get it with `msg_summary`, `pull_thread` and `list_threads`: replies, the latest, up to 5 people who took part and how many, whether the caller follows, their unread count |
+| Following | `thread_members`: the root's sender, everyone who replied and everyone mentioned follow. A reply follows again; a mention does not undo an unfollow. `follow_thread` and `unfollow_thread` change nothing when already so |
+| Read and unread | `read_thread` moves the caller's position (never back, never past the latest reply) on all their devices (`thread_read` frame). Writing in a thread reads the thread, not the conversation. The conversation's unread count leaves out thread replies that are not shown in it |
+| Notifications | A reply only in the thread notifies its followers and the people it mentions (subject to mute); the others receive the event quietly |
+| Agents | An agent sees a thread it takes part in (root and replies) in every trigger mode, and is woken as usual (a mention, `to`, its trigger). `context` with `thread_id` gives the root and replies only. Built-in assistants answer a message in a thread in that thread, cards and forms included. A draft keeps its thread; it cannot be approved once the root is recalled |
+| Recall | Of a reply: it leaves the summary. Of the root: the replies stay, nobody replies any more (`thread.root_recalled`) |
+| Retention, account deletion, export | Retention deletes the threads of the messages it deletes. An erased person's replies leave the summaries and their follows go. The export lists the threads a person follows |
+
+### 3.7 Reactions
+
+| Aspect | Rule |
+|---|---|
+| Key | One emoji (one Unicode emoji sequence: with skin tone, a flag, a keycap, a ZWJ sequence) or one of the app's short names written `:name:` (`messages.reaction_names`, drawn by the client) |
+| Once | `(msg_id, user_id, key)` is unique. `react` on one that exists and `unreact` on one that does not answer `changed: false` and write nothing |
+| Limits | `messages.reaction_keys` (50) different keys per message, `messages.reactions_per_user` (20) per person and message: past them `conflict`. A key already on the message still takes more people. `messages.reactions_per_second` (20) per user |
+| Single mode | `messages.reaction_mode = "single"`: a person's new reaction replaces the old one (a `reaction.removed`, then a `reaction.added`) |
+| Events | `reaction.added` and `reaction.removed` take a seq and name the message (`msg_id`, `msg_seq`, `msg_sender`), the key and the person. No unread count, no notification. Members who cannot see the message do not get them |
+| Agents | An agent receives reactions to its own messages only, and is not woken by them. Agents react too (e.g. 👀 on a request) |
+| Feedback | With `messages.reactions_as_feedback`, a person's 👍 or 👎 (any skin tone) on an agent's message is also their feedback on the agent ([agents](agents.md)); the latest thumb decides, removing it takes the feedback back |
+| Summary | `msg_summary`: per key the count, whether the caller is among them, the latest 5 people; `list_reactions` pages through the people of one key |
+| Recall, account deletion, export | A recall removes the message's reactions (the recall event says so). An erased person's reactions go, and the reactions of their erased messages. The export lists the reactions a person added |
+
+### 3.8 Pinned messages
+
+| Aspect | Rule |
+|---|---|
+| Who | Direct conversation: both people. Group or task: every member with `pin_policy = members` (the default), only the owner and admins with `admins`. The owner or an admin sets it with `update_conv`. Agents: only with `messages.agents_pin`. Silenced members do not pin |
+| Unpin | Who pinned it, the owner and admins; in a direct conversation both people |
+| What | A message of the main log the caller sees: not a system message, not recalled. Thread replies too |
+| Once | `pin` on a pinned message and `unpin` on one that is not answer `changed: false` and write nothing |
+| Limit | `messages.pins_per_conv` (100) per conversation: past it `conflict`; unpin one first |
+| Events | `msg.pinned` and `msg.unpinned` take a seq (clients show a notice); no unread count, no notification; audited as `msg.pinned` and `msg.unpinned` |
+| Listing | `list_pins`: latest pin first, with the message, the count and the policy; members who joined later get only pins of messages they see |
+| Recall | Unpins the message (the recall event says so) |
+
+### 3.9 Storage
 
 - **Durability checks and schema migration**: see [architecture §6](../architecture.md#6-storage).
 - **Several databases**: a control database holds the directory (`conv_id` → unit → database) and the membership index; it holds no content.
@@ -116,9 +162,11 @@ Agents, MCP and backends can also upload a whole file of up to 64 MiB in one req
 
 | Interface | Operations |
 |---|---|
-| Client protocol | `create_conv`, `update_conv`, `list_convs`, `send`, `whisper`, `edit`, `recall`, `stream_start`, `stream_append`, `stream_end`, `stream_cancel`, `focus`, `read`, `unread`, `pull`, `pull_side`, `add_member`, `remove_member`, `leave`, `set_role`, `transfer_owner`, `dissolve`, `block`, `unblock`, `list_blocks`, `find_user`, `signal`, `upload_start`, `upload_parts`, `upload_complete`, `file_url` |
-| Open API | `/v1/conversations…`, `/v1/conversations/{id}/messages…`, `/v1/uploads`, `/v1/conversations/{id}/files` ([open-api](open-api.md)) |
-| Events | `conv.*`, `member(s).*`, `msg.*` in the log; `side` events on the side channel |
+| Client protocol | `create_conv`, `update_conv` (with `pin_policy`), `list_convs`, `send` (with `thread_id`, `also_in_conv`), `whisper`, `edit`, `recall`, `stream_start` (with `thread_id`), `stream_append`, `stream_end`, `stream_cancel`, `focus`, `read`, `unread`, `pull`, `pull_side`, `add_member`, `remove_member`, `leave`, `set_role`, `transfer_owner`, `dissolve`, `block`, `unblock`, `list_blocks`, `find_user`, `signal`, `upload_start`, `upload_parts`, `upload_complete`, `file_url`; threads: `read_thread`, `follow_thread`, `unfollow_thread`, `list_threads`, `pull_thread`; reactions: `react`, `unreact`, `list_reactions`; pins: `pin`, `unpin`, `list_pins`; `msg_summary` (thread, reactions and pin of up to 100 messages) |
+| Open API | `/v1/conversations…`, `/v1/conversations/{id}/messages…` (sending takes `thread_id`), `/v1/conversations/{id}/threads[/{thread}]`, `/v1/conversations/{id}/messages/{msg}/reactions/{key}` (GET, PUT, DELETE), `/v1/conversations/{id}/pins[/{msg}]`, `/v1/uploads`, `/v1/conversations/{id}/files` ([open-api](open-api.md)) |
+| MCP | `send_message` takes `thread_id`; `react`, `unreact`, `get_thread`, `list_pins` |
+| Events | `conv.*`, `member(s).*`, `msg.*` (with `msg.pinned`, `msg.unpinned`), `reaction.added`, `reaction.removed` in the log; `side` events on the side channel; frames `thread_read` and `thread_follow` to the user's other devices |
+| Configuration | `[messages]`: `reaction_keys`, `reactions_per_user`, `reaction_mode`, `reaction_names`, `reactions_as_feedback`, `reactions_per_second`, `pins_per_conv`, `agents_pin` |
 
 The full protocol reference is generated into the docs site (`site/`, "Client protocol").
 
@@ -129,6 +177,10 @@ Rule prefixes in the [business rule catalog](../business-rules.md):
 - `member.*` members;
 - `block.*` blocks;
 - `msg.*` messages;
+- `thread.*` threads;
+- `reaction.*` reactions;
+- `pin.*` pinned messages;
+- `social.*` reading threads, reactions and pins;
 - `stream.*` streaming;
 - `file.*` files;
 - `sync.*` sync.
@@ -136,7 +188,7 @@ Rule prefixes in the [business rule catalog](../business-rules.md):
 Typical codes:
 - `forbidden`: not a member, or a role without the right;
 - `not_found`: an unknown conversation, message or file;
-- `conflict`: a stale version, an already recalled message, or a file already used;
+- `conflict`: a stale version, an already recalled message (also as a thread's root or to react to or pin), a file already used, or a limit of reactions or pins reached;
 - `bad_request`: a limit or a malformed input;
 - `blocked`;
 - `rate_limited`.
@@ -167,6 +219,9 @@ Server tests run on SQLite, PostgreSQL and MySQL unless noted. Paths are under `
 | MSG-16 | `audit.rs`: `retention_takes_a_prefix_and_what_derives_from_it`; `sync.rs`: `retention_deletes_old_events_and_resets_devices`; `pages.rs`: `retention_and_the_switch` |
 | MSG-17 | `multidb.rs`: all 9 tests (moves, failed moves, writes during a move, start-up repair, listing across databases); `membership.rs`: `membership_changes_in_a_unit_database_update_the_directory`; `concurrency.rs`: `many_conversations_across_databases_stay_independent` |
 | MSG-18 | `hub.rs`: `acked_messages_survive_restart_and_retries_are_deduplicated`, `failed_commit_acks_nothing_and_stops_writes`; `coverage.rs`: `one_failing_command_does_not_spoil_its_batch`, `a_full_write_queue_refuses_cleanly_and_retries_succeed`, `unsafe_postgres_durability_is_refused_unless_allowed`, `writes_wait_for_a_concurrent_sqlite_writer`, `startup_waits_for_a_concurrent_sqlite_writer`; `audit.rs`: `a_lock_held_elsewhere_fails_the_batch_not_the_database`; `schema.rs`: all 7 tests; `server/crates/agentim/tests/crash.rs` (`kill -9` mid-traffic) |
+| MSG-19 | `threads.rs`: `replies_go_into_a_thread_with_a_summary`, `the_root_of_a_thread_is_checked`, `thread_replies_count_and_notify_only_followers`, `reading_and_following_threads`, `recall_and_retries_in_threads`, `agents_answer_in_the_thread`, `new_members_see_replies_but_not_older_roots`, `threads_survive_a_restart`, `race_replies_in_one_thread` (mutation-checked); `schema.rs` (the v20 migration); `verify.rs` (`thread.root`, `thread.summary`) |
+| MSG-20 | `reactions.rs`: `reactions_are_added_once_and_summarised`, `reaction_keys_are_checked`, `who_may_react`, `reaction_limits_and_single_mode`, `agents_hear_of_reactions_to_their_own_messages`, `reactions_can_count_as_feedback`, `a_recall_takes_the_reactions`, `reactions_survive_a_restart`, `race_reactions_at_the_key_limit` (mutation-checked), `race_reactions_and_recall` (mutation-checked), `race_the_same_reaction_from_many_devices`; `logic::social::tests::emoji` (unit) |
+| MSG-21 | `pins.rs`: `messages_are_pinned_once_and_listed`, `who_may_pin_and_unpin`, `what_can_be_pinned`, `agents_pin_only_when_the_app_allows`, `the_pin_limit`, `a_recall_unpins_and_pins_survive_a_restart`, `race_pins_at_the_limit` (mutation-checked) |
 
 Other tests that cover the whole area:
 - malformed requests of every kind: `scenarios.rs`: `malformed_requests_are_rejected_without_side_effects`;
@@ -176,4 +231,4 @@ Other tests that cover the whole area:
 
 - Write throughput is about 1,300 msg/s per database. The plan: fewer statements per command, fan-out off the writer, several writers per PostgreSQL/MySQL database.
 - Large-group mode (2,000 to 100,000 members) is not built. It would read the log once per conversation, keep a per-user inbox of "conversation changed" signals, and coalesce pushes per node.
-- Not built: threads and reactions, and application-level encryption of files on local disk (use disk encryption meanwhile).
+- Not built: application-level encryption of files on local disk (use disk encryption meanwhile); pins that expire; nested threads.

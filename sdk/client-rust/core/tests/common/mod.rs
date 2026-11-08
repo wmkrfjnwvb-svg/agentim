@@ -205,6 +205,45 @@ impl Server {
         m
     }
 
+    /// Any event of the log (threads, reactions, pins), pushed as it comes.
+    pub fn push_event(
+        &mut self,
+        conv: &str,
+        kind: &str,
+        data: Value,
+        msg: Option<Value>,
+    ) -> Vec<String> {
+        self.conv(conv);
+        if let Some(m) = &msg
+            && let Some(id) = m["msg_id"].as_str()
+        {
+            self.cur.insert(id.to_string(), m.clone());
+        }
+        self.event(conv, kind, data, msg).1
+    }
+
+    /// Someone else replies in a thread.
+    pub fn other_replies(
+        &mut self,
+        conv: &str,
+        root: &str,
+        text: &str,
+        shown: bool,
+    ) -> Vec<String> {
+        self.conv(conv);
+        let mut m = self.new_msg(conv, "u_bob", text, None);
+        m["thread_id"] = json!(root);
+        if shown {
+            m["thread_shown"] = json!(true);
+        }
+        self.push_event(conv, "msg.created", json!({}), Some(m))
+    }
+
+    /// A stored message by id.
+    pub fn msg(&self, id: &str) -> Value {
+        self.cur[id].clone()
+    }
+
     /// Someone else says something.
     pub fn other_says(&mut self, conv: &str, text: &str) -> Vec<String> {
         self.conv(conv);
@@ -338,6 +377,12 @@ impl Server {
                         self.new_msg(&conv, ME, r["text"].as_str().unwrap_or(""), Some(&cm));
                     if let Some(k) = r["kind"].as_str() {
                         m["kind"] = json!(k);
+                    }
+                    if let Some(t) = r["thread_id"].as_str() {
+                        m["thread_id"] = json!(t);
+                        if r["also_in_conv"] == true {
+                            m["thread_shown"] = json!(true);
+                        }
                     }
                     if let Some(fid) = r["payload"]["file_id"].as_str() {
                         self.uploads.get_mut(fid).unwrap().taken = true;
@@ -978,6 +1023,19 @@ impl World {
     pub fn other_says(&mut self, conv: &str, text: &str) {
         self.server.now = self.now;
         let f = self.server.other_says(conv, text);
+        self.deliver(f);
+    }
+
+    /// An event of the log arrives (threads, reactions, pins).
+    pub fn push_event(&mut self, conv: &str, kind: &str, data: Value, msg: Option<Value>) {
+        self.server.now = self.now;
+        let f = self.server.push_event(conv, kind, data, msg);
+        self.deliver(f);
+    }
+
+    pub fn other_replies(&mut self, conv: &str, root: &str, text: &str, shown: bool) {
+        self.server.now = self.now;
+        let f = self.server.other_replies(conv, root, text, shown);
         self.deliver(f);
     }
 
