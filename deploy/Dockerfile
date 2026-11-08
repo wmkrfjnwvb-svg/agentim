@@ -5,7 +5,7 @@
 # downloads):
 #   docker buildx build -f deploy/Dockerfile --target release \
 #     --platform linux/amd64,linux/arm64 --build-context bin=<dir with amd64/ and arm64/> .
-FROM node:22-bookworm-slim AS console
+FROM node:25-bookworm-slim AS console
 WORKDIR /src/server/console
 COPY server/console/package.json server/console/package-lock.json ./
 RUN npm ci
@@ -20,7 +20,7 @@ COPY sdk/client-rust/ sdk/client-rust/
 RUN rustup target add wasm32-unknown-unknown \
  && cd sdk/client-rust && cargo build --locked -p agentim-client-wasm --target wasm32-unknown-unknown --release
 
-FROM node:22-bookworm-slim AS demo
+FROM node:25-bookworm-slim AS demo
 WORKDIR /src
 COPY sdk/client-web/ sdk/client-web/
 COPY sdk/react/ sdk/react/
