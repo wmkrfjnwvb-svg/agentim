@@ -42,7 +42,7 @@ mod tests {
 
 // ------------------------------------------------------------ passwords
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 
 /// Argon2id with the OWASP minimum (19 MiB, 2 passes, 1 lane).
 fn argon() -> argon2::Argon2<'static> {
@@ -65,9 +65,9 @@ pub fn check_password_policy(name: &str, password: &str) -> Result<(), &'static 
 }
 
 pub fn hash_password(password: &str) -> String {
-    let salt = SaltString::encode_b64(uuid::Uuid::new_v4().as_bytes()).expect("16-byte salt");
+    let salt = uuid::Uuid::new_v4();
     argon()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password_with_salt(password.as_bytes(), salt.as_bytes())
         .expect("argon2 hash")
         .to_string()
 }
@@ -153,6 +153,12 @@ mod password_tests {
         assert!(!verify_password("x", "not a hash"));
         assert_ne!(h, hash_password("correct horse battery"), "salted");
         assert!(!verify_password("anything", dummy_hash()));
+        // Hashes stored before the argon2 0.6 upgrade still verify (the
+        // reference vector of the Argon2 specification, PHC format).
+        let old =
+            "$argon2id$v=19$m=256,t=2,p=1$c29tZXNhbHQ$nf65EOgLrQMR/uIPnA4rEsF5h7TKyQwu9U1bMCHGi/4";
+        assert!(verify_password("password", old));
+        assert!(!verify_password("passwore", old));
         assert!(check_password_policy("alice", "short").is_err());
         assert!(check_password_policy("alice", &"x".repeat(129)).is_err());
         assert!(check_password_policy("alicealice", "ALICEALICE").is_err());
