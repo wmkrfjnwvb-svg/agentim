@@ -228,7 +228,7 @@ jobs:
         env:
           GRYPE_SHA256: 0a9ee97ef5ae2ee953b0a80098105052e846cdbe319a57d808b519c33cd1343d
       - if: env.PUBLISH == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

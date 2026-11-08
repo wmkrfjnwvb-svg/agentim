@@ -55,7 +55,7 @@ jobs:
             scenario: slow
             args: --users 200 --rate 300 --payload 2000
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -87,7 +87,7 @@ jobs:
         if: always()
         run: |
           { echo "### ${{ matrix.os }} / ${{ matrix.scenario }}"; echo '```'; cat result.txt 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: scale-${{ matrix.os }}-${{ matrix.scenario }}

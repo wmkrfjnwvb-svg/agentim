@@ -30,7 +30,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The runner's preinstalled Android SDK, Haskell and CodeQL (~20 GB)
       # are not used here; the test binaries need the room.
       - name: free disk space
@@ -72,7 +72,7 @@ jobs:
       # Every rule a test triggers is recorded here (docs/en/business-rules.md).
       AGENTIM_RULES_HIT: ${{ github.workspace }}/server/rules-hit.txt
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The runner's preinstalled Android SDK, Haskell and CodeQL (~20 GB)
       # are not used here; the test binaries need the room.
       - name: free disk space
@@ -82,7 +82,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: server
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: an S3 compatible store for the file tests (moto)
@@ -118,7 +118,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt, llvm-tools-preview
@@ -150,7 +150,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -159,7 +159,7 @@ jobs:
           workspaces: |
             server
             sdk/client-rust
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: cargo build --bin agentim
@@ -206,7 +206,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The runner's preinstalled Android SDK, Haskell and CodeQL (~20 GB)
       # are not used here; the test binaries need the room.
       - name: free disk space
@@ -218,14 +218,14 @@ jobs:
           workspaces: |
             server
             sdk/client-rust
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 8.0.x
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 21
-      - uses: swift-actions/setup-swift@v2
+      - uses: swift-actions/setup-swift@v3
         with:
           swift-version: "6.2"
       - uses: dart-lang/setup-dart@v1
@@ -260,7 +260,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -282,7 +282,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -303,7 +303,7 @@ jobs:
       run:
         working-directory: deploy/compose
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: build and start
         run: |
           openssl rand -base64 32 > master.key
@@ -359,7 +359,7 @@ jobs:
             name: write-path
             gate: --min-throughput 400 --max-p99-ms 500
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -394,7 +394,7 @@ jobs:
       run:
         working-directory: .
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: build the galleries
         run: |
           (cd sdk/client-web && npm ci && npx tsc -p tsconfig.json)
@@ -405,7 +405,7 @@ jobs:
         run: |
           npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" playwright@1.56.1
           PLAYWRIGHT="$RUNNER_TEMP/pw/node_modules/playwright" OUT="$PWD/screens-out" npm run screens
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: screens
@@ -421,7 +421,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -430,7 +430,7 @@ jobs:
           workspaces: |
             server
             sdk/client-rust
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: build the console
@@ -453,7 +453,7 @@ jobs:
           ok=1
       - name: run the console checks
         run: PLAYWRIGHT="$PWD/ci/node_modules/playwright" BIN=target/release/agentim OUT=screenshots node ci/console_smoke.mjs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ui-screenshots-${{ matrix.os }}
@@ -464,18 +464,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: server
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.22"
       - run: cargo build --bins
@@ -491,15 +491,15 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: server
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: cargo build --bins
