@@ -12,7 +12,7 @@ use crate::model::{ApiError, ApiResult};
 
 /// Version of the schema in `TABLES`. Bump it together with a new entry in
 /// `MIGRATIONS` (docs/en/design/messaging.md).
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -547,6 +547,9 @@ pub const TABLES: &[Table] = &[
             n("fields", Text),
             // v6: the last seq the replicas have (docs/en/design/cluster.md).
             n("confirmed_seq", Big),
+            // v20: who may pin messages: NULL or `members`, or `admins`
+            // (docs/en/design/messaging.md, MSG-21).
+            n("pin_policy", Id),
         ],
         pk: &["id"],
         indexes: &[],
@@ -625,10 +628,15 @@ pub const TABLES: &[Table] = &[
             n("root_id", Id),
             // v10: the trace of the request that created it (docs/en/design/tracing.md).
             n("trace_id", Id),
+            // v20: the thread (root message) a reply belongs to, and whether
+            // it also shows in the conversation (docs/en/design/messaging.md, MSG-19).
+            n("thread_id", Id),
+            n("thread_shown", Big),
         ],
         pk: &["msg_id"],
         indexes: &[
             ("messages_conv", &["conv_id", "created_seq"], false),
+            ("messages_thread", &["conv_id", "thread_id", "created_seq"], false),
             (
                 "messages_sender",
                 &["conv_id", "sender_id", "created_seq"],
@@ -636,6 +644,70 @@ pub const TABLES: &[Table] = &[
             ),
             ("messages_state", &["state"], false),
         ],
+        conv_key: Some("conv_id"),
+    },
+    // v20: threads (docs/en/design/messaging.md, MSG-19): the summary of each
+    // thread, kept with its replies in one transaction.
+    Table {
+        name: "threads",
+        cols: &[
+            c("conv_id", Id),
+            c("root_id", Id),
+            c("replies", Big),
+            c("last_seq", Big),
+            c("last_at", Big),
+            n("last_sender", Id),
+        ],
+        pk: &["conv_id", "root_id"],
+        indexes: &[("threads_last", &["conv_id", "last_seq"], false)],
+        conv_key: Some("conv_id"),
+    },
+    // v20: who takes part in a thread, how far they have read it and
+    // whether they follow it.
+    Table {
+        name: "thread_members",
+        cols: &[
+            c("conv_id", Id),
+            c("root_id", Id),
+            c("user_id", Id),
+            c("read_seq", Big),
+            c("following", Big),
+        ],
+        pk: &["conv_id", "root_id", "user_id"],
+        indexes: &[("thread_members_user", &["user_id", "conv_id"], false)],
+        conv_key: Some("conv_id"),
+    },
+    // v20: reactions (docs/en/design/messaging.md, MSG-20): one row per
+    // message, person and key.
+    Table {
+        name: "reactions",
+        cols: &[
+            c("conv_id", Id),
+            c("msg_id", Id),
+            c("user_id", Id),
+            c("rkey", Key),
+            c("seq", Big),
+            c("created_at", Big),
+        ],
+        pk: &["msg_id", "user_id", "rkey"],
+        indexes: &[
+            ("reactions_msg", &["conv_id", "msg_id", "seq"], false),
+            ("reactions_user", &["user_id"], false),
+        ],
+        conv_key: Some("conv_id"),
+    },
+    // v20: pinned messages (docs/en/design/messaging.md, MSG-21).
+    Table {
+        name: "pins",
+        cols: &[
+            c("conv_id", Id),
+            c("msg_id", Id),
+            c("pinned_by", Id),
+            c("pinned_at", Big),
+            c("seq", Big),
+        ],
+        pk: &["conv_id", "msg_id"],
+        indexes: &[("pins_seq", &["conv_id", "seq"], false)],
         conv_key: Some("conv_id"),
     },
     Table {
@@ -893,6 +965,9 @@ pub const TABLES: &[Table] = &[
             n("review_until", Big),
             n("human_required", Big),
             n("reviewed_by", Id),
+            // v20: the thread the approved message goes to (MSG-19).
+            n("thread_id", Id),
+            n("thread_shown", Big),
         ],
         pk: &["draft_id"],
         indexes: &[
@@ -1337,6 +1412,13 @@ pub enum Step {
     },
     /// Moves plaintext `users.token` values into `tokens`, hashed.
     HashLegacyTokens,
+    /// An index declared in `TABLES` on a table that already exists. SQLite
+    /// and PostgreSQL create every declared index after the migrations
+    /// anyway; MySQL declares indexes only with a new table.
+    AddIndex {
+        table: &'static str,
+        index: &'static str,
+    },
 }
 
 pub struct Migration {
@@ -1631,6 +1713,37 @@ pub const MIGRATIONS: &[Migration] = &[
             column: "approvals",
         }],
     },
+    Migration {
+        version: 20,
+        compat: 1,
+        about: "threads, reactions and pinned messages (docs/en/design/messaging.md): messages.thread_id, thread_shown, conversations.pin_policy; threads, thread_members, reactions, pins",
+        steps: &[
+            Step::AddColumn {
+                table: "messages",
+                column: "thread_id",
+            },
+            Step::AddColumn {
+                table: "messages",
+                column: "thread_shown",
+            },
+            Step::AddColumn {
+                table: "conversations",
+                column: "pin_policy",
+            },
+            Step::AddColumn {
+                table: "drafts",
+                column: "thread_id",
+            },
+            Step::AddColumn {
+                table: "drafts",
+                column: "thread_shown",
+            },
+            Step::AddIndex {
+                table: "messages",
+                index: "messages_thread",
+            },
+        ],
+    },
 ];
 
 fn table(name: &str) -> &'static Table {
@@ -1687,6 +1800,36 @@ async fn apply_step(c: &mut AnyConnection, d: Dialect, step: &Step) -> ApiResult
                 return Ok(());
             }
             let sql = format!("ALTER TABLE {tn} ADD COLUMN {}", column_ddl(d, tn, column));
+            sqlx::query(AssertSqlSafe(sql)).execute(&mut *c).await?;
+        }
+        Step::AddIndex { table: tn, index } => {
+            if d != Dialect::Mysql {
+                // Created with the other declared indexes after the migrations.
+                return Ok(());
+            }
+            let have = sqlx::query(d.q(
+                "SELECT COUNT(*) FROM information_schema.statistics \
+                 WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?",
+            ))
+            .bind(tn.to_string())
+            .bind(index.to_string())
+            .fetch_one(&mut *c)
+            .await?
+            .try_get::<i64, _>(0)?;
+            if have > 0 {
+                return Ok(());
+            }
+            let t = table(tn);
+            let (_, ic, unique) = t
+                .indexes
+                .iter()
+                .find(|(n, _, _)| n == index)
+                .unwrap_or_else(|| panic!("unknown index {tn}.{index}"));
+            let sql = format!(
+                "ALTER TABLE {tn} ADD {} {index} ({})",
+                if *unique { "UNIQUE KEY" } else { "INDEX" },
+                ic.join(", ")
+            );
             sqlx::query(AssertSqlSafe(sql)).execute(&mut *c).await?;
         }
         Step::HashLegacyTokens => {
@@ -1814,11 +1957,26 @@ async fn apply_schema(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
 const COUNTERS: &[&str] = &[crate::db::AUTH_EPOCH];
 
 async fn apply_tables(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
+    // Tables first; indexes after the migrations, which may add the columns
+    // an index of an existing table needs.
+    let mut indexes = vec![];
     for t in TABLES {
         for stmt in table_ddl(d, t) {
-            sqlx::query(AssertSqlSafe(stmt)).execute(&mut *c).await?;
+            if stmt.starts_with("CREATE TABLE") {
+                sqlx::query(AssertSqlSafe(stmt)).execute(&mut *c).await?;
+            } else {
+                indexes.push(stmt);
+            }
         }
     }
+    apply_versions(c, d).await?;
+    for stmt in indexes {
+        sqlx::query(AssertSqlSafe(stmt)).execute(&mut *c).await?;
+    }
+    Ok(())
+}
+
+async fn apply_versions(c: &mut AnyConnection, d: Dialect) -> ApiResult<()> {
     let parse = |k: &str, v: String| {
         v.parse::<i64>()
             .ok()

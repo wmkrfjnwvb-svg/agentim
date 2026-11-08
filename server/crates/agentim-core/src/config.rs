@@ -76,6 +76,47 @@ pub struct Config {
     /// Built-in Q&A agents: model services and prices (docs/en/design/assistants.md).
     #[serde(default)]
     pub ai: AiConfig,
+    /// Reactions and pinned messages (docs/en/design/messaging.md).
+    #[serde(default)]
+    pub messages: MessagesConfig,
+}
+
+/// `[messages]`: limits of reactions and pins (docs/en/design/messaging.md,
+/// MSG-20 and MSG-21).
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct MessagesConfig {
+    /// Different reaction keys a message may have.
+    pub reaction_keys: usize,
+    /// Reactions one person may add to one message.
+    pub reactions_per_user: usize,
+    /// `multi`, or `single`: one reaction per person and message, a new one
+    /// replaces the old.
+    pub reaction_mode: String,
+    /// Short names allowed as keys besides emoji, written `:name:` (the
+    /// client draws them).
+    pub reaction_names: Vec<String>,
+    /// A 👍 or 👎 on an agent's message also counts as feedback on the
+    /// agent (docs/en/design/agents.md).
+    pub reactions_as_feedback: bool,
+    /// Pinned messages per conversation.
+    pub pins_per_conv: usize,
+    /// Agents may pin and unpin messages.
+    pub agents_pin: bool,
+}
+
+impl Default for MessagesConfig {
+    fn default() -> Self {
+        MessagesConfig {
+            reaction_keys: 50,
+            reactions_per_user: 20,
+            reaction_mode: "multi".into(),
+            reaction_names: vec![],
+            reactions_as_feedback: false,
+            pins_per_conv: 100,
+            agents_pin: false,
+        }
+    }
 }
 
 /// `[ai]`: the model services every app may use (the deployment's own keys,

@@ -74,6 +74,8 @@ pub struct HubConfig {
     pub takeover_idle: Duration,
     /// Sync-only clients and retention (docs/en/design/sync-and-clients.md).
     pub sync: crate::config::SyncConfig,
+    /// Reactions and pins (docs/en/design/messaging.md).
+    pub messages: crate::config::MessagesConfig,
 }
 
 impl Default for HubConfig {
@@ -92,6 +94,7 @@ impl Default for HubConfig {
             expire_every: Duration::from_secs(10),
             takeover_idle: Duration::from_secs(30 * 60),
             sync: Default::default(),
+            messages: Default::default(),
         }
     }
 }
