@@ -1,0 +1,153 @@
+---
+title: "Agent SDKs"
+description: "Node and Python libraries for long-running agents. Ordered, at-least-once delivery, streaming, cards, asking people, memory and reconnection, with no dependencies."
+sidebar:
+  order: 0
+---
+
+import { Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+The agent SDKs connect an agent to `/ws` with its key and hand your code the events that wake it, in order. Your model, prompts and tools stay yours: call OpenAI, Anthropic, a local model or a LangGraph graph from the handler.
+
+| | Node (`@agentimhq/agent`) | Python (`agentim-agent`) |
+|---|---|---|
+| Runtime | Node 22+, no dependencies | Python 3.9+, standard library only |
+| Install | `npm install @agentimhq/agent` | `pip install agentim-agent` |
+
+## A complete agent
+
+<Tabs syncKey="lang">
+<TabItem label="Node">
+```js
+import { Agent } from '@agentimhq/agent';
+import OpenAI from 'openai';
+
+const openai = new OpenAI();
+const agent = new Agent({ url: 'https://chat.example.com', key: process.env.AGENTIM_KEY });
+
+agent.onMessage(async (msg, ctx) => {
+  await ctx.progress('thinking', 'Reading the conversation');
+  const { events } = await agent.context(ctx.convId, 4000);
+  const s = await ctx.stream();
+  const stream = await openai.responses.create({ model: 'gpt-5', input: toPrompt(events), stream: true });
+  for await (const e of stream) if (e.type === 'response.output_text.delta') await s.append(e.delta);
+  await s.end();
+});
+
+await agent.start();
+```
+</TabItem>
+<TabItem label="Python">
+```python
+import asyncio, os
+from agentim_agent import Agent
+
+agent = Agent("https://chat.example.com", os.environ["AGENTIM_KEY"])
+
+@agent.on_message
+async def answer(msg, ctx):
+    await ctx.progress("thinking", "Reading the conversation")
+    s = await ctx.stream()
+    async for token in my_model(msg["content"]):
+        await s.append(token)
+    await s.end()
+
+asyncio.run(agent.run())
+```
+</TabItem>
+</Tabs>
+
+## Roles and configuration
+
+An agent's role (its instructions, tags, declared tools) is a Markdown file in your app's library, the same format as a Claude Code subagent:
+
+```md title="sales.md"
+---
+name: sales
+description: Answers leads about pricing
+tags: [sales]
+---
+You are our sales assistant. Answer briefly; hand pricing exceptions to a person.
+```
+
+Store it with `PUT /v1/roles/sales` (open API) or in the console, and give it to an agent with `PUT /v1/agents/{id}/role {"role": "sales"}`. The agent gets its configuration when it connects and again whenever it changes; the SDK keeps `agent.config` current:
+
+<Tabs syncKey="lang">
+<TabItem label="Node">
+```js
+agent.onConfig((c) => console.log('role', c.role?.name, 'version', c.version));
+agent.onMessage(async (msg, ctx) => {
+  const system = ctx.role?.instructions ?? 'You are a helpful assistant.';
+  // ... call your model with `system`
+});
+```
+</TabItem>
+<TabItem label="Python">
+```python
+@agent.on_config
+def changed(c):
+    print("role", (c.get("role") or {}).get("name"), "version", c["version"])
+
+@agent.on_message
+async def reply(msg, ctx):
+    system = (ctx.role or {}).get("instructions", "You are a helpful assistant.")
+    # ... call your model with `system`
+```
+</TabItem>
+</Tabs>
+
+Without the SDK: `welcome.config` on `/ws`, the `get_config` operation, the MCP tool `get_config`, or `GET /api/agent/config` with the agent key (an `ETag`; `If-None-Match` answers `304`). A `{"type": "config.updated"}` frame says it is time to fetch again.
+
+### Skills and MCP servers on disk
+
+The role's skills, MCP servers and APIs ([built-in agents §4](/docs/guides/built-in-agents/)) are in `agent.config`. Agents built on Claude Code or the Claude Agent SDK read them from files, so the SDK can write them where those look and keep them current:
+
+```js
+const agent = new Agent({ url, key, files: { dir: './workdir' } });   // or files: true for the current directory
+// or once: await agent.writeFiles({ dir: './workdir' });
+// for other frameworks: agent.mcpServers() → [{ name, url, headers }]
+```
+
+```python
+agent = Agent(url, key, files={"dir": "./workdir"})   # or await agent.write_files(dir="./workdir"); agent.mcp_servers()
+```
+
+- Each skill becomes `.claude/skills/<name>/SKILL.md` with its reference files (fetched with the agent key from `GET /api/agent/skills/{name}/files/{path}`; only for an agent whose role names the skill, otherwise `404`).
+- MCP servers are merged into `.mcp.json` under `mcpServers` (`type: http`, `url`, `headers`); the file holds credentials and is written readable by its owner only.
+- Each API's OpenAPI document goes to `.agentim/apis/<name>.openapi.json`.
+- `.agentim/files.json` lists what the SDK wrote: it replaces or removes only those, so your own skills and MCP entries stay. Names or paths that would leave the folder are skipped.
+
+## Delivery
+
+- **In order, at least once.** The SDK syncs in batches and acknowledges a batch only after your handlers finished. If a handler throws or the process dies, the batch comes again. Use the event's `seq` if your side effects must not repeat.
+- **Only what wakes the agent** reaches `onMessage` / `on_message` ([when an agent is woken](/docs/concepts/agents/#when-an-agent-is-woken)). `onEvent` sees every event.
+- **Business refusals are not retried.** If the server refuses an action (`forbidden`, `conflict`, `taken_over`, …), the SDK logs it and moves on.
+- **Reconnects by itself** with backoff (0.5–30 s), continuing from the position the server remembers. Every 30 s it checks its position with `heads`.
+
+## What a handler can do
+
+| | Node | Python |
+|---|---|---|
+| Reply, stream, show progress | `ctx.reply`, `ctx.stream`, `ctx.progress` | `ctx.reply`, `ctx.stream`, `ctx.progress` |
+| Send with an envelope and sources | `agent.send(convId, text, { to, topics, intent, refs, sources })` | `agent.send(conv_id, text, to=…, topics=…)` |
+| Cards and their answers | `agent.sendCard`, `onCardResponse` | `send_card`, `on_card_response` |
+| Files | `sendFile`, `uploadFile`, `fileUrl` | `send_file`, `upload_file`, `file_url` |
+| Ask a person and wait | `askHuman` | `ask_human` |
+| Hand off to a person | `handoff`, `onHandback` | `handoff`, `on_handback` |
+| History and memory | `history`, `context`, `search`, `putSummary` | `history`, `context`, `search`, `put_summary` |
+| Checkpoints | `getState`, `putState` | `get_state`, `put_state` |
+| Claims and tasks | `claim`, `updateTask` | `claim`, `update_task` |
+| Anything else | `call(op, args)` | `call(op, **args)` |
+
+Errors are `AgentIMError` with the protocol's `code`. See the [concepts](/docs/concepts/agents/) for the rules behind each operation.
+
+## Without an SDK
+
+Any MCP client can be an agent: give it the MCP configuration returned when the agent was created ([MCP tools](/docs/reference/mcp-tools/)). Any WebSocket client can speak the [client protocol](/docs/reference/client-protocol/) with the agent key.
+
+## Full API
+
+<CardGrid>
+  <LinkCard title="Node" href="/docs/agent-sdks/agent-node-api/" />
+  <LinkCard title="Python" href="/docs/agent-sdks/agent-python-api/" />
+</CardGrid>

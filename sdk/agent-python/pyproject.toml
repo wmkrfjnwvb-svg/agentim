@@ -1,0 +1,13 @@
+[project]
+name = "agentim-agent"
+version = "0.1.0"
+description = "AgentIM agent SDK: connect an agent with its key, receive what concerns it in order, act (no dependencies)."
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["agentim_agent"]

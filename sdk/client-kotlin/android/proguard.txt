@@ -1,0 +1,3 @@
+# JNI: the native side finds these by name.
+-keep class com.agentim.client.Native { native <methods>; }
+-keep interface com.agentim.client.EventSink { *; }

@@ -1,0 +1,981 @@
+// Components over the hooks (docs/en/design/developer-experience.md). Styles are CSS variables
+// (theme.css, light and dark, from tokens.json); every part can be
+// replaced through `components`, every text through `strings`. The AI
+// mark is drawn by the list around each message, outside what can be
+// replaced (EU AI Act art. 50): a replacement Message cannot drop it.
+
+import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
+import type { Message } from '@agentimhq/client-web';
+import { AgentIMProvider, useClient, useConnection, useConversations, useMessages, useSend, useTyping, type Client } from './hooks.js';
+import { defaultStrings, type Strings } from './strings.js';
+import { avatarColor, ended, formatShort, formatTime, initials, interleave, layout, unreadIndex, type Notice, type When } from './format.js';
+import { Alert, ArrowDown, ArrowUp, Check, Link, Search, Sparkle, Stop, ThumbDown, ThumbUp } from './icons.js';
+import { AttachButton, FileMessage, ImageMessage } from './files.js';
+import { Card, type CardBlockProps, type FormFieldProps } from './cards.js';
+import { DefaultSteps, type StepsProps } from './steps.js';
+import { useSteps, type InboxItem } from './logic.js';
+import { InboxCount, InboxPanel, type InboxDetailProps } from './inbox.js';
+
+export { defaultStrings, type Strings };
+
+/** The avatar palette's size (tokens.json `avatar`). */
+const AVATARS = 8;
+
+/** What a message component gets: replace `Message` in `components` to draw messages your way. */
+export interface MessageProps {
+  /** The message to show. */
+  message: Message;
+  /** The conversation (to read the message's file). */
+  convId: string;
+  /** Whether I sent it (shown on the right). */
+  mine: boolean;
+  /** First and last of a run from one sender (the bubble's corners, the time). */
+  first: boolean;
+  /** Whether it ends a run of messages from the same sender (shows the time). */
+  last: boolean;
+  /** The time to show under the message ("2:41 PM"), on the last of a run. */
+  time?: string;
+  /** The interface texts in the current language. */
+  strings: Strings;
+  /** Sends a failed message again. */
+  onRetry(): void;
+  /** Drops a failed message. */
+  onDiscard(): void;
+  /** Rates an agent's message. */
+  onFeedback(rating: 'up' | 'down'): void;
+  /** Answers a card block: a button `action` or form `values`. */
+  onRespond(blockId: string, r: { action?: string; values?: Record<string, unknown> }): void;
+  /** Set when I may edit this message (mine, sent, plain text). */
+  onEdit?(text: string): void;
+  /** Set when I may delete it for everyone (mine, sent). */
+  onRecall?(): void;
+  /** Set while an agent's reply streams: interrupt it. */
+  onStop?(): void;
+}
+
+/**
+ * What a conversation list row gets: replace `ConversationItem` in `components` to draw rows your
+ * way.
+ */
+export interface ConversationItemProps {
+  /** The conversation (title, last message, unread count, members…). */
+  conversation: any;
+  /** Whether it is the open conversation. */
+  selected: boolean;
+  /** Opens it. */
+  onSelect(): void;
+  /** The interface texts in the current language. */
+  strings: Strings;
+  /** "2:41 PM", "Yesterday", "Mon": when the last message was sent. */
+  time?: string;
+  /** My user id (for "You: …" previews and direct-conversation titles). */
+  me?: string;
+}
+
+/** The parts you can replace, passed as `components` to `AgentIM`. */
+export interface Components {
+  /** Draws one message. */
+  Message: ComponentType<MessageProps>;
+  /** Draws one conversation list row. */
+  ConversationItem: ComponentType<ConversationItemProps>;
+  /** Draws an avatar from the id, name and kind (human or agent). */
+  Avatar: ComponentType<{ id?: string; name?: string; kind?: string; size?: number }>;
+  /** Draws an empty state (no conversations, no messages). */
+  Empty: ComponentType<{ text: string; hint?: string }>;
+  /** Draws an agent's steps next to its reply (docs/en/design/chat-components.md). */
+  Steps?: ComponentType<StepsProps>;
+  /** Your own card blocks, by type (`x-…`, docs/en/design/chat-components.md). */
+  cardBlocks?: Record<string, ComponentType<CardBlockProps>>;
+  /** Your own form fields, by type (`x-…`, docs/en/design/chat-components.md). */
+  formFields?: Record<string, ComponentType<FormFieldProps>>;
+}
+
+interface Ui {
+  strings: Strings;
+  components: Components;
+  me?: string;
+  when: () => When;
+}
+
+const UiCtx = createContext<Ui | null>(null);
+
+function useUi(): Ui {
+  return useContext(UiCtx) ?? { strings: defaultStrings, components: defaultComponents, when: () => ({}) };
+}
+
+/**
+ * The client, plus the texts, the replaceable parts, who "I" am (for my
+ * own messages) and how dates are shown (the user's own locale and time
+ * zone unless given).
+ */
+export function AgentIM({
+  client,
+  me,
+  strings,
+  components,
+  locale,
+  timeZone,
+  now,
+  children,
+}: {
+  client: Client;
+  me?: string;
+  strings?: Partial<Strings>;
+  components?: Partial<Components>;
+  locale?: string;
+  timeZone?: string;
+  /** The clock (tests and screenshots). */
+  now?: () => number;
+  children?: ReactNode;
+}) {
+  const ui: Ui = {
+    me,
+    strings: { ...defaultStrings, ...strings },
+    components: { ...defaultComponents, ...components },
+    when: () => ({ locale, timeZone, now: now?.() }),
+  };
+  return (
+    <AgentIMProvider client={client}>
+      <UiCtx.Provider value={ui}>{children}</UiCtx.Provider>
+    </AgentIMProvider>
+  );
+}
+
+/** Initials on a colour that stays the same for the same id; agents on the AI colour. */
+function DefaultAvatar({ id, name, kind, size = 32 }: { id?: string; name?: string; kind?: string; size?: number }) {
+  const style = { '--aim-av': `var(--aim-avatar-${avatarColor(id ?? name, AVATARS)})`, width: size, height: size, fontSize: Math.round(size * 0.4) } as CSSProperties;
+  return (
+    <span className="aim-avatar" data-kind={kind} style={style} aria-hidden="true">
+      {initials(name)}
+    </span>
+  );
+}
+
+/**
+ * The AI mark (EU AI Act art. 50): drawn next to every agent's name and message, also under a
+ * replaced Message component.
+ */
+export function AIBadge() {
+  const { strings } = useUi();
+  return (
+    <span className="aim-ai" title={strings.aiTitle} role="img" aria-label={strings.aiTitle}>
+      <Sparkle />
+      <span aria-hidden="true">{strings.ai}</span>
+    </span>
+  );
+}
+
+/**
+ * A line saying what the connection is doing (offline, reconnecting, waiting for network); nothing
+ * while connected.
+ */
+export function ConnectionBanner() {
+  const c = useConnection();
+  const { strings } = useUi();
+  const text = strings.connection[c.state] ?? c.state;
+  if (!text) return null;
+  return (
+    <div className="aim-banner" role="status" data-state={c.state}>
+      <span className="aim-dot" aria-hidden="true" />
+      {text}
+    </div>
+  );
+}
+
+function preview(c: any, strings: Strings, me?: string): string {
+  const m = c.last_message;
+  if (!m) return '';
+  const text = m.state === 'recalled' ? strings.recalled : m.content || '';
+  return m.mine || (m.sender_id && m.sender_id === me) ? `${strings.you}: ${text}` : text;
+}
+
+function DefaultConversationItem({ conversation: c, selected, onSelect, strings, time, me }: ConversationItemProps) {
+  const { components } = useUi();
+  const last = preview(c, strings, me);
+  return (
+    <button type="button" className="aim-conv" aria-current={selected || undefined} data-unread={c.unread > 0 || undefined} onClick={onSelect}>
+      <components.Avatar id={c.conv_id} name={c.title || c.conv_id} size={40} />
+      <span className="aim-conv-body">
+        <span className="aim-conv-top">
+          <span className="aim-conv-title" dir="auto">
+            {c.title || c.conv_id}
+          </span>
+          {time ? <span className="aim-conv-time">{time}</span> : null}
+        </span>
+        <span className="aim-conv-bottom">
+          <span className="aim-conv-last" dir="auto">
+            {last}
+          </span>
+          {c.unread > 0 ? <span className="aim-unread">{c.unread > 99 ? '99+' : c.unread}</span> : null}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/** The conversations, newest first, with a search box that filters by title and last message. */
+export function ConversationList({ selected, onSelect, search = true }: { selected?: string; onSelect(convId: string): void; search?: boolean }) {
+  const list = useConversations();
+  const { strings, components, me, when } = useUi();
+  const [q, setQ] = useState('');
+  const w = when();
+  const shown = useMemo(() => {
+    const needle = q.trim().toLocaleLowerCase();
+    if (!needle) return list;
+    return list.filter((c) => `${c.title ?? ''}\n${c.last_message?.content ?? ''}`.toLocaleLowerCase().includes(needle));
+  }, [list, q]);
+  return (
+    <div className="aim-convs-wrap">
+      {search && list.length ? (
+        <label className="aim-search">
+          <Search />
+          <input type="search" value={q} placeholder={strings.search} aria-label={strings.search} onChange={(e) => setQ(e.target.value)} />
+        </label>
+      ) : null}
+      {!list.length ? (
+        <components.Empty text={strings.noConversations} />
+      ) : !shown.length ? (
+        <components.Empty text={strings.noMatches} />
+      ) : (
+        <nav className="aim-convs" aria-label={strings.conversations}>
+          {shown.map((c) => (
+            <components.ConversationItem
+              key={c.conv_id}
+              conversation={c}
+              selected={c.conv_id === selected}
+              onSelect={() => onSelect(c.conv_id)}
+              strings={strings}
+              me={me}
+              time={c.last_message?.created_at ? formatShort(c.last_message.created_at, w) : undefined}
+            />
+          ))}
+        </nav>
+      )}
+    </div>
+  );
+}
+
+function EditBox({ text, strings, onSave, onCancel }: { text: string; strings: Strings; onSave(t: string): void; onCancel(): void }) {
+  const [value, setValue] = useState(text);
+  const save = () => {
+    const t = value.trim();
+    if (t && t !== text) onSave(t);
+    else onCancel();
+  };
+  return (
+    <div className="aim-edit">
+      <textarea
+        autoFocus
+        aria-label={strings.editing}
+        dir="auto"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel();
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            save();
+          }
+        }}
+      />
+      <div className="aim-edit-buttons">
+        <button type="button" onClick={onCancel}>
+          {strings.cancel}
+        </button>
+        <button type="button" data-style="primary" onClick={save} disabled={!value.trim()}>
+          {strings.save}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DefaultMessage({ message: m, convId, mine, first, last, time, strings, onRetry, onDiscard, onFeedback, onRespond, onEdit, onRecall, onStop }: MessageProps) {
+  const [editing, setEditing] = useState(false);
+  const ui = useUi();
+  if (m.state === 'recalled')
+    return (
+      <div className="aim-bubble aim-recalled" data-mine={mine || undefined}>
+        {strings.recalled}
+      </div>
+    );
+  const streaming = m.state === 'streaming';
+  const text = streaming ? (m.streamed ?? m.content) : m.content;
+  const sources: any[] = m.envelope?.sources ?? [];
+  const failed = m.status === 'failed';
+  // Versions start at 1; streams also move them, so only a committed message counts as edited.
+  const edited = m.state === 'committed' && m.version > 1;
+  const notes = [streaming && strings.streaming, m.state === 'cancelled' && strings.cancelled, m.state === 'failed' && strings.streamFailed, edited && strings.edited].filter(Boolean);
+  const feedback = m.sender_type === 'agent' && !mine && !streaming && m.status === 'sent';
+  const actions = !!(onEdit || onRecall || onStop);
+  if (editing && onEdit)
+    return (
+      <EditBox
+        text={m.content}
+        strings={strings}
+        onCancel={() => setEditing(false)}
+        onSave={(t) => {
+          setEditing(false);
+          onEdit(t);
+        }}
+      />
+    );
+  return (
+    <>
+      {m.sender_type === 'agent' && m.msg_id ? <ReplySteps convId={convId} msgId={m.msg_id} /> : null}
+      <div className="aim-bubble" data-state={m.state} data-mine={mine || undefined} data-first={first || undefined} data-last={last || undefined} data-failed={failed || undefined} data-sending={m.status === 'sending' || undefined} data-kind={m.kind === 'image' || m.kind === 'file' ? m.kind : m.kind === 'agentim.card' ? 'card' : undefined} aria-busy={streaming || undefined}>
+        {m.kind === 'agentim.card' ? (
+          <Card m={m} mine={mine} me={ui.me} strings={strings} when={ui.when()} parts={ui.components} onRespond={onRespond} />
+        ) : m.kind === 'image' && (m.payload?.file_id || m.payload?.local_source || m.payload?.local_thumb) ? (
+          <ImageMessage convId={convId} message={m} strings={strings} />
+        ) : (m.kind === 'file' || m.kind === 'image') && m.payload ? (
+          <FileMessage convId={convId} message={m} strings={strings} />
+        ) : (
+          <div className="aim-text" dir="auto">
+            {text}
+            {streaming ? <span className="aim-cursor" aria-hidden="true" /> : null}
+          </div>
+        )}
+        {sources.length ? (
+          <div className="aim-sources">
+            <span className="aim-sources-label">{strings.sources}</span>
+            <ul aria-label={strings.sources}>
+              {sources.map((s: any) => (
+                <li key={s.url}>
+                  <a href={s.url} target="_blank" rel="noreferrer noopener">
+                    {s.title}
+                    <Link />
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+      {last || failed || m.status === 'sending' || notes.length || feedback || actions ? (
+        <div className="aim-meta" data-mine={mine || undefined} data-float={(!last && !failed && m.status !== 'sending' && !notes.length && !onStop) || undefined}>
+          {notes.map((n) => (
+            <span key={n as string}>{n}</span>
+          ))}
+          {last && time && !failed ? <span className="aim-time">{time}</span> : null}
+          {mine && m.status === 'sending' ? <span>{strings.sending}</span> : null}
+          {mine && last && m.status === 'sent' ? (
+            <span className="aim-sent" title={strings.sent}>
+              <Check />
+              <span className="aim-sr">{strings.sent}</span>
+            </span>
+          ) : null}
+          {failed ? (
+            <span className="aim-failed" role="alert">
+              <Alert />
+              {strings.failed}
+              <button type="button" onClick={onRetry}>
+                {strings.retry}
+              </button>
+              <button type="button" onClick={onDiscard}>
+                {strings.discard}
+              </button>
+            </span>
+          ) : null}
+          {onStop ? (
+            <button type="button" className="aim-stop" onClick={onStop}>
+              <Stop />
+              {strings.stop}
+            </button>
+          ) : null}
+          {onEdit || onRecall ? (
+            <span className="aim-actions">
+              {onEdit ? (
+                <button type="button" onClick={() => setEditing(true)}>
+                  {strings.edit}
+                </button>
+              ) : null}
+              {onRecall ? (
+                <button type="button" onClick={onRecall}>
+                  {strings.discard}
+                </button>
+              ) : null}
+            </span>
+          ) : null}
+          {feedback ? (
+            <span className="aim-feedback">
+              <button type="button" aria-label={strings.helpful} title={strings.helpful} onClick={() => onFeedback('up')}>
+                <ThumbUp />
+              </button>
+              <button type="button" aria-label={strings.notHelpful} title={strings.notHelpful} onClick={() => onFeedback('down')}>
+                <ThumbDown />
+              </button>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function DefaultEmpty({ text, hint }: { text: string; hint?: string }) {
+  return (
+    <div className="aim-empty">
+      <div className="aim-empty-text">{text}</div>
+      {hint ? <div className="aim-empty-hint">{hint}</div> : null}
+    </div>
+  );
+}
+
+export const defaultComponents: Components = { Message: DefaultMessage, ConversationItem: DefaultConversationItem, Avatar: DefaultAvatar, Empty: DefaultEmpty };
+
+function reducedMotion(): boolean {
+  return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+/**
+ * The messages, oldest first, in runs per sender with day separators and
+ * "New messages" where the unread ones started; scrolled to the newest,
+ * keeps its place when older ones load, and offers a way back down.
+ */
+export function MessageList({ convId, notices = [] }: { convId: string; notices?: Notice<ReactNode>[] }) {
+  const client = useClient();
+  const { strings, components, me, when } = useUi();
+  const { messages, hasOlder, olderEnd, loadingOlder, loadOlder } = useMessages(convId);
+  const conv = useConversations().find((c) => c.conv_id === convId);
+  const box = useRef<HTMLDivElement>(null);
+  const top = useRef<HTMLDivElement>(null);
+  const flow = useRef<HTMLDivElement>(null);
+  const lastTop = useRef(0);
+  const [atBottom, setAtBottom] = useState(true);
+  const bottom = useRef(true);
+  const seen = useRef(0);
+  const lastKey = useRef<string | undefined>(undefined);
+  const prevHeight = useRef(0);
+  const firstKey = useRef<string | undefined>(undefined);
+  // "New messages": counted when the conversation opens, placed when its messages are there.
+  const divider = useRef<{ conv: string; count: number; key?: string }>({ conv: '', count: 0 });
+  if (divider.current.conv !== convId) divider.current = { conv: convId, count: conv?.unread ?? 0 };
+  if (divider.current.count > 0 && divider.current.key === undefined && messages.length) {
+    const i = unreadIndex(messages, divider.current.count, me);
+    divider.current.key = i === undefined ? '' : messages[i].key;
+  }
+  const unreadFrom = divider.current.key ? messages.findIndex((m) => m.key === divider.current.key) : -1;
+  const w = when();
+  // No longer in it: the last line says so (after everything else).
+  const end = ended(conv, me);
+  const all = end ? [...notices, { key: 'ended', seq: Number.MAX_SAFE_INTEGER, content: strings.ended(end.reason, end.by), tone: 'info' as const }] : notices;
+  const items = interleave(layout(messages, w, unreadFrom >= 0 ? unreadFrom : undefined), all);
+  const isMine = (m: Message) => m.mine || m.sender_id === me || m.key.startsWith('local:');
+
+  useLayoutEffect(() => {
+    bottom.current = true;
+    setAtBottom(true);
+    seen.current = 0;
+  }, [convId]);
+
+  // Follow new messages when at the bottom, or when I sent one; keep the
+  // place when older ones are added above.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const newest = messages.at(-1);
+    const olderAdded = firstKey.current !== undefined && messages[0]?.key !== firstKey.current && newest?.key === lastKey.current;
+    if (olderAdded && !bottom.current) el.scrollTop += el.scrollHeight - prevHeight.current;
+    else if (bottom.current || (newest && newest.key !== lastKey.current && isMine(newest))) {
+      el.scrollTop = el.scrollHeight;
+      bottom.current = true;
+      setAtBottom(true);
+    }
+    if (bottom.current) seen.current = messages.length;
+    lastKey.current = newest?.key;
+    firstKey.current = messages[0]?.key;
+    prevHeight.current = el.scrollHeight;
+  }, [messages]);
+
+  // Rows settle their height after layout (content-visibility, streaming
+  // text, cards), and the box itself shrinks when a banner or a taller
+  // composer appears: stay at the bottom through both.
+  useEffect(() => {
+    const el = box.current;
+    const inner = flow.current;
+    if (!el || !inner || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (bottom.current) el.scrollTop = el.scrollHeight;
+      prevHeight.current = el.scrollHeight;
+    });
+    ro.observe(inner);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Scrolling to the top loads the page before.
+  useEffect(() => {
+    const t = top.current;
+    if (!t || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver((es) => {
+      if (es.some((e) => e.isIntersecting) && hasOlder && !loadingOlder) void loadOlder();
+    });
+    io.observe(t);
+    return () => io.disconnect();
+  }, [hasOlder, loadingOlder, loadOlder]);
+
+  // The open conversation is the focused one: its streamed replies grow live.
+  useEffect(() => {
+    const focus = (c: string | null) => void client.focus?.(c).catch(() => {});
+    focus(convId);
+    return () => focus(null);
+  }, [client, convId]);
+
+  useEffect(() => {
+    const last = messages.at(-1);
+    if (last?.created_seq) client.read(convId, last.created_seq).catch(() => {});
+  }, [client, convId, messages]);
+
+  const below = atBottom ? 0 : messages.slice(seen.current).filter((m) => !isMine(m)).length;
+  const jump = () => {
+    const el = box.current;
+    if (!el) return;
+    if (typeof el.scrollTo === 'function') el.scrollTo({ top: el.scrollHeight, behavior: reducedMotion() ? 'auto' : 'smooth' });
+    else el.scrollTop = el.scrollHeight;
+  };
+
+  return (
+    <div className="aim-list">
+      <div
+        ref={box}
+        className="aim-messages"
+        role="log"
+        aria-label={strings.messages}
+        aria-live="polite"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          const near = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+          // Only scrolling up leaves the bottom: content growing above
+          // (rows taking their real height, scroll anchoring) also fires
+          // scroll events, and must not unpin the list.
+          const up = el.scrollTop < lastTop.current - 1;
+          lastTop.current = el.scrollTop;
+          const at = near || (bottom.current && !up);
+          bottom.current = at;
+          if (at) seen.current = messages.length;
+          if (at !== atBottom) setAtBottom(at);
+          prevHeight.current = el.scrollHeight;
+        }}
+      >
+        <div ref={top} className="aim-top">
+          {hasOlder ? (
+            <button type="button" onClick={() => void loadOlder()} disabled={loadingOlder}>
+              {loadingOlder ? strings.loading : strings.loadOlder}
+            </button>
+          ) : olderEnd === 'retention' ? (
+            strings.retention
+          ) : messages.length ? (
+            strings.start
+          ) : null}
+        </div>
+        {!messages.length ? <components.Empty text={strings.empty} hint={strings.emptyHint} /> : null}
+        <div ref={flow} className="aim-flow">
+        {items.map((it) => {
+          if (it.notice)
+            return (
+              <Fragment key={`n:${it.notice.key}`}>
+                {it.day ? (
+                  <div className="aim-day" role="separator" aria-label={it.day}>
+                    <span>{it.day}</span>
+                  </div>
+                ) : null}
+                <div className="aim-notice" data-tone={it.notice.tone} role="note">
+                  {it.notice.content}
+                </div>
+              </Fragment>
+            );
+          const { message: m, day, unread, first, last } = it.row;
+          const mine = isMine(m);
+          const sent = mine && m.status === 'sent' && m.msg_id && !m.key.startsWith('local:');
+          const target = { msgId: m.msg_id };
+          const agent = m.sender_type === 'agent';
+          return (
+            <Fragment key={m.key}>
+              {day ? (
+                <div className="aim-day" role="separator" aria-label={day}>
+                  <span>{day}</span>
+                </div>
+              ) : null}
+              {unread ? (
+                <div className="aim-new" role="separator" aria-label={strings.newMessages}>
+                  <span>{strings.newMessages}</span>
+                </div>
+              ) : null}
+              <div className="aim-row" data-mine={mine || undefined} data-first={first || undefined} data-last={last || undefined} data-sender-type={m.sender_type}>
+                {!mine ? <div className="aim-gutter">{first ? <components.Avatar id={m.sender_id} name={m.sender_name} kind={m.sender_type} /> : null}</div> : null}
+                <div className="aim-col">
+                  {first && !mine ? (
+                    <div className="aim-sender">
+                      <span dir="auto">{m.sender_name}</span>
+                      {agent ? <AIBadge /> : null}
+                    </div>
+                  ) : agent ? (
+                    <span className="aim-sr">{strings.aiTitle}</span>
+                  ) : null}
+                  <components.Message
+                    message={m}
+                    convId={convId}
+                    mine={mine}
+                    first={first}
+                    last={last}
+                    time={last && m.created_at ? formatTime(m.created_at, w) : undefined}
+                    strings={strings}
+                    onRetry={() => m.client_msg_id && void client.retry(convId, m.client_msg_id)}
+                    onDiscard={() => m.client_msg_id && void client.discard(convId, m.client_msg_id)}
+                    onFeedback={(r) => void client.feedback(convId, m.msg_id, r).catch(() => {})}
+                    onRespond={(b, r) => void client.respond(convId, m.msg_id, b, r).catch(() => {})}
+                    onEdit={sent && m.state === 'committed' && (m.kind ?? 'text') === 'text' ? (t) => void client.edit(convId, target, t).catch(() => {}) : undefined}
+                    onRecall={sent && m.state !== 'streaming' ? () => void client.recall(convId, target).catch(() => {}) : undefined}
+                    onStop={m.state === 'streaming' && agent ? () => void client.call('stream_cancel', { msg_id: m.msg_id }).catch(() => {}) : undefined}
+                  />
+                </div>
+              </div>
+            </Fragment>
+          );
+        })}
+        </div>
+      </div>
+      {!atBottom ? (
+        <button type="button" className="aim-jump" onClick={jump} data-new={below || undefined}>
+          <ArrowDown />
+          {strings.jumpToLatest(below)}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** Who is typing, by name (from the members), with the three dots. */
+export function TypingIndicator({ convId, names }: { convId: string; names?: (ids: string[]) => string[] }) {
+  const { typing } = useTyping(convId);
+  const { strings } = useUi();
+  const members: any[] = useConversations().find((c) => c.conv_id === convId)?.members ?? [];
+  if (!typing.length) return <div className="aim-typing" aria-hidden="true" />;
+  const shown = names ? names(typing) : typing.map((id) => members.find((m) => m.user_id === id)?.name ?? id);
+  return (
+    <div className="aim-typing" role="status">
+      <span className="aim-dots" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </span>
+      {strings.typing(shown)}
+    </div>
+  );
+}
+
+const MAX_COMPOSER_PX = 160;
+
+/**
+ * The message box: Enter sends, Shift+Enter adds a line, it grows with the text; a paperclip, drag
+ * and drop and paste send files (`attach={false}` hides them). Replaced by a notice once the
+ * person is no longer a member.
+ */
+export function Composer({ convId, attach = true }: { convId: string; attach?: boolean }) {
+  const client = useClient();
+  const { send } = useSend(convId);
+  const [dragging, setDragging] = useState(false);
+  const sendFiles = (files: File[]) => {
+    for (const f of files) void client.sendFile?.(convId, f).catch(() => {});
+  };
+  const canAttach = attach && !!client.sendFile;
+  const { notify } = useTyping(convId);
+  const { strings, me } = useUi();
+  const [text, setText] = useState('');
+  const end = ended(
+    useConversations().find((c) => c.conv_id === convId),
+    me,
+  );
+  const area = useRef<HTMLTextAreaElement>(null);
+  // Grows with the text, up to a limit, then scrolls.
+  useLayoutEffect(() => {
+    const el = area.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, MAX_COMPOSER_PX)}px`;
+  }, [text]);
+  const submit = () => {
+    const t = text.trim();
+    if (!t) return;
+    setText('');
+    void send(t);
+  };
+  const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      submit();
+    }
+  };
+  if (end)
+    return (
+      <div className="aim-composer aim-composer-ended" role="status">
+        {strings.endedComposer(end.reason)}
+      </div>
+    );
+  return (
+    <form
+      className="aim-composer"
+      data-dragging={dragging || undefined}
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
+      onDragOver={(e) => {
+        if (!canAttach || !e.dataTransfer.types.includes('Files')) return;
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        if (!canAttach) return;
+        e.preventDefault();
+        setDragging(false);
+        sendFiles(Array.from(e.dataTransfer.files));
+      }}
+    >
+      {dragging ? <div className="aim-drop">{strings.dropFiles}</div> : null}
+      <div className="aim-composer-box">
+        {canAttach ? <AttachButton strings={strings} onFiles={sendFiles} /> : null}
+        <textarea
+          ref={area}
+          aria-label={strings.placeholder}
+          placeholder={strings.placeholder}
+          dir="auto"
+          rows={1}
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            if (e.target.value) notify();
+          }}
+          onKeyDown={onKey}
+          onPaste={(e) => {
+            const files = Array.from(e.clipboardData.files);
+            if (!canAttach || !files.length) return;
+            e.preventDefault();
+            sendFiles(files);
+          }}
+        />
+        <button type="submit" className="aim-send" aria-label={strings.send} title={strings.send} disabled={!text.trim()}>
+          <ArrowUp />
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** The conversation's members; agents carry the AI mark. */
+export function MemberList({ convId }: { convId: string }) {
+  const conv = useConversations().find((c) => c.conv_id === convId);
+  const { strings, components } = useUi();
+  const members: any[] = conv?.members ?? [];
+  return (
+    <ul className="aim-members" aria-label={strings.members}>
+      {members.map((m) => (
+        <li key={m.user_id} data-kind={m.kind}>
+          <components.Avatar id={m.user_id} name={m.name} kind={m.kind} size={28} />
+          <span className="aim-member-name" dir="auto">
+            {m.name}
+          </span>
+          {m.kind === 'agent' ? <AIBadge /> : null}
+          {strings.roles[m.role] ? <span className="aim-role">{strings.roles[m.role]}</span> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Says when an agent hands the conversation to a person, and when it is back (docs/en/design/agents.md). */
+export function HandoffNotice({ convId }: { convId: string }) {
+  const client = useClient();
+  const { strings } = useUi();
+  const [notice, setNotice] = useState<{ text: string; note?: string; state: string } | null>(null);
+  useEffect(() => {
+    setNotice(null);
+    return client.on('event', (e) => {
+      const ev = e.event ?? {};
+      if (ev.conv_id !== convId || ev.type !== 'agent.state') return;
+      const d = ev.data ?? {};
+      if (d.state === 'taken_over' && d.handoff) setNotice({ text: strings.handedOff, note: d.note, state: 'handoff' });
+      else if (d.state === 'active' && d.handback) setNotice({ text: strings.handedBack, note: d.note, state: 'handback' });
+    });
+  }, [client, convId, strings]);
+  if (!notice) return null;
+  return (
+    <div className="aim-handoff" role="status" data-state={notice.state}>
+      <span className="aim-handoff-text">{notice.text}</span>
+      {notice.note ? (
+        <span className="aim-handoff-note" dir="auto">
+          {notice.note}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+type Approval = { id: string; op: any; title: string; state: string };
+
+function approvalOf(q: any): Approval | null {
+  const op = q?.context?.operation;
+  if (!q?.request_id || !op) return null;
+  return { id: q.request_id, op, title: q.title ?? '', state: q.state ?? 'pending' };
+}
+
+/**
+ * Operations an assistant waits to have approved (docs/en/design/assistants.md), as cards for the people who decide
+ * them: what it wants to do, the key values, Approve and Decline; after a decision, the outcome.
+ * Shows nothing for people who don't decide. Part of `Chat`.
+ */
+export function ApprovalCards({ convId }: { convId: string }) {
+  const client = useClient();
+  const { strings, me } = useUi();
+  const [cards, setCards] = useState<Approval[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  useEffect(() => {
+    setCards([]);
+    let on = true;
+    const put = (a: Approval) =>
+      setCards((list) => (list.some((x) => x.id === a.id) ? list.map((x) => (x.id === a.id ? { ...x, ...a } : x)) : [...list, a]));
+    // What already waits (the inbox), then what comes.
+    Promise.resolve(client.call('inbox'))
+      .then((r: any) => {
+        if (!on) return;
+        for (const i of r?.items ?? []) {
+          const a = i.type === 'request' && i.conv_id === convId ? approvalOf(i) : null;
+          if (a) put(a);
+        }
+      })
+      .catch(() => {});
+    const off = client.on('side', (e: any) => {
+      const ev = e?.event ?? e;
+      if (ev?.conv_id !== convId) return;
+      if (ev.type === 'request.created') {
+        // The agent's owner hears of every request; only those who decide get a card
+        // (named assignees, or the owner when none are named).
+        const who: string[] = ev.data?.assignees ?? [];
+        if (me && who.length > 0 && !who.includes(me)) return;
+        const a = approvalOf(ev.data?.request);
+        if (a) put(a);
+      } else if (ev.type === 'request.decided' || ev.type === 'request.expired' || ev.type === 'request.cancelled') {
+        const id = ev.data?.request_id;
+        setCards((list) => list.map((x) => (x.id === id ? { ...x, state: ev.data?.state ?? x.state } : x)));
+      }
+    });
+    return () => {
+      on = false;
+      off();
+    };
+  }, [client, convId, me]);
+  if (cards.length === 0) return null;
+  const decide = async (id: string, decision: 'approve' | 'reject') => {
+    setBusy(id);
+    try {
+      await client.call('decide', { request_id: id, decision });
+      setCards((list) => list.map((x) => (x.id === id ? { ...x, state: decision === 'approve' ? 'approved' : 'rejected' } : x)));
+    } catch {
+      // Someone else decided first, or it expired: the next event says.
+    } finally {
+      setBusy(null);
+    }
+  };
+  const outcome: Record<string, string> = {
+    approved: strings.approved,
+    rejected: strings.declined,
+    expired: strings.approvalExpired,
+    cancelled: strings.approvalCancelled,
+  };
+  return (
+    <div className="aim-approvals">
+      {cards.map((a) => (
+        <div key={a.id} className="aim-approval aim-card" role="group" aria-label={strings.approvalTitle} data-state={a.state}>
+          <div className="aim-approval-head">
+            <span className="aim-tone" data-tone={a.state === 'pending' ? 'warning' : a.state === 'approved' ? 'success' : 'neutral'}>
+              {strings.approvalTitle}
+            </span>
+          </div>
+          <div className="aim-card-title" dir="auto">
+            {/* What it does, as people read it (not the HTTP route an API's summary ends with). */}
+            {a.op.description ? String(a.op.description).split(' (')[0] : a.op.name}
+          </div>
+          <div className="aim-approval-sub">
+            {strings.approvalFor} <span className="aim-approval-op">{a.op.name}</span>
+          </div>
+          {Array.isArray(a.op.fields) && a.op.fields.length ? (
+            <dl className="aim-facts">
+              {a.op.fields.map((f: any) => (
+                <div key={f.name} className="aim-fact" data-key={a.op.rule?.amount_field === f.name || f.name === 'amount' || undefined}>
+                  <dt>{f.name}</dt>
+                  <dd dir="auto">{String(f.value)}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
+          {a.state === 'pending' ? (
+            <div className="aim-approval-actions">
+              <button type="button" data-style="primary" disabled={busy === a.id} onClick={() => decide(a.id, 'approve')}>
+                {strings.approve}
+              </button>
+              <button type="button" disabled={busy === a.id} onClick={() => decide(a.id, 'reject')}>
+                {strings.decline}
+              </button>
+            </div>
+          ) : (
+            <div className="aim-card-status" data-tone={a.state === 'approved' ? 'success' : undefined} role="status">
+              {outcome[a.state] ?? a.state}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The approval inbox (docs/en/design/chat-components.md): everything waiting for this person across
+ * conversations. `onOpen(convId)` opens a conversation in your app.
+ */
+export function Inbox(props: { types?: string[]; extraItems?: InboxItem[]; renderItem?(p: InboxDetailProps): ReactNode; onOpen?(convId: string): void }) {
+  const { strings, when } = useUi();
+  return <InboxPanel strings={strings} when={when()} {...props} />;
+}
+
+/** How many items wait in the inbox, for your navigation. */
+export function InboxBadge({ label = true }: { label?: boolean }) {
+  const { strings } = useUi();
+  return <InboxCount strings={strings} label={label} />;
+}
+
+/** The steps of an agent's reply, drawn by `components.Steps` (docs/en/design/chat-components.md). */
+function ReplySteps({ convId, msgId }: { convId: string; msgId?: string }) {
+  const steps = useSteps(convId, msgId);
+  const { components, strings } = useUi();
+  if (!steps.length) return null;
+  const S = components.Steps ?? DefaultSteps;
+  return <S steps={steps} strings={strings} />;
+}
+
+/** Steps an agent reports without tying them to a message (docs/en/design/chat-components.md). */
+export function ConversationSteps({ convId }: { convId: string }) {
+  return <ReplySteps convId={convId} />;
+}
+
+/** A whole chat window (the customer-service widget): header, status, messages, typing, composer. */
+export function Chat({ convId, title, subtitle }: { convId: string; title?: ReactNode; subtitle?: ReactNode }) {
+  return (
+    <section className="aim-root aim-chat">
+      {title ? (
+        <header className="aim-chat-header">
+          <div className="aim-chat-title">{title}</div>
+          {subtitle ? <div className="aim-chat-subtitle">{subtitle}</div> : null}
+        </header>
+      ) : null}
+      <ConnectionBanner />
+      <HandoffNotice convId={convId} />
+      <MessageList convId={convId} />
+      <ConversationSteps convId={convId} />
+      <ApprovalCards convId={convId} />
+      <TypingIndicator convId={convId} />
+      <Composer convId={convId} />
+    </section>
+  );
+}

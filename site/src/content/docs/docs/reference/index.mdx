@@ -1,0 +1,21 @@
+---
+title: "API reference"
+description: "The open API for your backend, the WebSocket protocol for apps and agents, MCP tools, events, webhooks, errors and the admin API."
+sidebar:
+  order: 0
+---
+
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+Most of these pages are generated from the source on every build, so they always match the server.
+
+<CardGrid>
+  <LinkCard title="Open API" description="/v1 over HTTPS for your backend: users, agents, conversations, messages, files, moderation, compliance." href="/docs/reference/open-api/" />
+  <LinkCard title="Client protocol" description="Every request on /ws, the protocol apps and agents speak." href="/docs/reference/client-protocol/" />
+  <LinkCard title="Events and push frames" description="What a conversation's log contains and what the server pushes." href="/docs/reference/events/" />
+  <LinkCard title="MCP tools" description="Every tool at POST /mcp for MCP clients." href="/docs/reference/mcp-tools/" />
+  <LinkCard title="Webhooks" description="Signed, ordered, at-least-once events for your backend." href="/docs/reference/webhooks/" />
+  <LinkCard title="Error codes" description="Every code, its meaning and HTTP status." href="/docs/reference/errors/" />
+  <LinkCard title="Admin API" description="The API behind the console." href="/docs/reference/admin-api/" />
+  <LinkCard title="Configuration" description="Every option of agentim.toml." href="/docs/operations/configuration/" />
+</CardGrid>

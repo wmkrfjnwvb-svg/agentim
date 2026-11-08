@@ -1,0 +1,14 @@
+[package]
+name = "agentim-client-wasm"
+description = "AgentIM client core for the browser: the core behind a plain wasm ABI (JSON in, JSON out), no bindgen (docs/en/design/developer-experience.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+agentim-client-core = { path = "../core" }
+serde_json = "1"

@@ -1,0 +1,25 @@
+# Clients: only ready nodes get traffic.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentim.name" . }}
+  labels: {{- include "agentim.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector: {{- include "agentim.labels" . | nindent 4 }}
+  ports:
+    - {name: http, port: {{ .Values.service.port }}, targetPort: http}
+---
+# Nodes reach each other by name, ready or not (a node that cannot renew
+# its leases still answers forwarded requests with retryable errors).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentim.name" . }}-peers
+  labels: {{- include "agentim.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {{- include "agentim.labels" . | nindent 4 }}
+  ports:
+    - {name: cluster, port: 7946, targetPort: cluster}

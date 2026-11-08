@@ -1,0 +1,24 @@
+{
+  "name": "agentim-examples",
+  "private": true,
+  "description": "Example apps for AgentIM (docs/en/design/developer-experience.md): an after-sales assistant with risk-tiered approval, an advisor and client with an AI aide, a multi-agent task room",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "aftersales": "node aftersales/start.mjs",
+    "advisor": "node advisor/start.mjs",
+    "tasks": "node tasks/start.mjs",
+    "test": "node test/e2e.mjs"
+  },
+  "dependencies": {
+    "@agentimhq/agent": "file:../sdk/agent-node",
+    "@agentimhq/client-web": "file:../sdk/client-web",
+    "@agentimhq/react": "file:../sdk/react",
+    "@agentimhq/server": "file:../sdk/node",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

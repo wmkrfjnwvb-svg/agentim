@@ -1,0 +1,560 @@
+// AgentIM agent SDK for Node.js 22+ (docs/en/design/agents.md).
+// No dependencies: Node's built-in WebSocket. An agent connects with its
+// key, receives what concerns it in order (sync, then pushes), and acts.
+//
+//   const agent = new Agent({ url: 'https://im.example.com', key: process.env.AGENTIM_KEY });
+//   agent.onMessage(async (msg, ctx) => { await ctx.reply(`you said: ${msg.content}`); });
+//   await agent.start();
+//
+// Delivery is at least once: a batch is acknowledged after its handlers
+// finish, so a handler that throws (or a crash) gets the event again;
+// use `event.seq` per conversation to skip what was already done.
+
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+
+export class AgentIMError extends Error {
+  constructor(code, message) {
+    super(`${code}: ${message}`);
+    this.code = code;
+    this.detail = message;
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Failures worth another try. A refusal on business grounds (forbidden,
+// conflict, taken_over, ...) would only be refused again: the event is
+// acknowledged and the refusal logged.
+const TRANSIENT = new Set(['rate_limited', 'disconnected', 'storage', 'conv_moved', 'conv_migrating', 'unavailable', 'internal']);
+const retriable = (e) => !(e instanceof AgentIMError) || TRANSIENT.has(e.code);
+const uid = () => globalThis.crypto.randomUUID();
+
+/** One WebSocket connection: requests by `rid`, pushes to a callback. */
+export class Connection {
+  /** `device`: a person's device id (agents connect with a key and none). */
+  constructor(url, token, onPush, { device } = {}) {
+    const base = url.replace(/^http/, 'ws').replace(/\/$/, '');
+    // The token goes in the bearer subprotocol, never the address (proxies
+    // log it); the built-in WebSocket, as browsers, cannot set Authorization.
+    this.wsUrl = `${base}/ws${device ? `?device=${encodeURIComponent(device)}` : ''}`;
+    this.protocols = ['agentim', `agentim.bearer.${Buffer.from(token).toString('base64url')}`];
+    this.onPush = onPush;
+    this.pending = new Map();
+    this.rid = 0;
+    this.ws = null;
+    this.welcome = null;
+    this.closed = null;
+  }
+
+  open() {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(this.wsUrl, this.protocols);
+      this.ws = ws;
+      let opened = false;
+      this.closed = new Promise((done) => {
+        ws.addEventListener('close', (e) => {
+          for (const [, p] of this.pending) p.reject(new AgentIMError('disconnected', `connection closed (${e.code} ${e.reason})`));
+          this.pending.clear();
+          if (!opened) reject(new AgentIMError('unauthorized', `could not connect (${e.code})`));
+          done(e);
+        });
+      });
+      // A refused handshake (e.g. 401) reports an error, maybe no close.
+      let failed = false;
+      ws.addEventListener('error', () => {
+        if (opened || failed) return;
+        failed = true;
+        reject(new AgentIMError('unauthorized', 'could not connect'));
+        try { ws.close(); } catch {}
+      });
+      ws.addEventListener('message', (m) => {
+        const f = JSON.parse(m.data);
+        if (f.type === 'welcome') { opened = true; this.welcome = f; resolve(f); return; }
+        if (f.type === 'res') {
+          const p = this.pending.get(f.rid);
+          if (p) { this.pending.delete(f.rid); f.ok ? p.resolve(f) : p.reject(new AgentIMError(f.error.code, f.error.message)); }
+          return;
+        }
+        this.onPush?.(f);
+      });
+    });
+  }
+
+  /** Sends a request and waits for its response (throws AgentIMError). */
+  call(op, args = {}) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return Promise.reject(new AgentIMError('disconnected', 'not connected'));
+    const rid = ++this.rid;
+    return new Promise((resolve, reject) => {
+      this.pending.set(rid, { resolve, reject });
+      this.ws.send(JSON.stringify({ op, rid, ...args }));
+    });
+  }
+
+  close() { this.ws?.close(); }
+}
+
+/** A W3C traceparent in the same trace with a new span id (docs/en/design/tracing.md). */
+export function childTrace(traceparent) {
+  const m = /^00-([0-9a-f]{32})-[0-9a-f]{16}-([0-9a-f]{2})$/.exec(traceparent ?? '');
+  if (!m) return undefined;
+  const span = Array.from(globalThis.crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
+  return `00-${m[1]}-${span}-${m[2]}`;
+}
+
+/** What a handler gets to act in the conversation of an event. */
+class Ctx {
+  constructor(agent, event, trace) {
+    this.agent = agent;
+    this.event = event;
+    this.convId = event.conv_id;
+    this.msg = event.msg ?? null;
+    /** The traceparent of the request that woke the agent, or null. */
+    this.trace = trace ?? null;
+    /** Its trace id, to pass to your model calls and logs, or null. */
+    this.traceId = this.trace ? this.trace.split('-')[1] : null;
+  }
+  /** The agent's configuration now (role, skills, MCP, APIs; docs/en/design/agents.md). */
+  get config() { return this.agent.config; }
+  /** Its role (name, description, instructions, ...), or null. */
+  get role() { return this.agent.config?.role ?? null; }
+  /** Replies to the message (or just sends in the conversation), in its trace. */
+  reply(text, opts = {}) {
+    return this.agent.send(this.convId, text, { replyTo: this.msg?.msg_id, trace: childTrace(this.trace), ...opts });
+  }
+  /** A streamed reply: `await s.append(text)`, then `await s.end()`. */
+  stream() { return this.agent.stream(this.convId, { replyTo: this.msg?.msg_id, trace: childTrace(this.trace) }); }
+  progress(kind, text, data) { return this.agent.progress(this.convId, kind, text, { data, trace: childTrace(this.trace) }); }
+  /**
+   * Shows data as a card in reply (docs/en/design/chat-components.md): `blocks` are text, facts,
+   * table, list or your own `x-…` blocks.
+   */
+  showCard(title, blocks, opts = {}) {
+    return this.agent.sendCard(this.convId, opts.text ?? title, { title, blocks }, { replyTo: this.msg?.msg_id });
+  }
+  /**
+   * Asks the person who wrote with a form card only they can fill in, and
+   * waits for their answers (docs/en/design/chat-components.md): resolves to the values, keyed by
+   * field id. `opts`: `intro`, `submit`, `to` (other people), `timeoutMs`.
+   */
+  askForm(title, fields, opts = {}) {
+    return this.agent.askForm(this.convId, title, fields, { replyTo: this.msg?.msg_id, to: opts.to ?? (this.msg ? [this.msg.sender_id] : undefined), ...opts });
+  }
+  /**
+   * Steps people see next to the reply (docs/en/design/chat-components.md): `const s = await
+   * ctx.steps(['Look up order', 'Refund'])`, then `s.start(0)`, `s.done(0)`,
+   * `s.wait(1, 'Waiting for approval')`, `s.fail(1, 'Card declined')`,
+   * `s.skip(1)`. `opts.msgId`: one of your own messages to hang them on.
+   */
+  async steps(titles, opts = {}) {
+    const ids = titles.map((_, i) => `s${i + 1}`);
+    const send = (kind, text, data) => this.agent.progress(this.convId, kind, text, { msgId: opts.msgId, data, trace: childTrace(this.trace) });
+    await send('plan', titles.join(' → ').slice(0, 4000), { steps: titles.map((title, i) => ({ id: ids[i], title })) });
+    const set = (state) => (i, detail) => send('step', titles[i], { id: ids[i], state, title: titles[i], ...(detail ? { detail } : {}) });
+    return { start: set('running'), done: set('done'), wait: set('waiting'), fail: set('failed'), skip: set('skipped') };
+  }
+}
+
+export class Agent {
+  /** @param {{url: string, key: string, name?: string, log?: (m: string) => void}} o */
+  constructor({ url, key, name = 'agentim-agent-node', log = () => {}, positionCheckMs = 30000, files = null }) {
+    /** Where `writeFiles` keeps skills and MCP servers current, or null. */
+    this.files = files;
+    this.url = url;
+    this.key = key;
+    this.clientName = name;
+    this.log = log;
+    this.handlers = { message: [], event: [], card: [], handback: [], config: [] };
+    /** The configuration from the server, kept current (docs/en/design/agents.md). */
+    this.config = null;
+    this.waiting = new Map(); // request_id -> resolve
+    this.forms = new Map(); // card msg_id -> resolve
+    this.me = null;
+    this.conn = null;
+    this.stopped = false;
+    this.queue = Promise.resolve(); // pushes are handled one at a time, in order
+    this.lastSeq = new Map();
+    this.positionCheckMs = positionCheckMs;
+  }
+
+  onMessage(fn) { this.handlers.message.push(fn); return this; }
+  onEvent(fn) { this.handlers.event.push(fn); return this; }
+  onCardResponse(fn) { this.handlers.card.push(fn); return this; }
+  onHandback(fn) { this.handlers.handback.push(fn); return this; }
+  /** Called with the new configuration when it arrives or changes. */
+  onConfig(fn) { this.handlers.config.push(fn); return this; }
+
+  async #setConfig(c) {
+    if (!c || c.version === this.config?.version) return;
+    this.config = c;
+    if (this.files) {
+      try { await this.writeFiles(this.files === true ? {} : this.files); } catch (e) { this.log(`files: ${e.message}`); }
+    }
+    for (const h of this.handlers.config) {
+      try { await h(c); } catch (e) { this.log(`config handler failed: ${e.stack ?? e}`); }
+    }
+  }
+
+  /**
+   * The configuration's MCP servers as most agent frameworks take them
+   * (e.g. OpenAI Agents SDK's MCPServerStreamableHttp params): name, url, headers.
+   */
+  mcpServers() {
+    return (this.config?.mcp ?? []).map((m) => ({ name: m.name, url: m.url, headers: m.headers ?? {} }));
+  }
+
+  /**
+   * Writes the configuration to disk where agent frameworks look for it
+   * (docs/en/design/assistants.md): each skill as `<skillsDir>/<name>/SKILL.md` with its files
+   * (Claude Code, Claude Agent SDK), the MCP servers into `mcpFile`
+   * (`.mcp.json`, `mcpServers` with type http, url, headers) and each API's
+   * OpenAPI document into `<apisDir>/<name>.openapi.json`. Only what it wrote
+   * before is replaced or removed (a manifest in `.agentim/files.json`); other
+   * skills and MCP servers stay. The MCP file holds credentials: it is
+   * written readable by its owner only.
+   */
+  async writeFiles({ dir = '.', skillsDir = '.claude/skills', mcpFile = '.mcp.json', apisDir = '.agentim/apis' } = {}) {
+    const c = this.config;
+    if (!c) throw new Error('no configuration yet: call start() first');
+    const safe = (p) => typeof p === 'string' && p.length > 0 && !p.startsWith('/') && !p.split(/[\\/]/).some((s) => s === '..' || s === '');
+    const manifestPath = join(dir, '.agentim', 'files.json');
+    let before = { skills: [], mcp: [], apis: [] };
+    try { before = { ...before, ...JSON.parse(await readFile(manifestPath, 'utf8')) }; } catch {}
+    const skills = (c.skills ?? []).filter((s) => safe(s.name));
+    for (const s of skills) {
+      const root = join(dir, skillsDir, s.name);
+      await rm(root, { recursive: true, force: true });
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'SKILL.md'), s.markdown ?? `---\nname: ${s.name}\ndescription: ${s.description}\n---\n${s.instructions ?? ''}\n`);
+      for (const f of (s.files ?? []).filter(safe)) {
+        const r = await fetch(`${this.url.replace(/\/$/, '')}/api/agent/skills/${encodeURIComponent(s.name)}/files/${f.split('/').map(encodeURIComponent).join('/')}`, {
+          headers: { authorization: `Bearer ${this.key}` },
+        });
+        if (!r.ok) throw new AgentIMError('unavailable', `skill file ${s.name}/${f}: ${r.status}`);
+        await mkdir(dirname(join(root, f)), { recursive: true });
+        await writeFile(join(root, f), await r.text());
+      }
+    }
+    for (const name of before.skills) {
+      if (!skills.some((s) => s.name === name) && safe(name)) await rm(join(dir, skillsDir, name), { recursive: true, force: true });
+    }
+    const mcpPath = join(dir, mcpFile);
+    let doc = {};
+    try { doc = JSON.parse(await readFile(mcpPath, 'utf8')); } catch {}
+    const servers = { ...(doc.mcpServers ?? {}) };
+    for (const name of before.mcp) delete servers[name];
+    const mcp = c.mcp ?? [];
+    for (const m of mcp) servers[m.name] = { type: 'http', url: m.url, ...(m.headers ? { headers: m.headers } : {}) };
+    if (mcp.length || before.mcp.length) {
+      await mkdir(dirname(mcpPath), { recursive: true });
+      await writeFile(mcpPath, JSON.stringify({ ...doc, mcpServers: servers }, null, 2) + '\n', { mode: 0o600 });
+      // An existing file keeps its mode on write: set it.
+      await chmod(mcpPath, 0o600);
+    }
+    const apis = (c.apis ?? []).filter((a) => safe(a.name));
+    for (const name of before.apis) {
+      if (!apis.some((a) => a.name === name) && safe(name)) await rm(join(dir, apisDir, `${name}.openapi.json`), { force: true });
+    }
+    for (const a of apis) {
+      await mkdir(join(dir, apisDir), { recursive: true });
+      const spec = { ...(a.spec ?? {}) };
+      if (!spec.servers) spec.servers = [{ url: a.url }];
+      await writeFile(join(dir, apisDir, `${a.name}.openapi.json`), JSON.stringify(spec, null, 2) + '\n');
+    }
+    const now = { skills: skills.map((s) => s.name), mcp: mcp.map((m) => m.name), apis: apis.map((a) => a.name) };
+    await mkdir(dirname(manifestPath), { recursive: true });
+    await writeFile(manifestPath, JSON.stringify(now, null, 2) + '\n');
+    return now;
+  }
+
+  /** Fetches the configuration again (also done on `config.updated`). */
+  async refreshConfig() {
+    const { type: _t, rid: _r, ok: _o, ...c } = await this.conn.call('get_config');
+    await this.#setConfig(c);
+    return this.config;
+  }
+
+  /**
+   * Connects and keeps the agent connected until `stop()`. The first
+   * connection is retried for up to `startTimeoutMs` (the server looks up
+   * a key it has not seen yet at most once a second), then it throws.
+   */
+  async start({ startTimeoutMs = 15000 } = {}) {
+    const end = Date.now() + startTimeoutMs;
+    let wait = 300;
+    for (;;) {
+      try { await this.#connect(); break; } catch (e) {
+        if (Date.now() + wait > end) throw e;
+        this.log(`connect failed (${e.message}); retrying in ${wait} ms`);
+        await sleep(wait);
+        wait = Math.min(wait * 2, 3000);
+      }
+    }
+    this.#keepAlive();
+    this.#checkPositions();
+    return this;
+  }
+
+  // Now and then the agent asks where its conversations stand: a last push
+  // lost on the way (no later message, no resync notice) is found and
+  // synced (docs/en/design/cluster.md).
+  async #checkPositions() {
+    while (!this.stopped) {
+      await sleep(this.positionCheckMs);
+      const conn = this.conn;
+      if (this.stopped || !conn || conn.failed || this.lastSeq.size === 0) continue;
+      await this.#enqueue(async () => {
+        if (conn !== this.conn) return;
+        const ids = [...this.lastSeq.keys()].slice(0, 200);
+        const r = await conn.call('heads', { conv_ids: ids });
+        const behind = ids.some((c) => (r.heads?.[c] ?? 0) > (this.lastSeq.get(c) ?? 0));
+        if (behind) await this.#sync();
+      }).catch(() => {});
+    }
+  }
+
+  async stop() { this.stopped = true; this.conn?.close(); }
+
+  async #connect() {
+    const conn = new Connection(this.url, this.key, (f) => this.#push(f));
+    const w = await conn.open();
+    this.conn = conn;
+    this.me = w.me;
+    await this.#setConfig(w.config);
+    await conn.call('hello', { client: { name: this.clientName, version: '0.1.0' } });
+    // Sync rounds and pushes go through one queue, so handlers see events
+    // in order.
+    await this.#enqueue(() => this.#sync()).catch(() => {});
+  }
+
+  #enqueue(fn) {
+    const run = this.queue.then(fn);
+    this.queue = run.catch(async (e) => {
+      // Not acknowledged: this connection acknowledges nothing more (an ack
+      // is a position); reconnect, and the server gives it again.
+      this.log(`handler failed: ${e.stack ?? e}`);
+      const conn = this.conn;
+      if (!conn) return;
+      conn.failed = true;
+      // Slowed down by the server: give it time before the retry.
+      if (e.code === 'rate_limited') await sleep(2000);
+      conn.close();
+    });
+    return run;
+  }
+
+  async #keepAlive() {
+    let wait = 500;
+    while (!this.stopped) {
+      await this.conn.closed;
+      if (this.stopped) return;
+      this.log(`disconnected; reconnecting in ${wait} ms`);
+      await sleep(wait);
+      try { await this.#connect(); wait = 500; } catch (e) { this.log(`reconnect failed: ${e.message}`); wait = Math.min(wait * 2, 30000); }
+    }
+  }
+
+  // Sync rounds until nothing is left; each batch is acknowledged after
+  // its handlers ran (at least once).
+  async #sync() {
+    for (;;) {
+      const r = await this.conn.call('sync', { limit: 200 });
+      const acks = [];
+      for (const c of r.convs) {
+        let done;
+        try {
+          for (const item of c.events ?? []) { this.#formAnswered(item.event); await this.#handle(item); done = item.event.seq; }
+        } catch (e) {
+          // What was handled before the failure is not given again.
+          if (done !== undefined) acks.push({ conv_id: c.conv_id, seq: done });
+          if (acks.length) await this.conn.call('ack', { acks }).catch(() => {});
+          throw e;
+        }
+        for (const s of c.side_events ?? []) this.#side(s);
+        if (c.upto !== undefined) acks.push({ conv_id: c.conv_id, seq: c.upto, side_seq: c.side_upto ?? 0 });
+      }
+      if (acks.length) await this.conn.call('ack', { acks });
+      if (!r.more) return;
+    }
+  }
+
+  // Runs handlers; a business refusal from the server is not retried.
+  async #run(fn, what) {
+    try { await fn(); } catch (e) {
+      if (retriable(e)) throw e;
+      this.log(`${what}: refused by the server (${e.code}): ${e.detail}; not retried`);
+    }
+  }
+
+  #push(f) {
+    // A decision a handler is waiting for must not queue behind it.
+    if (f.type === 'side') this.#side(f.event);
+    if (f.type === 'event') this.#formAnswered(f.event);
+    if (f.type === 'config.updated') {
+      this.refreshConfig().catch((e) => this.log(`config: ${e.message}`));
+      return;
+    }
+    const conn = this.conn;
+    this.#enqueue(async () => {
+      if (conn !== this.conn || conn.failed) return;
+      if (f.type === 'event') {
+        await this.#handle(f);
+        await this.conn.call('ack', { acks: [{ conv_id: f.event.conv_id, seq: f.event.seq }] });
+      } else if (f.type === 'side') {
+        await this.conn.call('ack', { acks: [{ conv_id: f.event.conv_id, side_seq: f.event.side_seq }] });
+      } else if (f.type === 'resync') {
+        await this.#sync();
+      }
+    }).catch(() => {});
+  }
+
+  async #handle(item) {
+    const ev = item.event;
+    this.lastSeq.set(ev.conv_id, ev.seq);
+    const what = `${ev.type} ${ev.conv_id}#${ev.seq}`;
+    for (const h of this.handlers.event) await this.#run(() => h(ev, item), what);
+    if (!item.wake) return;
+    const ctx = new Ctx(this, ev, item.trace);
+    if (ev.msg && ev.msg.sender_id !== this.me.id && (ev.type === 'msg.created' || ev.type === 'msg.updated')) {
+      for (const h of this.handlers.message) await this.#run(() => h(ev.msg, ctx, item), what);
+    } else if (ev.type === 'card.response') {
+      for (const h of this.handlers.card) await this.#run(() => h(ev.data, ctx), what);
+    } else if (ev.type === 'agent.state' && ev.data.handback) {
+      for (const h of this.handlers.handback) await this.#run(() => h(ev.data, ctx), what);
+    }
+  }
+
+  #formAnswered(ev) {
+    if (ev?.type === 'card.response' && this.forms.has(ev.data?.msg_id)) {
+      this.forms.get(ev.data.msg_id)(ev.data);
+      this.forms.delete(ev.data.msg_id);
+    }
+  }
+
+  #side(s) {
+    if (s.type?.startsWith('request.') && s.data?.request_id && this.waiting.has(s.data.request_id)) {
+      this.waiting.get(s.data.request_id)(s.data);
+      this.waiting.delete(s.data.request_id);
+    }
+  }
+
+  /** Any protocol operation (docs/en/testing.md). */
+  call(op, args) { return this.conn.call(op, args); }
+
+  /** Sends a message; `opts`: replyTo, to, topics, intent, refs, sources, clientMsgId, trace. */
+  send(convId, text, opts = {}) {
+    return this.conn.call('send', {
+      conv_id: convId, text, client_msg_id: opts.clientMsgId ?? uid(),
+      reply_to: opts.replyTo, to: opts.to, topics: opts.topics, intent: opts.intent, refs: opts.refs, sources: opts.sources,
+      trace: opts.trace,
+    });
+  }
+
+  /**
+   * Sends a form card and waits for the answers (docs/en/design/chat-components.md). `opts`:
+   * `to` (who may answer; anyone in the conversation if left out), `intro`,
+   * `submit`, `replyTo`, `timeoutMs` (default 30 minutes). Resolves to the
+   * values; rejects on timeout.
+   */
+  async askForm(convId, title, fields, { to, intro, submit = 'Send', replyTo, timeoutMs = 30 * 60_000 } = {}) {
+    const blocks = [];
+    if (intro) blocks.push({ type: 'text', text: intro });
+    blocks.push({ type: 'form', id: 'form', submit, fields });
+    const card = { title, once: true, blocks, ...(to ? { to } : {}) };
+    const sent = await this.sendCard(convId, `${title} (please fill in the form)`, card, { replyTo });
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => { this.forms.delete(sent.msg_id); reject(new Error(`no answer to the form ${title}`)); }, timeoutMs);
+      this.forms.set(sent.msg_id, (d) => { clearTimeout(t); resolve(d.values ?? {}); });
+    });
+  }
+
+  /** Sends a card (docs/en/design/agents.md); `text` is what clients without cards show. */
+  sendCard(convId, text, card, opts = {}) {
+    return this.conn.call('send', { conv_id: convId, text, kind: 'agentim.card', payload: card, client_msg_id: opts.clientMsgId ?? uid(), reply_to: opts.replyTo });
+  }
+
+  /**
+   * Uploads a whole file (at most 64 MiB) to a conversation the agent is in;
+   * the server removes EXIF and GPS and makes an image's thumbnail.
+   * Returns the file ({file_id, kind, name, size, ...}).
+   */
+  async uploadFile(convId, name, data, { mime } = {}) {
+    const q = new URLSearchParams({ conv_id: convId, name, ...(mime ? { mime } : {}) });
+    const res = await fetch(`${this.url.replace(/^ws/, 'http').replace(/\/$/, '')}/api/files?${q}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${this.key}`, 'content-type': 'application/octet-stream' },
+      body: data,
+    });
+    const v = await res.json().catch(() => ({}));
+    if (!res.ok) throw new AgentIMError(v.error?.code ?? 'unavailable', v.error?.message ?? `HTTP ${res.status}`);
+    return v;
+  }
+
+  /** Uploads a file and sends it as an image or file message; `opts`: mime, caption, replyTo. */
+  async sendFile(convId, name, data, opts = {}) {
+    const f = await this.uploadFile(convId, name, data, { mime: opts.mime });
+    const image = f.kind === 'image';
+    const sent = await this.conn.call('send', {
+      conv_id: convId, text: image ? '[Image]' : `[File] ${f.name}`, kind: image ? 'image' : 'file',
+      payload: { file_id: f.file_id, ...(opts.caption ? { caption: opts.caption } : {}) },
+      client_msg_id: opts.clientMsgId ?? uid(), reply_to: opts.replyTo,
+    });
+    return { ...sent, file: f };
+  }
+
+  /**
+   * A link (valid 5 minutes, absolute) to read a file of a message;
+   * `variant`: 'original' (default) or 'thumb'.
+   */
+  async fileUrl(convId, fileId, { variant } = {}) {
+    const r = await this.conn.call('file_url', { conv_id: convId, file_id: fileId, variant });
+    return { ...r, url: new URL(r.url, this.url.replace(/^ws/, 'http')).toString() };
+  }
+
+  /** A streamed reply; cancelled if `end` is never called before `fail`. */
+  async stream(convId, { replyTo, trace } = {}) {
+    const r = await this.conn.call('stream_start', { conv_id: convId, client_msg_id: uid(), reply_to: replyTo, trace });
+    const id = r.msg_id;
+    let idx = 0;
+    return {
+      msgId: id,
+      append: (text) => this.conn.call('stream_append', { msg_id: id, idx: idx++, text }),
+      end: () => this.conn.call('stream_end', { msg_id: id }),
+      cancel: () => this.conn.call('stream_cancel', { msg_id: id }),
+    };
+  }
+
+  progress(convId, kind, text, { msgId, data, trace } = {}) {
+    return this.conn.call('progress', { conv_id: convId, kind, text, msg_id: msgId, data, trace });
+  }
+
+  /**
+   * Asks a person to decide and waits for the outcome (approve, answer or
+   * choose; docs/en/design/agents.md). Resolves with {state, response, decided_by}.
+   */
+  async askHuman(convId, { kind = 'approve', title, context, options, assignees, ttlSecs, timeoutMs = 3600_000 } = {}) {
+    const r = await this.conn.call('request_human', { conv_id: convId, kind, title, context, options, assignees, ttl_secs: ttlSecs, client_req_id: uid() });
+    const id = r.request_id;
+    const decided = new Promise((resolve) => this.waiting.set(id, resolve));
+    // Decided before we started waiting?
+    const now = await this.conn.call('get_request', { request_id: id });
+    if (now.state !== 'pending') { this.waiting.delete(id); return { state: now.state, response: now.response, decided_by: now.decided_by }; }
+    const timeout = sleep(timeoutMs).then(() => ({ state: 'timeout' }));
+    return Promise.race([decided, timeout]);
+  }
+
+  handoff(convId, note, to) { return this.conn.call('handoff', { conv_id: convId, note, to }); }
+  history(convId, opts = {}) { return this.conn.call('history', { conv_id: convId, after_seq: opts.afterSeq, before_seq: opts.beforeSeq, limit: opts.limit }); }
+  context(convId, maxTokens) { return this.conn.call('context', { conv_id: convId, max_tokens: maxTokens }); }
+  search(query, opts = {}) { return this.conn.call('search', { query, conv_id: opts.convId, limit: opts.limit }); }
+  putSummary(convId, fromSeq, toSeq, text) { return this.conn.call('put_summary', { conv_id: convId, from_seq: fromSeq, to_seq: toSeq, text }); }
+
+  /** A checkpoint: {value, version} or null when the key does not exist. */
+  async getState(key) {
+    try { return await this.conn.call('state_get', { key }); } catch (e) { if (e.code === 'not_found') return null; throw e; }
+  }
+  /** Writes a checkpoint; `version` is the one read (0 creates). Conflict: someone wrote in between. */
+  putState(key, value, version) { return this.conn.call('state_put', { key, value, version }); }
+  claim(msgId) { return this.conn.call('claim', { msg_id: msgId }); }
+  updateTask(convId, state, note) { return this.conn.call('update_task', { conv_id: convId, state, note }); }
+}

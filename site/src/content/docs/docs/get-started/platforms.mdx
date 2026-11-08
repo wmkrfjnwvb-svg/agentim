@@ -1,0 +1,238 @@
+---
+title: "Quick start by platform"
+description: "The first screen of chat in Next.js, React Native, SwiftUI, Jetpack Compose, Flutter and Unity, and the token endpoint your backend serves."
+sidebar:
+  order: 2
+---
+
+import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+Every platform needs the same three things:
+
+1. **A token endpoint on your backend.** It checks your own session and signs a client token for that user ([below](#your-backend)).
+2. **A device id** generated once and stored.
+3. **The client**, created with the server address, the device id and a `tokenProvider` that calls your endpoint.
+
+Then the app follows three observable things: the connection, the conversation list and a conversation's messages. Do the [quick start](/docs/get-started/quickstart/) first if you need a server, keys and a conversation.
+
+## Your backend
+
+<Tabs syncKey="server">
+<TabItem label="Node (Express)">
+```js
+import { createUserToken } from '@agentimhq/server';
+const signingKey = { kid: process.env.AGENTIM_KID, secret: process.env.AGENTIM_SECRET };
+
+app.get('/api/chat-token', requireLogin, (req, res) => {
+  res.type('text/plain').send(createUserToken(signingKey, req.user.id, { expiresIn: 3600 }));
+});
+```
+</TabItem>
+<TabItem label="Python (FastAPI)">
+```python
+from agentim import create_user_token
+
+@app.get("/api/chat-token", response_class=PlainTextResponse)
+def chat_token(user = Depends(current_user)):
+    return create_user_token(os.environ["AGENTIM_KID"], os.environ["AGENTIM_SECRET"], user.id, expires_in=3600)
+```
+</TabItem>
+<TabItem label="Go">
+```go
+http.HandleFunc("/api/chat-token", func(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r) // your own session check
+	token, err := agentim.CreateUserToken(kid, secret, user.ID, time.Hour)
+	if err != nil { http.Error(w, "", 500); return }
+	w.Write([]byte(token))
+})
+```
+</TabItem>
+</Tabs>
+
+## Your app
+
+<Tabs syncKey="platform">
+<TabItem label="Next.js">
+The client runs in the browser, so the chat is a client component.
+
+```tsx title="app/chat/chat.tsx"
+'use client';
+import { useEffect, useState } from 'react';
+import { AgentIMClient } from '@agentimhq/client-web';
+import { AgentIM, Chat } from '@agentimhq/react';
+import '@agentimhq/react/theme.css';
+
+export default function SupportChat({ convId }: { convId: string }) {
+  const [client, setClient] = useState<AgentIMClient>();
+  useEffect(() => {
+    let c: AgentIMClient | undefined;
+    AgentIMClient.create({
+      url: process.env.NEXT_PUBLIC_AGENTIM_URL!,
+      deviceId: (localStorage.agentimDevice ??= crypto.randomUUID()),
+      tokenProvider: () => fetch('/api/chat-token').then((r) => r.text()),
+    }).then((created) => {
+      c = created;
+      setClient(created);
+      created.connect();
+    });
+    return () => void c?.dispose();
+  }, []);
+  if (!client) return null;
+  return (
+    <AgentIM client={client}>
+      <Chat convId={convId} title="Support" />
+    </AgentIM>
+  );
+}
+```
+
+Add your site's origin to `server.allowed_origins`. All tabs of the same browser share one connection.
+</TabItem>
+<TabItem label="React Native">
+```tsx
+import { AppState } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
+import { AgentIMClient } from '@agentimhq/client-react-native';
+import { AgentIM, Chat } from '@agentimhq/react-native-ui';
+
+const client = AgentIMClient.create({
+  url: 'https://chat.example.com',
+  deviceId: await storedDeviceId(),
+  storeDir: `${documentsDir}/agentim`,
+  tokenProvider: () => fetch(`${API}/api/chat-token`, { headers: auth() }).then((r) => r.text()),
+});
+AppState.addEventListener('change', (s) => client.setForeground(s === 'active'));
+NetInfo.addEventListener((s) => client.setNetwork(!!s.isConnected));
+client.connect();
+
+export function SupportScreen({ convId }: { convId: string }) {
+  return (
+    <AgentIM client={client}>
+      <Chat convId={convId} />
+    </AgentIM>
+  );
+}
+```
+
+The core runs natively through JSI, with an SQLite cache in `storeDir`. Telling the client about the app state and the network lets it reconnect at once instead of waiting for its backoff.
+</TabItem>
+<TabItem label="SwiftUI">
+```swift
+import AgentIM
+import SwiftUI
+
+let chat = try! AgentIMClient(ClientOptions(
+    url: "https://chat.example.com",
+    deviceId: DeviceId.stored(),
+    storeDir: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].path,
+    tokenProvider: { try await Backend.shared.chatToken() }))
+
+struct ConversationView: View {
+    let messages: Messages   // chat.messages(convId)
+    @State private var text = ""
+
+    var body: some View {
+        List(messages.list, id: \.key) { m in
+            Text(m.content)
+        }
+        HStack {
+            TextField("Message", text: $text)
+            Button("Send") {
+                let t = text; text = ""
+                Task { try await chat.send(messages.convId, t) }
+            }
+        }
+    }
+}
+```
+
+`AgentIMClient` and `Messages` are `@Observable` and change on the main queue: SwiftUI redraws when they do. Call `try await chat.connect()` at launch and `chat.setForeground(_:)` from your scene phase.
+</TabItem>
+<TabItem label="Compose">
+```kotlin
+val client = AgentIMClient.create(ClientOptions(
+    url = "https://chat.example.com",
+    deviceId = deviceId(context),
+    storeDir = context.filesDir.resolve("agentim").path,
+    tokenProvider = { backend.chatToken() },
+))
+
+@Composable
+fun ConversationScreen(convId: String) {
+    val messages by remember { client.messages(convId) }.list.collectAsState()
+    val scope = rememberCoroutineScope()
+    var text by remember { mutableStateOf("") }
+    Column {
+        LazyColumn(Modifier.weight(1f)) {
+            items(messages, key = { it.getString("key") }) { m -> Text(m.getString("content")) }
+        }
+        Row {
+            TextField(text, { text = it })
+            Button(onClick = { val t = text; text = ""; scope.launch { client.send(convId, t) } }) { Text("Send") }
+        }
+    }
+}
+```
+
+Connect once (`client.connect()` from a coroutine) and call `client.setForeground(…)` from your lifecycle observer. The AAR has the native core for four ABIs, with 16 KB pages.
+</TabItem>
+<TabItem label="Flutter">
+```dart
+final client = AgentIMClient.create(ClientOptions(
+  url: 'https://chat.example.com',
+  deviceId: await storedDeviceId(),
+  storeDir: '${(await getApplicationSupportDirectory()).path}/agentim',
+  tokenProvider: () => backend.chatToken(),
+));
+await client.connect();
+
+class ConversationView extends StatelessWidget {
+  const ConversationView(this.convId, {super.key});
+  final String convId;
+
+  @override
+  Widget build(BuildContext context) {
+    final messages = client.messages(convId);
+    return StreamBuilder(
+      stream: messages.list.watch(),
+      builder: (context, snap) => ListView(
+        children: [for (final m in snap.data ?? const []) ListTile(key: ValueKey(m['key']), title: Text(m['content']))],
+      ),
+    );
+  }
+}
+```
+</TabItem>
+<TabItem label="Unity">
+```csharp
+using AgentIM.Client;
+using UnityEngine;
+
+public class Chat : MonoBehaviour
+{
+    AgentIMClient client;
+
+    async void Start()
+    {
+        client = AgentIMClient.Create(new ClientOptions {
+            Url = "https://chat.example.com",
+            DeviceId = SystemInfo.deviceUniqueIdentifier,
+            StoreDir = System.IO.Path.Combine(Application.persistentDataPath, "agentim"),
+            TokenProvider = ct => Backend.ChatTokenAsync(ct),
+        });
+        client.Messages(convId).List.Subscribe(list => Render(list));   // on the main thread
+        await client.ConnectAsync();
+    }
+
+    void OnApplicationPause(bool paused) => client.SetForeground(!paused);
+    void OnDestroy() => client.Dispose();
+}
+```
+
+Events and state changes are delivered on Unity's main thread. WebGL builds use the browser SDK through a `.jslib` bridge with the same API.
+</TabItem>
+</Tabs>
+
+<Aside type="tip">
+Every SDK's full API, with every method explained, is under [Client SDKs](/docs/client-sdks/).
+</Aside>

@@ -1,0 +1,16 @@
+name: agentim_example
+description: Runs the AgentIM conformance steps inside a Flutter app, with the core the package's build hook provides.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  agentim_client:
+    path: ..
+
+flutter:
+  uses-material-design: false

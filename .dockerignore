@@ -1,0 +1,5 @@
+server/target
+**/node_modules
+.git
+server/bench/out
+sdk/client-rust/target

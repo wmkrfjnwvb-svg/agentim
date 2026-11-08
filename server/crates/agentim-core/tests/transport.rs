@@ -1,0 +1,362 @@
+//! Transport security (docs/en/design/security.md): the Origin check
+//! on browser-facing endpoints and built-in TLS. The certificate in
+//! tests/fixtures is a self-signed test certificate for localhost only.
+
+mod common;
+
+use std::time::Duration;
+
+use agentim_core::config::{Config, TlsConfig, sqlite_url};
+use agentim_core::hub::Hub;
+use agentim_core::model::UserKind;
+use agentim_core::server::{AppState, router};
+use common::*;
+use tokio::io::AsyncWriteExt;
+
+const CERT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/test-cert.pem");
+const KEY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/test-key.pem");
+const CA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/test-ca.pem");
+const OTHER_KEY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/other-key.pem");
+
+fn cfg(dir: &tempfile::TempDir) -> Config {
+    single(&sqlite_url(&dir.path().join("db").to_string_lossy()))
+}
+
+async fn plain(cfg: Config, demo: bool) -> (String, Hub) {
+    let hub = Hub::open(cfg, hub_cfg()).await.unwrap();
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = tcp.local_addr().unwrap().to_string();
+    let app = router(AppState {
+        hub: hub.clone(),
+        demo_login: demo,
+        metrics_token: None,
+    });
+    tokio::spawn(async move {
+        axum::serve(
+            tcp,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
+    (addr, hub)
+}
+
+async fn ws_status(url: &str, origin: Option<&str>) -> u16 {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = url.into_client_request().unwrap();
+    if let Some(o) = origin {
+        req.headers_mut().insert("origin", o.parse().unwrap());
+    }
+    match tokio_tungstenite::connect_async(req).await {
+        Ok(_) => 101,
+        Err(tokio_tungstenite::tungstenite::Error::Http(r)) => r.status().as_u16(),
+        Err(e) => panic!("{e}"),
+    }
+}
+
+#[tokio::test]
+async fn cross_site_browser_pages_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = cfg(&dir);
+    c.server.allowed_origins = vec!["https://app.example.com".into()];
+    let (addr, hub) = plain(c, true).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let url = format!("ws://{addr}/ws?{}", ws_query(&hub, &alice, "d1").await);
+    let same = format!("http://{addr}");
+    for (origin, want) in [
+        (None, 101),
+        (Some(same.as_str()), 101),
+        (Some("https://app.example.com"), 101),
+        (Some("HTTPS://APP.EXAMPLE.COM"), 101),
+        (Some("https://evil.example"), 403),
+        (Some("https://app.example.com.evil.example"), 403),
+        (Some("null"), 403),
+    ] {
+        assert_eq!(ws_status(&url, origin).await, want, "{origin:?}");
+    }
+    // Login is browser-facing too.
+    let http = reqwest::Client::new();
+    let login = |origin: Option<&'static str>| {
+        let mut r = http
+            .post(format!("http://{addr}/api/login"))
+            .header("content-type", "application/json")
+            .body(r#"{"name":"alice"}"#);
+        if let Some(o) = origin {
+            r = r.header("origin", o);
+        }
+        r.send()
+    };
+    assert_eq!(login(None).await.unwrap().status().as_u16(), 200);
+    assert_eq!(
+        login(Some("https://evil.example"))
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        403
+    );
+    // Only the WebSocket registered a device: logging in signs a token,
+    // and refused pages register nothing.
+    assert_eq!(hub.devices(&alice.id).await.unwrap().len(), 1);
+}
+
+#[test]
+fn origin_settings_are_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    for bad in [
+        "app.example.com",
+        "https://",
+        "https://x/path",
+        "ftp://x",
+        "https://a b",
+    ] {
+        let mut c = cfg(&dir);
+        c.server.allowed_origins = vec![bad.into()];
+        assert!(c.validate().is_err(), "{bad}");
+    }
+    let mut c = cfg(&dir);
+    c.server.allowed_origins = vec![
+        "https://app.example.com:8443".into(),
+        "http://[::1]:3000".into(),
+    ];
+    assert!(c.validate().is_ok());
+}
+
+#[test]
+fn certificates_are_checked_at_startup() {
+    assert!(agentim_core::tls::server_config(CERT, KEY).is_ok());
+    let e = agentim_core::tls::server_config(CERT, OTHER_KEY).unwrap_err();
+    assert!(e.contains("do not match"), "{e}");
+    assert!(agentim_core::tls::server_config("/nonexistent/cert.pem", KEY).is_err());
+    assert!(
+        agentim_core::tls::server_config(KEY, KEY)
+            .unwrap_err()
+            .contains("no certificate")
+    );
+}
+
+#[tokio::test]
+async fn the_server_speaks_tls_itself() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = cfg(&dir);
+    c.server.tls = Some(TlsConfig {
+        cert: CERT.into(),
+        key: KEY.into(),
+    });
+    let hub = Hub::open(c, hub_cfg()).await.unwrap();
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = tcp.local_addr().unwrap();
+    let l = agentim_core::tls::TlsListener::new(
+        tcp,
+        agentim_core::tls::server_config(CERT, KEY).unwrap(),
+    )
+    .unwrap();
+    let app = router(AppState {
+        hub: hub.clone(),
+        demo_login: false,
+        metrics_token: None,
+    });
+    tokio::spawn(async move {
+        axum::serve(
+            l,
+            app.into_make_service_with_connect_info::<agentim_core::tls::PeerAddr>(),
+        )
+        .await
+        .unwrap()
+    });
+    // A client that connects and never handshakes does not block others.
+    let mut silent = tokio::net::TcpStream::connect(addr).await.unwrap();
+    silent.write_all(b"").await.unwrap();
+    let ca = reqwest::Certificate::from_pem(&std::fs::read(CA).unwrap()).unwrap();
+    let https = reqwest::Client::builder()
+        .add_root_certificate(ca)
+        .build()
+        .unwrap();
+    let url = format!("https://localhost:{}", addr.port());
+    let r = tokio::time::timeout(
+        Duration::from_secs(5),
+        https.get(format!("{url}/healthz")).send(),
+    )
+    .await
+    .expect("not blocked by the silent client")
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    // The open API reports the client address through TLS connections too.
+    let scopes = vec!["users:read".to_string()];
+    let (key, _) = hub
+        .create_api_key("tls", &scopes, None, Some(vec!["127.0.0.1".into()]))
+        .await
+        .unwrap();
+    hub.create_user("alice", UserKind::Human, None, None)
+        .await
+        .unwrap();
+    let r = https
+        .get(format!("{url}/v1/users/alice"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let (far, _) = hub
+        .create_api_key("far", &scopes, None, Some(vec!["10.0.0.0/8".into()]))
+        .await
+        .unwrap();
+    let r = https
+        .get(format!("{url}/v1/users/alice"))
+        .bearer_auth(&far)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 403);
+    // Plain HTTP to the TLS port gets nothing useful.
+    let plain = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{}/healthz", addr.port()))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await;
+    assert!(plain.is_err() || !plain.unwrap().status().is_success());
+    // An untrusted certificate is rejected by a normal client.
+    assert!(
+        reqwest::Client::new()
+            .get(format!("{url}/healthz"))
+            .send()
+            .await
+            .is_err()
+    );
+    drop(silent);
+}
+
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// `query`: `token=…` (an agent) or `token=…&device=…` (a person).
+async fn open_ws(addr: &str, query: &str) -> Ws {
+    tokio_tungstenite::connect_async(format!("ws://{addr}/ws?{query}"))
+        .await
+        .unwrap()
+        .0
+}
+
+/// The next text frame, or the close reason.
+async fn next_frame(ws: &mut Ws) -> String {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), ws.next()).await {
+            Ok(Some(Ok(Message::Text(t)))) => return t.to_string(),
+            Ok(Some(Ok(Message::Close(c)))) => {
+                return format!(
+                    "close:{}",
+                    c.map(|c| c.reason.to_string()).unwrap_or_default()
+                );
+            }
+            Ok(Some(Ok(_))) => continue,
+            other => return format!("end:{other:?}"),
+        }
+    }
+}
+
+/// connections per user are capped; a connection that sends
+/// nothing, not even a pong, is closed; one that answers pings stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connections_are_capped_and_idle_ones_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = cfg(&dir);
+    c.clients.max_connections = 2;
+    c.clients.idle_secs = 3;
+    let (addr, hub) = plain(c, false).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let token = ws_query(&hub, &alice, "d1").await;
+    let mut a = open_ws(&addr, &token).await;
+    let mut b = open_ws(&addr, &token).await;
+    assert!(next_frame(&mut a).await.contains("welcome"));
+    assert!(next_frame(&mut b).await.contains("welcome"));
+    let mut third = open_ws(&addr, &token).await;
+    assert_eq!(next_frame(&mut third).await, "close:too_many_connections");
+    // `a` keeps reading (and so answers pings); `b` reads nothing.
+    let reader = tokio::spawn(async move {
+        use futures_util::{SinkExt, StreamExt};
+        let t = std::time::Instant::now();
+        while t.elapsed() < Duration::from_secs(5) {
+            let _ = tokio::time::timeout(Duration::from_millis(200), a.next()).await;
+        }
+        a.send(tokio_tungstenite::tungstenite::Message::Text(
+            r#"{"op":"unread"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        next_frame(&mut a).await
+    });
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    // The server closed `b` (reading it now may hit the closed socket first).
+    let f = next_frame(&mut b).await;
+    assert!(f == "close:idle" || f.starts_with("end:"), "{f}");
+    assert_eq!(
+        hub.connections_of(&alice.id),
+        1,
+        "only the live one is left"
+    );
+    assert!(
+        reader.await.unwrap().contains("\"ok\":true"),
+        "the live one still works"
+    );
+}
+
+/// M13: a logout between checking the token and registering the
+/// connection is caught once it is registered.
+#[tokio::test]
+async fn a_logout_before_registration_is_caught() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = Hub::open(cfg(&dir), hub_cfg()).await.unwrap();
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let t = client_token(&hub, &alice).await;
+    let login = hub
+        .authenticate_client(&t, Some("d1"), None, None)
+        .await
+        .unwrap();
+    hub.log_out(&alice.id, Some(&login.device_id))
+        .await
+        .unwrap();
+    let (_s, _p, refused) = hub.open_device_session(&login);
+    assert_eq!(refused, Some("logged_out"));
+}
+
+/// M13: a logout racing the handshake never leaves a connection open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn race_logout_during_the_handshake() {
+    let dir = tempfile::tempdir().unwrap();
+    let (addr, hub) = plain(cfg(&dir), false).await;
+    let alice = user(&hub, "alice", UserKind::Human, None).await;
+    let token = client_token(&hub, &alice).await;
+    for round in 0..30 {
+        let dev = format!("racer{round}");
+        let device_id = agentim_core::hub::login::device_id_of(&alice.id, &dev);
+        let (a, token) = (addr.clone(), token.clone());
+        let conn = tokio::spawn(async move {
+            // Logged out before the handshake: refused with 401.
+            let mut ws =
+                tokio_tungstenite::connect_async(format!("ws://{a}/ws?token={token}&device={dev}"))
+                    .await
+                    .ok()?
+                    .0;
+            let first = next_frame(&mut ws).await;
+            Some((ws, first))
+        });
+        tokio::time::sleep(Duration::from_micros(round * 150)).await;
+        hub.log_out(&alice.id, Some(&device_id)).await.unwrap();
+        if let Some((mut ws, first)) = conn.await.unwrap()
+            && !first.starts_with("close:")
+        {
+            // Welcomed before the logout: the logout closes it.
+            assert_eq!(
+                next_frame(&mut ws).await,
+                "close:logged_out",
+                "round {round}"
+            );
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(hub.connections_of(&alice.id), 0);
+}

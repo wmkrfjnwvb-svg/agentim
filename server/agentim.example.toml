@@ -1,0 +1,178 @@
+# AgentIM configuration (see docs/en/design/messaging.md).
+#
+#   agentim --config agentim.toml
+#
+# Databases: SQLite (single node, small deployments), PostgreSQL (recommended
+# for production) or MySQL 8 / MariaDB. Every database must be configured for
+# full durability or the server refuses to start (set unsafe_durability = true
+# to override, e.g. for throwaway test databases).
+
+[storage]
+# Database holding users, units and the conversation directory.
+control = "main"
+
+[[storage.databases]]
+name = "main"
+url = "sqlite://agentim.db?mode=rwc"
+# On Windows use the sqlite:<path> form, e.g. url = "sqlite:C:/agentim/agentim.db?mode=rwc"
+# url = "postgres://agentim:secret@db.internal/agentim"
+# url = "mysql://agentim:secret@db.internal/agentim"
+read_pool = 8
+
+# A subsidiary whose conversations must be stored separately (plan A).
+# [[storage.databases]]
+# name = "unit-b"
+# url = "postgres://agentim:secret@db-eu.internal/agentim_b"
+# Replicas (docs/en/design/cluster.md): detected at start-up. With asynchronous replicas
+# a write is acknowledged only once they have it (wait_ms, then
+# "unavailable"); reads stop at what they have.
+# [storage.databases.replication]
+# mode = "auto"              # or "managed_sync" (RDS Multi-AZ, Cloud SQL HA), "none"
+# wait_ms = 5000
+# replicas_required = 1      # default: every replica that replicates
+# replica_urls = ["mysql://agentim:secret@db-replica-1/agentim_b"]  # MySQL only
+
+# [[units]]
+# name = "subsidiary-b"
+# database = "unit-b"
+# Changing a unit's database only affects new conversations; move the existing
+# ones with (server stopped):
+#   agentim --config agentim.toml migrate-unit --unit subsidiary-b
+
+[writer]
+max_batch = 512          # commands per transaction (one fsync)
+queue_capacity = 10000   # bounded queue per database; full => "overloaded"
+commit_delay_us = 0      # optional wait to grow batches; 0 = never wait
+
+# Per-person limits, over all of a person's connections.
+# [clients]
+# send_rate = 10.0           # messages a second...
+# send_burst = 30.0          # ...with bursts up to this many
+# max_connections = 10       # WebSocket connections per user
+# max_group_members = 1000   # at creation and later
+# idle_secs = 90             # a WebSocket silent this long (no pong) is closed
+
+# What people may do from their client (docs/en/design/access.md). Your backend
+# overrides it per person: PATCH /v1/users/{id} {"permissions": {...}}.
+# [clients.allow]
+# create_groups = true
+# create_direct = true
+# add_members = true
+# find_users = true
+# create_agents = false      # people create their own agents and hold their keys
+# edit_minutes = 15          # own messages editable this long (unset: always)
+# recall_minutes = 2         # own messages recallable this long (unset: always)
+
+# Lowest supported client versions (docs/en/design/messaging.md). Older
+# clients are refused in `hello` with "client_too_old" and disconnected.
+# [clients.min_versions]
+# agentim-js = "1.2.0"
+
+# Event webhooks (docs/en/design/messaging.md): signed like Standard Webhooks,
+# delivered in order, at least once.
+# [[webhooks]]
+# name = "backend"
+# url = "https://example.com/agentim/events"
+# secret = "change-me-to-a-long-random-secret"
+# events = ["msg.*", "member.*"]
+# max_attempts = 8
+
+# Asked before every message is sent: allow, reject or replace.
+# [before_send]
+# url = "https://example.com/agentim/before-send"
+# secret = "change-me-to-a-long-random-secret"
+# timeout_ms = 2000
+# on_error = "allow"      # or "reject"
+
+# [server]
+# allowed_origins = ["https://app.example.com"]   # browser pages on other sites
+# public_url = "https://im.example.com"           # used in settings printed for new agents
+# [server.tls]                                    # serve HTTPS / WSS directly
+# cert = "/etc/agentim/cert.pem"
+# key = "/etc/agentim/key.pem"
+
+# Built-in accounts (passwords + TOTP).
+# [auth]
+# max_failures = 10           # failed logins before the account locks
+# lock_minutes = 15
+# Password hashes at once (19 MiB and a core each; 0 = one per core).
+# Logins beyond four times this get rate_limited.
+# max_concurrent_hashes = 0
+
+# Encryption at rest (docs/en/design/security.md) is on by default.
+# The master key comes from key_file, else AGENTIM_MASTER_KEY; a single
+# SQLite database without either gets <database>.key generated next to it.
+# Back the key up with the database: without it the content is unreadable.
+#   agentim encryption generate-key            # a new random key
+#   agentim encryption encrypt-existing        # encrypt data from before
+#   agentim encryption rotate-key --new-key-file new.key
+# [encryption]
+# mode = "managed"            # or "off"
+# key_file = "/etc/agentim/master.key"
+
+# Sync (docs/en/design/sync-and-clients.md). Clients only sync: the server keeps each
+# device's position and sends what follows it in batches.
+# [sync]
+# batch_size = 200            # events per conversation per batch
+# max_unacked = 1000          # events a device may hold unacknowledged
+# max_gap = 10000             # further behind than this: start over
+# device_ttl_days = 30        # positions unacknowledged this long are dropped
+# window_days = 90            # a new device gets at most this many days (max 90)
+# max_messages = 30           # ... and at most this many events per conversation (older: `history` pages)
+# older_enabled = false       # conversations quiet within the window get ...
+# older_messages = 20         # ... this many older events
+# older_max = 100
+# member_messages = 30        # history a new (human) member sees by default (<= max_messages)
+# member_days = 30
+# share_max = 200             # most history an inviter may share
+# rate_per_second = 10        # sync calls per connection
+# burst = 20
+# agent_rate_per_second = 2
+# agent_burst = 5
+
+# How long events are kept; 0 keeps them forever.
+# People paging back through older messages (docs/en/design/sync-and-clients.md).
+# [history]
+# enabled = true
+# page_max = 100              # most messages on each side of the anchor
+# rate_per_second = 5         # pages per person, all connections together
+# burst = 20
+
+# [retention]
+# days = 180
+
+# Agents (docs/en/design/agents.md–§2.3).
+# [agents]
+# max_per_owner = 20          # agents one person may own
+# conversations_per_hour = 60 # conversations one agent may start
+# history_per_minute = 60     # history and context reads per agent
+# search_per_minute = 30      # searches per agent
+# state_keys = 10000          # checkpoint keys per agent
+# progress_per_second = 10    # progress reports per agent per conversation
+
+# MCP endpoint POST /mcp for agent keys.
+# [mcp]
+# enabled = true
+# rate_per_second = 5         # tool calls per agent key
+# burst = 20
+
+# Files and images (docs/en/design/messaging.md).
+# [files]
+# storage = "local"           # "local" (through this server) or "s3" (clients upload to the bucket)
+# dir = "./data/files"        # local: the folder; behind a proxy allow request bodies of 16 MiB
+# shared = false              # local in a cluster: every node mounts the same folder
+# max_bytes = 4294967296      # largest file (4 GiB)
+# daily_bytes_per_user = 0    # 0 = no daily limit
+# max_open_per_user = 10      # uploads one person may have open at once
+# retention_days = 0          # 0 = files are kept
+# allow_metadata = false      # whether apps may keep EXIF and GPS in images
+#
+# [files.s3]                  # keys: AGENTIM_S3_ACCESS_KEY_ID, AGENTIM_S3_SECRET_ACCESS_KEY
+# endpoint = "https://s3.us-east-1.amazonaws.com"   # or MinIO, R2, OSS, COS...
+# bucket = "my-app-files"
+# region = "us-east-1"
+# prefix = "agentim"
+# path_style = false          # true for MinIO and most self-hosted stores
+# The bucket needs CORS for browsers (PUT and GET from your app's origins,
+# exposing ETag), and should abort incomplete multipart uploads after a day;
+# turn on its server-side encryption (SSE-S3 or SSE-KMS). See docs/en/testing.md.

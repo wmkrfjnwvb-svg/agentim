@@ -1,0 +1,5 @@
+module CAgentIM [system] {
+    header "shim.h"
+    link "agentim_client"
+    export *
+}

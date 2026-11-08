@@ -1,0 +1,50 @@
+---
+title: "Theme the components"
+description: "Make the chat, cards, steps and inbox look like your product: colours, corners, light and dark. Try it here and copy the CSS."
+sidebar:
+  order: 3
+---
+
+import ThemePreview from '../../../../components/ThemePreview';
+
+The components draw everything from CSS variables (React) or a `theme` object (React Native), made from one set of design tokens. Change a few of them and the chat, the cards, the steps and the inbox follow, in light and dark. The theme lives in your code, like the rest of your app's styles; nothing is set in the console.
+
+Pick an accent colour, the corner radius and the mode below. The preview is our real components; copy the CSS into your app.
+
+<ThemePreview client:only="react" />
+
+## In your app
+
+**React.** Import `@agentimhq/react/theme.css` once, then override variables on `:root` (or on any element around the components, for one part of the page only):
+
+```css
+:root {
+  --aim-accent: #0f766e;
+  --aim-accent-text: #0d5f58;
+  --aim-accent-soft: #f0fdfa;
+  --aim-radius-card: 10px;
+}
+:root[data-theme="dark"] {
+  --aim-accent-text: #5eead4;
+  --aim-accent-soft: #042f2e;
+}
+```
+
+Light and dark follow the system; set `data-theme="light"` or `"dark"` on `<html>` to choose. Every colour, radius, size and space is a variable: `--aim-bg`, `--aim-surface`, `--aim-fg`, `--aim-muted`, `--aim-border`, `--aim-success`, `--aim-warning-text`, `--aim-danger`, `--aim-font`, `--aim-font-size` and the rest are listed at the top of `theme.css`.
+
+**React Native.** Pass `scheme` (`light`, `dark` or `system`) and `colors` (any token) to `AgentIM`:
+
+```tsx
+<AgentIM client={client} me={me} scheme="system" colors={{ accent: '#0f766e', accentText: '#0d5f58', accentSoft: '#f0fdfa' }}>
+  <Chat convId={convId} />
+</AgentIM>
+```
+
+## Contrast
+
+The defaults meet WCAG 2.1 AA (4.5:1 for text, 3:1 for borders and icons) in both modes; the tests check every pair. When you change a colour, check its pairs too: the accent with white text on it, and the accent text on the page and on its soft background.
+
+## Beyond colours
+
+- Replace a whole part with `components` (the message bubble, a conversation row, the steps, your own card blocks and form fields): see [Chat components](/docs/guides/chat-components/).
+- Replace any text with `strings`, for your wording or another language.

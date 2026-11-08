@@ -1,0 +1,136 @@
+---
+title: "Client SDKs"
+description: "One Rust core on every platform. Connect, sync, the offline queue, the local cache and history, with the same rules on web, iOS, Android, Flutter, React Native, Unity and .NET."
+sidebar:
+  order: 0
+---
+
+import { Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+Every client SDK is a thin layer over one Rust core. The core holds all the rules: connecting and reconnecting, syncing without gaps, the offline queue, the encrypted cache and paging through history. So an app behaves the same on every platform, and a fix lands everywhere at once. Each wrapper runs the same scenario against a real server in CI.
+
+Each SDK gives your UI three things to follow and methods that resolve once the change is on screen:
+
+| | |
+|---|---|
+| `connection` | `closed`, `connecting`, `connected`, `disconnected`, `suspended` or `failed`, and why |
+| `conversations` | The conversation list, newest first: title, members, unread count, last message |
+| `messages(convId)` | One conversation's messages, oldest first, with `loadOlder()` and `hasOlder` |
+
+## Platforms
+
+| Platform | Package | Built on |
+|---|---|---|
+| Browser, Node | `@agentimhq/client-web` | The core in WebAssembly (146 KB gzipped), an encrypted IndexedDB cache, one connection shared by all tabs |
+| React | `@agentimhq/react` | Hooks and components: chat window, conversation list, cards, files, themes, right-to-left |
+| React Native | `@agentimhq/client-react-native`, `@agentimhq/react-native-ui` | JSI binding to the native core; components |
+| iOS, macOS | `agentim-swift` (Swift Package) | `@Observable` state on the main actor, `async` methods |
+| Android, JVM | `com.agentim:client` | `StateFlow`, `suspend` methods |
+| .NET, Unity | `AgentIM.Client` (NuGet, OpenUPM) | `Observable<T>` and `Task` methods; Unity WebGL through the browser SDK |
+| Flutter, Dart | `agentim_client` (pub.dev) | `Stream`s and `Future`s over FFI |
+
+## Connect and send
+
+<Tabs syncKey="platform">
+<TabItem label="Web">
+```ts
+import { AgentIMClient } from '@agentimhq/client-web';
+
+const client = await AgentIMClient.create({
+  url: 'https://chat.example.com',
+  deviceId: (localStorage.deviceId ??= crypto.randomUUID()),
+  tokenProvider: () => fetch('/api/chat-token').then((r) => r.text()),
+});
+await client.connect();
+
+client.conversations.subscribe((list) => render(list));
+const view = client.messages(convId);
+view.subscribe((messages) => renderMessages(messages));
+await client.send(convId, 'Hello!');
+```
+</TabItem>
+<TabItem label="React">
+```tsx
+import { AgentIM, Chat, ConversationList } from '@agentimhq/react';
+import '@agentimhq/react/theme.css';
+
+<AgentIM client={client}>
+  <ConversationList selected={convId} onSelect={setConvId} />
+  <Chat convId={convId} />
+</AgentIM>
+```
+</TabItem>
+<TabItem label="Swift">
+```swift
+let client = try AgentIMClient(ClientOptions(
+    url: "https://chat.example.com",
+    deviceId: savedDeviceId,
+    storeDir: cacheURL.path,
+    tokenProvider: { try await backend.chatToken() }))
+try await client.connect()
+// SwiftUI reads client.connection, client.conversations, client.messages(convId).list
+try await client.send(convId, "Hello!")
+```
+</TabItem>
+<TabItem label="Kotlin">
+```kotlin
+val client = AgentIMClient.create(ClientOptions(
+    url = "https://chat.example.com",
+    deviceId = savedDeviceId,
+    storeDir = context.filesDir.path,
+    tokenProvider = { backend.chatToken() }))
+client.connect()
+client.conversations.collect { render(it) }
+client.send(convId, "Hello!")
+```
+</TabItem>
+<TabItem label="C#">
+```csharp
+var client = AgentIMClient.Create(new ClientOptions {
+    Url = "https://chat.example.com",
+    DeviceId = savedDeviceId,
+    StoreDir = Application.persistentDataPath,
+    TokenProvider = ct => backend.ChatTokenAsync(ct),
+});
+await client.ConnectAsync();
+client.Conversations.Subscribe(list => Render(list));
+await client.SendAsync(convId, "Hello!");
+```
+</TabItem>
+<TabItem label="Dart">
+```dart
+final client = AgentIMClient.create(ClientOptions(
+  url: 'https://chat.example.com',
+  deviceId: savedDeviceId,
+  storeDir: (await getApplicationSupportDirectory()).path,
+  tokenProvider: () => backend.chatToken(),
+));
+await client.connect();
+client.conversations.watch().listen(render);
+await client.send(convId, 'Hello!');
+```
+</TabItem>
+</Tabs>
+
+## Things every app should know
+
+- **Keep the device id.** Generate it once and store it. A new id is a new device: it syncs from scratch and shows up as another device in the user's list.
+- **`tokenProvider` is called often.** On the first connection, every reconnect and expiry. Make it cheap and let your backend decide. Throw `TokenRefused` when your backend says the user is signed out; the client then stops instead of retrying.
+- **Sending never fails because of the network.** A message waits as `sending` until it can go. It becomes `failed` only when the server refuses it by its rules; then offer `retry` or `discard`.
+- **Use `key` for list identity.** A message sent from this device is `local:<client_msg_id>` until the server's copy replaces it in one change.
+- **`mine`** says whether I sent a message, from any of my devices. You don't need to know the server's internal user id.
+- **Errors** carry a `code`: the server's (`forbidden`, `not_found`, `conflict`, `bad_request`, `blocked`, `rate_limited`, …) or the client's (`disconnected`, `timeout`, `closed`, `unauthenticated`). See [errors](/docs/reference/errors/).
+- **`debugState()`** returns the connection, sync positions, queue and recent failures. Attach it to bug reports.
+
+## Full API
+
+<CardGrid>
+  <LinkCard title="Web" href="/docs/client-sdks/web-api/" />
+  <LinkCard title="React components" href="/docs/client-sdks/react-api/" />
+  <LinkCard title="React Native" href="/docs/client-sdks/react-native-api/" />
+  <LinkCard title="React Native components" href="/docs/client-sdks/react-native-ui-api/" />
+  <LinkCard title="Swift" href="/docs/client-sdks/swift-api/" />
+  <LinkCard title="Kotlin" href="/docs/client-sdks/kotlin-api/" />
+  <LinkCard title="C# (.NET, Unity)" href="/docs/client-sdks/dotnet-api/" />
+  <LinkCard title="Dart (Flutter)" href="/docs/client-sdks/flutter-api/" />
+</CardGrid>

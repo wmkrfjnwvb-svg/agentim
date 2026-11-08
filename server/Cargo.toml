@@ -1,0 +1,9 @@
+[workspace]
+resolver = "3"
+members = ["crates/agentim-core", "crates/agentim-cluster", "crates/agentim"]
+
+# Business enums are matched variant by variant: a new state, role, kind or
+# operation must be handled everywhere, not fall into `_` (CLAUDE.md).
+# Exceptions: `#[allow(clippy::wildcard_enum_match_arm)]` with the reason.
+[workspace.lints.clippy]
+wildcard_enum_match_arm = "warn"

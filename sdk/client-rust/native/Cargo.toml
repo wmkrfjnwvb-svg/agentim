@@ -1,0 +1,28 @@
+[package]
+name = "agentim-client"
+description = "AgentIM client SDK, native runtime: WebSocket, SQLite cache and the C ABI over the core (docs/en/design/developer-experience.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+agentim-client-core = { path = "../core" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros", "fs", "io-util"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "__rustls-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+rusqlite = { version = "0.37", features = ["bundled"] }
+getrandom = "0.3"
+# Uploads (docs/en/design/messaging.md): PUTs to the store, thumbnails.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "stream"] }
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+tokio-util = { version = "0.7", default-features = false, features = ["io"] }
+
+[dev-dependencies]
+tempfile = "3"

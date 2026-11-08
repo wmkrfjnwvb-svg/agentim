@@ -1,0 +1,15 @@
+// Cloudflare Workers static assets for agentim.co.
+// Dashboard → Workers & Pages → agentim → Settings → Build:
+//   Root directory:  site
+//   Build command:   npm ci && npm run build
+//   Deploy command:  npx wrangler deploy
+// The Worker's name in the dashboard must be the same as "name" here.
+{
+  "name": "agentim",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash"
+  }
+}

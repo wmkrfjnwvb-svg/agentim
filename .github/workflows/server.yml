@@ -1,0 +1,506 @@
+name: server
+
+on:
+  push:
+    paths: ["server/**", "sdk/**", "examples/**", ".github/workflows/server.yml"]
+  pull_request:
+    paths: ["server/**", "sdk/**", "examples/**", ".github/workflows/server.yml"]
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: server
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  # Full debug info for 60+ test binaries fills the runner's disk (the
+  # linker then dies with a bus error); line tables keep panic locations.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  check:
+    name: fmt / clippy / tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      # The runner's preinstalled Android SDK, Haskell and CodeQL (~20 GB)
+      # are not used here; the test binaries need the room.
+      - name: free disk space
+        if: runner.os == 'Linux'
+        run: sudo rm -rf /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL && df -h /
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # unit, acceptance (SQLite), multi-database, WebSocket and kill -9 crash tests
+      - run: cargo test --no-fail-fast
+
+  databases:
+    name: tests on PostgreSQL 16 and MySQL 8.4
+    runs-on: ubuntu-latest
+    # every test on three databases, then cluster and rule coverage
+    timeout-minutes: 50
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: agentim
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 2s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: agentim
+        ports: ["3306:3306"]
+        options: --health-cmd "mysqladmin ping -h 127.0.0.1 -pagentim" --health-interval 2s --health-retries 60
+    env:
+      AGENTIM_TEST_PG: postgres://postgres:agentim@127.0.0.1:5432
+      AGENTIM_TEST_MYSQL: mysql://root:agentim@127.0.0.1:3306
+      AGENTIM_TEST_S3: http://127.0.0.1:5055
+      # Every rule a test triggers is recorded here (docs/en/business-rules.md).
+      AGENTIM_RULES_HIT: ${{ github.workspace }}/server/rules-hit.txt
+    steps:
+      - uses: actions/checkout@v4
+      # The runner's preinstalled Android SDK, Haskell and CodeQL (~20 GB)
+      # are not used here; the test binaries need the room.
+      - name: free disk space
+        if: runner.os == 'Linux'
+        run: sudo rm -rf /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL && df -h /
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: an S3 compatible store for the file tests (moto)
+        run: |
+          pip install "moto[server]==5.1.0"
+          nohup moto_server -p 5055 > moto.log 2>&1 &
+          for i in $(seq 1 50); do curl -fs -X PUT http://127.0.0.1:5055/agentim-test && break; sleep 0.2; done
+      - name: same acceptance suite against every backend, plus mixed-backend units
+        # Every file with three-database tests, found here so a new or renamed one is never left out.
+        run: |
+          args=$(for f in $(grep -l 'backend_tests!' crates/agentim-core/tests/*.rs) crates/agentim-core/tests/multidb.rs; do printf -- '--test %s ' "$(basename "$f" .rs)"; done)
+          echo "$args"
+          cargo test $args -- --nocapture 2>&1 | tee result.txt; test ${PIPESTATUS[0]} -eq 0
+      - name: no test may be silently skipped here
+        run: "! grep -q 'skipped:' result.txt"
+      - name: cluster (several nodes on one database, docs/en/design/cluster.md)
+        run: cargo test -p agentim-cluster -- --nocapture 2>&1 | tee cluster.txt; test ${PIPESTATUS[0]} -eq 0
+      - name: no cluster test may be silently skipped
+        run: "! grep -q 'skipped:' cluster.txt"
+      - name: the other core tests, for rule coverage
+        run: |
+          args=$(for f in $(grep -L 'backend_tests!' crates/agentim-core/tests/*.rs); do n=$(basename "$f" .rs); [ "$n" = multidb ] || [ "$n" = rules ] || printf -- '--test %s ' "$n"; done)
+          cargo test -p agentim-core --lib $args
+      - name: every business rule is triggered by a test (docs/en/business-rules.md, ci/rules-untested.txt)
+        run: cargo test -p agentim-core --test rules -- --ignored --nocapture
+
+  client-core:
+    name: Rust client core and native runtime (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            sdk/client-rust
+      - run: cargo build --bin agentim
+      - name: fmt / clippy
+        working-directory: sdk/client-rust
+        run: cargo fmt --check && cargo clippy --all-targets -- -D warnings
+      - name: core rules, details and 1000 simulation seeds
+        working-directory: sdk/client-rust
+        run: AGENTIM_SIM_SEEDS=1000 cargo test -p agentim-client-core
+      - name: native runtime against the server (conformance, C ABI)
+        if: runner.os == 'Linux'
+        working-directory: sdk/client-rust
+        run: cargo test -p agentim-client
+      - name: core coverage
+        if: runner.os == 'Linux'
+        working-directory: sdk/client-rust
+        run: |
+          cargo install cargo-llvm-cov --locked
+          AGENTIM_SIM_SEEDS=300 cargo llvm-cov -p agentim-client-core --fail-under-lines 98 --summary-only
+
+  client-web:
+    name: browser SDK, React components and React Native
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            sdk/client-rust
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --bin agentim
+      - name: build (types, wasm size budget) and Node tests against the server
+        working-directory: sdk/client-web
+        run: npm ci && npm test
+      - name: Chromium (IndexedDB, two tabs, takeover, offline)
+        working-directory: sdk/client-web
+        run: |
+          npm install --no-save --prefix ../../server/ci playwright@1.56.1
+          npx --prefix ../../server/ci playwright install --with-deps chromium
+          PLAYWRIGHT="$PWD/../../server/ci/node_modules/playwright" node test/browser.mjs
+      - name: React components (every state, then the support window in Chromium with a real agent)
+        working-directory: sdk/react
+        run: |
+          npm ci
+          npm test
+          mkdir -p "$RUNNER_TEMP/shots"
+          PLAYWRIGHT="$PWD/../../server/ci/node_modules/playwright" OUT="$RUNNER_TEMP/shots" npm run e2e
+      - name: Example apps (each started with the scripted model; main flows in Chromium; first reply within 30 s)
+        working-directory: examples
+        run: |
+          npm ci
+          PLAYWRIGHT="$PWD/../server/ci/node_modules/playwright" AGENTIM_BIN=../server/target/debug/agentim npm test
+      - name: React Native (TypeScript against a fake binding; the JSI binding compiled against react-native 0.87.1)
+        working-directory: sdk/client-react-native
+        run: |
+          npm ci
+          npm test
+          mkdir -p "$RUNNER_TEMP/rn" && (cd "$RUNNER_TEMP/rn" && npm pack react-native@0.87.1 --silent && tar -xzf react-native-0.87.1.tgz)
+          RN="$RUNNER_TEMP/rn/package/ReactCommon"
+          c++ -std=c++20 -Wall -Wextra -Werror -fsyntax-only -I"$RN/jsi" -I"$RN/callinvoker" -I../client-rust/native/include cpp/AgentIMJsi.cpp
+      - name: React Native components (every state in the React Native test renderer, shared tokens up to date)
+        working-directory: sdk/react-native-ui
+        run: |
+          npm ci
+          npm test
+      - name: Unity WebGL bridge (the jslib over client-web, as emscripten loads it)
+        working-directory: sdk/client-dotnet
+        run: node --no-warnings --test --test-timeout=60000 --test-force-exit unity/test/*.test.mjs
+
+  client-wrappers:
+    name: client SDK wrappers (C#, Kotlin/JVM, Swift, Dart) against the server
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      # The runner's preinstalled Android SDK, Haskell and CodeQL (~20 GB)
+      # are not used here; the test binaries need the room.
+      - name: free disk space
+        if: runner.os == 'Linux'
+        run: sudo rm -rf /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL && df -h /
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            sdk/client-rust
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+      - uses: dart-lang/setup-dart@v1
+      - run: cargo build --bin agentim
+      - name: native runtime (the library every wrapper loads)
+        working-directory: sdk/client-rust
+        run: cargo build -p agentim-client
+      - name: C# (.NET; the Unity sources build as netstandard2.1)
+        working-directory: sdk/client-dotnet
+        run: |
+          dotnet build AgentIM.Client
+          dotnet build AgentIM.Client -f netstandard2.1 -p:DefineConstants=UNITY_WEBGL
+          dotnet run --project Conformance
+      - name: Kotlin (JNI bridge, JVM)
+        working-directory: sdk/client-kotlin
+        run: |
+          curl -sSfL --retry 5 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/kotlin.zip" https://github.com/JetBrains/kotlin/releases/download/v2.2.20/kotlin-compiler-2.2.20.zip
+          unzip -q "$RUNNER_TEMP/kotlin.zip" -d "$RUNNER_TEMP"
+          KOTLINC="$RUNNER_TEMP/kotlinc/bin/kotlinc" sh test.sh
+      - name: Swift
+        working-directory: sdk/client-swift
+        run: sh test.sh
+      - name: Dart (build hook, Dart VM)
+        working-directory: sdk/client-flutter
+        run: sh test.sh
+      - name: Dart package as published (downloads the core, checks its SHA-256)
+        working-directory: sdk/client-flutter
+        run: sh test-package.sh ../client-rust/target/debug/libagentim_client.so
+
+  client-flutter:
+    name: Flutter (a Linux app with the core from the build hook, against the server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            sdk/client-rust
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: "3.47.7"
+          channel: stable
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev ninja-build clang xvfb
+      - run: cargo build --bin agentim
+      - name: build the example app and run it
+        working-directory: sdk/client-flutter/example
+        run: sh test.sh
+
+  replicas:
+    name: database replicas and failover (PostgreSQL 16, MySQL 8.4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - run: docker pull mysql:8.4
+      - name: acknowledged writes survive a failover (docs/en/design/cluster.md)
+        env:
+          AGENTIM_TEST_REPLICAS: "1"
+        run: cargo test --test replicas -- --nocapture --test-threads 1 2>&1 | tee replicas.txt; test ${PIPESTATUS[0]} -eq 0
+      - name: both replica tests ran
+        run: test "$(grep -c '_replicas_keep_acknowledged_writes ... ok' replicas.txt)" -eq 2
+
+  deploy:
+    name: docker image and three-node compose cluster
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: deploy/compose
+    steps:
+      - uses: actions/checkout@v4
+      - name: build and start
+        run: |
+          openssl rand -base64 32 > master.key
+          docker compose up -d --build --wait --wait-timeout 600
+      - name: every node serves and all shards are held
+        run: |
+          for i in $(seq 60); do curl -fs http://127.0.0.1:8080/readyz && break; sleep 2; done
+          for i in $(seq 30); do
+            docker compose exec -T agentim-1 agentim --config /etc/agentim/agentim.toml cluster status > status.json
+            [ "$(jq '[.nodes[] | select(.state == "active")] | length' status.json)" -eq 3 ] \
+              && [ "$(jq '.databases[0].unheld' status.json)" -eq 0 ] && break
+            sleep 2
+          done
+          cat status.json
+          test "$(jq '[.nodes[] | select(.state == "active")] | length' status.json)" -eq 3
+          test "$(jq '.databases[0].unheld' status.json)" -eq 0
+      - name: a stopped node hands its shards over; the others keep serving
+        run: |
+          docker compose stop agentim-3
+          for i in $(seq 15); do
+            docker compose exec -T agentim-1 agentim --config /etc/agentim/agentim.toml cluster status > status.json
+            [ "$(jq '[.nodes[] | select(.state == "active")] | length' status.json)" -eq 2 ] && break
+            sleep 2
+          done
+          cat status.json
+          test "$(jq '[.nodes[] | select(.state == "active")] | length' status.json)" -eq 2
+          test "$(jq '.databases[0].unheld' status.json)" -eq 0
+          test -z "$(jq -r '.databases[0].held["agentim-3"] // empty' status.json)"
+          curl -fs http://127.0.0.1:8080/readyz
+      - name: logs
+        if: failure()
+        run: docker compose logs --no-color | tail -200
+
+  load:
+    name: load (${{ matrix.os }}, ${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        name: [fanout, write-path]
+        include:
+          - name: fanout
+            args: --clients 50 --messages 100 --streams 10 --chunks 60
+          - name: write-path
+            args: --solo --clients 50 --messages 200
+          # Performance gates on Linux only (runner disks differ a lot on Windows).
+          - os: ubuntu-latest
+            name: fanout
+            gate: --min-throughput 300 --max-p99-ms 1000
+          - os: ubuntu-latest
+            name: write-path
+            gate: --min-throughput 400 --max-p99-ms 500
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - run: cargo build --release --bins --examples
+      # Server start, test and stop in one step: on Windows a step does not end
+      # while a background process it started is still running.
+      - name: load test with consistency checks
+        run: |
+          # Throughput is measured: the per-person send limit is lifted, as in bench/single-node.sh.
+          printf "[storage]\ncontrol = 'main'\n[[storage.databases]]\nname = 'main'\nurl = 'sqlite:%s?mode=rwc'\nread_pool = 8\n[clients]\nsend_rate = 1000000.0\nsend_burst = 1000000.0\nmax_connections = 100000\n" "load-ci.db" > load-ci.toml
+          ./target/release/agentim --demo --config load-ci.toml --addr 127.0.0.1:8080 < /dev/null > "$RUNNER_TEMP/server.log" 2>&1 &
+          server=$!
+          ok=0
+          trap 'set +e; curl -s http://127.0.0.1:8080/metrics | grep -E "^agentim_(commit_batch_size|commit_duration_seconds)_(sum|count)|^agentim_push_dropped|^agentim_write_rejected"; kill $server; taskkill //F //IM agentim.exe > /dev/null 2>&1; [ $ok = 1 ] || tail -n 200 "$RUNNER_TEMP/server.log"' EXIT
+          for i in $(seq 150); do curl -sf -m 2 http://127.0.0.1:8080/readyz > /dev/null && break; sleep 0.2; done
+          ./target/release/examples/loadtest --addr 127.0.0.1:8080 ${{ matrix.args }} ${{ matrix.gate }} | tee result.txt
+          test ${PIPESTATUS[0]} -eq 0
+          ok=1
+          { echo "### ${{ matrix.os }} / ${{ matrix.name }}"; echo '```'; cat result.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  # docs/en/design/developer-experience.md: the web and React Native components in fixed states
+  # against the baselines in sdk/react/test/screens, in the Playwright
+  # image so fonts and rendering are the same every run. New or differing
+  # shots (and diffs) are uploaded.
+  screens:
+    name: screenshot comparison (web and React Native components)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: mcr.microsoft.com/playwright:v1.56.1-noble
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the galleries
+        run: |
+          (cd sdk/client-web && npm ci && npx tsc -p tsconfig.json)
+          (cd sdk/react && npm ci && npm run build)
+          (cd sdk/react-native-ui && npm ci)
+      - name: compare
+        working-directory: sdk/react
+        run: |
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" playwright@1.56.1
+          PLAYWRIGHT="$RUNNER_TEMP/pw/node_modules/playwright" OUT="$PWD/screens-out" npm run screens
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screens
+          path: sdk/react/screens-out
+          if-no-files-found: ignore
+
+  ui:
+    name: browser smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            server
+            sdk/client-rust
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: build the console
+        run: cd console && npm ci && npm run build
+      - name: build the demo (browser SDK with its wasm core, React components, the app)
+        run: sh demo/build.sh
+      - run: cargo build --release --bins
+      - name: install playwright
+        run: |
+          npm install --no-save --prefix ci playwright@1.56.1
+          npx --prefix ci playwright install --with-deps chromium
+      - name: run UI checks against the demo server
+        run: |
+          ./target/release/agentim --demo --db "$RUNNER_TEMP/ui.db" --addr 127.0.0.1:8099 --stream-idle-secs 6 < /dev/null > "$RUNNER_TEMP/server.log" 2>&1 &
+          server=$!
+          ok=0
+          trap 'set +e; kill $server; taskkill //F //IM agentim.exe > /dev/null 2>&1; [ $ok = 1 ] || tail -n 200 "$RUNNER_TEMP/server.log"' EXIT
+          for i in $(seq 150); do curl -sf -m 2 http://127.0.0.1:8099/readyz > /dev/null && break; sleep 0.2; done
+          PLAYWRIGHT="$PWD/ci/node_modules/playwright" BASE=http://127.0.0.1:8099 OUT=screenshots node ci/ui_smoke.mjs
+          ok=1
+      - name: run the console checks
+        run: PLAYWRIGHT="$PWD/ci/node_modules/playwright" BIN=target/release/agentim OUT=screenshots node ci/console_smoke.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-screenshots-${{ matrix.os }}
+          path: server/screenshots
+
+  sdk:
+    name: server SDK smoke tests (Node, Python, Go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: cargo build --bins
+      - run: (cd ../sdk/go && gofmt -l . | (! grep .) && go vet ./...)
+      - run: bash ../sdk/smoke.sh server/target/debug/agentim
+
+  agent-sdk:
+    name: agent SDK end-to-end (${{ matrix.os }}, Node and Python)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: cargo build --bins
+      - run: PYTHON=python bash ../sdk/agent_e2e.sh server/target/debug/agentim

@@ -1,0 +1,228 @@
+# Model prices for the built-in key (docs/en/design/assistants.md): USD per 1M tokens, from
+# each provider's official pricing page on the date in `as_of`. Only models
+# listed here can be used with a built-in key (their cost must be known);
+# an app's own key can use every model the provider lists.
+#
+# A model id matches the longest `model` that is equal to it or a prefix
+# followed by "-" (so "claude-sonnet-5-5" also covers dated variants).
+# Optional per entry:
+#   from = "YYYY-MM-DD"        the price applies from this day (UTC); the
+#                              latest entry not in the future wins
+#   long_above = N             prompts above N input tokens cost long_input /
+#                              long_output / long_cache_read / long_cache_write
+# Optional per provider ([provider.<name>]):
+#   peak_hours_utc = [[a, b]]  Monday-Friday hours [a, b) priced as listed;
+#   offpeak_factor = f         every other hour costs f times the price
+#
+# Deployments can override this file with `ai.prices_file`.
+
+[provider.deepseek]
+# https://api-docs.deepseek.com/quick_start/pricing (2026-11-06): off-peak
+# is half; peak 01:00-04:00 and 06:00-10:00 UTC on weekdays. Chinese public
+# holidays are off-peak there but charged as peak here (we can't know them).
+peak_hours_utc = [[1, 4], [6, 10]]
+offpeak_factor = 0.5
+
+# --- Anthropic (Claude); https://platform.claude.com/docs/en/about-claude/pricing
+# Cache writes (5-minute) cost 1.25x input.
+[[price]]
+provider = "anthropic"
+model = "claude-opus-5-5"
+input = 4.0
+output = 20.0
+cache_read = 0.20
+cache_write = 5.0
+as_of = "2026-11-06"
+
+[[price]]
+provider = "anthropic"
+model = "claude-sonnet-5-5"
+input = 2.0
+output = 10.0
+cache_read = 0.10
+cache_write = 2.5
+as_of = "2026-11-06"
+
+[[price]]
+provider = "anthropic"
+model = "claude-haiku-5-5"
+input = 0.10
+output = 0.50
+cache_read = 0.01
+cache_write = 0.125
+long_above = 100000
+long_input = 0.50
+long_output = 2.50
+long_cache_read = 0.05
+long_cache_write = 0.625
+as_of = "2026-11-06"
+
+[[price]]
+provider = "anthropic"
+model = "claude-fable-5-1"
+input = 10.0
+output = 50.0
+cache_read = 0.25
+cache_write = 12.5
+as_of = "2026-11-06"
+
+# --- OpenAI; https://developers.openai.com/api/docs/pricing (Standard, <=272K input)
+[[price]]
+provider = "openai"
+model = "gpt-5.6-sol"
+input = 4.0
+output = 20.0
+cache_read = 0.40
+as_of = "2026-11-06"
+
+[[price]]
+provider = "openai"
+model = "gpt-5.6-terra"
+input = 2.0
+output = 12.0
+cache_read = 0.20
+as_of = "2026-11-06"
+
+[[price]]
+provider = "openai"
+model = "gpt-5.6-luna"
+input = 0.20
+output = 1.20
+cache_read = 0.02
+as_of = "2026-11-06"
+
+[[price]]
+provider = "openai"
+model = "gpt-5.5"
+input = 5.0
+output = 30.0
+cache_read = 0.50
+as_of = "2026-11-06"
+
+[[price]]
+provider = "openai"
+model = "gpt-5.4"
+input = 2.50
+output = 15.0
+cache_read = 0.25
+as_of = "2026-11-06"
+
+[[price]]
+provider = "openai"
+model = "gpt-5.4-mini"
+input = 0.75
+output = 4.50
+cache_read = 0.075
+as_of = "2026-11-06"
+
+[[price]]
+provider = "openai"
+model = "gpt-5.4-nano"
+input = 0.20
+output = 1.25
+cache_read = 0.02
+as_of = "2026-11-06"
+
+[[price]]
+provider = "openai"
+model = "gpt-5.3-codex"
+input = 1.75
+output = 14.0
+cache_read = 0.175
+as_of = "2026-11-06"
+
+[[price]]
+provider = "openai"
+model = "gpt-5-mini"
+input = 0.25
+output = 2.0
+cache_read = 0.025
+as_of = "2026-11-06"
+
+[[price]]
+provider = "openai"
+model = "gpt-5-nano"
+input = 0.05
+output = 0.40
+cache_read = 0.005
+as_of = "2026-11-06"
+
+# --- Google Gemini; https://aistudio.google.com/docs/pricing (paid tier, Standard)
+[[price]]
+provider = "gemini"
+model = "gemini-3.1-pro-preview"
+input = 2.0
+output = 12.0
+cache_read = 0.20
+long_above = 200000
+long_input = 4.0
+long_output = 18.0
+long_cache_read = 0.40
+as_of = "2026-11-06"
+
+[[price]]
+provider = "gemini"
+model = "gemini-3.8-flash"
+input = 0.75
+output = 3.75
+cache_read = 0.075
+as_of = "2026-11-06"
+
+[[price]]
+provider = "gemini"
+model = "gemini-3.8-flash"
+from = "2027-01-01"
+input = 1.50
+output = 7.50
+cache_read = 0.15
+as_of = "2026-11-06"
+
+[[price]]
+provider = "gemini"
+model = "gemini-3.6-flash"
+input = 0.75
+output = 3.75
+cache_read = 0.075
+as_of = "2026-11-06"
+
+[[price]]
+provider = "gemini"
+model = "gemini-3.6-flash"
+from = "2027-01-01"
+input = 1.50
+output = 7.50
+cache_read = 0.15
+as_of = "2026-11-06"
+
+[[price]]
+provider = "gemini"
+model = "gemini-3.5-flash-lite"
+input = 0.30
+output = 2.50
+cache_read = 0.03
+as_of = "2026-11-06"
+
+[[price]]
+provider = "gemini"
+model = "gemini-3.1-flash-lite"
+input = 0.25
+output = 1.50
+cache_read = 0.025
+as_of = "2026-11-06"
+
+# --- DeepSeek (peak prices; see [provider.deepseek])
+[[price]]
+provider = "deepseek"
+model = "deepseek-flash"
+input = 0.30
+output = 1.20
+cache_read = 0.006
+as_of = "2026-11-06"
+
+[[price]]
+provider = "deepseek"
+model = "deepseek-v4-pro"
+input = 1.32
+output = 3.96
+cache_read = 0.044
+as_of = "2026-11-06"

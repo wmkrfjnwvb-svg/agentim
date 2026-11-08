@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- AgentIM: two chat bubbles, a person (behind) and an agent (in front, with its spark). -->
+  <path d="M8 6h28a8 8 0 0 1 8 8v14a8 8 0 0 1-8 8H20l-9 8v-8H8a8 8 0 0 1-8-8V14a8 8 0 0 1 8-8z" fill="#93c5fd"/>
+  <path d="M28 20h28a8 8 0 0 1 8 8v16a8 8 0 0 1-8 8h-3v9l-10-9H28a8 8 0 0 1-8-8V28a8 8 0 0 1 8-8z" fill="#2563eb"/>
+  <path d="M42 26.5l2.3 6.2 6.2 2.3-6.2 2.3-2.3 6.2-2.3-6.2-6.2-2.3 6.2-2.3z" fill="#fff"/>
+</svg>

@@ -1,0 +1,20 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "agentim.name" . }}
+spec:
+  selector:
+    matchLabels: {{- include "agentim.labels" . | nindent 6 }}
+  endpoints:
+    - {port: http, path: /metrics, interval: 15s}
+{{- end }}
+{{- if .Values.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "agentim.name" . }}
+spec:
+{{ .Files.Get "alerts.yml" | indent 2 }}
+{{- end }}
