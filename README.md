@@ -1,5 +1,7 @@
 # AgentIM
 
+English · [中文](README.zh-CN.md)
+
 **Let AI get things done inside your product, safely.** AgentIM is open-source chat infrastructure with AI agents built in, written in Rust. Your users talk to people and to agents in the same conversation. Agents call your APIs and MCP servers. A person approves anything that changes data. Anyone can take over at any time. Every step is on record.
 
 It ships as one program, `agentim`. It runs on one machine or as a cluster, on SQLite, PostgreSQL or MySQL. Self-host it under Apache 2.0 with every feature free, or use the hosted cloud (early access).
