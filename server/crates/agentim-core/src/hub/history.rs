@@ -198,6 +198,7 @@ impl Hub {
     /// until `want` are found, the budget of tokens is spent, the log (or
     /// the agent's visible part of it) ends, or SCAN_CAP events were looked
     /// at. Going down never passes `floor`.
+    #[allow(clippy::too_many_arguments)]
     async fn scan(
         &self,
         m: &Member,
@@ -206,9 +207,11 @@ impl Hub {
         want: usize,
         budget: Option<i64>,
         floor: i64,
+        thread: Option<&str>,
     ) -> ApiResult<Scan> {
         let shard = self.conv_shard(conv)?;
         let (m, conv, sh) = (m.clone(), conv.to_string(), self.inner.sh.clone());
+        let thread = thread.map(String::from);
         self.read(shard, move |db| {
             Box::pin(async move {
                 let floor = floor.max(m.visible_from - 1);
@@ -232,7 +235,14 @@ impl Hub {
                             break 'scan true;
                         }
                         let seq = e.seq;
-                        let Some(v) = agent_view(db, &sh, &m, e).await? else {
+                        // In a thread: its root and replies only (MSG-19).
+                        let in_thread = |v: &Value| {
+                            thread.as_deref().is_none_or(|t| {
+                                let msg = &v["event"]["msg"];
+                                msg["msg_id"] == t || msg["thread_id"] == t
+                            })
+                        };
+                        let Some(v) = agent_view(db, &sh, &m, e).await?.filter(in_thread) else {
                             looked += 1;
                             first = first.min(seq);
                             last = last.max(seq);
@@ -317,7 +327,7 @@ impl Hub {
         let m = self.reader_member(me, conv_id, None).await?;
         self.read_allowed(&me.id, "history")?;
         let s = self
-            .scan(&m, conv_id, from, limit as usize, None, 0)
+            .scan(&m, conv_id, from, limit as usize, None, 0, None)
             .await?;
         self.audit_read(
             me,
@@ -336,6 +346,7 @@ impl Hub {
         me: &User,
         conv_id: &str,
         max_tokens: Option<i64>,
+        thread: Option<&str>,
     ) -> ApiResult<Value> {
         Self::agents_only(me)?;
         let budget = max_tokens.unwrap_or(CONTEXT_DEFAULT);
@@ -369,6 +380,7 @@ impl Hub {
                 usize::MAX,
                 Some(left.max(0)),
                 floor,
+                thread,
             )
             .await?;
         self.audit_read(
@@ -379,7 +391,7 @@ impl Hub {
         )
         .await?;
         Ok(
-            json!({"conv_id": conv_id, "summary": summary, "events": s.events, "truncated": s.more, "max_tokens": budget}),
+            json!({"conv_id": conv_id, "thread_id": thread, "summary": summary, "events": s.events, "truncated": s.more, "max_tokens": budget}),
         )
     }
 
@@ -429,7 +441,7 @@ impl Hub {
         let mut found_in = vec![];
         for (conv, m) in &convs {
             let s = self
-                .scan(m, conv, From::Before(i64::MAX), usize::MAX, None, 0)
+                .scan(m, conv, From::Before(i64::MAX), usize::MAX, None, 0, None)
                 .await?;
             complete &= !s.more;
             let before = hits.len();

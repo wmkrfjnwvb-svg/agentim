@@ -676,6 +676,19 @@ pub fn routes(state: AppState) -> Router<AppState> {
             post(send_message).get(history),
         )
         .route("/v1/conversations/{id}/read", post(mark_read))
+        .route("/v1/conversations/{id}/threads", get(list_threads))
+        .route("/v1/conversations/{id}/threads/{thread}", get(get_thread))
+        .route(
+            "/v1/conversations/{id}/messages/{msg}/reactions/{key}",
+            get(list_reactions)
+                .put(add_reaction)
+                .delete(remove_reaction),
+        )
+        .route("/v1/conversations/{id}/pins", get(list_pins))
+        .route(
+            "/v1/conversations/{id}/pins/{msg}",
+            put(pin_message).delete(unpin_message),
+        )
         .route("/v1/conversations/{id}/uploads", post(upload_start))
         .route(
             "/v1/conversations/{id}/uploads/{file}",
@@ -747,6 +760,14 @@ pub const ROUTES: &[&str] = &[
     "POST /v1/conversations/{id}/messages",
     "GET /v1/conversations/{id}/messages",
     "POST /v1/conversations/{id}/read",
+    "GET /v1/conversations/{id}/threads",
+    "GET /v1/conversations/{id}/threads/{thread}",
+    "GET /v1/conversations/{id}/messages/{msg}/reactions/{key}",
+    "PUT /v1/conversations/{id}/messages/{msg}/reactions/{key}",
+    "DELETE /v1/conversations/{id}/messages/{msg}/reactions/{key}",
+    "GET /v1/conversations/{id}/pins",
+    "PUT /v1/conversations/{id}/pins/{msg}",
+    "DELETE /v1/conversations/{id}/pins/{msg}",
     "POST /v1/conversations/{id}/uploads",
     "GET /v1/conversations/{id}/uploads/{file}",
     "POST /v1/conversations/{id}/uploads/{file}:complete",
@@ -1715,6 +1736,7 @@ async fn create_conversation(State(st): State<AppState>, Extension(k): K, b: Byt
                     conv_id: conv.clone(),
                     title: None,
                     fields: Some(f),
+                    pin_policy: None,
                 },
             )
             .await?;
@@ -1754,6 +1776,8 @@ struct PatchConv {
     who: Option<String>,
     title: Option<String>,
     fields: Option<Value>,
+    /// `members` or `admins` (MSG-21).
+    pin_policy: Option<String>,
 }
 
 async fn patch_conversation(
@@ -1772,6 +1796,7 @@ async fn patch_conversation(
                 conv_id: id.clone(),
                 title: req.title,
                 fields: req.fields,
+                pin_policy: req.pin_policy,
             },
         )
         .await?;
@@ -1972,6 +1997,10 @@ struct SendReq {
     intent: Option<String>,
     refs: Option<Vec<String>>,
     sources: Option<Vec<Value>>,
+    /// Replies in this message's thread (docs/en/design/messaging.md, MSG-19).
+    thread_id: Option<String>,
+    #[serde(default)]
+    also_in_conv: bool,
 }
 
 /// The request's `client_msg_id`, else one derived from the Idempotency-Key
@@ -2021,6 +2050,8 @@ async fn send_as(
                 intent: req.intent,
                 refs: req.refs,
                 sources: req.sources,
+                thread_id: req.thread_id,
+                also_in_conv: req.also_in_conv,
             },
         )
         .await?;
@@ -2149,6 +2180,8 @@ async fn batch_send(
         intent: None,
         refs: None,
         sources: None,
+        thread_id: None,
+        also_in_conv: false,
     };
     let root = client_msg_id(&base, &k, idem.as_ref().map(|e| &e.0))?;
     let mut results = vec![];
@@ -2361,6 +2394,261 @@ async fn mark_read(
         )
         .await?;
     ok(json!({}))
+}
+
+// ---- threads, reactions and pins (docs/en/design/messaging.md, MSG-19 to MSG-21)
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ThreadsQuery {
+    /// A member: the threads they follow; none: every thread.
+    #[serde(rename = "as")]
+    who: Option<String>,
+    before: Option<i64>,
+    limit: Option<i64>,
+}
+
+/// The conversation's threads, latest reply first (as a member: the ones
+/// they follow, with their unread counts).
+async fn list_threads(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path(id): Path<String>,
+    Query(q): Query<ThreadsQuery>,
+) -> R {
+    need(&k, "messages:read")?;
+    let who = match q.who.as_deref() {
+        None => st.hub.system_user(),
+        w => actor(&st.hub, w)?,
+    };
+    let v = st
+        .hub
+        .act_as(
+            &who,
+            ClientMsg::ListThreads {
+                conv_id: Some(id.clone()),
+                before: q.before,
+                limit: q.limit,
+            },
+        )
+        .await?;
+    st.hub
+        .audit_api(&k.key_id, &who.id, "threads.read", Some(&id), json!({}))
+        .await;
+    ok(v)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ThreadQuery {
+    #[serde(default)]
+    after_seq: i64,
+    limit: Option<i64>,
+}
+
+/// A thread's root and replies.
+async fn get_thread(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path((id, thread)): Path<(String, String)>,
+    Query(q): Query<ThreadQuery>,
+) -> R {
+    need(&k, "messages:read")?;
+    let sys = st.hub.system_user();
+    let v = st
+        .hub
+        .act_as(
+            &sys,
+            ClientMsg::PullThread {
+                conv_id: id.clone(),
+                thread_id: thread.clone(),
+                after_seq: q.after_seq,
+                limit: q.limit,
+            },
+        )
+        .await?;
+    st.hub
+        .audit_api(
+            &k.key_id,
+            SYSTEM_ID,
+            "messages.read",
+            Some(&id),
+            json!({"thread_id": thread}),
+        )
+        .await;
+    ok(v)
+}
+
+/// A member acts (reactions and pins are people's and agents' own).
+fn member_actor(hub: &Hub, who: Option<&str>) -> Result<User, Problem> {
+    let u = actor(hub, who)?;
+    if u.kind == UserKind::System {
+        return Err(bad("reactions and pins are a member's: \"as\" names one"));
+    }
+    Ok(u)
+}
+
+async fn add_reaction(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path((id, msg, key)): Path<(String, String, String)>,
+    b: Bytes,
+) -> R {
+    need(&k, "messages:write")?;
+    let req: AsBody = body(&b)?;
+    let who = member_actor(&st.hub, req.who.as_deref())?;
+    let v = st
+        .hub
+        .act_as(
+            &who,
+            ClientMsg::React {
+                conv_id: id,
+                msg_id: msg,
+                key,
+            },
+        )
+        .await?;
+    ok(json!({"changed": v["changed"], "seq": v["seq"]}))
+}
+
+async fn remove_reaction(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path((id, msg, key)): Path<(String, String, String)>,
+    Query(q): Query<AsQuery>,
+) -> R {
+    need(&k, "messages:write")?;
+    let who = member_actor(&st.hub, q.who.as_deref())?;
+    let v = st
+        .hub
+        .act_as(
+            &who,
+            ClientMsg::Unreact {
+                conv_id: id,
+                msg_id: msg,
+                key,
+            },
+        )
+        .await?;
+    ok(json!({"changed": v["changed"], "seq": v["seq"]}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReactionsQuery {
+    #[serde(default)]
+    after_seq: i64,
+    limit: Option<i64>,
+}
+
+async fn list_reactions(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path((id, msg, key)): Path<(String, String, String)>,
+    Query(q): Query<ReactionsQuery>,
+) -> R {
+    need(&k, "messages:read")?;
+    let sys = st.hub.system_user();
+    let mut v = st
+        .hub
+        .act_as(
+            &sys,
+            ClientMsg::ListReactions {
+                conv_id: id,
+                msg_id: msg,
+                key,
+                after_seq: q.after_seq,
+                limit: q.limit,
+            },
+        )
+        .await?;
+    for u in v["users"].as_array_mut().into_iter().flatten() {
+        if let Some(x) = u["user_id"].as_str() {
+            u["user_id"] = json!(external(&st.hub, x));
+        }
+    }
+    ok(v)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PinsQuery {
+    before_seq: Option<i64>,
+    limit: Option<i64>,
+}
+
+async fn list_pins(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path(id): Path<String>,
+    Query(q): Query<PinsQuery>,
+) -> R {
+    need(&k, "messages:read")?;
+    let sys = st.hub.system_user();
+    let v = st
+        .hub
+        .act_as(
+            &sys,
+            ClientMsg::ListPins {
+                conv_id: id.clone(),
+                before_seq: q.before_seq,
+                limit: q.limit,
+            },
+        )
+        .await?;
+    st.hub
+        .audit_api(
+            &k.key_id,
+            SYSTEM_ID,
+            "messages.read",
+            Some(&id),
+            json!({"pins": true}),
+        )
+        .await;
+    ok(v)
+}
+
+async fn pin_message(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path((id, msg)): Path<(String, String)>,
+    b: Bytes,
+) -> R {
+    need(&k, "messages:write")?;
+    let req: AsBody = body(&b)?;
+    let who = member_actor(&st.hub, req.who.as_deref())?;
+    let v = st
+        .hub
+        .act_as(
+            &who,
+            ClientMsg::Pin {
+                conv_id: id,
+                msg_id: msg,
+            },
+        )
+        .await?;
+    ok(json!({"changed": v["changed"], "seq": v["seq"]}))
+}
+
+async fn unpin_message(
+    State(st): State<AppState>,
+    Extension(k): K,
+    Path((id, msg)): Path<(String, String)>,
+    Query(q): Query<AsQuery>,
+) -> R {
+    need(&k, "messages:write")?;
+    let who = member_actor(&st.hub, q.who.as_deref())?;
+    let v = st
+        .hub
+        .act_as(
+            &who,
+            ClientMsg::Unpin {
+                conv_id: id,
+                msg_id: msg,
+            },
+        )
+        .await?;
+    ok(json!({"changed": v["changed"], "seq": v["seq"]}))
 }
 
 // ---- files (docs/en/design/messaging.md)

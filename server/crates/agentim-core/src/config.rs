@@ -83,7 +83,7 @@ pub struct Config {
 
 /// `[messages]`: limits of reactions and pins (docs/en/design/messaging.md,
 /// MSG-20 and MSG-21).
-#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct MessagesConfig {
     /// Different reaction keys a message may have.
@@ -99,6 +99,8 @@ pub struct MessagesConfig {
     /// A 👍 or 👎 on an agent's message also counts as feedback on the
     /// agent (docs/en/design/agents.md).
     pub reactions_as_feedback: bool,
+    /// Reactions (added or removed) one user may make per second.
+    pub reactions_per_second: f64,
     /// Pinned messages per conversation.
     pub pins_per_conv: usize,
     /// Agents may pin and unpin messages.
@@ -113,6 +115,7 @@ impl Default for MessagesConfig {
             reaction_mode: "multi".into(),
             reaction_names: vec![],
             reactions_as_feedback: false,
+            reactions_per_second: 20.0,
             pins_per_conv: 100,
             agents_pin: false,
         }
@@ -1292,6 +1295,7 @@ impl Config {
             tenancy: Default::default(),
             ai: Default::default(),
             cluster: Default::default(),
+            messages: Default::default(),
         }
     }
 
@@ -1666,6 +1670,7 @@ mod tests {
             ai: Default::default(),
             tenancy: Default::default(),
             cluster: Default::default(),
+            messages: Default::default(),
         }
     }
 

@@ -151,6 +151,11 @@
           "minLength": 1,
           "type": "string"
         },
+        "thread_id": {
+          "description": "Reply in the thread of this message (the thread's root; optional). When you were woken by a message in a thread, answer in the same thread.",
+          "minLength": 1,
+          "type": "string"
+        },
         "to": {
           "description": "Members who should act (names or ids).",
           "items": {
@@ -1192,5 +1197,148 @@
     },
     "name": "progress",
     "title": "Report progress"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a reaction (one emoji) to a message, e.g. 👀 when you start on a request or ✅ when it is done. Adding it again changes nothing.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "key": {
+          "description": "One emoji, or one of the app's :names:.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "msg_id": {
+          "description": "The message.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "conv_id",
+        "msg_id",
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "react",
+    "title": "React to a message"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes a reaction you added.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "msg_id": {
+          "description": "The message.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "conv_id",
+        "msg_id",
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "unreact",
+    "title": "Remove a reaction"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The root message of a thread and its replies after a seq, oldest first.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after_seq": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "thread_id": {
+          "description": "The thread's root message.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "conv_id",
+        "thread_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_thread",
+    "title": "Read a thread"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The conversation's pinned messages, latest pin first: what its people keep at hand (rules, decisions, links).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "conv_id": {
+          "description": "The conversation.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "conv_id"
+      ],
+      "type": "object"
+    },
+    "name": "list_pins",
+    "title": "List pinned messages"
   }
 ]

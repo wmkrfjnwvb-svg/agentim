@@ -434,6 +434,10 @@ pub const TOOLS: &[&str] = &[
     "send_file",
     "file_url",
     "progress",
+    "react",
+    "unreact",
+    "get_thread",
+    "list_pins",
 ];
 
 /// Largest file `send_file` takes (base64 makes the request a third larger).
@@ -488,6 +492,7 @@ fn tools() -> Value {
                     "conv_id": id("Conversation id (from list_conversations or get_updates)."),
                     "text": {"type": "string", "minLength": 1, "description": "The message."},
                     "reply_to": id("msg_id of the message you answer (optional)."),
+                    "thread_id": id("Reply in the thread of this message (the thread's root; optional). When you were woken by a message in a thread, answer in the same thread."),
                     "client_msg_id": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Your id for this message; repeat it on retries (optional)."},
                     "to": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 20, "description": "Members who should act (names or ids)."},
                     "topics": {"type": "array", "items": {"type": "string", "pattern": "^[a-z0-9._-]{1,64}$"}, "minItems": 1, "maxItems": 10},
@@ -932,6 +937,70 @@ fn tools() -> Value {
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
         },
+        {
+            "name": "react",
+            "title": "React to a message",
+            "description": "Adds a reaction (one emoji) to a message, e.g. 👀 when you start on a request or ✅ when it is done. Adding it again changes nothing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "msg_id": id("The message."),
+                    "key": {"type": "string", "minLength": 1, "maxLength": 64, "description": "One emoji, or one of the app's :names:."},
+                },
+                "required": ["conv_id", "msg_id", "key"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+        },
+        {
+            "name": "unreact",
+            "title": "Remove a reaction",
+            "description": "Removes a reaction you added.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "msg_id": id("The message."),
+                    "key": {"type": "string", "minLength": 1, "maxLength": 64},
+                },
+                "required": ["conv_id", "msg_id", "key"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+        },
+        {
+            "name": "get_thread",
+            "title": "Read a thread",
+            "description": "The root message of a thread and its replies after a seq, oldest first.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "thread_id": id("The thread's root message."),
+                    "after_seq": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                },
+                "required": ["conv_id", "thread_id"],
+                "additionalProperties": false,
+            },
+            "annotations": ro,
+        },
+        {
+            "name": "list_pins",
+            "title": "List pinned messages",
+            "description": "The conversation's pinned messages, latest pin first: what its people keep at hand (rules, decisions, links).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conv_id": id("The conversation."),
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "required": ["conv_id"],
+                "additionalProperties": false,
+            },
+            "annotations": ro,
+        },
     ])
 }
 
@@ -1091,6 +1160,7 @@ async fn call_tool(
                     "conv_id",
                     "text",
                     "reply_to",
+                    "thread_id",
                     "client_msg_id",
                     "to",
                     "topics",
@@ -1109,6 +1179,9 @@ async fn call_tool(
             });
             if let Some(r) = arg_str(args, "reply_to", false)? {
                 m["reply_to"] = json!(r);
+            }
+            if let Some(t) = arg_str(args, "thread_id", false)? {
+                m["thread_id"] = json!(t);
             }
             if let Some(i) = arg_str(args, "intent", false)? {
                 m["intent"] = json!(i);
@@ -1153,6 +1226,38 @@ async fn call_tool(
             )
             .await?;
             Ok(("Edited.".into(), v))
+        }
+        "react" | "unreact" => {
+            only(args, &["conv_id", "msg_id", "key"])?;
+            let v = run(json!({"op": name, "conv_id": need(args, "conv_id")?, "msg_id": need(args, "msg_id")?, "key": need(args, "key")?})).await?;
+            let text = if v["changed"] == true {
+                "Done."
+            } else {
+                "Nothing to change."
+            };
+            Ok((text.into(), v))
+        }
+        "get_thread" => {
+            only(args, &["conv_id", "thread_id", "after_seq", "limit"])?;
+            let mut m = json!({"op": "pull_thread", "conv_id": need(args, "conv_id")?, "thread_id": need(args, "thread_id")?});
+            for k in ["after_seq", "limit"] {
+                if let Some(x) = opt_int(args, k)? {
+                    m[k] = json!(x);
+                }
+            }
+            let v = run(m).await?;
+            let n = v["replies"].as_array().map_or(0, Vec::len);
+            Ok((format!("The root and {n} replies."), v))
+        }
+        "list_pins" => {
+            only(args, &["conv_id", "limit"])?;
+            let mut m = json!({"op": "list_pins", "conv_id": need(args, "conv_id")?});
+            if let Some(x) = opt_int(args, "limit")? {
+                m["limit"] = json!(x);
+            }
+            let v = run(m).await?;
+            let n = v["pins"].as_array().map_or(0, Vec::len);
+            Ok((format!("{n} pinned messages."), v))
         }
         "recall_message" => {
             only(args, &["msg_id"])?;
@@ -1551,6 +1656,9 @@ async fn call_tool(
             if let Some(r) = arg_str(args, "reply_to", false)? {
                 m["reply_to"] = json!(r);
             }
+            if let Some(t) = arg_str(args, "thread_id", false)? {
+                m["thread_id"] = json!(t);
+            }
             let v = run(m).await?;
             let text = match v["draft_id"].as_str() {
                 Some(d) => format!("Waiting for approval (draft {d})."),
@@ -1606,6 +1714,9 @@ async fn call_tool(
             let mut m = json!({"op": "send", "conv_id": conv, "text": text, "kind": kind, "payload": payload, "client_msg_id": format!("mcp-{}", uuid::Uuid::new_v4().simple())});
             if let Some(r) = arg_str(args, "reply_to", false)? {
                 m["reply_to"] = json!(r);
+            }
+            if let Some(t) = arg_str(args, "thread_id", false)? {
+                m["thread_id"] = json!(t);
             }
             let mut v = run(m).await?;
             v["file"] = f;

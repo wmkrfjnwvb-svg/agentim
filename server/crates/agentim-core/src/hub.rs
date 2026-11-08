@@ -54,6 +54,7 @@ mod state;
 pub use agents::MAX_AGENT_KEYS;
 pub use requests::MAX_WAIT_SECS;
 mod silos;
+mod social;
 mod sync;
 mod tenant_webhooks;
 pub use silos::silo_url;
@@ -2499,6 +2500,11 @@ impl Hub {
             let c = &self.inner.cfg.clients;
             self.user_bucket(&me.id, "send", c.send_rate, c.send_burst)?;
         }
+        // Reactions: 20 a second per user, like signals (MSG-20).
+        if matches!(msg, ClientMsg::React { .. } | ClientMsg::Unreact { .. }) {
+            let r = self.inner.sh.cfg.messages.reactions_per_second;
+            self.user_bucket(&me.id, "react", r, r)?;
+        }
         match msg {
             ClientMsg::Hello {
                 protocol: requested,
@@ -2745,9 +2751,51 @@ impl Hub {
             | ClientMsg::PutSummary { ref conv_id, .. }
             | ClientMsg::Handoff { ref conv_id, .. }
             | ClientMsg::Handback { ref conv_id, .. }
-            | ClientMsg::Progress { ref conv_id, .. } => {
+            | ClientMsg::Progress { ref conv_id, .. }
+            | ClientMsg::ReadThread { ref conv_id, .. }
+            | ClientMsg::FollowThread { ref conv_id, .. }
+            | ClientMsg::UnfollowThread { ref conv_id, .. }
+            | ClientMsg::React { ref conv_id, .. }
+            | ClientMsg::Unreact { ref conv_id, .. }
+            | ClientMsg::Pin { ref conv_id, .. }
+            | ClientMsg::Unpin { ref conv_id, .. } => {
                 let c = conv_id.clone();
                 self.on_conv(sess, &c, msg).await
+            }
+            ClientMsg::ListThreads {
+                conv_id,
+                before,
+                limit,
+            } => {
+                self.list_threads(me, conv_id.as_deref(), before, limit)
+                    .await
+            }
+            ClientMsg::PullThread {
+                conv_id,
+                thread_id,
+                after_seq,
+                limit,
+            } => {
+                self.pull_thread(me, &conv_id, &thread_id, after_seq, limit)
+                    .await
+            }
+            ClientMsg::ListReactions {
+                conv_id,
+                msg_id,
+                key,
+                after_seq,
+                limit,
+            } => {
+                self.list_reactions(me, &conv_id, &msg_id, &key, after_seq, limit)
+                    .await
+            }
+            ClientMsg::ListPins {
+                conv_id,
+                before_seq,
+                limit,
+            } => self.list_pins(me, &conv_id, before_seq, limit).await,
+            ClientMsg::MsgSummary { conv_id, msg_ids } => {
+                self.msg_summary(me, &conv_id, &msg_ids).await
             }
             ClientMsg::UploadParts { ref conv_id, .. } | ClientMsg::FileUrl { ref conv_id, .. } => {
                 let c = conv_id.clone();
@@ -2823,7 +2871,11 @@ impl Hub {
             ClientMsg::Context {
                 conv_id,
                 max_tokens,
-            } => self.context(me, &conv_id, max_tokens).await,
+                thread_id,
+            } => {
+                self.context(me, &conv_id, max_tokens, thread_id.as_deref())
+                    .await
+            }
             ClientMsg::Search {
                 query,
                 conv_id,
@@ -3088,13 +3140,15 @@ impl Hub {
             intent,
             refs,
             sources,
+            thread_id,
+            also_in_conv,
         } = msg
         else {
             return Ok(msg);
         };
         crate::logic::check_text(&text)?;
         crate::logic::check_kind(kind.clone(), &payload)?;
-        let req = json!({"conv_id": conv_id, "client_msg_id": client_msg_id, "kind": kind.as_deref().unwrap_or("text"), "text": text, "payload": payload, "reply_to": reply_to, "to_user": to_user, "to": to, "topics": topics, "intent": intent, "refs": refs});
+        let req = json!({"conv_id": conv_id, "client_msg_id": client_msg_id, "kind": kind.as_deref().unwrap_or("text"), "text": text, "payload": payload, "reply_to": reply_to, "to_user": to_user, "to": to, "topics": topics, "intent": intent, "refs": refs, "thread_id": thread_id});
         if let crate::webhook::Verdict::Replace {
             text: t,
             payload: p,
@@ -3118,6 +3172,8 @@ impl Hub {
             intent,
             refs,
             sources,
+            thread_id,
+            also_in_conv,
         })
     }
 

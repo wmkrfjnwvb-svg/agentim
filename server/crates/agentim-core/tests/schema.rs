@@ -58,10 +58,23 @@ async fn set_meta(db: &TestDb, k: &str, v: Option<&str>) {
 /// Turns a database into what `version` would have left behind: the steps
 /// of later migrations undone and the version rows of that time.
 async fn downgrade(db: &TestDb, version: i64) {
-    let (mut c, _) = raw(db).await;
+    let (mut c, d) = raw(db).await;
     for m in MIGRATIONS.iter().rev().filter(|m| m.version > version) {
-        for step in m.steps {
+        // Undone last step first: an index goes before its column.
+        for step in m.steps.iter().rev() {
             match step {
+                Step::AddIndex { table, index } => {
+                    let sql = match d {
+                        Dialect::Mysql => format!("ALTER TABLE {table} DROP INDEX {index}"),
+                        Dialect::Sqlite | Dialect::Postgres => {
+                            format!("DROP INDEX IF EXISTS {index}")
+                        }
+                    };
+                    sqlx::query(sqlx::AssertSqlSafe(sql))
+                        .execute(&mut c)
+                        .await
+                        .unwrap();
+                }
                 Step::AddColumn { table, column } => {
                     sqlx::query(sqlx::AssertSqlSafe(format!(
                         "ALTER TABLE {table} DROP COLUMN {column}"

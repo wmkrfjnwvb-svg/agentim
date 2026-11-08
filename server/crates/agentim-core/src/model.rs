@@ -288,6 +288,10 @@ impl Member {
                 .msg
                 .as_ref()
                 .is_none_or(|m| m.created_seq >= self.visible_from)
+            // Reactions and pins name the message they are about (MSG-20, MSG-21).
+            && ev.data["msg_seq"]
+                .as_i64()
+                .is_none_or(|s| s >= self.visible_from)
     }
 
     /// Whether an event should notify this member (docs/en/design/sync-and-clients.md): never for
@@ -933,6 +937,9 @@ pub enum ClientMsg {
         conv_id: String,
         #[serde(default)]
         max_tokens: Option<i64>,
+        /// Only this thread: its root and replies (MSG-19).
+        #[serde(default)]
+        thread_id: Option<String>,
     },
     /// An agent searches the messages it may see (optionally one conversation).
     Search {

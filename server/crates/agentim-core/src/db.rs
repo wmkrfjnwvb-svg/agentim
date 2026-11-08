@@ -19,6 +19,7 @@ mod files;
 pub mod friends;
 mod msgtrace;
 pub mod roles;
+pub mod social;
 pub mod verify;
 pub use compliance::ERASE_BATCH;
 pub use files::{FileRow, TrashRow};
@@ -3161,6 +3162,8 @@ impl Db<'_> {
             for f in self.files_of_messages_before(&conv, upto).await? {
                 self.file_trash(&f).await?;
             }
+            // Reactions, pins and threads of the messages that go.
+            self.purge_social_before(&conv, upto).await?;
             for (q, by_seq) in [
                 ("DELETE FROM events WHERE conv_id = ? AND seq < ?", true),
                 (
@@ -3292,7 +3295,7 @@ impl Db<'_> {
     pub async fn unread_mentions(&mut self, conv_id: &str, user_id: &str) -> ApiResult<i64> {
         let read = self.unread_floor(conv_id, user_id).await?;
         let r = sqlx::query(self.d.q(
-            "SELECT COUNT(*) FROM messages WHERE conv_id = ? AND created_seq > ? AND sender_id <> ? AND state <> ? AND mentions LIKE ?",
+            "SELECT COUNT(*) FROM messages WHERE conv_id = ? AND created_seq > ? AND sender_id <> ? AND state <> ? AND mentions LIKE ? AND (thread_id IS NULL OR thread_shown = 1)",
         ))
         .bind(conv_id)
         .bind(read)
@@ -3354,7 +3357,7 @@ impl Db<'_> {
     pub async fn unread(&mut self, conv_id: &str, user_id: &str) -> ApiResult<i64> {
         let read = self.unread_floor(conv_id, user_id).await?;
         let r = sqlx::query(self.d.q(
-            "SELECT COUNT(*) FROM messages WHERE conv_id = ? AND created_seq > ? AND sender_id <> ? AND state <> ?",
+            "SELECT COUNT(*) FROM messages WHERE conv_id = ? AND created_seq > ? AND sender_id <> ? AND state <> ? AND (thread_id IS NULL OR thread_shown = 1)",
         ))
         .bind(conv_id)
         .bind(read)

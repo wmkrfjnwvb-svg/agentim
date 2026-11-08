@@ -271,6 +271,18 @@ impl Hub {
             | ClientMsg::UploadStart { .. }
             | ClientMsg::UploadParts { .. }
             | ClientMsg::UploadComplete { .. }
+            | ClientMsg::ReadThread { .. }
+            | ClientMsg::FollowThread { .. }
+            | ClientMsg::UnfollowThread { .. }
+            | ClientMsg::ListThreads { .. }
+            | ClientMsg::PullThread { .. }
+            | ClientMsg::React { .. }
+            | ClientMsg::Unreact { .. }
+            | ClientMsg::ListReactions { .. }
+            | ClientMsg::Pin { .. }
+            | ClientMsg::Unpin { .. }
+            | ClientMsg::ListPins { .. }
+            | ClientMsg::MsgSummary { .. }
             | ClientMsg::FileUrl { .. } => return Ok(()),
         };
         for o in others {
@@ -394,6 +406,18 @@ impl Hub {
             | ClientMsg::UploadStart { .. }
             | ClientMsg::UploadParts { .. }
             | ClientMsg::UploadComplete { .. }
+            | ClientMsg::ReadThread { .. }
+            | ClientMsg::FollowThread { .. }
+            | ClientMsg::UnfollowThread { .. }
+            | ClientMsg::ListThreads { .. }
+            | ClientMsg::PullThread { .. }
+            | ClientMsg::React { .. }
+            | ClientMsg::Unreact { .. }
+            | ClientMsg::ListReactions { .. }
+            | ClientMsg::Pin { .. }
+            | ClientMsg::Unpin { .. }
+            | ClientMsg::ListPins { .. }
+            | ClientMsg::MsgSummary { .. }
             | ClientMsg::FileUrl { .. } => (true, ""),
         };
         if ok {

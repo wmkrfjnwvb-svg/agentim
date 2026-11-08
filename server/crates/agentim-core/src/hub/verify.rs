@@ -82,6 +82,26 @@ pub const CHECKS: &[(&str, &str)] = &[
         "side.audience",
         "side-channel events go only to members at their anchor",
     ),
+    (
+        "thread.root",
+        "a thread reply's root is a message of the conversation that is not itself a reply",
+    ),
+    (
+        "thread.summary",
+        "each thread's reply count and latest reply match its replies that are not recalled",
+    ),
+    (
+        "reaction.state",
+        "replaying the reactions (and recalls and erasures) gives the reactions table",
+    ),
+    (
+        "reaction.after_recall",
+        "no reaction is added to a message after its recall",
+    ),
+    (
+        "pin.state",
+        "replaying the pins (and recalls and erasures) gives the pins table",
+    ),
 ];
 
 const STUCK_MS: i64 = 3_600_000;
@@ -434,6 +454,7 @@ impl Hub {
                 _ => {}
             }
         }
+        self.check_social(d, full, &rows, &mut f);
         if full {
             for (side_seq, anchor, audience) in &d.side {
                 let Some((_, at)) = at_seq.range(..=*anchor).next_back() else {
@@ -451,6 +472,165 @@ impl Hub {
             }
         }
         out
+    }
+}
+
+impl Hub {
+    /// Threads, reactions and pins (docs/en/design/messaging.md, MSG-19 to
+    /// MSG-21) against the log.
+    fn check_social(
+        &self,
+        d: &ConvData,
+        full: bool,
+        rows: &HashMap<&str, &crate::db::verify::MsgRow>,
+        f: &mut impl FnMut(Option<i64>, &'static str, String),
+    ) {
+        let first = d.events.first().map_or(1, |e| e.seq);
+        // Threads: roots, and the summary against the replies.
+        let mut counted: BTreeMap<&str, (i64, i64)> = BTreeMap::new();
+        for m in &d.messages {
+            let Some(t) = m.thread_id.as_deref() else {
+                continue;
+            };
+            match rows.get(t) {
+                Some(r) if r.thread_id.is_some() => f(
+                    Some(m.created_seq),
+                    "thread.root",
+                    format!("{} replies in {t}, itself a reply", m.msg_id),
+                ),
+                Some(r) if r.created_seq >= m.created_seq => f(
+                    Some(m.created_seq),
+                    "thread.root",
+                    format!("{} replies in {t}, which came later", m.msg_id),
+                ),
+                // A root the retention deleted is fine.
+                None if full => f(
+                    Some(m.created_seq),
+                    "thread.root",
+                    format!("{} replies in {t}, not a message here", m.msg_id),
+                ),
+                _ => {}
+            }
+            if m.state != "recalled" {
+                let c = counted.entry(t).or_insert((0, 0));
+                c.0 += 1;
+                c.1 = c.1.max(m.created_seq);
+            }
+        }
+        for t in &d.threads {
+            let (n, last) = counted.get(t.root_id.as_str()).copied().unwrap_or((0, 0));
+            // With retention, replies older than the kept log are gone.
+            let exact = full || rows.contains_key(t.root_id.as_str());
+            if exact && (t.replies != n || (n > 0 && t.last_seq != last)) {
+                f(
+                    None,
+                    "thread.summary",
+                    format!(
+                        "{}: {} replies up to {}, stored {} up to {}",
+                        t.root_id, n, last, t.replies, t.last_seq
+                    ),
+                );
+            }
+        }
+        for (t, (n, _)) in &counted {
+            if *n > 0 && !d.threads.iter().any(|x| x.root_id == *t) {
+                f(
+                    None,
+                    "thread.summary",
+                    format!("{t} has replies but no summary"),
+                );
+            }
+        }
+        // Reactions and pins, replayed.
+        let mut senders: HashMap<String, String> = HashMap::new();
+        let mut recalled: HashSet<String> = HashSet::new();
+        let mut reactions: HashSet<(String, String, String)> = HashSet::new();
+        let mut pins: HashSet<String> = HashSet::new();
+        for e in &d.events {
+            let msg = e.data["msg_id"].as_str().map(String::from);
+            let key = e.data["key"].as_str().map(String::from);
+            let user = e.data["user_id"].as_str().map(String::from);
+            match e.kind.as_str() {
+                "msg.created" => {
+                    if let Some(m) = &e.msg {
+                        senders.insert(m.msg_id.clone(), m.sender_id.clone());
+                    }
+                }
+                "msg.recalled" => {
+                    if let Some(m) = &e.msg {
+                        recalled.insert(m.msg_id.clone());
+                        reactions.retain(|r| r.0 != m.msg_id);
+                        pins.remove(&m.msg_id);
+                    }
+                }
+                "reaction.added" => {
+                    if let (Some(m), Some(u), Some(k)) = (msg, user, key) {
+                        if recalled.contains(&m) {
+                            f(
+                                Some(e.seq),
+                                "reaction.after_recall",
+                                format!("{k} on recalled {m}"),
+                            );
+                        }
+                        reactions.insert((m, u, k));
+                    }
+                }
+                "reaction.removed" => {
+                    if let (Some(m), Some(u), Some(k)) = (msg, user, key) {
+                        reactions.remove(&(m, u, k));
+                    }
+                }
+                "msg.pinned" => {
+                    if let Some(m) = msg {
+                        pins.insert(m);
+                    }
+                }
+                "msg.unpinned" => {
+                    if let Some(m) = msg {
+                        pins.remove(&m);
+                    }
+                }
+                "user.erased" => {
+                    if let Some(u) = user {
+                        reactions.retain(|r| r.1 != u && senders.get(&r.0).is_none_or(|s| *s != u));
+                        pins.retain(|p| senders.get(p).is_none_or(|s| *s != u));
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Messages the retention deleted take what derives from them along.
+        let kept = |m: &str| rows.get(m).is_some_and(|r| r.created_seq >= first);
+        let stored: HashSet<(String, String, String)> = d.reactions.iter().cloned().collect();
+        if full || !d.events.is_empty() {
+            for r in stored.symmetric_difference(&reactions) {
+                if !full && !kept(&r.0) {
+                    continue;
+                }
+                let (what, side) = if stored.contains(r) {
+                    ("stored but not in the log", &r.2)
+                } else {
+                    ("in the log but not stored", &r.2)
+                };
+                f(
+                    None,
+                    "reaction.state",
+                    format!("{side} by {} on {}: {what}", r.1, r.0),
+                );
+            }
+            let stored: HashSet<String> = d.pins.iter().cloned().collect();
+            for p in stored.symmetric_difference(&pins) {
+                if !full && !kept(p) {
+                    continue;
+                }
+                let what = if stored.contains(p) {
+                    "pinned but not in the log"
+                } else {
+                    "pinned in the log but not stored"
+                };
+                f(None, "pin.state", format!("{p}: {what}"));
+            }
+        }
     }
 }
 

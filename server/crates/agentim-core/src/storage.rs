@@ -636,7 +636,11 @@ pub const TABLES: &[Table] = &[
         pk: &["msg_id"],
         indexes: &[
             ("messages_conv", &["conv_id", "created_seq"], false),
-            ("messages_thread", &["conv_id", "thread_id", "created_seq"], false),
+            (
+                "messages_thread",
+                &["conv_id", "thread_id", "created_seq"],
+                false,
+            ),
             (
                 "messages_sender",
                 &["conv_id", "sender_id", "created_seq"],
@@ -1807,10 +1811,8 @@ async fn apply_step(c: &mut AnyConnection, d: Dialect, step: &Step) -> ApiResult
                 // Created with the other declared indexes after the migrations.
                 return Ok(());
             }
-            let have = sqlx::query(d.q(
-                "SELECT COUNT(*) FROM information_schema.statistics \
-                 WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?",
-            ))
+            let have = sqlx::query(d.q("SELECT COUNT(*) FROM information_schema.statistics \
+                 WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?"))
             .bind(tn.to_string())
             .bind(index.to_string())
             .fetch_one(&mut *c)

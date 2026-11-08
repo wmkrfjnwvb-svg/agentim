@@ -140,6 +140,10 @@ pub fn hub_cfg() -> HubConfig {
             agent_rate: (1e6, 1e6),
             ..Default::default()
         },
+        messages: agentim_core::config::MessagesConfig {
+            reactions_per_second: 1e6,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -209,6 +213,7 @@ pub fn single(url: &str) -> Config {
         tracing: Default::default(),
         tenancy: Default::default(),
         ai: Default::default(),
+        messages: Default::default(),
         cluster: Default::default(),
     }
 }
@@ -257,6 +262,7 @@ pub fn two(main: &str, secret: &str, unit_b_in: &str) -> Config {
         tracing: Default::default(),
         tenancy: Default::default(),
         ai: Default::default(),
+        messages: Default::default(),
         cluster: Default::default(),
     }
 }
@@ -464,4 +470,10 @@ const VERIFY_SKIP: &[&str] = &[
     "tampered_or_moved_content_is_refused",
     // Damages the database to prove each check of the verifier.
     "each_kind_of_damage_is_found",
+    // Mutation checks leave the damage the mutation did (and check that
+    // the verifier finds it).
+    "race_replies_in_one_thread",
+    "race_reactions_at_the_key_limit",
+    "race_reactions_and_recall",
+    "race_pins_at_the_limit",
 ];
