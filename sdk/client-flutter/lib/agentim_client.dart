@@ -419,8 +419,7 @@ class AgentIMClient {
   /// Sends a text, optionally as a reply: shown at once as sending, sent when the connection
   /// allows, in order. Returns the `client_msg_id` and the local key; a retry with the same
   /// `client_msg_id` is the same message.
-  Future<Map<String, dynamic>> send(String convId, String text,
-          {String? clientMsgId, String? replyTo, String? threadId, bool alsoInConv = false}) async =>
+  Future<Map<String, dynamic>> send(String convId, String text, {String? clientMsgId, String? replyTo, String? threadId, bool alsoInConv = false}) async =>
       ((await command({
                 'cmd': 'send',
                 'conv_id': convId,
@@ -472,8 +471,7 @@ class AgentIMClient {
   Future<Object?> listThreads({String? convId}) => call('list_threads', {if (convId != null) 'conv_id': convId});
 
   /// Marks a thread read up to `seq` on all my devices.
-  Future<Object?> readThread(String convId, String threadId, int seq) =>
-      call('read_thread', {'conv_id': convId, 'thread_id': threadId, 'seq': seq});
+  Future<Object?> readThread(String convId, String threadId, int seq) => call('read_thread', {'conv_id': convId, 'thread_id': threadId, 'seq': seq});
 
   /// Follows a thread (its replies notify me) or stops following it.
   Future<Object?> followThread(String convId, String threadId, {bool follow = true}) =>
