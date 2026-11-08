@@ -225,9 +225,9 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: swift-actions/setup-swift@v3
-        with:
-          swift-version: "6.2"
+      # The ubuntu-24.04 image has Swift (6.4); setup-swift@v3 fails to
+      # check Swiftly's signature there.
+      - run: swift --version
       - uses: dart-lang/setup-dart@v1
       - run: cargo build --bin agentim
       - name: native runtime (the library every wrapper loads)
