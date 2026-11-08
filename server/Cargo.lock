@@ -47,7 +47,7 @@ name = "agentim-cluster"
 version = "0.1.0"
 dependencies = [
  "agentim-core",
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures-util",
  "metrics",
  "rcgen",
@@ -71,7 +71,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "data-encoding",
  "futures-util",

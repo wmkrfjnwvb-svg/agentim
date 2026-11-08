@@ -8,7 +8,7 @@ description = "Several AgentIM nodes serving the same databases (docs/en/design/
 
 [dependencies]
 agentim-core = { path = "../agentim-core" }
-base64 = "0.22"
+base64 = "0.23"
 metrics = { version = "0.24.6", default-features = false }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "crypto"] }
 ring = "0.17"
