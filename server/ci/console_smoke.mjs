@@ -195,6 +195,18 @@ try {
   await page.screenshot({ path: `${out}/console-connections.png` });
 
   // The audit log has the reasoned read and the decisions.
+  // The built-in library (docs/en/design/assistants.md, AST-15): a role is added with its skills.
+  await page.click('nav a:has-text("Agent roles")');
+  await page.waitForSelector('[aria-label="Built-in library"] td:has-text("order-support")');
+  check((await page.locator('[aria-label="Built-in library"] tbody tr').count()) >= 10, 'the built-in roles are listed');
+  await page.locator('[aria-label="Built-in library"] tr', { hasText: 'order-support' }).locator('button:has-text("Add")').click();
+  await page.waitForSelector('[role=status]:has-text("Added order-support with the skills")');
+  check((await page.locator('[aria-label="Built-in library"] tr', { hasText: 'order-support' }).innerText()).includes('added'), 'and marked as added');
+  check((await page.locator('table').first().innerText()).includes('order-support'), 'the role is in the library');
+  await page.screenshot({ path: `${out}/console-library.png` });
+  await page.click('nav a:has-text("Skills")');
+  await page.waitForSelector('table >> nth=0 >> td:has-text("actions-with-approval")');
+  check((await page.locator('[aria-label="Built-in library"] tr', { hasText: 'show-data-as-cards' }).innerText()).includes('added'), 'its skills came with it');
   await page.click('nav a:has-text("Audit log")');
   await page.fill('input[placeholder^="Action"]', 'admin.');
   await page.waitForSelector('td code:has-text("admin.conversations.read")');

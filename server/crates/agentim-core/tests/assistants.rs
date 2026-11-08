@@ -299,7 +299,7 @@ async fn a_built_in_agent_answers_in_the_chat(db: TestDb) {
     let s = Srv::start(&db).await;
     let alice = user(&s.hub, "alice", UserKind::Human, None).await;
     s.service(&f).await;
-    // The catalog: five roles, none enabled.
+    // The catalog: the built-in roles, none enabled.
     let cat = s.ok("GET", "/assistants/catalog", None).await;
     let slugs: Vec<_> = cat["catalog"]
         .as_array()
@@ -309,8 +309,12 @@ async fn a_built_in_agent_answers_in_the_chat(db: TestDb) {
         .collect();
     assert_eq!(
         slugs,
-        ["assistant", "translator", "notes", "support", "moderator"]
+        agentim_core::library::ROLES
+            .iter()
+            .map(|(n, _)| *n)
+            .collect::<Vec<_>>()
     );
+    assert_eq!(slugs[1], "support");
     assert!(
         cat["catalog"]
             .as_array()
@@ -332,8 +336,23 @@ async fn a_built_in_agent_answers_in_the_chat(db: TestDb) {
     assert_eq!(agent.owner_id.as_deref(), Some(alice.id.as_str()));
     let cfg = s.hub.agent_config(&agent).await.unwrap();
     assert_eq!(cfg["role"]["name"], "support");
+    // The Skills the role names came with it, and the agent gets them.
+    let names: Vec<_> = cfg["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "support-replies",
+            "knowledge-answers",
+            "handoff-to-a-person"
+        ]
+    );
     let cat = s.ok("GET", "/assistants/catalog", None).await;
-    assert_eq!(cat["catalog"][3]["enabled"], true);
+    assert_eq!(cat["catalog"][1]["enabled"], true);
     let l = s.ok("GET", "/assistants", None).await;
     assert_eq!(l["assistants"][0]["name"], "support");
     assert_eq!(l["assistants"][0]["settings"]["max_tokens"], 2048);

@@ -29,6 +29,7 @@
 | AST-12 | 限额 | 每个助手每分钟、每天的回复次数，每次回复的 token 和工具轮数，每个模型服务每天的 token。超了用一句提示回复。被限流的发送会耐心重试 |
 | AST-13 | 给外部 Agent 的配置 | 外部 Agent 在配置里拿到同样的角色、Skills、MCP 服务和 API 文档。SDK 可以把它们写到磁盘（`.claude/skills/…`、`.mcp.json`、`.agentim/apis/…`） |
 | AST-14 | 托管云的额度 | 托管项目里，内置 Key 花组织的预充值额度；额度用完项目就不再调用内置 Key |
+| AST-15 | 内置库 | 程序自带 12 个角色和 14 个 Skill（`builtin/agents/`、`builtin/skills/`）。控制台和管理 API 列出它们；添加一个角色就把它复制进应用自己的库，连同它用到、库里还没有的 Skill；之后应用自己拥有、自己修改这份副本。每一项显示库里有没有、是不是自带的版本；"恢复"拿回自带的版本 |
 
 ## 3. 设计
 
@@ -86,9 +87,42 @@
 - 助手只读它所在的会话；它的消息带 AI 标识。
 - 用部署者的内置 Key 时，模型厂商是部署者的子处理方。给欧盟用户选欧盟以外的厂商属于数据跨境，由部署者决定，控制台会提示。
 
+### 3.6 内置库
+
+从模板开始是业内通行的做法：Anthropic 的 Agent Skills 仓库以"文件夹 + `SKILL.md` + 参考文件"的形式提供示例 Skill；Claude Code 的 Agent 是带头部的 Markdown 文件；Dify 和 Copilot Studio 提供现成 Agent 的模板库，复制后再改。AgentIM 用同样的格式提供同类的库，所以每个内置角色、每个 Skill 同时也是合法的 Claude Code Agent 和 Agent Skill。
+
+- **自带什么**：角色在 `server/crates/agentim-core/builtin/agents/*.md`，Skill 在 `builtin/skills/<名字>/SKILL.md` 加 `references/`，编译进程序（`library.rs`）。Skill 只有说明，从不带脚本，也不执行脚本。
+- **添加**：在控制库的写线程里一次写入，把它复制进应用自己的库：
+  - 角色连同它用到、库里还没有的 Skill 一起加；库里已有的 Skill（可能改过）保持不动。
+  - 不带 `replace` 时，库里已有的同名项被拒绝（`role.exists`、`skill.exists`），什么都不写，包括角色的 Skill。
+  - `replace` 恢复自带的内容；Skill 不是自带的文件会被删掉。
+  - 用这个角色、或角色用到这个 Skill 的 Agent，会收到配置已变化的通知。
+- **状态**：`installed`（库里有同名的）和 `current`（内容就是自带的）。新版本的程序可能带更新的内容，控制台就把副本显示为"已修改"，并给出"恢复内置版本"按钮。
+- **启用内置助手**（`/admin/v1/app/assistants/catalog/{名字}`）时，如果角色还没有，用同样的方式加入角色和它的 Skill。
+
+| 角色 | 用途 | Skill |
+|---|---|---|
+| `assistant` | 聊天里的通用问答 | knowledge-answers |
+| `support` | 回答客户问题，需要时转人工 | support-replies, knowledge-answers, handoff-to-a-person |
+| `order-support` | 售后：订单、退款、取消、改地址（带审批） | support-replies, show-data-as-cards, collect-details-with-forms, actions-with-approval, handoff-to-a-person |
+| `booking` | 预约、改约、取消 | booking-appointments, show-data-as-cards, collect-details-with-forms, actions-with-approval, handoff-to-a-person |
+| `advisor-aide` | 给专业人士拟回复由他发出；私下提示 | draft-for-review, summarizing-conversations |
+| `it-helpdesk` | 内部 IT 问题、排障、工单 | troubleshooting, knowledge-answers, actions-with-approval, handoff-to-a-person |
+| `hr-helpdesk` | 内部 HR 政策问答和申请 | knowledge-answers, collect-details-with-forms, handoff-to-a-person |
+| `sales` | 回答潜在客户、收集线索、约电话 | knowledge-answers, collect-details-with-forms, booking-appointments, handoff-to-a-person |
+| `notes` | 会议纪要和总结 | meeting-notes, summarizing-conversations |
+| `translator` | 翻译消息 | translation |
+| `moderator` | 提醒社区规则、举报 | content-moderation |
+| `task-lead` | 带领多 Agent 任务 | task-coordination, summarizing-conversations |
+
+Skill：`support-replies`、`handoff-to-a-person`、`actions-with-approval`、`show-data-as-cards`、`collect-details-with-forms`、`knowledge-answers`、`booking-appointments`、`draft-for-review`、`troubleshooting`、`summarizing-conversations`、`meeting-notes`、`translation`、`content-moderation`、`task-coordination`。
+
+<img src="../../images/console/library.png" width="640" alt="控制台的内置角色：已添加 order-support 和它的 Skill">
+
 ## 4. 接口
 
 - 管理 API（控制台）：
+  - `/admin/v1/app/library/roles`、`/admin/v1/app/library/skills`（列出）、`POST …/library/roles/{name}`、`POST …/library/skills/{name}`（添加；请求体 `{"replace": true}` 表示恢复）；
   - `/admin/v1/app/model-services`；
   - `/admin/v1/app/assistants`（设置 `cards`、`forms`、`steps`、`handoff`、限额、只按资料）；
   - 知识文件、`/admin/v1/app/skills`、`/admin/v1/app/connections`（带 `approvals`）。
@@ -98,7 +132,7 @@
 
 ## 5. 规则和错误
 
-规则前缀：`model_service.*`、`assistant.*`、`knowledge.*`、`skill.*`、`connection.*`（[目录](../../en/business-rules.md)）。输入不对的管理请求是 `bad_request`，未知的 id 是 `not_found`，删除在用的东西是 `conflict`。运行时的失败在聊天里用一句提示回复，不给任何人报错。
+规则前缀：`model_service.*`、`assistant.*`、`knowledge.*`、`skill.*`（含 `skill.catalog`、`skill.exists`）、`role.*`（`role.catalog`、`role.exists`）、`connection.*`（[目录](../../en/business-rules.md)）。输入不对的管理请求是 `bad_request`，未知的 id 是 `not_found`，删除在用的东西是 `conflict`。运行时的失败在聊天里用一句提示回复，不给任何人报错。
 
 ## 6. 测试
 
@@ -116,6 +150,7 @@
 | AST-12 | `assistants.rs`: `failures_and_limits_answer_with_a_notice` |
 | AST-13 | `roles.rs`: `agents_get_their_config_at_login_and_when_it_changes`; `sdk/agent-node/e2e.mjs` and `sdk/agent-python/e2e.py` (files written to disk) |
 | AST-14 | `assistants.rs`: `hosted_projects_spend_their_ai_credit` |
+| AST-15 | `library.rs`：`every_role_is_valid_and_its_skills_are_built_in`、`every_skill_is_valid_and_used`；`tests/library.rs`：全部 8 个测试（列出、角色连同 Skill、Skill 连同文件、replace 和 current、Agent 收到什么、拒绝不留痕迹、重启、并发只有一个赢家并做过变异检查）；`assistants.rs`：`a_built_in_agent_answers_in_the_chat`（启用时加入 Skill）；`server/ci/console_smoke.mjs` |
 
 
 ## 7. 限制和下一步

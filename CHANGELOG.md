@@ -14,6 +14,10 @@ notes are taken from it.
 
 ### Added
 
+- A built-in library of 12 roles (order support, booking, IT and HR
+  helpdesks, sales, an advisor's aide, a task lead, and more) and 14 Skills,
+  listed in the console and the admin API (`/admin/v1/app/library/…`) and
+  added to an app's library in one click; a role brings the Skills it uses.
 - One program (`agentim`) from a single node on SQLite to a cluster on
   PostgreSQL or MySQL: conversations, ordered and gap-free event logs,
   sync by device position, drafts and streams, read state, mentions,

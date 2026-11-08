@@ -29,6 +29,7 @@ Many products need an assistant that answers from their documents and does simpl
 | AST-12 | Limits | Replies per minute and per day per assistant, tokens and tool rounds per reply, tokens per day per model service. A limit hit answers with a notice. Rate-limited sends are retried patiently |
 | AST-13 | Config for external agents | External agents receive the same role, Skills, MCP servers and API documents in their config. The SDKs can write them to disk (`.claude/skills/…`, `.mcp.json`, `.agentim/apis/…`) |
 | AST-14 | Hosted credit | In a hosted project, built-in keys spend the organisation's prepaid credit. The project stops calling them when its allowance runs out |
+| AST-15 | Built-in library | 12 roles and 14 Skills ship with the program (`builtin/agents/`, `builtin/skills/`). The console and the admin API list them; adding a role copies it into the app's library with the Skills it names that are missing; the app then owns and edits its copy. Each item shows whether the library has it and whether it is the shipped version; "restore" brings the shipped one back |
 
 ## 3. Design
 
@@ -86,9 +87,42 @@ model error or timeout (120 s) ──▶ "I can't answer right now", logged, no 
 - An assistant reads only conversations it is in. Its messages carry the AI label.
 - When the deployment's built-in key is used, the model provider is a subprocessor of the deployment. Choosing a provider outside the EU for EU users is a transfer the deployer decides on; the console warns about it.
 
+### 3.6 The built-in library
+
+Templates are the common way to start: Anthropic's Agent Skills repository ships example Skills as folders with a `SKILL.md` and reference files; Claude Code agents are Markdown files with a header; Dify and Copilot Studio offer galleries of ready-made agents to copy and adapt. AgentIM ships the same kind of library, in the same formats, so a built-in role or Skill is also a valid Claude Code agent or Agent Skill.
+
+- **What ships**: roles in `server/crates/agentim-core/builtin/agents/*.md` and Skills in `builtin/skills/<name>/SKILL.md` with `references/`. They are compiled into the program (`library.rs`). Skills are instructions only; scripts are never shipped or run.
+- **Installing** copies the item into the app's own library in one write in the control database's writer:
+  - A role brings the Skills it names that the library lacks. Skills the app already has (maybe edited) are left as they are.
+  - Without `replace`, an item the library already has is refused (`role.exists`, `skill.exists`), and nothing is written, including the role's Skills.
+  - `replace` restores the shipped text. For a Skill, files that are not shipped are removed.
+  - Agents with the role, or with a role naming the Skill, are told their configuration changed.
+- **Status**: `installed` (the library has an item of that name) and `current` (its text is the shipped one). A newer program version can ship newer text; the console then shows the copy as "edited" with a "Restore built-in" button.
+- **Enabling a built-in assistant** (`/admin/v1/app/assistants/catalog/{name}`) installs the role and its Skills the same way when the role is missing.
+
+| Role | For | Skills |
+|---|---|---|
+| `assistant` | General Q&A in the chat | knowledge-answers |
+| `support` | Customer questions, hands over when needed | support-replies, knowledge-answers, handoff-to-a-person |
+| `order-support` | After-sales: orders, refunds, cancellations, address changes with approval | support-replies, show-data-as-cards, collect-details-with-forms, actions-with-approval, handoff-to-a-person |
+| `booking` | Books, moves and cancels appointments | booking-appointments, show-data-as-cards, collect-details-with-forms, actions-with-approval, handoff-to-a-person |
+| `advisor-aide` | Drafts replies for a professional to send; private notes | draft-for-review, summarizing-conversations |
+| `it-helpdesk` | Internal IT questions, troubleshooting, tickets | troubleshooting, knowledge-answers, actions-with-approval, handoff-to-a-person |
+| `hr-helpdesk` | Internal HR policy questions and requests | knowledge-answers, collect-details-with-forms, handoff-to-a-person |
+| `sales` | Prospects' questions, lead form, booking a call | knowledge-answers, collect-details-with-forms, booking-appointments, handoff-to-a-person |
+| `notes` | Meeting notes and summaries | meeting-notes, summarizing-conversations |
+| `translator` | Translates messages | translation |
+| `moderator` | Reminds of community rules, reports | content-moderation |
+| `task-lead` | Leads multi-agent tasks | task-coordination, summarizing-conversations |
+
+Skills: `support-replies`, `handoff-to-a-person`, `actions-with-approval`, `show-data-as-cards`, `collect-details-with-forms`, `knowledge-answers`, `booking-appointments`, `draft-for-review`, `troubleshooting`, `summarizing-conversations`, `meeting-notes`, `translation`, `content-moderation`, `task-coordination`.
+
+<img src="../../images/console/library.png" width="640" alt="The console's built-in roles: order-support added with its skills">
+
 ## 4. Interfaces
 
 - Admin API (console):
+  - `/admin/v1/app/library/roles`, `/admin/v1/app/library/skills` (list), `POST …/library/roles/{name}`, `POST …/library/skills/{name}` (install; body `{"replace": true}` to restore);
   - `/admin/v1/app/model-services`;
   - `/admin/v1/app/assistants` (settings `cards`, `forms`, `steps`, `handoff`, limits, knowledge-only);
   - knowledge files, `/admin/v1/app/skills`, `/admin/v1/app/connections` (with `approvals`).
@@ -98,7 +132,7 @@ model error or timeout (120 s) ──▶ "I can't answer right now", logged, no 
 
 ## 5. Rules and errors
 
-Rule prefixes: `model_service.*`, `assistant.*`, `knowledge.*`, `skill.*`, `connection.*` ([catalog](../business-rules.md)). Admin requests with bad input are `bad_request`; unknown ids are `not_found`; deleting something in use is `conflict`. Failures at run time are answered in the chat with a notice, not with an error to anyone.
+Rule prefixes: `model_service.*`, `assistant.*`, `knowledge.*`, `skill.*` (including `skill.catalog`, `skill.exists`), `role.*` (`role.catalog`, `role.exists`), `connection.*` ([catalog](../business-rules.md)). Admin requests with bad input are `bad_request`; unknown ids are `not_found`; deleting something in use is `conflict`. Failures at run time are answered in the chat with a notice, not with an error to anyone.
 
 ## 6. Tests
 
@@ -116,6 +150,7 @@ Paths under `server/crates/agentim-core/tests/`; three databases. Model provider
 | AST-12 | `assistants.rs`: `failures_and_limits_answer_with_a_notice` |
 | AST-13 | `roles.rs`: `agents_get_their_config_at_login_and_when_it_changes`; `sdk/agent-node/e2e.mjs` and `sdk/agent-python/e2e.py` (files written to disk) |
 | AST-14 | `assistants.rs`: `hosted_projects_spend_their_ai_credit` |
+| AST-15 | `library.rs`: `every_role_is_valid_and_its_skills_are_built_in`, `every_skill_is_valid_and_used`; `tests/library.rs`: all 8 tests (listing, a role with its skills, a skill with its files, replace and current, what agents receive, refusals leave no trace, restart, races with one winner, mutation-checked); `assistants.rs`: `a_built_in_agent_answers_in_the_chat` (enabling installs the skills); `server/ci/console_smoke.mjs` |
 
 ## 7. Limits and next steps
 

@@ -6,7 +6,7 @@ Every business check is a numbered rule ([tracing and business rules](design/tra
 
 Stage: ③ session layer (before the writer, `hub`); ⑦ writer (in the same transaction as the write, `logic`); file store. The text is the error message in the code (`{}` is the actual value).
 
-422 rules.
+426 rules.
 
 ## Conversations (`conv.*`, 20)
 
@@ -233,11 +233,13 @@ Stage: ③ session layer (before the writer, `hub`); ⑦ writer (in the same tra
 | `agent.unknown` | `not_found` | ③ session, ⑦ writer | agent; no such agent; the agent is gone | `hub.rs` `hub/agents.rs` `hub/assistants.rs` `hub/developer.rs` `hub/knowledge.rs` `hub/lifecycle.rs` `hub/roles.rs` `logic.rs` `logic/ai.rs` `logic/lifecycle.rs` |
 | `agent.unknown_key` | `not_found` | ③ session | no such key | `hub/agents.rs` |
 
-## Agent roles (`role.*`, 9)
+## Agent roles (`role.*`, 11)
 
 | Rule | Code | Stage | Text | Code location |
 |---|---|---|---|---|
+| `role.catalog` | `not_found` | ③ session | no such built-in role | `hub/library.rs` |
 | `role.description` | `bad_request` | ③ session | — | `hub/roles.rs` |
+| `role.exists` | `conflict` | ⑦ writer | the library already has a role named {}; install it with replace to update it | `logic.rs` |
 | `role.header` | `bad_request` | ③ session | — | `hub/roles.rs` |
 | `role.in_use` | `conflict` | ⑦ writer | {} agent(s) have this role ({}); give them another role first | `logic.rs` |
 | `role.name` | `bad_request` | ③ session | — | `hub/roles.rs` |
@@ -301,11 +303,13 @@ Stage: ③ session layer (before the writer, `hub`); ⑦ writer (in the same tra
 | `knowledge.unknown` | `not_found` | ⑦ writer | no such knowledge file | `logic.rs` |
 | `knowledge.unreadable` | `bad_request` | ③ session | the PDF could not be read | `hub/knowledge.rs` |
 
-## Skills (`skill.*`, 12)
+## Skills (`skill.*`, 14)
 
 | Rule | Code | Stage | Text | Code location |
 |---|---|---|---|---|
+| `skill.catalog` | `not_found` | ③ session | no such built-in skill | `hub/library.rs` |
 | `skill.description` | `bad_request` | ③ session | — | `hub/skills.rs` |
+| `skill.exists` | `conflict` | ⑦ writer | the library already has a skill named {}; install it with replace to update it | `logic.rs` |
 | `skill.file_encoding` | `bad_request` | ③ session | skill files are UTF-8 text | `hub/skills.rs` |
 | `skill.file_size` | `bad_request` | ③ session | a skill's file is at most 512 KB | `hub/skills.rs` |
 | `skill.file_unknown` | `not_found` | ③ session, ⑦ writer | no such file in this skill | `hub/skills.rs` `logic.rs` |
@@ -430,14 +434,14 @@ Stage: ③ session layer (before the writer, `hub`); ⑦ writer (in the same tra
 |---|---|---|---|---|
 | `history.after_or_before` | `bad_request` | ③ session | give after_seq or before_seq, not both | `hub/history.rs` |
 | `history.agent_read_args` | `bad_request` | ③ session | agents read with after_seq, before_seq and limit | `hub.rs` |
-| `history.agents_only` | `forbidden` | ③ session | reading history is for agents; people sync (docs/08) | `hub/history.rs` |
+| `history.agents_only` | `forbidden` | ③ session | reading history is for agents; people sync (docs/en/design/sync-and-clients.md) | `hub/history.rs` |
 | `history.anchor` | `bad_request` | ③ session | anchor is a seq (>= 0), "newest" or "first_unread" | `hub/pages.rs` |
 | `history.filter_size` | `bad_request` | ③ session | {name} must be 1..64 bytes | `hub/history.rs` |
 | `history.limit` | `bad_request` | ③ session | limit must be 1..200 | `hub/history.rs` |
 | `history.max_tokens` | `bad_request` | ③ session | max_tokens must be 256..200000 | `hub/history.rs` |
 | `history.page_direction` | `bad_request` | ③ session | ask for messages before or after the anchor | `hub/pages.rs` |
 | `history.page_size` | `bad_request` | ③ session | before and after are 0..{} | `hub/pages.rs` |
-| `history.people_page_args` | `bad_request` | ③ session | people page with anchor, before and after (docs/08 §2.8) | `hub.rs` |
+| `history.people_page_args` | `bad_request` | ③ session | people page with anchor, before and after (docs/en/design/sync-and-clients.md) | `hub.rs` |
 | `history.rate` | `rate_limited` | ③ session | too many {kind} reads (at most {n} a minute) | `hub/history.rs` |
 | `history.search_limit` | `bad_request` | ③ session | limit must be 1..50 | `hub/history.rs` |
 | `history.search_query` | `bad_request` | ③ session | query must be 2..200 bytes | `hub/history.rs` |

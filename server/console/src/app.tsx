@@ -458,6 +458,66 @@ Answer briefly and ask before doing anything irreversible.
 `;
 
 /** Agent roles (docs/en/design/agents.md): Markdown files, same format as Claude Code's agents/*.md. */
+/**
+ * The built-in library (docs/en/design/assistants.md, AST-15): roles and Skills that ship with
+ * AgentIM. Adding one copies it into the app's library, where it can be changed; a role brings the
+ * Skills it names. "Edited" means the app's copy differs from the shipped one; restoring brings the
+ * shipped text back.
+ */
+function BuiltinLibrary({ kind, onChange }: { kind: 'roles' | 'skills'; onChange(): void }) {
+  const [v, err, reload] = useLoad(() => api('GET', `/app/library/${kind}`), [kind]);
+  const a = useAction();
+  const [done, setDone] = useState('');
+  const install = (name: string, replace: boolean) =>
+    a.run(async () => {
+      if (replace && !confirm(`Replace your ${kind === 'roles' ? 'role' : 'skill'} ${name} with the built-in one?`)) return;
+      const r = await api('POST', `/app/library/${kind}/${enc(name)}`, replace ? { replace: true } : undefined);
+      const added: string[] = r.skills_added ?? [];
+      setDone(kind === 'roles' && added.length ? `Added ${name} with the skills ${added.join(', ')}.` : `Added ${name}.`);
+      reload();
+      onChange();
+    });
+  return (
+    <div className="card" aria-label="Built-in library">
+      <h3>Built-in {kind === 'roles' ? 'roles' : 'skills'}</h3>
+      <p className="muted">
+        {kind === 'roles'
+          ? 'Ready-made roles for common jobs. Adding one copies it into your library, with the skills it uses; then change it as you like.'
+          : 'Ready-made skills (instructions and reference files) that the built-in roles use. Add one to use it in your own roles.'}
+      </p>
+      <Err text={err ?? a.err} />
+      {done && <p className="muted" role="status">{done}</p>}
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>What it does</th>
+            <th>{kind === 'roles' ? 'Skills' : 'Used by'}</th>
+            <th>In your library</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {v?.[kind].map((x: any) => (
+            <tr key={x.name}>
+              <td>{x.name}</td>
+              <td>{x.description}</td>
+              <td className="muted">{(kind === 'roles' ? x.skills : x.used_by).join(', ') || '—'}</td>
+              <td>{x.installed ? (x.current ? <span className="badge ok">added</span> : <span className="badge">edited</span>) : <span className="muted">no</span>}</td>
+              <td>
+                <div className="row-actions">
+                  {!x.installed && <button onClick={() => install(x.name, false)} disabled={a.busy}>Add</button>}
+                  {x.installed && !x.current && <button onClick={() => install(x.name, true)} disabled={a.busy}>Restore built-in</button>}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function Roles() {
   const [v, err, reload] = useLoad(() => api('GET', '/app/roles'), []);
   const [name, setName] = useState('');
@@ -527,6 +587,7 @@ export function Roles() {
           ))}
         </tbody>
       </table>
+      <BuiltinLibrary kind="roles" onChange={reload} />
     </Page>
   );
 }
@@ -832,6 +893,7 @@ export function Skills() {
           ))}
         </tbody>
       </table>
+      <BuiltinLibrary kind="skills" onChange={reload} />
     </Page>
   );
 }

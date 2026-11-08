@@ -33,7 +33,7 @@ With a deployment's key only models with a known price can be used, so every cal
 
 ## 2. An agent
 
-Under **Built-in agents**, enable one of five ready roles — `assistant`, `translator`, `notes`, `support`, `moderator` — with a maintainer, a service and a model. That creates a team agent with the role. Or turn any existing agent into a built-in one:
+Under **Built-in agents**, enable one of the ready roles from the built-in library (below) with a maintainer, a service and a model. That creates a team agent with the role and the Skills it uses. Or turn any existing agent into a built-in one:
 
 ```bash
 curl -X PUT "$AGENTIM/admin/v1/app/agents/helper/assistant" \
@@ -43,6 +43,34 @@ curl -X PUT "$AGENTIM/admin/v1/app/agents/helper/assistant" \
 ```
 
 Its instructions are its [role](/docs/concepts/agents/) (a Markdown file). Each message gets exactly one reply, even across restarts and cluster nodes. When the model can't answer, the agent says so (your `fallback` text); limits (replies per minute and per day, tokens per day per service) answer with a short notice instead of calling the model.
+
+### The built-in library
+
+AgentIM ships 12 roles and 14 Skills, in the same formats as Claude Code agents and Agent Skills. Add them from the console (**Agent roles** and **Skills**, "Built-in roles" and "Built-in skills") or the admin API. Adding a role copies it into your library with the Skills it uses that you don't have yet; then change your copy as you like.
+
+| Role | For |
+|---|---|
+| `assistant` | General questions in the chat |
+| `support` | Customer questions; hands over when needed |
+| `order-support` | After-sales: orders, refunds, cancellations, address changes with approval |
+| `booking` | Booking, moving and cancelling appointments |
+| `advisor-aide` | Drafts replies for a professional to send, and private notes |
+| `it-helpdesk` | Internal IT questions, troubleshooting, tickets |
+| `hr-helpdesk` | Internal HR policy questions and requests |
+| `sales` | Prospects' questions, a lead form, booking a call |
+| `notes` | Meeting notes and summaries |
+| `translator` | Translating messages |
+| `moderator` | Reminding people of the rules and reporting |
+| `task-lead` | Leading a task done by several agents |
+
+The Skills teach the habits these jobs share: `support-replies`, `handoff-to-a-person`, `actions-with-approval`, `show-data-as-cards`, `collect-details-with-forms`, `knowledge-answers`, `booking-appointments`, `draft-for-review`, `troubleshooting`, `summarizing-conversations`, `meeting-notes`, `translation`, `content-moderation`, `task-coordination`.
+
+```bash
+curl -X POST "$AGENTIM/admin/v1/app/library/roles/order-support" -H "Authorization: Bearer $ADMIN_KEY"
+# {"role": "order-support", "skills_added": ["support-replies", "show-data-as-cards", ...]}
+curl "$AGENTIM/admin/v1/app/library/roles" -H "Authorization: Bearer $ADMIN_KEY"
+# each role with "installed" and "current"; POST with {"replace": true} restores the shipped text
+```
 
 ## 3. Knowledge
 

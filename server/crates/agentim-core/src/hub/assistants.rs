@@ -24,22 +24,7 @@ use crate::logic::{AdminOp, Op};
 use crate::model::*;
 
 /// Built-in roles (`builtin/agents/*.md`): enabled from the console.
-pub const CATALOG: &[(&str, &str)] = &[
-    (
-        "assistant",
-        include_str!("../../builtin/agents/assistant.md"),
-    ),
-    (
-        "translator",
-        include_str!("../../builtin/agents/translator.md"),
-    ),
-    ("notes", include_str!("../../builtin/agents/notes.md")),
-    ("support", include_str!("../../builtin/agents/support.md")),
-    (
-        "moderator",
-        include_str!("../../builtin/agents/moderator.md"),
-    ),
-];
+pub use crate::library::ROLES as CATALOG;
 
 /// How often the runner looks at what it should run.
 const SUPERVISE_EVERY: Duration = Duration::from_secs(5);
@@ -274,7 +259,7 @@ impl Hub {
     /// goes into the library (unless one by that name is there), the agent
     /// is created with the owner as its maintainer and gets the role.
     pub async fn enable_builtin(&self, slug: &str, req: EnableReq) -> ApiResult<Value> {
-        let (_, md) = CATALOG
+        CATALOG
             .iter()
             .find(|(s, _)| *s == slug)
             .ok_or_else(|| rule!("assistant.catalog", "not_found", "no such built-in agent"))?;
@@ -306,7 +291,8 @@ impl Hub {
             .await?
             .is_some();
         if !have_role {
-            self.put_role(slug, md).await?;
+            // With the Skills the role names that the library lacks.
+            self.install_library_role(slug, false).await?;
         }
         let made = self.create_agent_with(&owner, &id, true).await?;
         let agent = self

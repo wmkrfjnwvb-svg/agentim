@@ -222,6 +222,16 @@ pub fn routes(state: AppState) -> Router<AppState> {
                     crate::hub::knowledge::MAX_FILE_BYTES + 1,
                 )),
         )
+        .route("/admin/v1/app/library/roles", get(library_roles))
+        .route(
+            "/admin/v1/app/library/roles/{name}",
+            post(install_library_role),
+        )
+        .route("/admin/v1/app/library/skills", get(library_skills))
+        .route(
+            "/admin/v1/app/library/skills/{name}",
+            post(install_library_skill),
+        )
         .route("/admin/v1/app/skills", get(list_skills))
         .route(
             "/admin/v1/app/skills/{name}",
@@ -1094,6 +1104,65 @@ async fn delete_knowledge(
         "knowledge.delete",
         Some(&id),
         json!({"name": name}),
+    )
+    .await;
+    ok(v)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct InstallReq {
+    #[serde(default)]
+    replace: bool,
+}
+
+async fn library_roles(State(st): State<AppState>, Extension(a): A) -> R {
+    need(&a, APP_READ)?;
+    ok(json!({"roles": st.hub.library_roles().await?}))
+}
+
+async fn library_skills(State(st): State<AppState>, Extension(a): A) -> R {
+    need(&a, APP_READ)?;
+    ok(json!({"skills": st.hub.library_skills().await?}))
+}
+
+/// Body (optional): `{"replace": true}` updates a role already there.
+async fn install_library_role(
+    State(st): State<AppState>,
+    Extension(a): A,
+    Path(name): Path<String>,
+    b: Bytes,
+) -> R {
+    need(&a, APP)?;
+    let req: InstallReq = body_or_default(&b)?;
+    let v = st.hub.install_library_role(&name, req.replace).await?;
+    audit(
+        &st.hub,
+        &a,
+        "library.role_install",
+        Some(&name),
+        json!({"replace": req.replace, "skills_added": v["skills_added"]}),
+    )
+    .await;
+    ok(v)
+}
+
+/// Body (optional): `{"replace": true}` updates a skill already there.
+async fn install_library_skill(
+    State(st): State<AppState>,
+    Extension(a): A,
+    Path(name): Path<String>,
+    b: Bytes,
+) -> R {
+    need(&a, APP)?;
+    let req: InstallReq = body_or_default(&b)?;
+    let v = st.hub.install_library_skill(&name, req.replace).await?;
+    audit(
+        &st.hub,
+        &a,
+        "library.skill_install",
+        Some(&name),
+        json!({"replace": req.replace}),
     )
     .await;
     ok(v)

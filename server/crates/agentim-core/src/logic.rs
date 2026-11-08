@@ -169,6 +169,19 @@ pub enum FriendOp {
     },
 }
 
+/// A role or Skill copied from the built-in library.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryItem {
+    pub name: String,
+    pub description: String,
+    pub markdown: String,
+    /// Reference files of a Skill: (path, body).
+    pub files: Vec<(String, String)>,
+    /// Asked for by name (refused when present without `replace`); a Skill
+    /// a role names is only added when missing.
+    pub explicit: bool,
+}
+
 /// Writes of the console's accounts and settings (docs/en/design/developer-experience.md).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AdminOp {
@@ -285,6 +298,16 @@ pub enum AdminOp {
     },
     SkillDelete {
         name: String,
+    },
+    /// Copies built-in library items into the app's library in one write
+    /// (docs/en/design/assistants.md, AST-15): a role and the Skills it names
+    /// that are missing, or one Skill. Without `replace`, an item named
+    /// explicitly that is already there is refused (`conflict`).
+    LibraryInstall {
+        role: Option<LibraryItem>,
+        skills: Vec<LibraryItem>,
+        replace: bool,
+        now: i64,
     },
     SkillFilePut {
         skill: String,
@@ -6101,6 +6124,97 @@ impl Ctx<'_, '_> {
                     return Err(rule!("skill.unknown", "not_found", "no such skill"));
                 }
                 Ok(json!({"deleted": name}))
+            }
+            AdminOp::LibraryInstall {
+                role,
+                skills,
+                replace,
+                now,
+            } => {
+                // Every refusal comes before the first write.
+                if let Some(r) = &role
+                    && !replace
+                    && self.db.role_get(&r.name).await?.is_some()
+                {
+                    return Err(rule!(
+                        "role.exists",
+                        "conflict",
+                        format!(
+                            "the library already has a role named {}; install it with replace to update it",
+                            r.name
+                        )
+                    ));
+                }
+                let mut present = Vec::with_capacity(skills.len());
+                for sk in &skills {
+                    let there = self.db.skill(&sk.name).await?.is_some();
+                    if there && sk.explicit && !replace {
+                        return Err(rule!(
+                            "skill.exists",
+                            "conflict",
+                            format!(
+                                "the library already has a skill named {}; install it with replace to update it",
+                                sk.name
+                            )
+                        ));
+                    }
+                    present.push(there);
+                }
+                let max = crate::hub::skills::FILES_PER_SKILL;
+                let mut added = vec![];
+                let mut updated = vec![];
+                for (sk, there) in skills.iter().zip(present) {
+                    if there && !(sk.explicit && replace) {
+                        continue;
+                    }
+                    self.db
+                        .skill_put(&sk.name, &sk.description, &sk.markdown, now)
+                        .await?;
+                    if there {
+                        for (path, _) in self.db.skill_files(&sk.name, false).await? {
+                            if !sk.files.iter().any(|(p, _)| *p == path) {
+                                self.db.skill_file_delete(&sk.name, &path, now).await?;
+                            }
+                        }
+                    }
+                    for (path, body) in &sk.files {
+                        if self
+                            .db
+                            .skill_file_put(&sk.name, path, body, now, max)
+                            .await?
+                            .is_none()
+                        {
+                            return Err(rule!(
+                                "skill.files",
+                                "rate_limited",
+                                format!("a skill has at most {max} files")
+                            ));
+                        }
+                    }
+                    self.skill_changed(&sk.name).await?;
+                    if there {
+                        updated.push(sk.name.clone());
+                    } else {
+                        added.push(sk.name.clone());
+                    }
+                }
+                let mut role_version = Value::Null;
+                if let Some(r) = &role {
+                    let v = self
+                        .db
+                        .role_put(&r.name, &r.description, &r.markdown, now)
+                        .await?;
+                    for a in self.db.agents_with_role(&r.name).await? {
+                        self.config_changed(a);
+                    }
+                    role_version = json!(v);
+                }
+                Ok(json!({
+                    "role": role.as_ref().map(|r| r.name.clone()),
+                    "role_version": role_version,
+                    "skills_added": added,
+                    "skills_updated": updated,
+                }))
             }
             AdminOp::SkillFilePut {
                 skill,

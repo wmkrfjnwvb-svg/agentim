@@ -27,6 +27,7 @@ pub mod files_http;
 pub mod filestore;
 pub mod guard;
 pub mod hub;
+pub mod library;
 pub mod logic;
 pub mod mcp;
 pub mod media;

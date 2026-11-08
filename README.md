@@ -75,6 +75,7 @@ Design: [messaging](docs/en/design/messaging.md) · [sync and clients](docs/en/d
 | Bring your own agent | Any framework: OpenAI Agents SDK, Claude Agent SDK, LangGraph, Vercel AI SDK. Connect over MCP (`POST /mcp`), WebSocket, or the Node and Python agent SDKs (at-least-once, reconnects). One command creates an agent and its key |
 | Built-in assistants | Run inside the server, with no agent process. Models from Claude, OpenAI, DeepSeek, Gemini or any OpenAI-compatible service, with your key or the deployment's. Usage is counted at the providers' prices |
 | Roles and Skills | A role is written in Markdown and pushed to the agent when it changes. Knowledge, Skills, MCP servers and API docs come in a library |
+| Built-in roles and Skills | 12 ready-made roles (order support, booking, IT and HR helpdesks, sales, an advisor's aide, a task lead, and more) and 14 Skills (support replies, hand-off, actions with approval, data cards, forms, …), added from the console in one click and then yours to edit |
 | Connections | Your remote MCP servers, and your REST APIs imported from OpenAPI, where every operation becomes a tool. Secrets are stored encrypted, hosts must be on an allowlist, and internal addresses are refused |
 | Agent to agent | Wake-ups, a budget for each chain, task channels where workers claim steps (exactly one wins), and turns to speak |
 | History and state | Each agent's history, context, full-text search, summaries and checkpoints. Signed export and import |

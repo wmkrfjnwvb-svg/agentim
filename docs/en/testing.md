@@ -87,7 +87,7 @@ The cluster suite uses them to prove the lease and fencing rules. Each guard has
 | Sync and clients | SYN-01 … SYN-12, CLI-01 … CLI-11 | [sync-and-clients](design/sync-and-clients.md#6-tests) |
 | Agents | AGT-01 … AGT-19 | [agents](design/agents.md#6-tests) |
 | Approvals | APR-01 … APR-16 | [approvals](design/approvals.md#6-tests) |
-| Built-in assistants | AST-01 … AST-14 | [assistants](design/assistants.md#6-tests) |
+| Built-in assistants | AST-01 … AST-15 | [assistants](design/assistants.md#6-tests) |
 | Chat components | UI-01 … UI-14 | [chat-components](design/chat-components.md#6-tests) |
 | Open API and webhooks | API-01 … API-15 | [open-api](design/open-api.md#6-tests) |
 | Access | ACC-01 … ACC-17 | [access](design/access.md#6-tests) |

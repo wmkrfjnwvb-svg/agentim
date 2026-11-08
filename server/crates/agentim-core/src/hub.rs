@@ -32,6 +32,7 @@ mod compliance;
 pub mod connections;
 mod friends;
 pub mod knowledge;
+mod library;
 mod roles;
 pub mod skills;
 pub use compliance::{CATEGORIES as REPORT_CATEGORIES, DELETED_CAN_SEND, ERASURE_STEP};
