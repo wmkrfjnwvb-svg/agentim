@@ -22,24 +22,26 @@ These come from [CLAUDE.md](../../CLAUDE.md) and apply to every change:
 
 ## 2. Suites
 
+CI runs the suites when a release is tagged (`v*`, `sdk-v*`: nothing is published unless they pass) and by hand (Actions → the workflow → Run workflow), not on every push, to save CI minutes. Run the suites you touch locally before pushing (§3).
+
 | Suite | Where | What | Runs |
 |---|---|---|---|
-| Server business tests | `server/crates/agentim-core/tests/*.rs` (about 500 test functions) | Every operation and rule, races, restarts, several databases. Tests in `backend_tests!` run once per database | Every push, three databases |
-| Cluster tests | `server/crates/agentim-cluster/tests/` (36) | Several nodes on one database: forwarding, failover, fencing, hand-over, invalidation, fault injection, mutation checks | Every push, PostgreSQL and MySQL |
-| Crash tests | `server/crates/agentim/tests/crash.rs` | A real process killed with `kill -9` mid-traffic; every acknowledged message must be there | Every push, Linux and Windows |
-| CLI tests | `server/crates/agentim/tests/cli.rs` | First run, admin commands against a running server, the demo, `verify` | Every push |
-| Replica failover | `tests/replicas.rs` + `server.yml` | Real PostgreSQL and MySQL primary/replica pairs, failover under load | Every push |
-| Business verifier | `agentim verify` after the suites | Log replay against state on every database the tests used | Every push |
-| Rule coverage | `tests/rules.rs` | The catalog matches the code; every refusal is a rule; every rule is triggered by some test | Every push, after the other suites |
-| Scale tests | `.github/workflows/scale.yml` | 20,000 connections with a reconnect storm, a 2,000-member group, slow consumers | Nightly |
-| Client core | `sdk/client-rust/core/tests/` | Deterministic tests with fake clock, network and storage; random simulation over thousands of seeds; 100% line and branch coverage | Every SDK change |
-| SDK conformance | `sdk/client-rust/native/tests/conformance.rs` and each wrapper's test | The same scenarios against a real server in Rust, C, Swift, Kotlin, C#, Dart, React Native, the browser | Every SDK change |
-| Agent SDKs | `sdk/agent_e2e.sh`, `sdk/agent-node/e2e.mjs`, `sdk/agent-python/e2e.py` | Two real agents with a person: streaming, cards, forms, requests, state, hand-off, redelivery, restart | Every push, Linux and Windows |
-| Server SDKs | `sdk/node/smoke.mjs`, `sdk/python/smoke.py`, `sdk/go/smoke` | Every endpoint against a real server | Every push |
-| UI components | `sdk/react/test/`, `sdk/react-native-ui/test/` | Components, chat components, formats, contrast, an end-to-end run against a real server, screenshots compared with baselines | Every UI change |
-| Console | `server/ci/console_smoke.mjs` | The console in a browser against a real server | Every push |
-| Examples | `examples/test/e2e.mjs` | The three example apps in a browser | Every push |
-| Docs site | `site/scripts/complete.mjs` | Every endpoint, message, error, rule and SDK method has a page | Every site change |
+| Server business tests | `server/crates/agentim-core/tests/*.rs` (about 500 test functions) | Every operation and rule, races, restarts, several databases. Tests in `backend_tests!` run once per database | Every release, three databases |
+| Cluster tests | `server/crates/agentim-cluster/tests/` (36) | Several nodes on one database: forwarding, failover, fencing, hand-over, invalidation, fault injection, mutation checks | Every release, PostgreSQL and MySQL |
+| Crash tests | `server/crates/agentim/tests/crash.rs` | A real process killed with `kill -9` mid-traffic; every acknowledged message must be there | Every release, Linux and Windows |
+| CLI tests | `server/crates/agentim/tests/cli.rs` | First run, admin commands against a running server, the demo, `verify` | Every release |
+| Replica failover | `tests/replicas.rs` + `server.yml` | Real PostgreSQL and MySQL primary/replica pairs, failover under load | Every release |
+| Business verifier | `agentim verify` after the suites | Log replay against state on every database the tests used | Every release |
+| Rule coverage | `tests/rules.rs` | The catalog matches the code; every refusal is a rule; every rule is triggered by some test | Every release, after the other suites |
+| Scale tests | `.github/workflows/scale.yml` | 20,000 connections with a reconnect storm, a 2,000-member group, slow consumers | By hand |
+| Client core | `sdk/client-rust/core/tests/` | Deterministic tests with fake clock, network and storage; random simulation over thousands of seeds; 100% line and branch coverage | Every release and SDK release |
+| SDK conformance | `sdk/client-rust/native/tests/conformance.rs` and each wrapper's test | The same scenarios against a real server in Rust, C, Swift, Kotlin, C#, Dart, React Native, the browser | Every release and SDK release |
+| Agent SDKs | `sdk/agent_e2e.sh`, `sdk/agent-node/e2e.mjs`, `sdk/agent-python/e2e.py` | Two real agents with a person: streaming, cards, forms, requests, state, hand-off, redelivery, restart | Every release, Linux and Windows |
+| Server SDKs | `sdk/node/smoke.mjs`, `sdk/python/smoke.py`, `sdk/go/smoke` | Every endpoint against a real server | Every release |
+| UI components | `sdk/react/test/`, `sdk/react-native-ui/test/` | Components, chat components, formats, contrast, an end-to-end run against a real server, screenshots compared with baselines | Every release |
+| Console | `server/ci/console_smoke.mjs` | The console in a browser against a real server | Every release |
+| Examples | `examples/test/e2e.mjs` | The three example apps in a browser | Every release |
+| Docs site | `site/scripts/complete.mjs` | Every endpoint, message, error, rule and SDK method has a page | By hand |
 | Benchmarks | `server/bench/` | Throughput and latency with correctness checks | By hand; the numbers are in the README |
 
 ## 3. Running them

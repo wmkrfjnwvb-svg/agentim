@@ -22,24 +22,26 @@ AgentIM 怎么测试、每套测试覆盖什么、怎么运行。每个[设计�
 
 ## 2. 测试套件
 
+CI 在打发布标签时跑（`v*`、`sdk-v*`：测试不过就不发布），也可以手动跑（Actions → 选工作流 → Run workflow），不再每次推送都跑，省 CI 额度。推送前在本地跑改到的那部分测试（§3）。
+
 | 套件 | 位置 | 测什么 | 什么时候跑 |
 |---|---|---|---|
-| 服务端业务测试 | `server/crates/agentim-core/tests/*.rs`（约 500 个测试函数） | 每个操作和规则、竞争、重启、多个数据库。`backend_tests!` 里的测试每种数据库各跑一次 | 每次推送，三种数据库 |
-| 集群测试 | `server/crates/agentim-cluster/tests/`（36 个） | 一个库上多个节点：转发、故障接管、栅栏、交接、失效通知、故障注入、变异检查 | 每次推送，PostgreSQL 和 MySQL |
-| 崩溃测试 | `server/crates/agentim/tests/crash.rs` | 流量中用 `kill -9` 杀掉真实进程；每条已确认的消息都必须在 | 每次推送，Linux 和 Windows |
-| 命令行测试 | `server/crates/agentim/tests/cli.rs` | 第一次运行、对运行中的服务端执行管理命令、演示、`verify` | 每次推送 |
-| 从库切主 | `tests/replicas.rs` 加 `server.yml` | 真实的 PostgreSQL 和 MySQL 主从，在负载下切主 | 每次推送 |
-| 业务校验器 | 测试套件之后跑 `agentim verify` | 对测试用过的每个库，按状态回放日志 | 每次推送 |
-| 规则覆盖 | `tests/rules.rs` | 目录和代码一致；每次拒绝都是一条规则；每条规则都被某个测试触发 | 每次推送，在其他套件之后 |
-| 规模测试 | `.github/workflows/scale.yml` | 2 万连接加重连风暴、2000 人大群、慢消费者 | 每晚 |
-| 客户端核心 | `sdk/client-rust/core/tests/` | 假时钟、假网络、假存储的确定性测试；几千个随机种子的模拟；100% 行和分支覆盖率 | 每次改 SDK |
-| SDK 一致性 | `sdk/client-rust/native/tests/conformance.rs` 和各平台封装的测试 | 同一组场景对着真实服务端跑：Rust、C、Swift、Kotlin、C#、Dart、React Native、浏览器 | 每次改 SDK |
-| Agent SDK | `sdk/agent_e2e.sh`、`sdk/agent-node/e2e.mjs`、`sdk/agent-python/e2e.py` | 两个真实 Agent 和一个人：流式、卡片、表单、请求、状态、转人工、重新投递、重启 | 每次推送，Linux 和 Windows |
-| 服务端 SDK | `sdk/node/smoke.mjs`、`sdk/python/smoke.py`、`sdk/go/smoke` | 每个端点对着真实服务端 | 每次推送 |
-| 界面组件 | `sdk/react/test/`、`sdk/react-native-ui/test/` | 组件、聊天组件、格式化、对比度、对着真实服务端的端到端、和基准图比对的截图 | 每次改界面 |
-| 控制台 | `server/ci/console_smoke.mjs` | 浏览器里对着真实服务端操作控制台 | 每次推送 |
-| 示例 | `examples/test/e2e.mjs` | 浏览器里跑三个示例应用 | 每次推送 |
-| 文档站 | `site/scripts/complete.mjs` | 每个端点、消息、错误、规则、SDK 方法都有页面 | 每次改文档站 |
+| 服务端业务测试 | `server/crates/agentim-core/tests/*.rs`（约 500 个测试函数） | 每个操作和规则、竞争、重启、多个数据库。`backend_tests!` 里的测试每种数据库各跑一次 | 每次发布，三种数据库 |
+| 集群测试 | `server/crates/agentim-cluster/tests/`（36 个） | 一个库上多个节点：转发、故障接管、栅栏、交接、失效通知、故障注入、变异检查 | 每次发布，PostgreSQL 和 MySQL |
+| 崩溃测试 | `server/crates/agentim/tests/crash.rs` | 流量中用 `kill -9` 杀掉真实进程；每条已确认的消息都必须在 | 每次发布，Linux 和 Windows |
+| 命令行测试 | `server/crates/agentim/tests/cli.rs` | 第一次运行、对运行中的服务端执行管理命令、演示、`verify` | 每次发布 |
+| 从库切主 | `tests/replicas.rs` 加 `server.yml` | 真实的 PostgreSQL 和 MySQL 主从，在负载下切主 | 每次发布 |
+| 业务校验器 | 测试套件之后跑 `agentim verify` | 对测试用过的每个库，按状态回放日志 | 每次发布 |
+| 规则覆盖 | `tests/rules.rs` | 目录和代码一致；每次拒绝都是一条规则；每条规则都被某个测试触发 | 每次发布，在其他套件之后 |
+| 规模测试 | `.github/workflows/scale.yml` | 2 万连接加重连风暴、2000 人大群、慢消费者 | 手动 |
+| 客户端核心 | `sdk/client-rust/core/tests/` | 假时钟、假网络、假存储的确定性测试；几千个随机种子的模拟；100% 行和分支覆盖率 | 每次发布和 SDK 发布 |
+| SDK 一致性 | `sdk/client-rust/native/tests/conformance.rs` 和各平台封装的测试 | 同一组场景对着真实服务端跑：Rust、C、Swift、Kotlin、C#、Dart、React Native、浏览器 | 每次发布和 SDK 发布 |
+| Agent SDK | `sdk/agent_e2e.sh`、`sdk/agent-node/e2e.mjs`、`sdk/agent-python/e2e.py` | 两个真实 Agent 和一个人：流式、卡片、表单、请求、状态、转人工、重新投递、重启 | 每次发布，Linux 和 Windows |
+| 服务端 SDK | `sdk/node/smoke.mjs`、`sdk/python/smoke.py`、`sdk/go/smoke` | 每个端点对着真实服务端 | 每次发布 |
+| 界面组件 | `sdk/react/test/`、`sdk/react-native-ui/test/` | 组件、聊天组件、格式化、对比度、对着真实服务端的端到端、和基准图比对的截图 | 每次发布 |
+| 控制台 | `server/ci/console_smoke.mjs` | 浏览器里对着真实服务端操作控制台 | 每次发布 |
+| 示例 | `examples/test/e2e.mjs` | 浏览器里跑三个示例应用 | 每次发布 |
+| 文档站 | `site/scripts/complete.mjs` | 每个端点、消息、错误、规则、SDK 方法都有页面 | 手动 |
 | 压测 | `server/bench/` | 吞吐和延迟，同时检查正确性 | 手动；数字在 README |
 
 ## 3. 怎么运行

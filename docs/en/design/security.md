@@ -69,7 +69,7 @@ Most users are outside China, so GDPR, the DSA, the EU AI Act, the UK Online Saf
 
 - **Input limits** on frame size, JSON depth and request rates.
 - **Permission matrices** in tests: roles × operations × conversation kinds, with positive and negative cases.
-- **Dependencies** are checked for advisories and licences on every change and weekly (`cargo-deny`, npm audit).
+- **Dependencies** are checked for advisories and licences before every release and by hand (`cargo-deny`, npm audit); Dependabot opens update requests weekly.
 - **Releases** are signed (Sigstore), carry build provenance, and their images have an SBOM ([developer-experience](developer-experience.md)).
 - **Vulnerability reports** follow [`SECURITY.md`](../../../SECURITY.md).
 

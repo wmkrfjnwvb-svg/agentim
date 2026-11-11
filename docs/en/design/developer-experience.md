@@ -23,8 +23,8 @@ Code: `deploy/` (Dockerfile, install scripts, Compose, Helm, release checks), `.
 | DX-04 | Images and Helm | `ghcr.io/<owner>/agentim` for amd64 and arm64, from the same static binary, user 10001, with an SBOM, signed. The Helm chart is an OCI package with the same version |
 | DX-05 | The first run | `agentim` in an empty folder creates `agentim.db` and `agentim.db.key` (0600; refused if others can read it) and prints the address and a one-time console setup link. `agentim --demo` starts with demo people and agents |
 | DX-06 | Versions and changelog | Semantic versions. The program, the chart, the tag and the `CHANGELOG.md` section must agree, or the release stops at once |
-| DX-07 | Dependency checks | `cargo-deny` (advisories, permissive licences only, crates.io only) and npm audits on every dependency change, weekly, and before every release |
-| DX-08 | Client SDK packages | One version for all packages, released on `sdk-v*` tags. Every push builds and tests everything without uploading. Registries with OIDC publishing (npm, NuGet, pub.dev) need no stored secrets |
+| DX-07 | Dependency checks | `cargo-deny` (advisories, permissive licences only, crates.io only) and npm audits before every release and by hand |
+| DX-08 | Client SDK packages | One version for all packages, released on `sdk-v*` tags, after every package is built and tested. Run by hand, the same build and tests run without uploading. Registries with OIDC publishing (npm, NuGet, pub.dev) need no stored secrets |
 | DX-09 | Swift package repository | SwiftPM needs `Package.swift` at the root of a repository, so the release commits the package to [`agentim-swift`](https://github.com/wmkrfjnwvb-svg/agentim-swift) and tags it. The XCFramework is on the release, with its checksum |
 | DX-10 | The console | A React app embedded in the binary at `/console` ([access](access.md)). Pages: overview, keys, people, agents, assistants, model services, connections and approval rules, roles, Skills, conversations, reports, webhooks, audit, settings, message trace, dye rules, cluster and databases, admins |
 | DX-11 | The demo | A web app (React, on the browser SDK and the components) embedded with `--demo`, with demo people and scripted agents |
@@ -45,7 +45,7 @@ Code: `deploy/` (Dockerfile, install scripts, Compose, Helm, release checks), `.
   6. install again as an upgrade;
   7. refuse a tampered archive.
 - **The image** installs the same static binary. Before pushing, each architecture is started once (arm64 under QEMU).
-- **On pull requests that touch the server or deployment**, the whole release runs without uploading.
+- **Before anything is published**, the whole test suite (`server.yml`) runs. Run by hand, the whole release runs without uploading.
 
 ### 3.2 Client SDK packages
 
@@ -88,9 +88,9 @@ Taken by `server/ci/console_smoke.mjs` against a real server.
 - Commands: `agentim` (first run), `agentim --demo`, `agentim admin …`, `agentim cluster …`, `agentim verify`, `agentim encryption …`, `agentim api-key|signing-key|admin-key|token …`.
 - Workflows:
   - `release.yml` (`v*`);
-  - `sdk-packages.yml` (every SDK change);
+  - `sdk-packages.yml` (`sdk-v*`, by hand);
   - `sdk-release.yml` (`sdk-v*`);
-  - `deps.yml`, `site.yml`, `server.yml`, `scale.yml` (nightly).
+  - `deps.yml`, `server.yml` (every release, by hand), `site.yml`, `scale.yml` (by hand). CI does not run on pushes or pull requests.
 
 ## 5. Rules and errors
 
@@ -105,7 +105,7 @@ Each refusal says what to do.
 
 | Feature | Tests |
 |---|---|
-| DX-01–DX-04, DX-06 | `.github/workflows/release.yml` dry run on pull requests; `deploy/release/` version checks; `deploy/smoke/first_message.py` |
+| DX-01–DX-04, DX-06 | `.github/workflows/release.yml` run by hand (no upload); `deploy/release/` version checks; `deploy/smoke/first_message.py` |
 | DX-05 | `server/crates/agentim/tests/cli.rs`: `the_first_run_needs_nothing`, `the_demo_refuses_a_public_address`; `encryption.rs`: `a_single_sqlite_database_gets_a_generated_key`, `the_master_key_is_checked` |
 | DX-07 | `.github/workflows/deps.yml` |
 | DX-08, DX-09 | `.github/workflows/sdk-packages.yml` (every package built, installed and run); `sdk/version.sh`; `sdk/check-npm-pack.mjs`; `sdk/client-swift/test-xcframework.sh`; `sdk/client-dotnet/test-package.sh`; `sdk/client-flutter/test-package.sh`; `sdk/client-react-native/test-app.sh` |

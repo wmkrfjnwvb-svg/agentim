@@ -23,8 +23,8 @@
 | DX-04 | 镜像和 Helm | `ghcr.io/<owner>/agentim`，amd64 和 arm64，用同一个静态程序，用户 10001，带 SBOM，有签名。Helm Chart 以同版本的 OCI 包发布 |
 | DX-05 | 第一次运行 | 在空目录里运行 `agentim`：建 `agentim.db` 和 `agentim.db.key`（0600；别人能读就拒绝启动），打印地址和一次性的控制台初始化链接。`agentim --demo` 带演示用户和演示 Agent 启动 |
 | DX-06 | 版本和更新日志 | 语义化版本。程序、Chart、标签、`CHANGELOG.md` 里的小节必须一致，否则发布一开始就停 |
-| DX-07 | 依赖检查 | `cargo-deny`（漏洞、只允许宽松许可证、只从 crates.io）和 npm audit，每次改依赖、每周、每次发布前都跑 |
-| DX-08 | 客户端 SDK 包 | 所有包一个版本号，打 `sdk-v*` 标签时发布。每次推送都构建和测试全部，只是不上传。支持 OIDC 发布的注册表（npm、NuGet、pub.dev）不存长期密钥 |
+| DX-07 | 依赖检查 | `cargo-deny`（漏洞、只允许宽松许可证、只从 crates.io）和 npm audit，每次发布前跑，也可以手动跑 |
+| DX-08 | 客户端 SDK 包 | 所有包一个版本号，打 `sdk-v*` 标签时先构建和测试全部包再发布。手动运行时同样构建和测试，只是不上传。支持 OIDC 发布的注册表（npm、NuGet、pub.dev）不存长期密钥 |
 | DX-09 | Swift 包的仓库 | SwiftPM 要求 `Package.swift` 在仓库根目录，所以发布时把包提交到 [`agentim-swift`](https://github.com/wmkrfjnwvb-svg/agentim-swift) 并打标签；XCFramework 和它的 checksum 挂在 Release 上 |
 | DX-10 | 控制台 | 嵌在程序里的 React 应用，地址 `/console`（[access](access.md)）。页面：概览、密钥、人员、Agent、助手、模型服务、连接和审批规则、角色、Skills、会话、举报、Webhook、审计、设置、消息轨迹、染色规则、集群和数据库、管理员 |
 | DX-11 | 演示 | 一个网页应用（React，基于浏览器 SDK 和组件），`--demo` 时嵌入，带演示用户和脚本化的 Agent |
@@ -45,7 +45,7 @@
   6. 再装一次（升级）；
   7. 拒绝被改坏的压缩包。
 - **镜像**装同一个静态程序，推送前每种架构各启动一次（arm64 在 QEMU 里）。
-- **改到服务端或部署的 PR** 上，整个发布流程空跑一遍，只是不上传。
+- **发布任何东西之前**，先跑完整测试套件（`server.yml`）。手动运行时整个发布流程空跑一遍，只是不上传。
 
 ### 3.2 客户端 SDK 包
 
@@ -88,9 +88,9 @@
 - 命令：`agentim`（第一次运行）、`agentim --demo`、`agentim admin …`、`agentim cluster …`、`agentim verify`、`agentim encryption …`、`agentim api-key|signing-key|admin-key|token …`。
 - 工作流：
   - `release.yml`（`v*`）；
-  - `sdk-packages.yml`（每次改 SDK）；
+  - `sdk-packages.yml`（`sdk-v*`、手动）；
   - `sdk-release.yml`（`sdk-v*`）；
-  - `deps.yml`、`site.yml`、`server.yml`、`scale.yml`（每晚）。
+  - `deps.yml`、`server.yml`（每次发布、手动），`site.yml`、`scale.yml`（手动）。推送和 PR 不再触发 CI。
 
 ## 5. 规则和错误
 
@@ -105,7 +105,7 @@
 
 | 功能点 | 测试 |
 |---|---|
-| DX-01–DX-04, DX-06 | `.github/workflows/release.yml` dry run on pull requests; `deploy/release/` version checks; `deploy/smoke/first_message.py` |
+| DX-01–DX-04, DX-06 | `.github/workflows/release.yml` run by hand (no upload); `deploy/release/` version checks; `deploy/smoke/first_message.py` |
 | DX-05 | `server/crates/agentim/tests/cli.rs`: `the_first_run_needs_nothing`, `the_demo_refuses_a_public_address`; `encryption.rs`: `a_single_sqlite_database_gets_a_generated_key`, `the_master_key_is_checked` |
 | DX-07 | `.github/workflows/deps.yml` |
 | DX-08, DX-09 | `.github/workflows/sdk-packages.yml` (every package built, installed and run); `sdk/version.sh`; `sdk/check-npm-pack.mjs`; `sdk/client-swift/test-xcframework.sh`; `sdk/client-dotnet/test-package.sh`; `sdk/client-flutter/test-package.sh`; `sdk/client-react-native/test-app.sh` |

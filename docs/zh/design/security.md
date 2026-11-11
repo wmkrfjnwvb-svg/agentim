@@ -69,7 +69,7 @@
 
 - **输入限制**：帧大小、JSON 深度、请求频率。
 - **权限矩阵测试**：角色 × 操作 × 会话类型，正反用例都有。
-- **依赖检查**：每次改依赖时、每周一次检查漏洞和许可证（`cargo-deny`、npm audit）。
+- **依赖检查**：每次发布前检查漏洞和许可证，也可以手动跑（`cargo-deny`、npm audit）；Dependabot 每周提更新请求。
 - **发布物**有签名（Sigstore）和构建来源证明，镜像带 SBOM（[developer-experience](developer-experience.md)）。
 - **漏洞报告**见 [`SECURITY.md`](../../../SECURITY.md)。
 
