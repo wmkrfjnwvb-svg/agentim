@@ -1,8 +1,8 @@
 # 消息
 
-会话、事件日志、消息、成员、文件、扩展和存储。
+会话、事件日志、消息、成员、话题、表情回应、置顶消息、文件、扩展和存储。
 
-代码：`server/crates/agentim-core/src/logic.rs` 和 `logic/`（写线程里的业务逻辑）、`hub.rs`（会话层）、`db.rs`（SQL）、`storage.rs`（数据库和表结构）、`filestore.rs` 和 `hub/files.rs`（文件）。
+代码：`server/crates/agentim-core/src/logic.rs` 和 `logic/`（写线程里的业务逻辑）、`hub.rs`（会话层）、`db.rs`（SQL）、`storage.rs`（数据库和表结构）、`filestore.rs` 和 `hub/files.rs`（文件），`logic/social.rs`、`hub/social.rs`、`db/social.rs`（话题、回应、置顶）。
 
 ## 1. 用途
 
@@ -30,6 +30,9 @@
 | MSG-16 | 保留期 | 按应用设置保留期：旧事件被删除，落在后面的设备重新开始 |
 | MSG-17 | 多个数据库 | 一个组织单元可以有自己的库。会话可以在线在库之间搬 |
 | MSG-18 | 持久性 | 持久化提交后才确认；提交失败什么都不确认并停止写入；启动时检查数据库的持久化配置 |
+| MSG-19 | 话题 | 回复用 `thread_id` 指向根消息，它就是日志里一条普通消息。只有一层（话题里不能再开话题）。根消息带汇总：回复数、最后一条、参与的人。成员可以关注话题；只通知关注者和被提到的人；每个话题有自己的已读位置和未读数；会话的未读数不算话题回复，除非这条回复也显示在会话里（`also_in_conv`） |
+| MSG-20 | 表情回应 | 每条消息、每个人、每个 key 一个；key 是一个表情，或应用定义的 `:name:`。加两次、删一个没有的，都不改变任何东西。每条消息最多 50 种、每人最多 20 个；`single` 模式下每人只留一个。不算未读、不发通知；Agent 只收到对它自己消息的回应；可配置让 👍/👎 同时算作对 Agent 的反馈 |
+| MSG-21 | 置顶消息 | 每个会话最多 100 条；置顶两次不改变任何东西。群里所有成员都能置顶（`pin_policy = members`，默认），或只有群主和管理员（`admins`）；别人的置顶只有群主和管理员能取消。应用允许时 Agent 才能置顶。撤回会取消置顶 |
 
 ## 3. 设计
 
@@ -102,7 +105,50 @@ Agent、MCP 和后端也可以一次传整个文件（最多 64 MiB），由服�
 | 过期 | 24 小时内没被消息引用的文件删除。`files.retention_days` 单独设文件保留期 |
 | 限制 | `files.max_bytes`、`files.daily_bytes_per_user`、`files.max_open_per_user`（同时 10 个上传） |
 
-### 3.6 存储
+### 3.6 话题
+
+话题是一条根消息，加上用 `thread_id` 指向它的回复。回复是同一条日志里的消息：占 `conv_seq`，所以顺序、同步、重试、重启、集群、校验器都和普通消息一样处理。
+
+| 方面 | 规则 |
+|---|---|
+| 根 | 同一会话主日志里的消息：不是侧信道消息，不是系统消息，没有撤回，本身不是回复（只有一层）。在根之后才加入的成员能看到之后的回复，也能回复；根本身对他们仍然不可见 |
+| 回复 | `send`、`stream_start` 和 Agent 的草稿都接受 `thread_id`；`reply_to` 仍可以引用任何消息。`also_in_conv: true` 让回复同时显示在会话里（消息上带 `thread_shown`） |
+| 汇总 | `threads`（回复数、最后一条的 seq、时间和发送者）和每条回复在同一个事务里写入；撤回的回复会被减掉。客户端用 `msg_summary`、`pull_thread`、`list_threads` 取：回复数、最后一条、最多 5 个参与者和总人数、调用者是否关注、他的未读数 |
+| 关注 | `thread_members`：根的发送者、回复过的人、被提到的人都会关注。再次回复会重新关注；被提到不会撤销"取消关注"。已经是这个状态时 `follow_thread`、`unfollow_thread` 不改变任何东西 |
+| 已读和未读 | `read_thread` 移动调用者在所有设备上的位置（只前进，不超过最后一条回复；其他设备收到 `thread_read`）。在话题里发言算读了这个话题，不算读了会话。会话的未读数不算没有显示在会话里的话题回复 |
+| 通知 | 只在话题里的回复，通知关注者和被提到的人（受免打扰影响）；其他人安静地收到事件 |
+| Agent | Agent 参与的话题（根和回复），在任何触发模式下它都能看到；唤醒规则不变（被提到、`to`、触发模式）。`context` 带 `thread_id` 时只给根和回复。内置助手回答话题里的消息时回到这个话题，卡片和表单也一样。草稿保留话题；根被撤回后不能再批准 |
+| 撤回 | 撤回回复：从汇总里减掉。撤回根：回复保留，不能再回复（`thread.root_recalled`） |
+| 保留期、删除账号、导出 | 保留期删除消息时连同它们的话题。被删除的人的回复从汇总里减掉，关注记录删除。导出列出这个人关注的话题 |
+
+### 3.7 表情回应
+
+| 方面 | 规则 |
+|---|---|
+| Key | 一个表情（一个 Unicode 表情序列：带肤色、旗帜、键帽、ZWJ 组合），或应用定义的短名 `:name:`（`messages.reaction_names`，由客户端画） |
+| 只一次 | `(msg_id, user_id, key)` 唯一。对已有的 `react`、对没有的 `unreact`，回答 `changed: false`，不写任何东西 |
+| 上限 | 每条消息 `messages.reaction_keys`（50）种、每人每条 `messages.reactions_per_user`（20）个，超过是 `conflict`。消息上已有的 key 还能有更多人加。每人每秒 `messages.reactions_per_second`（20）次 |
+| 单选模式 | `messages.reaction_mode = "single"`：一个人的新回应替换旧的（先一条 `reaction.removed`，再一条 `reaction.added`） |
+| 事件 | `reaction.added`、`reaction.removed` 占 seq，带消息（`msg_id`、`msg_seq`、`msg_sender`）、key 和人。不算未读，不发通知。看不到那条消息的成员收不到 |
+| Agent | Agent 只收到对它自己消息的回应，不会因此被唤醒。Agent 也能回应（比如在请求上点 👀） |
+| 反馈 | 打开 `messages.reactions_as_feedback` 时，一个人在 Agent 消息上的 👍 或 👎（任何肤色）也算他对 Agent 的反馈（[agents](agents.md)）；以最新的那个为准，删掉就收回反馈 |
+| 汇总 | `msg_summary`：每个 key 的数量、调用者是否在其中、最近 5 个人；`list_reactions` 分页列出某个 key 的人 |
+| 撤回、删除账号、导出 | 撤回删除这条消息的回应（撤回事件本身表示这一点）。被删除的人的回应、以及他被删除的消息上的回应都删除。导出列出这个人加过的回应 |
+
+### 3.8 置顶消息
+
+| 方面 | 规则 |
+|---|---|
+| 谁能置顶 | 单聊：两个人都能。群和任务频道：`pin_policy = members`（默认）时所有成员，`admins` 时只有群主和管理员；群主或管理员用 `update_conv` 设置。Agent：只有 `messages.agents_pin` 打开时。被禁言的成员不能置顶 |
+| 取消 | 置顶的人、群主、管理员；单聊两个人都能 |
+| 什么能置顶 | 调用者能看到的主日志消息：不是系统消息，没有撤回。话题回复也可以 |
+| 只一次 | 对已置顶的 `pin`、对没置顶的 `unpin`，回答 `changed: false`，不写任何东西 |
+| 上限 | 每个会话 `messages.pins_per_conv`（100）条，超过是 `conflict`；先取消一条 |
+| 事件 | `msg.pinned`、`msg.unpinned` 占 seq（客户端显示一条提示）；不算未读、不发通知；审计记录为 `msg.pinned`、`msg.unpinned` |
+| 列表 | `list_pins`：最新置顶在前，带消息、数量和权限设置；后加入的成员只看到自己能看到的消息的置顶 |
+| 撤回 | 撤回会取消置顶（撤回事件本身表示这一点） |
+
+### 3.9 存储
 
 - **持久化检查和表结构迁移**：见[架构 §6](../architecture.md#6-存储)。
 - **多个数据库**：控制库存目录（`conv_id` → 单元 → 数据库）和成员索引，不存内容。
@@ -116,9 +162,11 @@ Agent、MCP 和后端也可以一次传整个文件（最多 64 MiB），由服�
 
 | 接口 | 操作 |
 |---|---|
-| 客户端协议 | `create_conv`、`update_conv`、`list_convs`、`send`、`whisper`、`edit`、`recall`、`stream_start`、`stream_append`、`stream_end`、`stream_cancel`、`focus`、`read`、`unread`、`pull`、`pull_side`、`add_member`、`remove_member`、`leave`、`set_role`、`transfer_owner`、`dissolve`、`block`、`unblock`、`list_blocks`、`find_user`、`signal`、`upload_start`、`upload_parts`、`upload_complete`、`file_url` |
-| 开放 API | `/v1/conversations…`、`/v1/conversations/{id}/messages…`、`/v1/uploads`、`/v1/conversations/{id}/files`（[open-api](open-api.md)） |
-| 事件 | 日志里的 `conv.*`、`member(s).*`、`msg.*`；侧信道上的 `side` 事件 |
+| 客户端协议 | `create_conv`、`update_conv`（含 `pin_policy`）、`list_convs`、`send`（含 `thread_id`、`also_in_conv`）、`whisper`、`edit`、`recall`、`stream_start`（含 `thread_id`）、`stream_append`、`stream_end`、`stream_cancel`、`focus`、`read`、`unread`、`pull`、`pull_side`、`add_member`、`remove_member`、`leave`、`set_role`、`transfer_owner`、`dissolve`、`block`、`unblock`、`list_blocks`、`find_user`、`signal`、`upload_start`、`upload_parts`、`upload_complete`、`file_url`；话题：`read_thread`、`follow_thread`、`unfollow_thread`、`list_threads`、`pull_thread`；回应：`react`、`unreact`、`list_reactions`；置顶：`pin`、`unpin`、`list_pins`；`msg_summary`（最多 100 条消息的话题、回应和置顶） |
+| 开放 API | `/v1/conversations…`、`/v1/conversations/{id}/messages…`（发送可带 `thread_id`）、`/v1/conversations/{id}/threads[/{thread}]`、`/v1/conversations/{id}/messages/{msg}/reactions/{key}`（GET、PUT、DELETE）、`/v1/conversations/{id}/pins[/{msg}]`、`/v1/uploads`、`/v1/conversations/{id}/files`（[open-api](open-api.md)） |
+| MCP | `send_message` 可带 `thread_id`；`react`、`unreact`、`get_thread`、`list_pins` |
+| 事件 | 日志里的 `conv.*`、`member(s).*`、`msg.*`（含 `msg.pinned`、`msg.unpinned`）、`reaction.added`、`reaction.removed`；侧信道上的 `side` 事件；发给用户其他设备的 `thread_read`、`thread_follow` |
+| 配置 | `[messages]`：`reaction_keys`、`reactions_per_user`、`reaction_mode`、`reaction_names`、`reactions_as_feedback`、`reactions_per_second`、`pins_per_conv`、`agents_pin` |
 
 完整的协议参考由代码生成到文档站（`site/` 的 "Client protocol"）。
 
@@ -129,6 +177,10 @@ Agent、MCP 和后端也可以一次传整个文件（最多 64 MiB），由服�
 - `member.*` 成员；
 - `block.*` 拉黑；
 - `msg.*` 消息；
+- `thread.*` 话题；
+- `reaction.*` 表情回应；
+- `pin.*` 置顶消息；
+- `social.*` 读取话题、回应和置顶；
 - `stream.*` 流式；
 - `file.*` 文件；
 - `sync.*` 同步。
@@ -136,7 +188,7 @@ Agent、MCP 和后端也可以一次传整个文件（最多 64 MiB），由服�
 常见的码：
 - `forbidden`：不是成员，或角色没有权限；
 - `not_found`：会话、消息、文件不存在；
-- `conflict`：版本过期、已经撤回、文件已被使用；
+- `conflict`：版本过期、已经撤回（也包括作为话题的根、被回应或被置顶）、文件已被使用、回应或置顶到了上限；
 - `bad_request`：超出限制或输入不对；
 - `blocked`；
 - `rate_limited`。
@@ -167,6 +219,9 @@ Agent、MCP 和后端也可以一次传整个文件（最多 64 MiB），由服�
 | MSG-16 | `audit.rs`: `retention_takes_a_prefix_and_what_derives_from_it`; `sync.rs`: `retention_deletes_old_events_and_resets_devices`; `pages.rs`: `retention_and_the_switch` |
 | MSG-17 | `multidb.rs`: 全部 9 个测试 (moves, failed moves, writes during a move, start-up repair, listing across databases); `membership.rs`: `membership_changes_in_a_unit_database_update_the_directory`; `concurrency.rs`: `many_conversations_across_databases_stay_independent` |
 | MSG-18 | `hub.rs`: `acked_messages_survive_restart_and_retries_are_deduplicated`, `failed_commit_acks_nothing_and_stops_writes`; `coverage.rs`: `one_failing_command_does_not_spoil_its_batch`, `a_full_write_queue_refuses_cleanly_and_retries_succeed`, `unsafe_postgres_durability_is_refused_unless_allowed`, `writes_wait_for_a_concurrent_sqlite_writer`, `startup_waits_for_a_concurrent_sqlite_writer`; `audit.rs`: `a_lock_held_elsewhere_fails_the_batch_not_the_database`; `schema.rs`: 全部 7 个测试; `server/crates/agentim/tests/crash.rs` (`kill -9` mid-traffic) |
+| MSG-19 | `threads.rs`: `replies_go_into_a_thread_with_a_summary`, `the_root_of_a_thread_is_checked`, `thread_replies_count_and_notify_only_followers`, `reading_and_following_threads`, `recall_and_retries_in_threads`, `agents_answer_in_the_thread`, `new_members_see_replies_but_not_older_roots`, `threads_survive_a_restart`, `race_replies_in_one_thread`（做过变异检查）; `schema.rs`（v20 迁移）; `verify.rs`（`thread.root`、`thread.summary`）；客户端核心 `sdk/client-rust/core/tests/social.rs`；Agent SDK `sdk/agent-node/e2e.mjs`、`sdk/agent-python/e2e.py`；服务端 SDK `sdk/*/smoke*`；组件 `sdk/react/test/social.test.tsx`、`sdk/react-native-ui/test/components.test.tsx` |
+| MSG-20 | `reactions.rs`: `reactions_are_added_once_and_summarised`, `reaction_keys_are_checked`, `who_may_react`, `reaction_limits_and_single_mode`, `agents_hear_of_reactions_to_their_own_messages`, `reactions_can_count_as_feedback`, `a_recall_takes_the_reactions`, `reactions_survive_a_restart`, `race_reactions_at_the_key_limit`（做过变异检查）, `race_reactions_and_recall`（做过变异检查）, `race_the_same_reaction_from_many_devices`; `logic::social::tests::emoji`（单元测试）；客户端核心 `sdk/client-rust/core/tests/social.rs`；组件 `sdk/react/test/social.test.tsx` |
+| MSG-21 | `pins.rs`: `messages_are_pinned_once_and_listed`, `who_may_pin_and_unpin`, `what_can_be_pinned`, `agents_pin_only_when_the_app_allows`, `the_pin_limit`, `a_recall_unpins_and_pins_survive_a_restart`, `race_pins_at_the_limit`（做过变异检查）；客户端核心 `sdk/client-rust/core/tests/social.rs`；组件 `sdk/react/test/social.test.tsx` |
 
 覆盖整个板块的其他测试：
 - 各种格式不对的请求: `scenarios.rs`: `malformed_requests_are_rejected_without_side_effects`;
@@ -177,4 +232,4 @@ Agent、MCP 和后端也可以一次传整个文件（最多 64 MiB），由服�
 
 - 写入吞吐每个库约每秒 1,300 条。计划：减少每条命令的语句、扇出移出写线程、PostgreSQL 和 MySQL 每个库多个写线程。
 - 大群模式（2000 到 10 万人）没做：每个会话的日志只读一份，每个用户一个"会话有更新"的收件箱，推送按节点合并。
-- 没做：话题（thread）和表情回应；本机磁盘上文件的应用层加密（先用磁盘加密）。
+- 没做：本机磁盘上文件的应用层加密（先用磁盘加密）；会过期的置顶；嵌套话题。

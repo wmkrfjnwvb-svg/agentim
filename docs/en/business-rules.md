@@ -6,7 +6,7 @@ Every business check is a numbered rule ([tracing and business rules](design/tra
 
 Stage: ③ session layer (before the writer, `hub`); ⑦ writer (in the same transaction as the write, `logic`); file store. The text is the error message in the code (`{}` is the actual value).
 
-426 rules.
+450 rules.
 
 ## Conversations (`conv.*`, 20)
 
@@ -145,6 +145,50 @@ Stage: ③ session layer (before the writer, `hub`); ⑦ writer (in the same tra
 | `msg.text_nul` | `bad_request` | ⑦ writer | text must not contain NUL | `logic.rs` |
 | `msg.text_size` | `bad_request` | ⑦ writer | text must be 1..64KB | `logic.rs` |
 | `msg.unknown` | `not_found` | ③ session | message; no such message | `hub.rs` `hub/compliance.rs` `hub/msgtrace.rs` `hub/requests.rs` |
+
+## Threads (`thread.*`, 7)
+
+| Rule | Code | Stage | Text | Code location |
+|---|---|---|---|---|
+| `thread.nested` | `bad_request` | ⑦ writer | threads do not nest: reply in the root's thread instead | `logic/social.rs` |
+| `thread.root_other_conv` | `bad_request` | ⑦ writer | the thread's root is in another conversation | `logic/social.rs` |
+| `thread.root_recalled` | `conflict` | ⑦ writer | the thread's root was recalled; the thread's root was recalled; reject the draft | `logic.rs` `logic/social.rs` |
+| `thread.root_system` | `bad_request` | ⑦ writer | a system message cannot start a thread | `logic/social.rs` |
+| `thread.root_unknown` | `not_found` | ⑦ writer | no such message to reply to in a thread | `logic/social.rs` |
+| `thread.shown_without_thread` | `bad_request` | ⑦ writer | also_in_conv goes with thread_id | `logic/social.rs` |
+| `thread.unknown` | `not_found` | ③ session, ⑦ writer | no such thread | `hub/social.rs` `logic/social.rs` |
+
+## Reactions (`reaction.*`, 6)
+
+| Rule | Code | Stage | Text | Code location |
+|---|---|---|---|---|
+| `reaction.key_invalid` | `bad_request` | ⑦ writer | a reaction is one emoji or one of the app's :names: | `logic/social.rs` |
+| `reaction.not_reactable` | `bad_request` | ⑦ writer | system messages take no reactions | `logic/social.rs` |
+| `reaction.recalled` | `conflict` | ⑦ writer | the message was recalled | `logic/social.rs` |
+| `reaction.too_many_keys` | `conflict` | ⑦ writer | a message takes at most {} different reactions | `logic/social.rs` |
+| `reaction.too_many_per_user` | `conflict` | ⑦ writer | at most {} reactions per person on a message | `logic/social.rs` |
+| `reaction.unknown_message` | `not_found` | ③ session, ⑦ writer | no such message | `hub/social.rs` `logic/social.rs` |
+
+## Pinned messages (`pin.*`, 9)
+
+| Rule | Code | Stage | Text | Code location |
+|---|---|---|---|---|
+| `pin.agents` | `forbidden` | ⑦ writer | agents do not pin messages in this app (messages.agents_pin) | `logic/social.rs` |
+| `pin.forbidden` | `forbidden` | ⑦ writer | only the owner and admins pin messages here | `logic/social.rs` |
+| `pin.limit` | `conflict` | ⑦ writer | a conversation holds at most {max} pinned messages; unpin one first | `logic/social.rs` |
+| `pin.not_pinnable` | `bad_request` | ⑦ writer | system messages cannot be pinned | `logic/social.rs` |
+| `pin.policy` | `bad_request` | ⑦ writer | pin_policy is members or admins | `logic/social.rs` |
+| `pin.policy_dm` | `bad_request` | ⑦ writer | in a direct conversation both people pin | `logic/social.rs` |
+| `pin.recalled` | `conflict` | ⑦ writer | the message was recalled | `logic/social.rs` |
+| `pin.unknown_message` | `not_found` | ⑦ writer | no such message | `logic/social.rs` |
+| `pin.unpin_forbidden` | `forbidden` | ⑦ writer | only who pinned it, the owner and admins unpin a message | `logic/social.rs` |
+
+## Threads, reactions and pins: reading (`social.*`, 2)
+
+| Rule | Code | Stage | Text | Code location |
+|---|---|---|---|---|
+| `social.limit` | `bad_request` | ③ session | limit must be 1..{max} | `hub/social.rs` |
+| `social.summary_size` | `bad_request` | ③ session | 1..{SUMMARY_MAX} message ids | `hub/social.rs` |
 
 ## Streaming replies (`stream.*`, 5)
 

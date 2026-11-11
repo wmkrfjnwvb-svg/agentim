@@ -552,7 +552,13 @@ impl Hub {
         msg: &Value,
     ) -> ApiResult<()> {
         match self
-            .claim_reply(sess, conv_id, &format!("ai-{msg_id}"), msg_id)
+            .claim_reply(
+                sess,
+                conv_id,
+                &format!("ai-{msg_id}"),
+                msg_id,
+                msg["thread_id"].as_str(),
+            )
             .await?
         {
             Some(reply_id) => {
@@ -572,11 +578,13 @@ impl Hub {
         conv_id: &str,
         client_msg_id: &str,
         reply_to: &str,
+        // A message in a thread is answered in that thread (MSG-19).
+        thread: Option<&str>,
     ) -> ApiResult<Option<String>> {
         let mut wait = 500u64;
         let start = loop {
             let r = self
-                .call_as(sess, json!({"op": "stream_start", "rid": 5, "conv_id": conv_id, "client_msg_id": client_msg_id, "reply_to": reply_to}))
+                .call_as(sess, json!({"op": "stream_start", "rid": 5, "conv_id": conv_id, "client_msg_id": client_msg_id, "reply_to": reply_to, "thread_id": thread}))
                 .await;
             if r["error"]["code"] != "rate_limited" || wait > 16_000 {
                 break r;
@@ -861,7 +869,12 @@ impl Hub {
             name = me.name
         );
         let ctx = self
-            .context(me, conv_id, Some(settings.context_tokens))
+            .context(
+                me,
+                conv_id,
+                Some(settings.context_tokens),
+                msg["thread_id"].as_str(),
+            )
             .await?;
         let mut lines = vec![];
         if let Some(s) = ctx["summary"]["text"].as_str() {
@@ -1313,7 +1326,7 @@ impl Hub {
             .send_patiently(
                 sess,
                 json!({"op": "send", "rid": 13, "conv_id": asking.conv_id,
-                "client_msg_id": format!("ai-card-{msg_id}-{}", c.id), "reply_to": msg_id,
+                "client_msg_id": format!("ai-card-{msg_id}-{}", c.id), "reply_to": msg_id, "thread_id": asking.msg["thread_id"],
                 "kind": crate::logic::cards::KIND, "payload": card,
                 "text": title.unwrap_or_else(|| "Details".into())}),
             )
@@ -1392,7 +1405,7 @@ impl Hub {
                 sess,
                 json!({"op": "send", "rid": 14, "conv_id": asking.conv_id,
                 // The reply and the step it belongs to: the step is done when the answers come.
-                "client_msg_id": format!("ai-form-{}-{}", asking.reply_id, c.id), "reply_to": msg_id,
+                "client_msg_id": format!("ai-form-{}-{}", asking.reply_id, c.id), "reply_to": msg_id, "thread_id": asking.msg["thread_id"],
                 "kind": crate::logic::cards::KIND, "payload": card,
                 "text": format!("{title} (please fill in the form)")}),
             )
@@ -1442,7 +1455,13 @@ impl Hub {
             return Ok(());
         };
         let Some(reply_id) = self
-            .claim_reply(sess, conv_id, &format!("ai-f-{card_id}-{by}"), card_id)
+            .claim_reply(
+                sess,
+                conv_id,
+                &format!("ai-f-{card_id}-{by}"),
+                card_id,
+                card.thread_id.as_deref(),
+            )
             .await?
         else {
             return Ok(());
@@ -1672,7 +1691,13 @@ impl Hub {
         // The reply is claimed before anything runs: a second delivery of
         // the decision finds it taken, so the call runs at most once.
         let Some(reply_id) = self
-            .claim_reply(sess, conv_id, &format!("ai-q-{rid}"), msg_id)
+            .claim_reply(
+                sess,
+                conv_id,
+                &format!("ai-q-{rid}"),
+                msg_id,
+                msg["thread_id"].as_str(),
+            )
             .await?
         else {
             return Ok(());

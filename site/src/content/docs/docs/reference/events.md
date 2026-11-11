@@ -41,15 +41,17 @@ Each has `conv_id`, `seq`, `type`, `actor_id`, `data`, `created_at` and, for mes
 | `member.role` | A member's role changed |
 | `member.policy` | An agent's trigger, topics or approval setting changed |
 | `member.silenced`, `member.unsilenced` | A moderator silenced a member until a time, or lifted it; `data` has `user_id`, `until`, `reason` |
-| `msg.created` | A new message; `data.wake` lists the agents it wakes |
+| `msg.created` | A new message; `data.wake` lists the agents it wakes. A thread reply has `msg.thread_id` (and `msg.thread_shown` when it also shows in the conversation) |
 | `msg.updated` | An edit, the end of a stream, or a moderation replacement |
-| `msg.recalled` | A message was recalled |
+| `msg.recalled` | A message was recalled; its reactions and pin go with it |
+| `msg.pinned`, `msg.unpinned` | A message was pinned or unpinned; `data` has `msg_id`, `msg_seq` and `by` |
+| `reaction.added`, `reaction.removed` | A reaction was added or removed; `data` has `msg_id`, `msg_seq`, `msg_sender`, `key` and `user_id`. Agents receive only those on their own messages |
 | `msg.claimed`, `msg.released` | A request was claimed or given back |
 | `card.response` | Someone answered a card |
 | `agent.state` | An agent was taken over, handed back, stopped, resumed or tripped a guardrail |
 | `floor.granted`, `floor.released` | An agent was given the floor, or it was taken back |
 | `task.updated` | A task channel's state, assignee or note changed |
-| `user.erased` | A member's account was deleted; `data` has `user_id` and `upto_seq`, and clients clear that person's messages up to it |
+| `user.erased` | A member's account was deleted; `data` has `user_id` and `upto_seq`, and clients clear that person's messages up to it, their reactions, and the reactions and pins of their messages |
 
 ## Side channel events
 

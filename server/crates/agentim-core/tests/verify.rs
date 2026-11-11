@@ -44,6 +44,8 @@ struct Story {
     m2: String,
     edit2: i64,
     recall2: i64,
+    /// A reply in m1's thread (MSG-19).
+    m3: String,
 }
 
 fn seq_of(log: &Value, kind: &str, nth: usize) -> i64 {
@@ -83,7 +85,21 @@ async fn story(hub: &Hub, alice: &User, carol: &User, bot: &User) -> Story {
         .to_string();
     a.ok(json!({"op": "edit", "msg_id": m2, "text": "two!"}))
         .await;
+    // A reaction between the edit and the recall of m2; m1 has a thread,
+    // a reaction and a pin (MSG-19 to MSG-21).
+    a.ok(json!({"op": "react", "conv_id": conv, "msg_id": m2, "key": "👍"}))
+        .await;
     a.ok(json!({"op": "recall", "msg_id": m2})).await;
+    let m3 = c
+        .ok(json!({"op": "send", "conv_id": conv, "client_msg_id": "t1", "text": "in thread", "thread_id": m1}))
+        .await["msg_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    a.ok(json!({"op": "react", "conv_id": conv, "msg_id": m1, "key": "🎉"}))
+        .await;
+    a.ok(json!({"op": "pin", "conv_id": conv, "msg_id": m1}))
+        .await;
     a.ok(json!({"op": "whisper", "conv_id": conv, "agent_id": bot.id, "text": "psst"}))
         .await;
     let log = a.pull(&conv, 0).await;
@@ -96,6 +112,7 @@ async fn story(hub: &Hub, alice: &User, carol: &User, bot: &User) -> Story {
         conv,
         m1,
         m2,
+        m3,
     }
 }
 
@@ -190,6 +207,34 @@ async fn each_kind_of_damage_is_found(db: TestDb) {
                 "UPDATE dedup SET result = '{\"msg_id\":\"m_nope\"}' WHERE conv_id = ?".into(),
                 "dedup.target",
             ),
+            (
+                format!(
+                    "UPDATE messages SET thread_id = msg_id WHERE conv_id = ? AND msg_id = '{}'",
+                    s.m3
+                ),
+                "thread.root",
+            ),
+            (
+                "UPDATE threads SET replies = replies + 3 WHERE conv_id = ?".into(),
+                "thread.summary",
+            ),
+            (
+                format!(
+                    "INSERT INTO reactions (conv_id, msg_id, user_id, rkey, seq, created_at) VALUES (?, '{}', 'u_nobody', 'x', 999, 1)",
+                    s.m1
+                ),
+                "reaction.state",
+            ),
+            (
+                // The edit of m2 becomes its recall: the reaction after it
+                // comes after a recall.
+                format!(
+                    "UPDATE events SET type = CASE WHEN seq = {} THEN 'msg.recalled' ELSE 'msg.updated' END WHERE conv_id = ? AND seq IN ({}, {})",
+                    s.edit2, s.edit2, s.recall2
+                ),
+                "reaction.after_recall",
+            ),
+            ("DELETE FROM pins WHERE conv_id = ?".into(), "pin.state"),
             (
                 format!(
                     "UPDATE messages SET state = 'streaming', updated_at = 1 WHERE conv_id = ? AND msg_id = '{}'",

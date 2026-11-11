@@ -30,6 +30,10 @@ pub enum Kind {
         /// A file or image: uploaded before the message is sent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         upload: Option<Box<crate::upload::Upload>>,
+        /// The thread it replies in, and whether it also shows in the
+        /// conversation (docs/en/design/messaging.md, MSG-19).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread: Option<Value>,
     },
     /// `target` is a msg_id, or `local:<client_msg_id>` of a send still
     /// in the queue.
@@ -221,7 +225,10 @@ impl Core {
         if text.is_empty() && msg_kind.is_none() {
             return Err(ClientError::new("bad_request", "text is required"));
         }
-        self.queue_send(
+        let thread = cmd["thread_id"]
+            .as_str()
+            .map(|t| json!({"thread_id": t, "also_in_conv": cmd["also_in_conv"] == true}));
+        let r = self.queue_send(
             &conv,
             cmd["client_msg_id"].as_str(),
             text,
@@ -229,7 +236,16 @@ impl Core {
             cmd.get("payload").filter(|p| !p.is_null()).cloned(),
             cmd["reply_to"].as_str().map(String::from),
             None,
-        )
+        )?;
+        // In a thread (MSG-19): the queued send carries it.
+        if let Some(t) = thread
+            && let Some(i) = r["client_msg_id"].as_str().and_then(|c| self.find_send(c))
+            && let Kind::Send { thread: th, .. } = &mut self.ops[i].kind
+        {
+            *th = Some(t);
+            self.save_op(i);
+        }
+        Ok(r)
     }
 
     /// Queues a send (a file send has its upload).
@@ -274,6 +290,7 @@ impl Core {
                     reply_to,
                     sent: None,
                     upload,
+                    thread: None,
                 },
             );
             self.conv_mut(&conv);
@@ -580,9 +597,16 @@ impl Core {
                 msg_kind,
                 payload,
                 reply_to,
+                thread,
                 ..
             } => {
                 let mut v = json!({"conv_id": o.conv_id, "client_msg_id": cm, "text": text});
+                if let Some(t) = thread {
+                    v["thread_id"] = t["thread_id"].clone();
+                    if t["also_in_conv"] == true {
+                        v["also_in_conv"] = json!(true);
+                    }
+                }
                 if let Some(k) = msg_kind {
                     v["kind"] = json!(k);
                 }

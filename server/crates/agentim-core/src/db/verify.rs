@@ -15,6 +15,7 @@ pub struct MsgRow {
     pub state: String,
     pub version: i64,
     pub updated_at: i64,
+    pub thread_id: Option<String>,
 }
 
 /// One conversation as stored.
@@ -30,6 +31,11 @@ pub struct ConvData {
     pub dedup: Vec<(String, String, Value)>,
     /// (side_seq, anchor_seq, audience)
     pub side: Vec<(i64, i64, Vec<String>)>,
+    /// Threads, reactions (msg_id, user_id, key) and pinned msg_ids
+    /// (docs/en/design/messaging.md, MSG-19 to MSG-21).
+    pub threads: Vec<crate::db::social::ThreadRow>,
+    pub reactions: Vec<(String, String, String)>,
+    pub pins: Vec<String>,
 }
 
 impl Db<'_> {
@@ -89,7 +95,7 @@ impl Db<'_> {
         }
         let members = self.members(conv_id).await?;
         let rows = sqlx::query(self.d.q(
-            "SELECT msg_id, created_seq, sender_id, state, version, updated_at FROM messages WHERE conv_id = ? ORDER BY created_seq",
+            "SELECT msg_id, created_seq, sender_id, state, version, updated_at, thread_id FROM messages WHERE conv_id = ? ORDER BY created_seq",
         ))
         .bind(conv_id)
         .fetch_all(&mut *self.c)
@@ -104,6 +110,7 @@ impl Db<'_> {
                     state: r.try_get(3)?,
                     version: r.try_get(4)?,
                     updated_at: r.try_get(5)?,
+                    thread_id: r.try_get(6)?,
                 })
             })
             .collect::<sqlx::Result<Vec<_>>>()?;
@@ -152,7 +159,18 @@ impl Db<'_> {
                 ))
             })
             .collect::<sqlx::Result<Vec<_>>>()?;
+        let threads = self.threads_of(conv_id).await?;
+        let reactions = self.reactions_of(conv_id).await?;
+        let pins = self
+            .pins(conv_id, i64::MAX, i64::MAX)
+            .await?
+            .into_iter()
+            .map(|p| p.0)
+            .collect();
         Ok(Some(ConvData {
+            threads,
+            reactions,
+            pins,
             kind: conv.kind,
             last_seq: conv.last_seq,
             events,

@@ -201,14 +201,16 @@ impl Core {
             let created = m["created_seq"].as_i64().unwrap_or(seq);
             let from_me = m["sender_id"] == mine.as_str();
             let new = ev["type"] == "msg.created";
+            // A reply only in a thread is neither the latest nor unread here.
+            let in_thread = Core::only_in_thread(&m);
             self.put_msg(id, m.clone(), true);
             self.settle_send(id, &m);
             let c = self.conv_mut(id);
-            if created >= c.info["last_message_seq"].as_i64().unwrap_or(0) {
+            if created >= c.info["last_message_seq"].as_i64().unwrap_or(0) && !in_thread {
                 c.info["last_message"] = m;
                 c.info["last_message_seq"] = json!(created);
             }
-            if new && !from_me {
+            if new && !from_me && !in_thread {
                 let u = c.info["unread"].as_i64().unwrap_or(0);
                 c.info["unread"] = json!(u + 1);
             }
@@ -303,6 +305,7 @@ impl Core {
             }
             _ => {}
         }
+        self.apply_social(id, &ev);
         self.emit(json!({"type": "event", "event": ev}));
     }
 

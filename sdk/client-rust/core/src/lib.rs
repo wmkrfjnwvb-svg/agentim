@@ -19,6 +19,7 @@ mod history;
 pub mod media;
 mod queue;
 mod rng;
+mod social;
 mod sync;
 pub mod upload;
 mod view;

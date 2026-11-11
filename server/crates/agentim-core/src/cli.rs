@@ -351,6 +351,7 @@ pub async fn run_with(cluster: Option<ClusterSupport>) {
         stream_idle: Duration::from_secs(args.stream_idle_secs),
         takeover_idle: Duration::from_secs(cfg.agents.takeover_idle_minutes * 60),
         sync: cfg.sync_config(),
+        messages: cfg.messages.clone(),
         guards: crate::guard::GuardConfig {
             // The demo's agent ping-pong stops quickly enough to watch.
             root_messages: if args.demo { 12 } else { 50 },

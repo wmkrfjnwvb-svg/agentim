@@ -669,6 +669,7 @@ mod tests {
                 payload: None,
                 reply_to: None,
                 sent: None,
+                thread: None,
                 upload: Some(Box::new(Upload {
                     source: "/a".into(),
                     name: "a".into(),

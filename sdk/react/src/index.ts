@@ -13,6 +13,8 @@ export {
   ConnectionBanner,
   ConversationList,
   MessageList,
+  PinnedMessages,
+  Thread,
   TypingIndicator,
   defaultComponents,
   type Components,
@@ -24,3 +26,4 @@ export { FileIcon } from './icons.js';
 export { Card, type CardBlockProps, type CardParts, type FormFieldProps } from './cards.js';
 export { DefaultSteps, type StepsProps } from './steps.js';
 export { DefaultInboxDetail, type InboxDetailProps } from './inbox.js';
+export { QUICK_REACTIONS, Reactions, ThreadSummary, onlyInThread, type Reaction } from './social.js';

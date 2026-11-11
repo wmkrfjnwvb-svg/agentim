@@ -123,6 +123,7 @@ async fn cross_database_membership_listing_and_side_channel_work() {
     assert!(side.to_string().contains("careful"));
     // Restart: the directory and member index come back.
     drop((c, a, ag));
+    hub.close().await;
     drop(hub);
     let hub = open(two(&main.url, &secret.url, "secret")).await;
     let a = Conn::new(&hub, &alice);
@@ -153,6 +154,7 @@ async fn migrate_unit_moves_conversations_without_losing_order() {
         .await;
     let before = c.pull(&conv, 0).await;
     drop(c);
+    hub.close().await;
     drop(hub);
     assert!(contains(&raw(&main), "before-move-7"));
 
@@ -180,6 +182,7 @@ async fn migrate_unit_moves_conversations_without_losing_order() {
     let list = c.ok(json!({"op": "list_convs"})).await;
     assert_eq!(list["convs"][0]["database"], "secret");
     drop(c);
+    hub.close().await;
     drop(hub);
     // The shared database holds no copy any more: no rows, and (secure_delete)
     // no leftover bytes once the WAL is checkpointed.
@@ -222,6 +225,7 @@ async fn writes_during_a_move_are_refused_and_succeed_after() {
     let conv = c.group(&[]).await;
     c.send(&conv, "x").await;
     drop(c);
+    hub.close().await;
     drop(hub);
     let hub = open(two(&main.url, &secret.url, "secret")).await;
     let c = Conn::new(&hub, &carol);
@@ -275,6 +279,7 @@ async fn startup_repairs_a_directory_entry_lost_in_a_crash() {
     let conv = c.group(&[]).await;
     c.send(&conv, "survives").await;
     drop(c);
+    hub.close().await;
     drop(hub);
     // Simulate a crash between the conversation write and the directory write.
     let mut conn = sqlx::AnyConnection::connect(&main.url).await.unwrap();
@@ -347,6 +352,7 @@ async fn a_move_cancels_running_streams() {
         .await;
     drop(c);
     drop(g);
+    hub.close().await;
     drop(hub);
     let hub = open(two(&main.url, &secret.url, "secret")).await;
     // Restarting already ends streams; start a new one in the new process.
@@ -389,6 +395,7 @@ async fn a_failed_move_leaves_the_conversation_where_it_was() {
     let conv = c.group(&[]).await;
     c.send(&conv, "kept-in-main").await;
     drop(c);
+    hub.close().await;
     drop(hub);
     let hub = open(plain(two(&main.url, &secret.url, "secret"))).await;
     // The copy into the target fails.
@@ -429,9 +436,11 @@ async fn startup_removes_stale_copies_and_dangling_entries() {
     let conv = c.group(&[]).await;
     c.send(&conv, "the-real-one").await;
     drop(c);
+    hub.close().await;
     drop(hub);
     let hub = open(plain(two(&main.url, &secret.url, "secret"))).await;
     hub.migrate_unit("b").await.unwrap();
+    hub.close().await;
     drop(hub);
     // A crash after the switch but before the source was deleted leaves a
     // copy in main; a lost conversation leaves a directory entry pointing

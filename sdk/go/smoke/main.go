@@ -117,6 +117,30 @@ func main() {
 		log.Fatal("history")
 	}
 	must(im.MarkRead(ctx, dm["conv_id"].(string), b, 1))
+	// Threads, reactions and pins (docs/en/design/messaging.md).
+	root := sent["msg_id"].(string)
+	reply := must(im.SendMessage(ctx, id, M{"as": b, "text": "in a thread", "thread_id": root}))
+	if th := must(im.GetThread(ctx, id, root, 0)); th["replies"].([]any)[0].(M)["msg_id"] != reply["msg_id"] {
+		log.Fatal("thread")
+	}
+	if l := must(im.ListThreads(ctx, id, a)); l["threads"].([]any)[0].(M)["following"] != true {
+		log.Fatal("threads")
+	}
+	if r := must(im.AddReaction(ctx, id, root, "👍", b)); r["changed"] != true {
+		log.Fatal("react")
+	}
+	if r := must(im.AddReaction(ctx, id, root, "👍", b)); r["changed"] != false {
+		log.Fatal("react twice")
+	}
+	if l := must(im.ListReactions(ctx, id, root, "👍")); l["users"].([]any)[0].(M)["user_id"] != b {
+		log.Fatal("reactions")
+	}
+	must(im.RemoveReaction(ctx, id, root, "👍", b))
+	must(im.PinMessage(ctx, id, root, a))
+	if p := must(im.ListPins(ctx, id)); p["pins"].([]any)[0].(M)["msg_id"] != root {
+		log.Fatal("pins")
+	}
+	must(im.UnpinMessage(ctx, id, root, a))
 	var err error
 	// Files: an image and a file, read back through a short-lived link.
 	png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")

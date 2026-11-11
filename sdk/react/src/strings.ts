@@ -35,6 +35,18 @@ export const defaultStrings = {
   jumpToLatest: (n: number) => (n ? `${n} new ${n === 1 ? 'message' : 'messages'}` : 'Jump to latest'),
   typing: (names: string[]) =>
     names.length === 1 ? `${names[0]} is typing…` : names.length === 2 ? `${names[0]} and ${names[1]} are typing…` : 'Several people are typing…',
+  /** Threads, reactions and pins (docs/en/design/messaging.md). */
+  replies: (n: number) => `${n} ${n === 1 ? 'reply' : 'replies'}`,
+  replyInThread: 'Reply in thread',
+  thread: 'Thread',
+  threadPlaceholder: 'Reply…',
+  alsoInConversation: 'Also send to the conversation',
+  react: 'Add reaction',
+  reactedBy: (key: string, n: number, me: boolean) => `${key} ${n}${me ? ', including you' : ''}`,
+  pinned: 'Pinned',
+  pinnedCount: (n: number) => `${n} pinned ${n === 1 ? 'message' : 'messages'}`,
+  pin: 'Pin',
+  unpin: 'Unpin',
   helpful: 'Helpful',
   notHelpful: 'Not helpful',
   submit: 'Submit',

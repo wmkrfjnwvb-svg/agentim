@@ -199,17 +199,28 @@ class Ctx:
         """Its role (name, description, instructions, ...), or None."""
         return (self.agent.config or {}).get("role")
 
+    @property
+    def thread_id(self):
+        """The thread the message is in (its root's id), or None: replies go there too."""
+        return (self.msg or {}).get("thread_id")
+
     async def reply(self, text, **opts):
-        """Replies to the message (or just sends in the conversation), in its trace."""
+        """Replies to the message (or just sends in the conversation), in its trace and its thread."""
         opts.setdefault("reply_to", self.msg["msg_id"] if self.msg else None)
+        opts.setdefault("thread_id", self.thread_id)
         opts.setdefault("trace", child_trace(self.trace))
         return await self.agent.send(self.conv_id, text, **opts)
 
     async def stream(self):
         """Starts a streamed reply to the message being handled."""
         return await self.agent.stream(
-            self.conv_id, reply_to=self.msg["msg_id"] if self.msg else None, trace=child_trace(self.trace)
+            self.conv_id, reply_to=self.msg["msg_id"] if self.msg else None, trace=child_trace(self.trace),
+            thread_id=self.thread_id,
         )
+
+    async def react(self, key, msg_id=None):
+        """Reacts to the message being handled (or ``msg_id``) with one emoji."""
+        return await self.agent.react(self.conv_id, msg_id or (self.msg or {}).get("msg_id"), key)
 
     async def progress(self, kind, text, data=None):
         """Reports progress on the conversation being handled."""
@@ -218,7 +229,8 @@ class Ctx:
     async def show_card(self, title, blocks, text=None):
         """Shows data as a card in reply (docs/en/design/chat-components.md): text, facts, table, list or your own ``x-…`` blocks."""
         return await self.agent.send_card(self.conv_id, text or title, {"title": title, "blocks": blocks},
-                                          reply_to=self.msg["msg_id"] if self.msg else None)
+                                          reply_to=self.msg["msg_id"] if self.msg else None,
+                                          thread_id=self.thread_id)
 
     async def ask_form(self, title, fields, intro=None, submit="Send", to=None, timeout=1800.0):
         """Asks the person who wrote with a form card only they can fill in and waits
@@ -226,7 +238,8 @@ class Ctx:
         if to is None and self.msg:
             to = [self.msg["sender_id"]]
         return await self.agent.ask_form(self.conv_id, title, fields, intro=intro, submit=submit, to=to,
-                                         reply_to=self.msg["msg_id"] if self.msg else None, timeout=timeout)
+                                         reply_to=self.msg["msg_id"] if self.msg else None, timeout=timeout,
+                                         thread_id=self.thread_id)
 
     async def steps(self, titles, msg_id=None):
         """Steps people see next to the reply (docs/en/design/chat-components.md): ``s = await ctx.steps([...])``,
@@ -297,7 +310,7 @@ class Agent:
         self._last_seq = {}
         self.client_name = name
         self.log = log or (lambda m: None)
-        self.handlers = {"message": [], "event": [], "card": [], "handback": [], "config": []}
+        self.handlers = {"message": [], "event": [], "card": [], "handback": [], "config": [], "reaction": []}
         # The configuration from the server, kept current (docs/en/design/agents.md).
         self.config = None
         self.waiting = {}  # request_id -> future
@@ -331,6 +344,13 @@ class Agent:
         their note.
         """
         self.handlers["handback"].append(fn)
+        return fn
+
+    def on_reaction(self, fn):
+        """Called when someone reacts to (or un-reacts from) one of the agent's
+        messages: ``fn(data, ctx)`` with ``data["added"]``; it does not wake the agent.
+        """
+        self.handlers["reaction"].append(fn)
         return fn
 
     def on_config(self, fn):
@@ -648,6 +668,13 @@ class Agent:
         what = f"{ev['type']} {ev['conv_id']}#{ev['seq']}"
         for h in self.handlers["event"]:
             await self._run(h(ev, item), what)
+        # Reactions to its messages arrive without waking it.
+        if ev["type"] in ("reaction.added", "reaction.removed") and \
+                (ev.get("data") or {}).get("msg_sender") == self.me["id"]:
+            rctx = Ctx(self, ev, item.get("trace"))
+            data = {**ev["data"], "added": ev["type"] == "reaction.added"}
+            for h in self.handlers["reaction"]:
+                await self._run(h(data, rctx), what)
         if not item.get("wake"):
             return
         ctx = Ctx(self, ev, item.get("trace"))
@@ -682,18 +709,35 @@ class Agent:
         return await self.conn.call(op, **args)
 
     async def send(self, conv_id, text, reply_to=None, to=None, topics=None, intent=None,
-                   refs=None, sources=None, client_msg_id=None, trace=None):
+                   refs=None, sources=None, client_msg_id=None, trace=None, thread_id=None):
         """Sends a message, with an optional envelope (`to`, `topics`, `intent`, `refs`)
-        and `sources`, in the trace `trace` (a W3C traceparent) when given. Under
-        approval it becomes a draft (`draft_id`).
+        and `sources`, in the trace `trace` (a W3C traceparent) when given, in the
+        thread `thread_id` when given. Under approval it becomes a draft (`draft_id`).
         """
         return await self.call(
             "send", conv_id=conv_id, text=text, client_msg_id=client_msg_id or str(uuid.uuid4()),
             reply_to=reply_to, to=to, topics=topics, intent=intent, refs=refs, sources=sources, trace=trace,
+            thread_id=thread_id,
         )
 
+    async def react(self, conv_id, msg_id, key):
+        """Adds a reaction (one emoji); adding it twice changes nothing."""
+        return await self.call("react", conv_id=conv_id, msg_id=msg_id, key=key)
+
+    async def unreact(self, conv_id, msg_id, key):
+        """Removes the agent's reaction."""
+        return await self.call("unreact", conv_id=conv_id, msg_id=msg_id, key=key)
+
+    async def thread(self, conv_id, thread_id, after_seq=0, limit=None):
+        """A thread's root and its replies."""
+        return await self.call("pull_thread", conv_id=conv_id, thread_id=thread_id, after_seq=after_seq, limit=limit)
+
+    async def pins(self, conv_id):
+        """The conversation's pinned messages, latest pin first."""
+        return await self.call("list_pins", conv_id=conv_id)
+
     async def ask_form(self, conv_id, title, fields, intro=None, submit="Send", to=None, reply_to=None,
-                       timeout=1800.0):
+                       timeout=1800.0, thread_id=None):
         """Sends a form card (docs/en/design/chat-components.md) and waits for its answers; ``to`` limits who may
         answer. Returns the values; raises ``asyncio.TimeoutError`` after ``timeout`` seconds."""
         blocks = ([{"type": "text", "text": intro}] if intro else []) + [
@@ -701,7 +745,8 @@ class Agent:
         card = {"title": title, "once": True, "blocks": blocks}
         if to:
             card["to"] = to
-        sent = await self.send_card(conv_id, f"{title} (please fill in the form)", card, reply_to=reply_to)
+        sent = await self.send_card(conv_id, f"{title} (please fill in the form)", card, reply_to=reply_to,
+                                    thread_id=thread_id)
         fut = asyncio.get_running_loop().create_future()
         self.forms[sent["msg_id"]] = fut
         try:
@@ -709,10 +754,10 @@ class Agent:
         finally:
             self.forms.pop(sent["msg_id"], None)
 
-    async def send_card(self, conv_id, text, card, reply_to=None):
+    async def send_card(self, conv_id, text, card, reply_to=None, thread_id=None):
         """A card (docs/en/design/agents.md); ``text`` is what clients without cards show."""
         return await self.call("send", conv_id=conv_id, text=text, kind="agentim.card", payload=card,
-                               client_msg_id=str(uuid.uuid4()), reply_to=reply_to)
+                               client_msg_id=str(uuid.uuid4()), reply_to=reply_to, thread_id=thread_id)
 
     async def upload_file(self, conv_id, name, data, mime=None):
         """Uploads a whole file (at most 64 MiB) to a conversation the agent is
@@ -758,12 +803,13 @@ class Agent:
         r = await self.call("file_url", conv_id=conv_id, file_id=file_id, variant=variant)
         return {**r, "url": urljoin(_http_base(self.url) + "/", r["url"])}
 
-    async def stream(self, conv_id, reply_to=None, trace=None):
+    async def stream(self, conv_id, reply_to=None, trace=None, thread_id=None):
         """Starts a streamed reply; append text, then end it. People see it as it is
         written and can stop it.
         """
         r = await self.call(
-            "stream_start", conv_id=conv_id, client_msg_id=str(uuid.uuid4()), reply_to=reply_to, trace=trace
+            "stream_start", conv_id=conv_id, client_msg_id=str(uuid.uuid4()), reply_to=reply_to, trace=trace,
+            thread_id=thread_id,
         )
         return Stream(self, r["msg_id"])
 

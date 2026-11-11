@@ -357,8 +357,17 @@ class AgentIMClient private constructor(private val o: ClientOptions) : AutoClos
     suspend fun logout() = cmd("logout")
 
     /** Returns `{client_msg_id, key}` once the message is queued and shown. */
-    suspend fun send(convId: String, text: String, clientMsgId: String? = null, replyTo: String? = null) =
-        cmd("send", "conv_id" to convId, "text" to text, "client_msg_id" to clientMsgId, "reply_to" to replyTo) as JSONObject
+    suspend fun send(
+        convId: String,
+        text: String,
+        clientMsgId: String? = null,
+        replyTo: String? = null,
+        threadId: String? = null,
+        alsoInConv: Boolean = false,
+    ) = cmd(
+        "send", "conv_id" to convId, "text" to text, "client_msg_id" to clientMsgId, "reply_to" to replyTo,
+        "thread_id" to threadId, "also_in_conv" to (if (alsoInConv) true else null),
+    ) as JSONObject
 
     /**
      * Sends a file or a photo from a path: shown at once as uploading, sent
@@ -395,6 +404,33 @@ class AgentIMClient private constructor(private val o: ClientOptions) : AutoClos
     suspend fun retry(convId: String, clientMsgId: String) = cmd("retry", "conv_id" to convId, "client_msg_id" to clientMsgId)
     /** Drops a failed or waiting message from the queue. */
     suspend fun discard(convId: String, clientMsgId: String) = cmd("discard", "conv_id" to convId, "client_msg_id" to clientMsgId)
+
+    private fun args(vararg kv: Pair<String, Any?>) = JSONObject().apply { for ((k, v) in kv) if (v != null) put(k, v) }
+
+    /** Adds a reaction (one emoji, or one of the app's `:names:`); adding it twice changes nothing. */
+    suspend fun react(convId: String, msgId: String, key: String) = call("react", args("conv_id" to convId, "msg_id" to msgId, "key" to key))
+    /** Removes my reaction; removing one that is not there changes nothing. */
+    suspend fun unreact(convId: String, msgId: String, key: String) = call("unreact", args("conv_id" to convId, "msg_id" to msgId, "key" to key))
+    /** Pins a message to the conversation; pinning it again changes nothing. */
+    suspend fun pin(convId: String, msgId: String) = call("pin", args("conv_id" to convId, "msg_id" to msgId))
+    /** Unpins a message. */
+    suspend fun unpin(convId: String, msgId: String) = call("unpin", args("conv_id" to convId, "msg_id" to msgId))
+    /** The conversation's pinned messages, latest pin first. */
+    suspend fun listPins(convId: String) = call("list_pins", args("conv_id" to convId))
+    /** A thread's root and its replies after [afterSeq]. */
+    suspend fun pullThread(convId: String, threadId: String, afterSeq: Long = 0) =
+        call("pull_thread", args("conv_id" to convId, "thread_id" to threadId, "after_seq" to afterSeq))
+    /** The threads I follow (in one conversation, or all), latest reply first, with unread counts. */
+    suspend fun listThreads(convId: String? = null) = call("list_threads", args("conv_id" to convId))
+    /** Marks a thread read up to [seq] on all my devices. */
+    suspend fun readThread(convId: String, threadId: String, seq: Long) =
+        call("read_thread", args("conv_id" to convId, "thread_id" to threadId, "seq" to seq))
+    /** Follows a thread (its replies notify me) or stops following it. */
+    suspend fun followThread(convId: String, threadId: String, follow: Boolean = true) =
+        call(if (follow) "follow_thread" else "unfollow_thread", args("conv_id" to convId, "thread_id" to threadId))
+    /** The thread summary, reactions and pin of up to 100 messages (for messages loaded from history). */
+    suspend fun msgSummary(convId: String, msgIds: List<String>) =
+        call("msg_summary", args("conv_id" to convId, "msg_ids" to JSONArray(msgIds)))
 
     /** A request that needs the server now (approvals, decisions, queries). */
     suspend fun call(op: String, args: JSONObject = JSONObject()) = cmd("call", "op" to op, "args" to args)

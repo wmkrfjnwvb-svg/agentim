@@ -471,3 +471,19 @@ describe('Images and files (docs/en/design/messaging.md)', () => {
     expect(screen.queryByTestId('attach')).toBeNull();
   });
 });
+
+describe('threads and reactions', () => {
+  it('keeps thread-only replies out, shows the reply count and toggles reactions', async () => {
+    const root = msg('r', 'plan?', { thread: { replies: 3 }, reactions: [{ key: '👍', count: 2, me: true }, { key: '🎉', count: 1, me: false }] });
+    const { client } = fake([root, msg('t', 'only in the thread', { thread_id: 'r' }), msg('s', 'shown too', { thread_id: 'r', thread_shown: true })]);
+    await chat(client);
+    expect(screen.getByText('plan?')).toBeTruthy();
+    expect(screen.queryByText('only in the thread')).toBeNull();
+    expect(screen.getByText('shown too')).toBeTruthy();
+    expect(screen.getByText('3 replies')).toBeTruthy();
+    await act(() => fireEvent.press(screen.getByLabelText('👍 2, including you')));
+    expect(client.call).toHaveBeenCalledWith('unreact', { conv_id: 'c1', msg_id: 'r', key: '👍' });
+    await act(() => fireEvent.press(screen.getByLabelText('🎉 1')));
+    expect(client.call).toHaveBeenCalledWith('react', { conv_id: 'c1', msg_id: 'r', key: '🎉' });
+  });
+});

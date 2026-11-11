@@ -120,6 +120,8 @@ export interface Steps {
 export interface SendOptions {
   /** The message this replies to. */
   replyTo?: string;
+  /** Reply in the thread of this root message (docs/en/design/messaging.md). */
+  threadId?: string;
   /** Members this asks to act; others see it but need not answer. */
   to?: string[];
   /** Topics the message is about, for members that follow only some topics. */
@@ -171,8 +173,12 @@ export interface Ctx {
   readonly config: AgentConfig | null;
   /** Its role, or null. */
   readonly role: Role | null;
-  /** Replies in the conversation. */
+  /** The thread the message is in (its root's id), or null: replies go there too. */
+  readonly threadId: string | null;
+  /** Replies in the conversation (in the message's thread when it has one). */
   reply(text: string, opts?: SendOptions): Promise<any>;
+  /** Reacts to the message being handled (or `msgId`) with one emoji. */
+  react(key: string, msgId?: string): Promise<{ changed: boolean; seq?: number }>;
   /** Starts a streaming reply. */
   stream(): Promise<Stream>;
   /** Shows what the agent is doing (thinking, a tool call, a step…) above its reply. */
@@ -328,6 +334,8 @@ export class Agent {
   onCardResponse(fn: (r: { msg_id: string; block_id: string; action?: string; values?: Record<string, unknown>; by: string }, ctx: Ctx) => unknown): this;
   /** Called when the person a conversation was handed off to hands it back, with their note. */
   onHandback(fn: (d: { by: string; note?: string }, ctx: Ctx) => unknown): this;
+  /** Someone reacted to (or un-reacted from) one of the agent's messages; it is not woken by it. */
+  onReaction(fn: (d: { msg_id: string; key: string; user_id: string; added: boolean }, ctx: Ctx) => unknown): this;
   /** The configuration from the server (docs/en/design/agents.md), kept current; null before `start()`. */
   config: AgentConfig | null;
   /** Called with the configuration when it arrives at login and whenever it changes. */
@@ -374,7 +382,15 @@ export class Agent {
    * Starts a streamed reply; append text, then end it. People see it as it is written and can stop
    * it.
    */
-  stream(convId: string, opts?: { replyTo?: string; trace?: string }): Promise<Stream>;
+  stream(convId: string, opts?: { replyTo?: string; threadId?: string; trace?: string }): Promise<Stream>;
+  /** Adds a reaction (one emoji); adding it twice changes nothing. */
+  react(convId: string, msgId: string, key: string): Promise<{ changed: boolean; seq?: number }>;
+  /** Removes the agent's reaction. */
+  unreact(convId: string, msgId: string, key: string): Promise<{ changed: boolean; seq?: number }>;
+  /** A thread's root and its replies. */
+  thread(convId: string, threadId: string, opts?: { afterSeq?: number; limit?: number }): Promise<{ root: any; thread: any; replies: any[]; more: boolean }>;
+  /** The conversation's pinned messages, latest pin first. */
+  pins(convId: string): Promise<{ pins: any[]; more: boolean; count: number; pin_policy: string }>;
   /**
    * Reports progress in the side channel (`thinking`, `plan`, `step`, `tool_call`, `tool_result`, `error`), optionally tied to a
    * message.

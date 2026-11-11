@@ -78,6 +78,10 @@ export interface MessageProps {
   onRecall?(): void;
   /** Stops an agent's streaming reply. */
   onStop?(): void;
+  /** Adds (`on`) or removes my reaction (docs/en/design/messaging.md). */
+  onReact?(key: string, on: boolean): void;
+  /** Set when the app shows threads: opens this message's thread. */
+  onOpenThread?(): void;
 }
 
 /**
@@ -948,7 +952,7 @@ function TextLink({ label, onPress, tone }: { label: string; onPress(): void; to
   );
 }
 
-function DefaultMessage({ message: m, convId, mine, first, last, time, strings, onRetry, onDiscard, onFeedback, onRespond, onEdit, onRecall, onStop }: MessageProps) {
+function DefaultMessage({ message: m, convId, mine, first, last, time, strings, onRetry, onDiscard, onFeedback, onRespond, onEdit, onRecall, onStop, onReact, onOpenThread }: MessageProps) {
   const s = useStyles();
   const [editing, setEditing] = useState(false);
   // A long press shows what I can do with my message (iMessage, WhatsApp).
@@ -1017,6 +1021,30 @@ function DefaultMessage({ message: m, convId, mine, first, last, time, strings, 
           </View>
         ) : null}
       </Pressable>
+      {(m as any).reactions?.length && m.state !== 'recalled' ? (
+        <View style={[s.reactions, mine && s.metaMine]}>
+          {((m as any).reactions as any[]).map((r) => (
+            <Pressable
+              key={r.key}
+              style={[s.reaction, r.me && s.reactionMine]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: !!r.me }}
+              accessibilityLabel={strings.reactedBy(r.key, r.count, !!r.me)}
+              disabled={!onReact}
+              onPress={() => onReact?.(r.key, !r.me)}
+            >
+              <Text style={s.reactionText}>
+                {r.key} {r.count}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+      {(m as any).thread?.replies ? (
+        <Pressable accessibilityRole="button" disabled={!onOpenThread} onPress={onOpenThread} style={mine && s.metaMine}>
+          <Text style={s.threadLink}>{strings.replies((m as any).thread.replies)}</Text>
+        </Pressable>
+      ) : null}
       {last || failed || m.status === 'sending' || notes.length || feedback || onStop || actions ? (
         <View style={[s.meta, mine && s.metaMine]}>
           {notes.map((n) => (
@@ -1076,10 +1104,11 @@ export const defaultComponents: Components = { Message: DefaultMessage, Conversa
 interface RowProps {
   item: Item<Message, ReactNode>;
   convId: string;
+  onOpenThread?(threadId: string): void;
 }
 
 /** One cell of the list: a notice, or a message with its day line, name, avatar and AI mark. */
-const Cell = memo(function Cell({ item, convId }: RowProps) {
+const Cell = memo(function Cell({ item, convId, onOpenThread }: RowProps) {
   const client = useClient();
   const s = useStyles();
   const { strings, components, me, when } = useUi();
@@ -1127,6 +1156,8 @@ const Cell = memo(function Cell({ item, convId }: RowProps) {
             onEdit={sent && m.state === 'committed' && (m.kind ?? 'text') === 'text' ? (t) => void client.edit(convId, target, t).catch(() => {}) : undefined}
             onRecall={sent && m.state !== 'streaming' ? () => void client.recall(convId, target).catch(() => {}) : undefined}
             onStop={m.state === 'streaming' && agent ? () => void client.call('stream_cancel', { msg_id: m.msg_id }).catch(() => {}) : undefined}
+            onReact={m.msg_id && !m.key.startsWith('local:') ? (k, on) => void client.call(on ? 'react' : 'unreact', { conv_id: convId, msg_id: m.msg_id, key: k }).catch(() => {}) : undefined}
+            onOpenThread={onOpenThread && m.msg_id ? () => onOpenThread(m.msg_id) : undefined}
           />
         </View>
       </View>
@@ -1152,11 +1183,13 @@ const NEAR_BOTTOM = 48;
  * older ones; Stream Chat does the same), in runs per sender with day
  * separators, notices and "New messages"; a button brings you back down.
  */
-export function MessageList({ convId, notices = [] }: { convId: string; notices?: Notice<ReactNode>[] }) {
+export function MessageList({ convId, notices = [], onOpenThread }: { convId: string; notices?: Notice<ReactNode>[]; onOpenThread?(threadId: string): void }) {
   const client = useClient();
   const s = useStyles();
   const { strings, components, me, when } = useUi();
-  const { messages, hasOlder, olderEnd, loadingOlder, loadOlder } = useMessages(convId);
+  const { messages: everything, hasOlder, olderEnd, loadingOlder, loadOlder } = useMessages(convId);
+  // A reply only in a thread is shown in its thread, not here (docs/en/design/messaging.md).
+  const messages = useMemo(() => everything.filter((m: any) => !(typeof m.thread_id === 'string' && m.thread_shown !== true)), [everything]);
   const conv = useConversations().find((c) => c.conv_id === convId);
   const list = useRef<FlatList<Item<Message, ReactNode>>>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -1209,7 +1242,7 @@ export function MessageList({ convId, notices = [] }: { convId: string; notices?
     [messages.length],
   );
 
-  const renderItem: ListRenderItem<Item<Message, ReactNode>> = useCallback(({ item }) => <Cell item={item} convId={convId} />, [convId]);
+  const renderItem: ListRenderItem<Item<Message, ReactNode>> = useCallback(({ item }) => <Cell item={item} convId={convId} onOpenThread={onOpenThread} />, [convId, onOpenThread]);
   const below = atBottom ? 0 : messages.slice(seen.current).filter((m) => !isMine(m)).length;
   // Inverted, the footer is at the top.
   const top = hasOlder ? (
@@ -1474,6 +1507,11 @@ function makeStyles(t: Theme) {
     cursor: { color: c.aiText },
     recalled: { backgroundColor: 'transparent', borderWidth: 1, borderStyle: 'dashed', borderColor: c.border },
     recalledText: { fontSize: f.sizeSmall, fontStyle: 'italic', color: c.muted },
+    reactions: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 },
+    reaction: { paddingHorizontal: 8, minHeight: 26, justifyContent: 'center', borderRadius: 999, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border },
+    reactionMine: { borderColor: c.accent },
+    reactionText: { fontSize: f.sizeSmall, color: c.fg },
+    threadLink: { marginTop: 4, fontSize: f.sizeSmall, fontWeight: '600', color: c.accent },
     sources: { marginTop: 8, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border, gap: 4 },
     sourcesLabel: { fontSize: f.sizeTiny - 1, fontWeight: '600', letterSpacing: 0.6, color: c.muted },
     source: { fontSize: f.sizeSmall, color: c.accentText },

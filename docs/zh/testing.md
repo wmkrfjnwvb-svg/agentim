@@ -83,12 +83,12 @@ bench/single-node.sh                                  # 性能
 
 | 板块 | 功能点 | 页面 |
 |---|---|---|
-| 消息 | MSG-01 … MSG-18 | [messaging](design/messaging.md#6-测试) |
+| 消息 | MSG-01 … MSG-21 | [messaging](design/messaging.md#6-测试) |
 | 同步和客户端 | SYN-01 … SYN-12、CLI-01 … CLI-11 | [sync-and-clients](design/sync-and-clients.md#6-测试) |
 | Agent | AGT-01 … AGT-19 | [agents](design/agents.md#6-测试) |
 | 审批 | APR-01 … APR-16 | [approvals](design/approvals.md#6-测试) |
 | 内置助手 | AST-01 … AST-15 | [assistants](design/assistants.md#6-测试) |
-| 聊天组件 | UI-01 … UI-14 | [chat-components](design/chat-components.md#6-测试) |
+| 聊天组件 | UI-01 … UI-15 | [chat-components](design/chat-components.md#6-测试) |
 | 开放 API 和 Webhook | API-01 … API-15 | [open-api](design/open-api.md#6-测试) |
 | 接入身份 | ACC-01 … ACC-17 | [access](design/access.md#6-测试) |
 | 安全和合规 | SEC-01 … SEC-17 | [security](design/security.md#6-测试) |

@@ -340,6 +340,7 @@ impl Hub {
                         "payload": if recalled { Value::Null } else { json!(m.payload) },
                         "state": m.state,
                         "reply_to": m.reply_to,
+                        "thread_id": m.thread_id,
                     }))
                     .await?;
                 }
@@ -358,6 +359,22 @@ impl Hub {
                 })
                 .await?;
             send(json!({"type": "answers", "conv_id": c, "feedback": answers["feedback"], "card_responses": answers["card_responses"]})).await?;
+            // Reactions they added and threads they follow (MSG-19, MSG-20).
+            let (cid, uid) = (c.clone(), id.clone());
+            let (reactions, threads) = self
+                .read(shard, move |db| {
+                    Box::pin(async move {
+                        let r = db.reactions_of_user(&cid, &uid).await?;
+                        let t = db.threads_followed_by(&cid, &uid).await?;
+                        Ok((r, t))
+                    })
+                })
+                .await?;
+            let reactions: Vec<Value> = reactions
+                .into_iter()
+                .map(|(m, k, at)| json!({"msg_id": m, "key": k, "at": at}))
+                .collect();
+            send(json!({"type": "social", "conv_id": c, "reactions": reactions, "following_threads": threads})).await?;
         }
         send(json!({"type": "end"})).await?;
         Ok(())

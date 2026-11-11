@@ -173,8 +173,15 @@ try {
       await ctx.reply(`trace ${ctx.traceId}`);
     } else if (t.includes('sources')) {
       await ctx.reply('see the docs', { sources: [{ title: 'Docs', url: 'https://example.com/docs' }] });
+    } else if (t.includes('in the thread')) {
+      // Asked in a thread: the reply goes there, and a reaction says it is on it.
+      await ctx.react('👀');
+      const th = await bot.thread(ctx.convId, ctx.threadId);
+      await ctx.reply(`thread ${ctx.threadId === th.root.msg_id} ${th.replies.length}`);
     }
   });
+  const reacted = [];
+  bot.onReaction((d) => { reacted.push(`${d.added ? '+' : '-'}${d.key}`); });
   bot.onCardResponse(async (r, ctx) => ctx.reply(`card: ${r.action}`));
   bot.onHandback(async (d, ctx) => ctx.reply(`back: ${d.note}`));
   await bot.start();
@@ -257,6 +264,21 @@ try {
   await alice.say(conv, '@nbot sources');
   const src = await alice.reply(a, 'see the docs');
   check(src.msg.envelope?.sources?.[0]?.title === 'Docs', 'sources travel with the reply');
+
+  // Threads and reactions (docs/en/design/messaging.md): asked in a thread,
+  // the agent answers there; a reaction to its answer reaches it.
+  {
+    const root = await alice.say(conv, 'refund policy?');
+    await alice.conn.call('send', { conv_id: conv, client_msg_id: crypto.randomUUID(), text: '@nbot answer in the thread', thread_id: root.msg_id });
+    const ans = await alice.reply(a, 'thread ');
+    check(ans.msg.thread_id === root.msg_id && ans.msg.content === 'thread true 1', 'ctx.reply answers in the thread it was asked in');
+    const eyes = await alice.wait((e) => e.type === 'reaction.added' && e.data.user_id === a && e.data.key === '👀', 'the agent reacts');
+    check(eyes.data.msg_id !== root.msg_id, 'ctx.react reacts to the message being handled');
+    await alice.conn.call('react', { conv_id: conv, msg_id: ans.msg.msg_id, key: '🙏' });
+    await alice.conn.call('unreact', { conv_id: conv, msg_id: ans.msg.msg_id, key: '🙏' });
+    for (let i = 0; i < 100 && reacted.length < 2; i++) await sleep(50);
+    check(reacted.join(' ') === '+🙏 -🙏', `onReaction hears reactions to its messages (${reacted.join(' ')})`);
+  }
 
   // The agent gets the trace of the message that woke it, and its reply is
   // stored in that trace (docs/en/design/tracing.md), as the admin API shows.

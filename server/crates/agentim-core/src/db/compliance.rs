@@ -163,11 +163,38 @@ impl Db<'_> {
     /// What the user left in a conversation besides messages: feedback,
     /// card answers, whispers and other side events they wrote.
     pub async fn erase_user_extras(&mut self, conv_id: &str, user_id: &str) -> ApiResult<()> {
+        // Threads their replies were in count again (the replies are gone).
+        let threads = sqlx::query(self.d.q(
+            "SELECT DISTINCT thread_id FROM messages WHERE conv_id = ? AND sender_id = ? AND thread_id IS NOT NULL",
+        ))
+        .bind(conv_id)
+        .bind(user_id)
+        .fetch_all(&mut *self.c)
+        .await?;
+        for r in threads {
+            let t: String = r.try_get(0)?;
+            self.thread_recount(conv_id, &t).await?;
+        }
         for q in [
             "DELETE FROM feedback WHERE conv_id = ? AND user_id = ?",
             "DELETE FROM card_responses WHERE conv_id = ? AND user_id = ?",
+            // Their reactions, and reactions and pins of their messages
+            // (docs/en/design/messaging.md, MSG-19 to MSG-21).
+            "DELETE FROM reactions WHERE conv_id = ? AND user_id = ?",
+            "DELETE FROM thread_members WHERE conv_id = ? AND user_id = ?",
         ] {
             sqlx::query(self.d.q(q))
+                .bind(conv_id)
+                .bind(user_id)
+                .execute(&mut *self.c)
+                .await?;
+        }
+        for q in [
+            "DELETE FROM reactions WHERE conv_id = ? AND msg_id IN (SELECT msg_id FROM messages WHERE conv_id = ? AND sender_id = ?)",
+            "DELETE FROM pins WHERE conv_id = ? AND msg_id IN (SELECT msg_id FROM messages WHERE conv_id = ? AND sender_id = ?)",
+        ] {
+            sqlx::query(self.d.q(q))
+                .bind(conv_id)
                 .bind(conv_id)
                 .bind(user_id)
                 .execute(&mut *self.c)

@@ -564,3 +564,55 @@ func (c *Client) MarkRead(ctx context.Context, convID, as string, seq int) (M, e
 	var out M
 	return out, c.Do(ctx, "POST", "/v1/conversations/"+q(convID)+"/read", M{"as": as, "seq": seq}, &out)
 }
+
+// ListThreads lists a conversation's threads, latest reply first; with as, the ones that user follows.
+func (c *Client) ListThreads(ctx context.Context, convID, as string) (M, error) {
+	var out M
+	path := "/v1/conversations/" + q(convID) + "/threads"
+	if as != "" {
+		path += "?as=" + q(as)
+	}
+	return out, c.Do(ctx, "GET", path, nil, &out)
+}
+
+// GetThread returns a thread's root, summary and replies after a seq.
+func (c *Client) GetThread(ctx context.Context, convID, threadID string, afterSeq int) (M, error) {
+	var out M
+	return out, c.Do(ctx, "GET", fmt.Sprintf("/v1/conversations/%s/threads/%s?after_seq=%d", q(convID), q(threadID), afterSeq), nil, &out)
+}
+
+// AddReaction adds a member's reaction; adding it again changes nothing.
+func (c *Client) AddReaction(ctx context.Context, convID, msgID, key, as string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "PUT", "/v1/conversations/"+q(convID)+"/messages/"+q(msgID)+"/reactions/"+q(key), M{"as": as}, &out)
+}
+
+// RemoveReaction removes a member's reaction.
+func (c *Client) RemoveReaction(ctx context.Context, convID, msgID, key, as string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "DELETE", "/v1/conversations/"+q(convID)+"/messages/"+q(msgID)+"/reactions/"+q(key)+"?as="+q(as), nil, &out)
+}
+
+// ListReactions lists who reacted with a key, oldest first.
+func (c *Client) ListReactions(ctx context.Context, convID, msgID, key string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "GET", "/v1/conversations/"+q(convID)+"/messages/"+q(msgID)+"/reactions/"+q(key), nil, &out)
+}
+
+// ListPins lists the pinned messages, latest pin first.
+func (c *Client) ListPins(ctx context.Context, convID string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "GET", "/v1/conversations/"+q(convID)+"/pins", nil, &out)
+}
+
+// PinMessage pins a message as a member; pinning it again changes nothing.
+func (c *Client) PinMessage(ctx context.Context, convID, msgID, as string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "PUT", "/v1/conversations/"+q(convID)+"/pins/"+q(msgID), M{"as": as}, &out)
+}
+
+// UnpinMessage unpins a message as a member.
+func (c *Client) UnpinMessage(ctx context.Context, convID, msgID, as string) (M, error) {
+	var out M
+	return out, c.Do(ctx, "DELETE", "/v1/conversations/"+q(convID)+"/pins/"+q(msgID)+"?as="+q(as), nil, &out)
+}

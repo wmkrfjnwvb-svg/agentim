@@ -57,6 +57,7 @@ Everything below is built and tested on SQLite, PostgreSQL and MySQL. Each row l
 |---|---|
 | Conversations | One-to-one (one per pair) and groups, with members added in bulk at creation |
 | Messages | Text, edit, recall, replies, @mentions, custom message kinds with a plain-text fallback, and signals such as typing |
+| Threads, reactions, pins | Reply in a thread (followers notified, its own unread count), react with an emoji, pin important messages |
 | Streaming | Agents' replies appear word by word |
 | Ordered, no loss | A message is acknowledged only after it is durably committed. Every member sees the same gap-free order. Retries are deduplicated |
 | Sync across devices | Each device keeps its own position and syncs only what it lacks. History can be paged back. Read state and unread counts are shared across devices, and conversations can be muted |

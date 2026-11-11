@@ -288,6 +288,10 @@ impl Member {
                 .msg
                 .as_ref()
                 .is_none_or(|m| m.created_seq >= self.visible_from)
+            // Reactions and pins name the message they are about (MSG-20, MSG-21).
+            && ev.data["msg_seq"]
+                .as_i64()
+                .is_none_or(|s| s >= self.visible_from)
     }
 
     /// Whether an event should notify this member (docs/en/design/sync-and-clients.md): never for
@@ -346,6 +350,22 @@ pub struct MsgView {
     /// budget); None for messages from before v3.
     #[serde(default)]
     pub root_id: Option<String>,
+    /// The thread (its root message) this reply belongs to
+    /// (docs/en/design/messaging.md, MSG-19).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// A thread reply that also shows in the conversation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub thread_shown: bool,
+}
+
+/// Where a message goes in a thread: the root's id, and whether it also
+/// shows in the conversation (docs/en/design/messaging.md, MSG-19).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadRef {
+    pub id: String,
+    #[serde(default)]
+    pub shown: bool,
 }
 
 /// One entry of the main conversation log. `seq` is gap-free per conversation.
@@ -524,6 +544,12 @@ pub enum ClientMsg {
         /// Sources an answer is based on (docs/en/design/agents.md).
         #[serde(default)]
         sources: Option<Vec<Value>>,
+        /// Replies in the thread of this root message (MSG-19).
+        #[serde(default)]
+        thread_id: Option<String>,
+        /// A thread reply that also shows in the conversation.
+        #[serde(default)]
+        also_in_conv: bool,
     },
     /// Edits a message: the sender (or the sending agent's owner), within the
     /// app's edit window.
@@ -618,6 +644,11 @@ pub enum ClientMsg {
         reply_to: Option<String>,
         #[serde(default)]
         causation_id: Option<String>,
+        /// Streams the reply into this thread (MSG-19).
+        #[serde(default)]
+        thread_id: Option<String>,
+        #[serde(default)]
+        also_in_conv: bool,
     },
     /// Appends text to a stream; `idx` numbers the chunks from 0 (out of order
     /// is refused).
@@ -688,6 +719,85 @@ pub enum ClientMsg {
         title: Option<String>,
         #[serde(default)]
         fields: Option<Value>,
+        /// Who may pin messages in a group: `members` or `admins` (MSG-21).
+        #[serde(default)]
+        pin_policy: Option<String>,
+    },
+    /// Marks a thread read up to `seq` on all of the caller's devices
+    /// (MSG-19).
+    ReadThread {
+        conv_id: String,
+        thread_id: String,
+        seq: i64,
+    },
+    /// Follows a thread: its replies notify the caller.
+    FollowThread { conv_id: String, thread_id: String },
+    /// Stops following a thread.
+    UnfollowThread { conv_id: String, thread_id: String },
+    /// The threads the caller follows, unread first, then by latest reply
+    /// (one conversation, or all of the caller's).
+    ListThreads {
+        #[serde(default)]
+        conv_id: Option<String>,
+        /// Only threads whose latest reply is older than this time (ms).
+        #[serde(default)]
+        before: Option<i64>,
+        #[serde(default)]
+        limit: Option<i64>,
+    },
+    /// A thread's root and the replies after a seq.
+    PullThread {
+        conv_id: String,
+        thread_id: String,
+        #[serde(default)]
+        after_seq: i64,
+        #[serde(default)]
+        limit: Option<i64>,
+    },
+    /// Adds a reaction to a message (MSG-20); adding one twice changes
+    /// nothing.
+    React {
+        conv_id: String,
+        msg_id: String,
+        key: String,
+    },
+    /// Removes the caller's reaction; removing one that is not there changes
+    /// nothing.
+    Unreact {
+        conv_id: String,
+        msg_id: String,
+        key: String,
+    },
+    /// Who reacted to a message with a key, oldest first.
+    ListReactions {
+        conv_id: String,
+        msg_id: String,
+        key: String,
+        /// Only reactions after this seq.
+        #[serde(default)]
+        after_seq: i64,
+        #[serde(default)]
+        limit: Option<i64>,
+    },
+    /// Pins a message to the conversation (MSG-21); pinning it again changes
+    /// nothing.
+    Pin { conv_id: String, msg_id: String },
+    /// Unpins a message.
+    Unpin { conv_id: String, msg_id: String },
+    /// The conversation's pinned messages, latest pin first.
+    ListPins {
+        conv_id: String,
+        /// Only pins older than this seq.
+        #[serde(default)]
+        before_seq: Option<i64>,
+        #[serde(default)]
+        limit: Option<i64>,
+    },
+    /// The thread summary, reactions and pin of up to 100 messages of a
+    /// conversation, as the caller sees them.
+    MsgSummary {
+        conv_id: String,
+        msg_ids: Vec<String>,
     },
     /// This user's devices (one per client token).
     ListDevices,
@@ -827,6 +937,9 @@ pub enum ClientMsg {
         conv_id: String,
         #[serde(default)]
         max_tokens: Option<i64>,
+        /// Only this thread: its root and replies (MSG-19).
+        #[serde(default)]
+        thread_id: Option<String>,
     },
     /// An agent searches the messages it may see (optionally one conversation).
     Search {
@@ -1078,6 +1191,18 @@ impl ClientMsg {
             ClientMsg::UploadParts { .. } => "upload_parts",
             ClientMsg::UploadComplete { .. } => "upload_complete",
             ClientMsg::FileUrl { .. } => "file_url",
+            ClientMsg::ReadThread { .. } => "read_thread",
+            ClientMsg::FollowThread { .. } => "follow_thread",
+            ClientMsg::UnfollowThread { .. } => "unfollow_thread",
+            ClientMsg::ListThreads { .. } => "list_threads",
+            ClientMsg::PullThread { .. } => "pull_thread",
+            ClientMsg::React { .. } => "react",
+            ClientMsg::Unreact { .. } => "unreact",
+            ClientMsg::ListReactions { .. } => "list_reactions",
+            ClientMsg::Pin { .. } => "pin",
+            ClientMsg::Unpin { .. } => "unpin",
+            ClientMsg::ListPins { .. } => "list_pins",
+            ClientMsg::MsgSummary { .. } => "msg_summary",
         }
     }
 
@@ -1117,8 +1242,21 @@ impl ClientMsg {
             | ClientMsg::UploadStart { conv_id, .. }
             | ClientMsg::UploadParts { conv_id, .. }
             | ClientMsg::UploadComplete { conv_id, .. }
-            | ClientMsg::FileUrl { conv_id, .. } => Some(conv_id),
-            ClientMsg::Focus { conv_id, .. } => conv_id.as_deref(),
+            | ClientMsg::FileUrl { conv_id, .. }
+            | ClientMsg::ReadThread { conv_id, .. }
+            | ClientMsg::FollowThread { conv_id, .. }
+            | ClientMsg::UnfollowThread { conv_id, .. }
+            | ClientMsg::PullThread { conv_id, .. }
+            | ClientMsg::React { conv_id, .. }
+            | ClientMsg::Unreact { conv_id, .. }
+            | ClientMsg::ListReactions { conv_id, .. }
+            | ClientMsg::Pin { conv_id, .. }
+            | ClientMsg::Unpin { conv_id, .. }
+            | ClientMsg::ListPins { conv_id, .. }
+            | ClientMsg::MsgSummary { conv_id, .. } => Some(conv_id),
+            ClientMsg::Focus { conv_id, .. } | ClientMsg::ListThreads { conv_id, .. } => {
+                conv_id.as_deref()
+            }
             ClientMsg::Hello { .. }
             | ClientMsg::ListConvs
             | ClientMsg::CreateConv { .. }

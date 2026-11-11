@@ -27,6 +27,7 @@ mod history;
 mod lifecycle;
 mod requests;
 mod routing;
+pub mod social;
 mod state;
 mod tasks;
 pub use requests::MAX_PENDING as MAX_PENDING_REQUESTS;
@@ -74,6 +75,8 @@ pub struct HubConfig {
     pub takeover_idle: Duration,
     /// Sync-only clients and retention (docs/en/design/sync-and-clients.md).
     pub sync: crate::config::SyncConfig,
+    /// Reactions and pins (docs/en/design/messaging.md).
+    pub messages: crate::config::MessagesConfig,
 }
 
 impl Default for HubConfig {
@@ -92,6 +95,7 @@ impl Default for HubConfig {
             expire_every: Duration::from_secs(10),
             takeover_idle: Duration::from_secs(30 * 60),
             sync: Default::default(),
+            messages: Default::default(),
         }
     }
 }
@@ -581,6 +585,8 @@ struct Stream {
     hop: i64,
     causation_id: Option<String>,
     reply_to: Option<String>,
+    /// The thread the reply streams into (MSG-19).
+    thread: Option<ThreadRef>,
 }
 
 /// A conversation's member list and the fan-out recipients built from it.
@@ -647,6 +653,9 @@ pub struct SessCtx {
     pub trace: Option<crate::trace::Trace>,
 }
 
+// A request moves through the writer's queue once; boxing every client
+// message would cost an allocation per request for no gain.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Op {
     Client {
@@ -2396,6 +2405,8 @@ impl Ctx<'_, '_> {
                 intent,
                 refs,
                 sources,
+                thread_id,
+                also_in_conv,
             } => {
                 check_client_msg_id(&client_msg_id)?;
                 self.send(
@@ -2415,6 +2426,7 @@ impl Ctx<'_, '_> {
                         refs,
                         sources,
                     },
+                    (thread_id, also_in_conv),
                 )
                 .await
             }
@@ -2528,11 +2540,46 @@ impl Ctx<'_, '_> {
                 client_msg_id,
                 reply_to,
                 causation_id,
+                thread_id,
+                also_in_conv,
             } => {
                 check_client_msg_id(&client_msg_id)?;
-                self.stream_start(me, &conv_id, &client_msg_id, reply_to, causation_id)
+                self.stream_start(
+                    me,
+                    &conv_id,
+                    &client_msg_id,
+                    reply_to,
+                    causation_id,
+                    (thread_id, also_in_conv),
+                )
+                .await
+            }
+            ClientMsg::ReadThread {
+                conv_id,
+                thread_id,
+                seq,
+            } => {
+                self.read_thread(me, sess.sid, &conv_id, &thread_id, seq)
                     .await
             }
+            ClientMsg::FollowThread { conv_id, thread_id } => {
+                self.follow_thread(me, &conv_id, &thread_id, true).await
+            }
+            ClientMsg::UnfollowThread { conv_id, thread_id } => {
+                self.follow_thread(me, &conv_id, &thread_id, false).await
+            }
+            ClientMsg::React {
+                conv_id,
+                msg_id,
+                key,
+            } => self.react(me, &conv_id, &msg_id, &key).await,
+            ClientMsg::Unreact {
+                conv_id,
+                msg_id,
+                key,
+            } => self.unreact(me, &conv_id, &msg_id, &key).await,
+            ClientMsg::Pin { conv_id, msg_id } => self.pin(me, &conv_id, &msg_id).await,
+            ClientMsg::Unpin { conv_id, msg_id } => self.unpin(me, &conv_id, &msg_id).await,
             ClientMsg::StreamAppend { msg_id, idx, text } => {
                 self.stream_append(me, &msg_id, idx, &text).await
             }
@@ -2727,6 +2774,7 @@ impl Ctx<'_, '_> {
                 conv_id,
                 title,
                 fields,
+                pin_policy,
             } => {
                 let mine = self.require_member(&conv_id, &me.id).await?;
                 if !is_manager(&mine.role) {
@@ -2736,7 +2784,7 @@ impl Ctx<'_, '_> {
                         "only the owner or an admin changes the conversation",
                     ));
                 }
-                if title.is_none() && fields.is_none() {
+                if title.is_none() && fields.is_none() && pin_policy.is_none() {
                     return Err(rule!(
                         "conv.update_nothing",
                         "bad_request",
@@ -2756,18 +2804,21 @@ impl Ctx<'_, '_> {
                         "a direct conversation has no title"
                     ));
                 }
-                self.db
-                    .update_conv(&conv_id, title.as_deref(), fields.as_ref())
-                    .await?;
+                if let Some(p) = &pin_policy {
+                    self.set_pin_policy(&conv_id, p).await?;
+                }
+                if title.is_some() || fields.is_some() {
+                    self.db
+                        .update_conv(&conv_id, title.as_deref(), fields.as_ref())
+                        .await?;
+                }
+                let mut data = json!({"title": title, "fields": fields});
+                if let Some(p) = &pin_policy {
+                    data["pin_policy"] = json!(p);
+                }
                 let ev = self
                     .db
-                    .append_event(
-                        &conv_id,
-                        "conv.updated",
-                        Some(&me.id),
-                        None,
-                        json!({"title": title, "fields": fields}),
-                    )
+                    .append_event(&conv_id, "conv.updated", Some(&me.id), None, data)
                     .await?;
                 let seq = ev.seq;
                 self.emit(ev).await?;
@@ -2862,6 +2913,11 @@ impl Ctx<'_, '_> {
             | other @ ClientMsg::ResumeAgent { .. }
             | other @ ClientMsg::DestroyAgent { .. }
             | other @ ClientMsg::ListFeedback { .. }
+            | other @ ClientMsg::ListThreads { .. }
+            | other @ ClientMsg::PullThread { .. }
+            | other @ ClientMsg::ListReactions { .. }
+            | other @ ClientMsg::ListPins { .. }
+            | other @ ClientMsg::MsgSummary { .. }
             | other @ ClientMsg::Report { .. } => Err(rule!(
                 "session.wrong_writer",
                 "bad_request",
@@ -3385,6 +3441,10 @@ impl Ctx<'_, '_> {
         if !m.sees(ev) {
             return Ok(false);
         }
+        // An agent hears of reactions to its own messages only (MSG-20).
+        if matches!(ev.kind.as_str(), "reaction.added" | "reaction.removed") {
+            return Ok(ev.data["msg_sender"].as_str() == Some(m.user_id.as_str()));
+        }
         let Some(msg) = &ev.msg else { return Ok(true) };
         if matches!(
             m.trigger,
@@ -3395,6 +3455,15 @@ impl Ctx<'_, '_> {
         }
         let to = routing::to_of(msg.envelope.as_ref());
         if routing::wakes(m, &msg.mentions, msg.envelope.as_ref(), None, &to) {
+            return Ok(true);
+        }
+        // A thread the agent takes part in: its replies and its root (MSG-19).
+        let thread = msg.thread_id.as_deref().unwrap_or(&msg.msg_id);
+        if db
+            .thread_member(&msg.conv_id, thread, &m.user_id)
+            .await?
+            .is_some_and(|x| x.following)
+        {
             return Ok(true);
         }
         if let Some(r) = &msg.reply_to
@@ -3464,8 +3533,13 @@ impl Ctx<'_, '_> {
         };
         // Events about a message from before a member could see the log
         // (edits, recalls) stay hidden from them.
-        let recips = match &ev.msg {
-            Some(msg) if members.iter().any(|mb| msg.created_seq < mb.visible_from) => {
+        let about = ev
+            .msg
+            .as_ref()
+            .map(|m| m.created_seq)
+            .or_else(|| ev.data["msg_seq"].as_i64());
+        let recips = match about {
+            Some(seq) if members.iter().any(|mb| seq < mb.visible_from) => {
                 let mut r = (*recips).clone();
                 for (mb, x) in members.iter().zip(r.iter_mut()) {
                     if !mb.sees(&ev) {
@@ -3480,6 +3554,20 @@ impl Ctx<'_, '_> {
         // New messages notify members who did not send them and have not
         // muted the conversation (docs/en/design/sync-and-clients.md).
         let recips = match (&ev.msg, ev.kind.as_str()) {
+            // A reply only in a thread notifies its followers and whom it
+            // mentions (MSG-19).
+            (Some(msg), "msg.created") if msg.thread_id.is_some() && !msg.thread_shown => {
+                let now = now_ms();
+                let root = msg.thread_id.as_deref().unwrap_or_default();
+                let followers = self.db.thread_followers(&msg.conv_id, root).await?;
+                let mut r = (*recips).clone();
+                for (mb, x) in members.iter().zip(r.iter_mut()) {
+                    let concerned =
+                        followers.contains(&mb.user_id) || msg.mentions.contains(&mb.user_id);
+                    x.notify = concerned && mb.notified_by(msg, now);
+                }
+                Arc::new(r)
+            }
             (Some(msg), "msg.created") => {
                 let now = now_ms();
                 let mut r = (*recips).clone();
@@ -4285,6 +4373,7 @@ impl Ctx<'_, '_> {
         on_behalf_of: Option<String>,
         to_user: Option<String>,
         envelope: routing::EnvelopeIn,
+        (thread_id, also_in_conv): (Option<String>, bool),
     ) -> ApiResult<Value> {
         // A retry of a committed write gets its result back before any other
         // check: membership, guards or budgets may have changed since (M1).
@@ -4311,6 +4400,7 @@ impl Ctx<'_, '_> {
         not_silenced(&member)?;
         check_text(text)?;
         let kind = check_kind(kind, &payload)?;
+        let thread = self.thread_target(conv_id, thread_id, also_in_conv).await?;
         let envelope = self.envelope(conv_id, envelope).await?;
         if envelope.is_some() && to_user.is_some() {
             return Err(rule!(
@@ -4392,7 +4482,7 @@ impl Ctx<'_, '_> {
                     &audience,
                     "ephemeral",
                     Some(&me.id),
-                    json!({"text": text, "kind": kind, "payload": payload, "from": me.id, "from_name": me.name, "from_type": me.kind, "to": t.id, "hop": hop}),
+                    json!({"text": text, "kind": kind, "payload": payload, "from": me.id, "from_name": me.name, "from_type": me.kind, "to": t.id, "hop": hop, "thread_id": thread.as_ref().map(|t| t.id.clone())}),
                 )
                 .await?;
             let side_seq = side.side_seq;
@@ -4451,6 +4541,7 @@ impl Ctx<'_, '_> {
                     payload,
                     envelope,
                     &plan,
+                    thread,
                 )
                 .await?;
             self.db
@@ -4511,6 +4602,7 @@ impl Ctx<'_, '_> {
                 envelope,
                 root_id: root,
                 wake: Some(wake),
+                thread: thread.clone(),
             })
             .await?;
         if let Some(fid) = &file_id {
@@ -4532,9 +4624,12 @@ impl Ctx<'_, '_> {
                 self.charge(msg).await?;
                 let v = json!({"seq": ev.seq, "msg_id": msg.msg_id, "hop": msg.hop, "root_id": msg.root_id, "wake": ev.data["wake"]});
                 let seq = ev.seq;
+                let msg = msg.clone();
+                self.thread_replied(&msg).await?;
                 self.emit(ev).await?;
-                // Writing means having read up to here.
-                if me.kind == UserKind::Human {
+                // Writing means having read up to here (a reply only in a
+                // thread: the thread).
+                if me.kind == UserKind::Human && thread.as_ref().is_none_or(|t| t.shown) {
                     self.db.set_read(conv_id, &me.id, seq).await?;
                     self.out.push(Out::ToUser {
                         user_id: me.id.clone(),
@@ -4753,6 +4848,8 @@ impl Ctx<'_, '_> {
         self.db
             .scrub_message(&msg.conv_id, msg_id, msg.created_seq)
             .await?;
+        // Its reactions and pin go with it; a reply leaves its thread's count.
+        self.social_recalled(&msg).await?;
         // So are the copies: the approved draft and webhook bodies not yet
         // delivered.
         let created = self
@@ -4793,6 +4890,7 @@ impl Ctx<'_, '_> {
         client_msg_id: &str,
         reply_to: Option<String>,
         causation_id: Option<String>,
+        (thread_id, also_in_conv): (Option<String>, bool),
     ) -> ApiResult<Value> {
         if me.kind != UserKind::Agent {
             return Err(rule!(
@@ -4806,6 +4904,7 @@ impl Ctx<'_, '_> {
         }
         let member = self.require_member(conv_id, &me.id).await?;
         not_silenced(&member)?;
+        let thread = self.thread_target(conv_id, thread_id, also_in_conv).await?;
         let active = self
             .st
             .streams
@@ -4876,6 +4975,7 @@ impl Ctx<'_, '_> {
                     root_id: root,
                     // Agents act on a stream when it completes.
                     wake: Some((vec![], 0)),
+                    thread: thread.clone(),
                 })
                 .await?;
             match res {
@@ -4886,6 +4986,8 @@ impl Ctx<'_, '_> {
                     self.charge(ev.msg.as_ref().unwrap()).await?;
                     let id = ev.msg.as_ref().unwrap().msg_id.clone();
                     let seq = ev.seq;
+                    let msg = ev.msg.clone().unwrap();
+                    self.thread_replied(&msg).await?;
                     self.emit(ev).await?;
                     (id, Target::Main, Some(seq))
                 }
@@ -4908,6 +5010,7 @@ impl Ctx<'_, '_> {
                 hop,
                 causation_id,
                 reply_to,
+                thread,
             },
         );
         self.sh
@@ -5119,7 +5222,7 @@ impl Ctx<'_, '_> {
         actor: &str,
     ) -> ApiResult<()> {
         self.flush_one(msg_id);
-        let (conv_id, sender, target, buf, hop, causation_id, reply_to) =
+        let (conv_id, sender, target, buf, hop, causation_id, reply_to, thread) =
             match self.st.streams.get(msg_id) {
                 Some(s) => (
                     s.conv_id.clone(),
@@ -5129,6 +5232,7 @@ impl Ctx<'_, '_> {
                     s.hop,
                     s.causation_id.clone(),
                     s.reply_to.clone(),
+                    s.thread.clone(),
                 ),
                 None => return Ok(()),
             };
@@ -5186,6 +5290,7 @@ impl Ctx<'_, '_> {
                             None,
                             None,
                             plan,
+                            thread,
                         )
                         .await?;
                     self.db
@@ -5479,6 +5584,20 @@ impl Ctx<'_, '_> {
                 .await?;
             return Ok(json!({"stage": "human"}));
         }
+        // The thread it goes to may have lost its root meanwhile.
+        if let Some(t) = &d.thread
+            && self
+                .db
+                .message(&t.id)
+                .await?
+                .is_none_or(|r| r.state == "recalled")
+        {
+            return Err(rule!(
+                "thread.root_recalled",
+                "conflict",
+                "the thread's root was recalled; reject the draft"
+            ));
+        }
         let side = self
             .db
             .decide_draft(draft_id, "approved", &me.id, &audience, &d.conv_id)
@@ -5521,9 +5640,11 @@ impl Ctx<'_, '_> {
                 envelope: d.envelope.clone(),
                 root_id: root,
                 wake: Some(wake),
+                thread: d.thread.clone(),
             })
             .await?;
         if let Committed::New(ev) = &res {
+            self.thread_replied(ev.msg.as_ref().unwrap()).await?;
             self.charge(ev.msg.as_ref().unwrap()).await?;
             let mid = ev.msg.as_ref().unwrap().msg_id.clone();
             self.reattach(&d.payload, draft_id, &mid).await?;

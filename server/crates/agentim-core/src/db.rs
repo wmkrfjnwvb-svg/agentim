@@ -19,6 +19,7 @@ mod files;
 pub mod friends;
 mod msgtrace;
 pub mod roles;
+pub mod social;
 pub mod verify;
 pub use compliance::ERASE_BATCH;
 pub use files::{FileRow, TrashRow};
@@ -111,6 +112,8 @@ pub struct Draft {
     pub review_until: Option<i64>,
     pub human_required: bool,
     pub reviewed_by: Option<String>,
+    /// The thread the message goes to once approved (MSG-19).
+    pub thread: Option<ThreadRef>,
 }
 
 /// How a draft is approved (docs/en/design/agents.md).
@@ -320,6 +323,8 @@ pub struct NewMsg<'a> {
     /// Agents this message wakes, and how many more it would have woken
     /// past the fan-out cap; recorded in the event.
     pub wake: Option<(Vec<String>, usize)>,
+    /// The thread this message replies in (MSG-19).
+    pub thread: Option<ThreadRef>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -343,9 +348,9 @@ pub enum Cell {
 pub const AUTH_EPOCH: &str = "auth_epoch";
 
 const MSG_COLS: &str = "msg_id, conv_id, created_seq, sender_id, sender_name, sender_type, on_behalf_of, kind, content,
-    version, state, state_reason, hop, causation_id, reply_to, mentions, created_at, updated_at, payload, envelope, root_id";
+    version, state, state_reason, hop, causation_id, reply_to, mentions, created_at, updated_at, payload, envelope, root_id, thread_id, thread_shown";
 const MEMBER_COLS: &str = "user_id, name, kind, owner_id, role, trigger_mode, approval, join_seq, visible_from, mute_mode, mute_until, topics, silenced_until, approval_rules, required_approval";
-const DRAFT_COLS: &str = "draft_id, conv_id, agent_id, content, hop, causation_id, reply_to, state, created_at, kind, payload, envelope, approvers, reviewer, stage, expires_at, review_until, human_required, reviewed_by";
+const DRAFT_COLS: &str = "draft_id, conv_id, agent_id, content, hop, causation_id, reply_to, state, created_at, kind, payload, envelope, approvers, reviewer, stage, expires_at, review_until, human_required, reviewed_by, thread_id, thread_shown";
 
 fn row_user(r: &AnyRow) -> sqlx::Result<User> {
     Ok(User {
@@ -383,6 +388,8 @@ fn row_msg(r: &AnyRow, cx: &crate::crypto::Crypto) -> sqlx::Result<MsgView> {
         mentions: serde_json::from_str(&r.try_get::<String, _>("mentions")?).unwrap_or_default(),
         created_at: r.try_get("created_at")?,
         updated_at: r.try_get("updated_at")?,
+        thread_id: r.try_get("thread_id")?,
+        thread_shown: r.try_get::<Option<i64>, _>("thread_shown")?.unwrap_or(0) != 0,
     })
 }
 
@@ -487,6 +494,17 @@ fn row_draft(r: &AnyRow, cx: &crate::crypto::Crypto) -> sqlx::Result<Draft> {
         review_until: r.try_get("review_until")?,
         human_required: r.try_get::<Option<i64>, _>("human_required")?.unwrap_or(0) != 0,
         reviewed_by: r.try_get("reviewed_by")?,
+        thread: r
+            .try_get::<Option<String>, _>("thread_id")?
+            .map(|id| ThreadRef {
+                id,
+                shown: r
+                    .try_get::<Option<i64>, _>("thread_shown")
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0)
+                    != 0,
+            }),
     })
 }
 
@@ -2321,6 +2339,8 @@ impl Db<'_> {
             updated_at: ts,
             envelope: m.envelope,
             root_id: None,
+            thread_id: m.thread.as_ref().map(|t| t.id.clone()),
+            thread_shown: m.thread.as_ref().is_some_and(|t| t.shown),
         };
         let mut view = view;
         view.root_id = Some(m.root_id.unwrap_or_else(|| view.msg_id.clone()));
@@ -2346,7 +2366,7 @@ impl Db<'_> {
             )
             .await?;
         sqlx::query(self.d.q(&format!(
-            "INSERT INTO messages ({MSG_COLS}, trace_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO messages ({MSG_COLS}, trace_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )))
         .bind(&view.msg_id)
         .bind(&view.conv_id)
@@ -2369,6 +2389,8 @@ impl Db<'_> {
         .bind(sealed_payload)
         .bind(sealed_envelope)
         .bind(&view.root_id)
+        .bind(&view.thread_id)
+        .bind(view.thread_id.as_ref().map(|_| view.thread_shown as i64))
         // The request's trace, for the message trace (docs/en/design/tracing.md).
         .bind(crate::trace::current_id())
         .execute(&mut *self.c)
@@ -3140,6 +3162,8 @@ impl Db<'_> {
             for f in self.files_of_messages_before(&conv, upto).await? {
                 self.file_trash(&f).await?;
             }
+            // Reactions, pins and threads of the messages that go.
+            self.purge_social_before(&conv, upto).await?;
             for (q, by_seq) in [
                 ("DELETE FROM events WHERE conv_id = ? AND seq < ?", true),
                 (
@@ -3271,7 +3295,7 @@ impl Db<'_> {
     pub async fn unread_mentions(&mut self, conv_id: &str, user_id: &str) -> ApiResult<i64> {
         let read = self.unread_floor(conv_id, user_id).await?;
         let r = sqlx::query(self.d.q(
-            "SELECT COUNT(*) FROM messages WHERE conv_id = ? AND created_seq > ? AND sender_id <> ? AND state <> ? AND mentions LIKE ?",
+            "SELECT COUNT(*) FROM messages WHERE conv_id = ? AND created_seq > ? AND sender_id <> ? AND state <> ? AND mentions LIKE ? AND (thread_id IS NULL OR thread_shown = 1)",
         ))
         .bind(conv_id)
         .bind(read)
@@ -3333,7 +3357,7 @@ impl Db<'_> {
     pub async fn unread(&mut self, conv_id: &str, user_id: &str) -> ApiResult<i64> {
         let read = self.unread_floor(conv_id, user_id).await?;
         let r = sqlx::query(self.d.q(
-            "SELECT COUNT(*) FROM messages WHERE conv_id = ? AND created_seq > ? AND sender_id <> ? AND state <> ?",
+            "SELECT COUNT(*) FROM messages WHERE conv_id = ? AND created_seq > ? AND sender_id <> ? AND state <> ? AND (thread_id IS NULL OR thread_shown = 1)",
         ))
         .bind(conv_id)
         .bind(read)
@@ -3419,6 +3443,7 @@ impl Db<'_> {
         payload: Option<Value>,
         envelope: Option<Value>,
         plan: &DraftPlan,
+        thread: Option<ThreadRef>,
     ) -> ApiResult<(Draft, SideEvent)> {
         let now = now_ms();
         let d = Draft {
@@ -3436,6 +3461,7 @@ impl Db<'_> {
                 .map(|_| now + plan.review_secs * 1000),
             human_required: plan.human_required,
             reviewed_by: None,
+            thread,
             draft_id: draft_id.to_string(),
             conv_id: conv_id.to_string(),
             agent_id: agent.id.clone(),
@@ -3471,7 +3497,7 @@ impl Db<'_> {
             )
             .await?;
         sqlx::query(self.d.q(&format!(
-            "INSERT INTO drafts ({DRAFT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO drafts ({DRAFT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )))
         .bind(&d.draft_id)
         .bind(&d.conv_id)
@@ -3492,6 +3518,8 @@ impl Db<'_> {
         .bind(d.review_until)
         .bind(d.human_required as i64)
         .bind(&d.reviewed_by)
+        .bind(d.thread.as_ref().map(|t| t.id.clone()))
+        .bind(d.thread.as_ref().map(|t| t.shown as i64))
         .execute(&mut *self.c)
         .await?;
         let side = self
@@ -3501,7 +3529,7 @@ impl Db<'_> {
                 "draft.created",
                 Some(&agent.id),
                 json!({"draft_id": d.draft_id, "agent_id": agent.id, "agent_name": agent.name, "content": content, "kind": d.kind, "payload": d.payload,
-                    "stage": d.stage, "reviewer": d.reviewer, "expires_at": d.expires_at}),
+                    "stage": d.stage, "reviewer": d.reviewer, "expires_at": d.expires_at, "thread_id": d.thread.as_ref().map(|t| t.id.clone())}),
             )
             .await?;
         Ok((d, side))
