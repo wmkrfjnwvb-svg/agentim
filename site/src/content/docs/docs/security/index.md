@@ -31,7 +31,7 @@ Membership, roles, blocks, approval, takeover and the kill switch are checked on
 
 ## Supply chain
 
-Releases are built in CI, signed with Sigstore and come with build provenance and an SBOM for the images. Dependencies are checked for known vulnerabilities and licenses on every change and every week.
+Releases are built in CI, signed with Sigstore and come with build provenance and an SBOM for the images. Dependencies are checked for known vulnerabilities and licenses before every release.
 
 ## Your part
 

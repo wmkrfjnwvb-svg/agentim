@@ -5,22 +5,7 @@
 name: deps
 
 on:
-  push:
-    paths:
-      - "**/Cargo.lock"
-      - "**/Cargo.toml"
-      - "**/package-lock.json"
-      - "deny.toml"
-      - ".github/workflows/deps.yml"
-  pull_request:
-    paths:
-      - "**/Cargo.lock"
-      - "**/Cargo.toml"
-      - "**/package-lock.json"
-      - "deny.toml"
-      - ".github/workflows/deps.yml"
-  schedule:
-    - cron: "17 5 * * 1"
+  # Run by hand and by both release workflows before they publish.
   workflow_call:
   workflow_dispatch:
 

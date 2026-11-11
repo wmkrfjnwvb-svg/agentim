@@ -8,10 +8,7 @@ name: site
 # rebuild the site too.
 
 on:
-  push:
-    paths: ["site/**", "sdk/**", "server/crates/agentim-core/**", ".github/workflows/site.yml"]
-  pull_request:
-    paths: ["site/**", "sdk/**", "server/crates/agentim-core/**", ".github/workflows/site.yml"]
+  # Run by hand; Cloudflare builds and deploys the site itself.
   workflow_dispatch:
 
 permissions:

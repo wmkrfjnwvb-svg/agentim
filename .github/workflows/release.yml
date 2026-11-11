@@ -1,28 +1,17 @@
 # Release (docs/en/design/developer-experience.md). On a `v*` tag: builds the program for five
 # targets, tests each install for real, signs everything (Sigstore, no
 # keys) and publishes the GitHub release, the image on GHCR (amd64 +
-# arm64, SBOM and provenance) and the Helm chart (OCI). On pull requests
-# the same jobs run without publishing.
+# arm64, SBOM and provenance) and the Helm chart (OCI), after the whole test
+# suite (server.yml) has passed. Run by hand, the same jobs run without
+# publishing.
 #
 # Third-party actions are pinned to a commit (this workflow can publish).
 name: release
 
 on:
-  # Tags always run (path filters do not apply to tag pushes); a branch
-  # push runs it when the release machinery itself changed.
+  # A `v*` tag publishes. Run by hand, the same jobs run without publishing.
   push:
     tags: ["v*"]
-    branches: ["**"]
-    paths:
-      - ".github/workflows/release.yml"
-      - "deploy/**"
-      - "CHANGELOG.md"
-  pull_request:
-    paths:
-      - ".github/workflows/release.yml"
-      - "deploy/**"
-      - "server/**"
-      - "CHANGELOG.md"
   workflow_dispatch:
 
 permissions:
@@ -53,6 +42,10 @@ jobs:
 
   deps:
     uses: ./.github/workflows/deps.yml
+
+  # The whole test suite (server.yml) runs before anything is published.
+  tests:
+    uses: ./.github/workflows/server.yml
 
   console:
     runs-on: ubuntu-24.04
@@ -176,7 +169,7 @@ jobs:
           arch -x86_64 intel/agentim --version
 
   image:
-    needs: [version, build]
+    needs: [version, build, tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -299,7 +292,7 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [version, deps, install, image, helm]
+    needs: [version, deps, tests, install, image, helm]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

@@ -7,10 +7,7 @@
 name: sdk-packages
 
 on:
-  push:
-    paths: ["sdk/**", ".github/workflows/sdk-packages.yml"]
-  pull_request:
-    paths: ["sdk/**", ".github/workflows/sdk-packages.yml"]
+  # Run by hand and by sdk-release.yml before it publishes.
   workflow_call:
   workflow_dispatch:
 

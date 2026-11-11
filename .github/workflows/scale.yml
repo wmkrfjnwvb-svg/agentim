@@ -3,8 +3,7 @@ name: scale
 # Large-scale concurrency tests (docs/en/testing.md). Nightly and on
 # demand; also when the scale tool or this workflow changes.
 on:
-  schedule:
-    - cron: "17 18 * * *" # 02:17 Beijing time
+  # Run by hand only.
   workflow_dispatch:
     inputs:
       linux_connections:
@@ -13,8 +12,6 @@ on:
       duration:
         description: Traffic duration per scenario (seconds)
         default: "120"
-  push:
-    paths: ["server/crates/agentim-core/examples/scale.rs", ".github/workflows/scale.yml"]
 
 defaults:
   run:
