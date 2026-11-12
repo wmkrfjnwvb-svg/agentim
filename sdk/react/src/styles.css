@@ -562,10 +562,17 @@ textarea.aim-input { resize: vertical; line-height: var(--aim-line); }
 .aim-thread-composer { display: flex; flex-wrap: wrap; gap: var(--aim-space-2); align-items: center; padding: var(--aim-space-2) var(--aim-space-3); border-top: 1px solid var(--aim-border); }
 .aim-thread-composer input[type='text'], .aim-thread-composer > input { flex: 1 1 200px; min-height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--aim-border); background: var(--aim-surface); color: var(--aim-fg); font: inherit; }
 .aim-thread-also { display: flex; gap: 6px; align-items: center; font-size: var(--aim-font-size-small); color: var(--aim-muted); }
-.aim-pinned { display: flex; align-items: center; gap: var(--aim-space-2); width: 100%; padding: 6px var(--aim-space-3); border: 0; border-bottom: 1px solid var(--aim-border); background: var(--aim-surface); color: var(--aim-fg); font: inherit; text-align: start; cursor: pointer; }
-.aim-pinned-label { font-size: var(--aim-font-size-tiny); font-weight: 700; color: var(--aim-accent); text-transform: uppercase; letter-spacing: 0.06em; }
-.aim-pinned-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--aim-font-size-small); }
-.aim-pinned-count { font-size: var(--aim-font-size-tiny); color: var(--aim-muted); }
+.aim-pinned { display: flex; align-items: center; gap: var(--aim-space-3); width: 100%; min-height: 52px; padding: 8px var(--aim-space-3); border: 0; border-bottom: 1px solid var(--aim-border); border-inline-start: 3px solid var(--aim-accent); background: color-mix(in srgb, var(--aim-accent) 6%, var(--aim-surface)); color: var(--aim-fg); font: inherit; text-align: start; cursor: pointer; }
+.aim-pinned:hover { background: color-mix(in srgb, var(--aim-accent) 11%, var(--aim-surface)); }
+.aim-pinned:focus-visible { outline: 2px solid var(--aim-accent); outline-offset: -2px; }
+.aim-pinned-icon { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 50%; background: color-mix(in srgb, var(--aim-accent) 14%, transparent); color: var(--aim-accent); }
+.aim-pinned-body { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.aim-pinned-label { display: flex; align-items: center; gap: 6px; font-size: var(--aim-font-size-tiny); font-weight: 700; color: var(--aim-accent); }
+.aim-pinned-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--aim-font-size-small); font-weight: 500; }
+.aim-pinned-count { font-size: var(--aim-font-size-tiny); font-weight: 600; color: var(--aim-muted); }
+.aim-row[data-flash] { animation: aim-flash 1.6s ease-out; border-radius: var(--aim-radius-small, 8px); }
+@keyframes aim-flash { 0%, 40% { background: color-mix(in srgb, var(--aim-accent) 14%, transparent); } 100% { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .aim-row[data-flash] { animation: none; background: color-mix(in srgb, var(--aim-accent) 10%, transparent); } }
 @media (prefers-reduced-motion: no-preference) { .aim-react-add { transition: opacity 0.15s; } }
 /* No reactions yet: the add button floats beside the bubble and takes no room. */
 .aim-reactions[data-empty] { position: relative; height: 0; margin: 0; }

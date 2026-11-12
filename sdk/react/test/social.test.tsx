@@ -144,6 +144,54 @@ describe('pins', () => {
     await waitFor(() => expect(client.call.mock.calls.length).toBe(before + 1));
   });
 
+  it('in a chat, jumps to the latest pinned message and marks it; a pin not loaded does nothing', async () => {
+    const scroll = vi.fn();
+    const was = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scroll;
+    try {
+      const messages = [msg('m1', 'rules: refunds over $30 need approval'), msg('m2', 'hello'), msg('m3', 'bye')];
+      const pins = [{ msg_id: 'm1', msg: { content: 'rules: refunds over $30 need approval' } }];
+      const { client } = fake(messages, { list_pins: { pins, count: 1 } });
+      const { container } = render(
+        <AgentIM client={client} me="u_me">
+          <Chat convId="c1" />
+        </AgentIM>,
+      );
+      const bar = await waitFor(() => {
+        const el = container.querySelector<HTMLButtonElement>('.aim-pinned');
+        expect(el).toBeTruthy();
+        return el!;
+      });
+      fireEvent.click(bar);
+      const row = container.querySelector('.aim-row[data-msg-id="m1"]')!;
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(scroll.mock.contexts[0]).toBe(row);
+      expect(row.hasAttribute('data-flash')).toBe(true);
+      expect(container.querySelector('.aim-row[data-msg-id="m2"]')!.hasAttribute('data-flash')).toBe(false);
+      await waitFor(() => expect(row.hasAttribute('data-flash')).toBe(false), { timeout: 2500 });
+
+      cleanup();
+      scroll.mockClear();
+      const other = fake(messages, { list_pins: { pins: [{ msg_id: 'gone', msg: { content: 'older' } }], count: 1 } });
+      const r2 = render(
+        <AgentIM client={other.client} me="u_me">
+          <Chat convId="c1" />
+        </AgentIM>,
+      );
+      fireEvent.click(
+        await waitFor(() => {
+          const el = r2.container.querySelector<HTMLButtonElement>('.aim-pinned');
+          expect(el).toBeTruthy();
+          return el!;
+        }),
+      );
+      expect(scroll).not.toHaveBeenCalled();
+      expect(r2.container.querySelector('[data-flash]')).toBeNull();
+    } finally {
+      Element.prototype.scrollIntoView = was;
+    }
+  });
+
   it('shows nothing without pins, or when the call fails', async () => {
     const { client } = fake([]);
     client.call = vi.fn(async () => {
