@@ -84,7 +84,7 @@ const paths = [
 const steps = [
   { n: '1', t: t('Connect a system', '接上系统'), d: t('Paste an OpenAPI document or an MCP server address in the console.', '在控制台粘贴 OpenAPI 文档或 MCP 服务地址。'), code: 'https://shop.example.com/openapi.json' },
   { n: '2', t: t('Add it to a role', '写进角色'), d: t('List the connection in a role and pick its Skills.', '在角色里列出这个连接，选好 Skills。'), code: 'apis: [orders]   mcp: [ups]' },
-  { n: '3', t: t('It works in chat', '聊天里直接用'), d: t('The agent looks up orders, sends cards and asks before it changes anything.', 'Agent 查订单、发卡片，改数据前先等人批准。'), code: t('no extra service to deploy', '不用另外部署服务') },
+  { n: '3', t: t('It works in chat', '聊天里直接用'), d: t('The agent looks up orders, sends cards and asks before it changes anything.', 'Agent 查订单、发卡片，改数据前先等人批准。'), code: '' },
 ];
 ---
 
@@ -176,7 +176,7 @@ const steps = [
     {steps.map((s) => (
       <li>
         <span class="num">{s.n}</span>
-        <div><h3>{s.t}</h3><p>{s.d}</p><code>{s.code}</code></div>
+        <div><h3>{s.t}</h3><p>{s.d}</p>{s.code && <code>{s.code}</code>}</div>
       </li>
     ))}
   </ol>

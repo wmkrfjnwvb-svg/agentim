@@ -16,18 +16,6 @@ interface Props { lang: Lang }
 const { lang } = Astro.props;
 const c = copy[lang];
 const zh = lang === 'zh';
-const roleFile = `---
-name: order-support
-description: After-sales assistant for online shops
-skills: [support-replies, show-data-as-cards,
-         collect-details-with-forms,
-         actions-with-approval, handoff-to-a-person]
-apis: [orders]      # your OpenAPI connection
-mcp: [ups]          # the carrier's MCP server
----
-You are the after-sales assistant of an online shop.
-Find the order first and show it as a data card.
-Before a refund, ask why with a short form…`;
 const codeApp = `// React: your app renders the chat
 const client = await AgentIMClient.create({
   url: 'https://chat.example.com',
@@ -91,37 +79,17 @@ await agent.start();`;
 
   <ImWall lang={lang} />
 
-  <section aria-labelledby="ai-title">
-    <div class="wrap">
-      <p class="eyebrow">{c.ai.eyebrow}</p>
-      <h2 id="ai-title">{c.ai.title}</h2>
-      <p class="lead">{c.ai.lead}</p>
-      <ul class="cards3">
-        {c.ai.items.map((x) => (
-          <li><a href={x.href}><h3>{x.t}</h3><p>{x.d}</p><span class="go" aria-hidden="true">→</span></a></li>
-        ))}
-      </ul>
-    </div>
-  </section>
-
   <section class="band" aria-labelledby="pl-title">
     <div class="wrap">
       <p class="eyebrow">{c.platform.eyebrow}</p>
       <h2 id="pl-title">{c.platform.title}</h2>
       <p class="lead">{c.platform.lead}</p>
       <AgentMap lang={lang} />
-      <div class="platform">
-        <ul class="tiles">
-          {c.platform.items.map((x) => (
-            <li class={x.tag ? 'soon' : ''}><h3>{x.t}{x.tag && <span class="soon-tag">{x.tag}</span>}</h3><p>{x.d}</p></li>
-          ))}
-        </ul>
-        <figure class="file">
-          <div class="file-bar"><span class="lights" aria-hidden="true"><i></i><i></i><i></i></span><code>{c.platform.fileTitle}</code></div>
-          <pre><code>{roleFile}</code></pre>
-          <figcaption>{c.platform.fileNote}</figcaption>
-        </figure>
-      </div>
+      <ul class="flist four">
+        {c.ai.items.slice(0, 4).map((x) => (
+          <li><a href={x.href}><h3>{x.t}</h3><p>{x.d}</p></a></li>
+        ))}
+      </ul>
       <a class="more" href="/docs/guides/built-in-agents/">{c.platform.link} →</a>
     </div>
   </section>
@@ -166,7 +134,7 @@ await agent.start();`;
         <span>{zh ? '接入' : 'Integrations'}: <b>SDK</b> · <b>MCP</b> · <b>Webhooks</b> · <b>Open API</b></span>
       </div>
       <h3 class="sub-h">{c.scale.title}</h3>
-      <ul class="cards4">{c.scale.items.map((x) => <li><h3>{x.t}</h3><p>{x.d}</p></li>)}</ul>
+      <ul class="flist four">{c.scale.items.map((x) => <li><h3>{x.t}</h3><p>{x.d}</p></li>)}</ul>
       <a class="more" href="/docs/concepts/overview/">{c.arch.link} →</a>
     </div>
   </section>
@@ -268,7 +236,7 @@ await agent.start();`;
     <div class="wrap">
       <p class="eyebrow">{c.security.eyebrow}</p>
       <h2 id="s-title">{c.security.title}</h2>
-      <ul class="cards3 plain">{c.security.items.map((x) => <li><h3>{x.t}</h3><p>{x.d}</p></li>)}</ul>
+      <ul class="flist">{c.security.items.map((x) => <li><h3>{x.t}</h3><p>{x.d}</p></li>)}</ul>
       <a class="more" href="/docs/security/">{c.security.link} →</a>
     </div>
   </section>

@@ -74,9 +74,6 @@ const en = {
     ],
   },
   ai: {
-    eyebrow: 'Built for AI agents',
-    title: 'Agents are members, people stay in control',
-    lead: 'Not a chat SDK with a bot bolted on. An agent joins a conversation like a person, with the controls a business needs.',
     items: [
       { t: 'Streaming replies', d: 'Token by token to every device, with a Stop button for anyone in the conversation.', href: '/docs/concepts/streaming/' },
       { t: 'Human approval', d: 'Refunds, sends and tool calls wait for a person, with the reason and the rule that asked.', href: '/docs/concepts/approvals/' },
@@ -90,19 +87,6 @@ const en = {
     eyebrow: 'AI platform',
     title: 'Agents that get work done in your systems',
     lead: 'Give an agent a role, Skills and knowledge, connect it to your APIs and MCP servers, and decide what it may do alone. Run it on the server, or bring your own.',
-    items: [
-      { t: 'Roles', d: 'Instructions in Markdown. 12 ready roles: order support, booking, IT and HR helpdesks, sales, an advisor’s aide and more.', tag: '' },
-      { t: 'Skills', d: 'The Agent Skills format (SKILL.md), the same as Claude Code. 14 ready Skills, loaded only when needed.', tag: '' },
-      { t: 'Knowledge', d: 'Upload Markdown, PDF, CSV or JSON. Stored encrypted; answers cite their source, or come only from it.', tag: '' },
-      { t: 'MCP', d: 'Connect remote MCP servers and their tools become the agent’s. AgentIM is itself an MCP server any agent can join.', tag: '' },
-      { t: 'APIs', d: 'Import an OpenAPI 3 document: every operation becomes a tool. Keys stored encrypted, sent only to their own address.', tag: '' },
-      { t: 'Model services', d: 'Claude, OpenAI, Gemini, DeepSeek or any OpenAI-compatible model. Your key or ours; the cost of every call recorded.', tag: '' },
-      { t: 'Approval rules', d: 'Read-only tools run at once; writes ask first. Rules by tool and amount, with the approvers you choose.', tag: '' },
-      { t: 'Agent SDKs', d: 'Run your own agent in Node or Python, or take webhooks. The same Skills and connections, written where Claude Code reads them.', tag: '' },
-      { t: 'Connect apps', d: 'Slack, Salesforce, Gmail and more, each user signing in with their own account.', tag: 'Coming soon' },
-    ],
-    fileTitle: 'roles/order-support.md',
-    fileNote: 'A built-in role, connected to your order API and the carrier’s MCP server',
     link: 'Built-in agents guide',
   },
   cards: {
@@ -292,9 +276,6 @@ const zh: Copy = {
     ],
   },
   ai: {
-    eyebrow: '为 AI Agent 设计',
-    title: 'Agent 是成员，人始终掌控',
-    lead: '不是在聊天 SDK 上外挂一个机器人。Agent 像人一样加入会话，同时具备企业需要的管控能力。',
     items: [
       { t: '流式回复', d: '逐字推送到每台设备，会话里任何人都可以点"停止"。', href: '/docs/concepts/streaming/' },
       { t: '人工审批', d: '退款、发送、工具调用先等人批准，附带原因和触发的规则。', href: '/docs/concepts/approvals/' },
@@ -308,19 +289,6 @@ const zh: Copy = {
     eyebrow: 'AI 平台',
     title: '在你的系统里把事办完的 Agent',
     lead: '给 Agent 设定角色、Skills 和知识，接上你的 API 和 MCP 服务，并决定哪些事它可以自己做。可以在服务端运行，也可以接入你自己的 Agent。',
-    items: [
-      { t: '角色', d: '用 Markdown 写指令。内置 12 个角色：售后、预约、IT 和 HR 服务台、销售、顾问助理等。', tag: '' },
-      { t: 'Skills', d: 'Agent Skills 格式（SKILL.md），与 Claude Code 相同。内置 14 个 Skills，需要时才加载。', tag: '' },
-      { t: '知识库', d: '上传 Markdown、PDF、CSV 或 JSON，加密存储；回答注明出处，也可以只按知识库回答。', tag: '' },
-      { t: 'MCP', d: '接入远程 MCP 服务，它的工具就成为 Agent 的工具。AgentIM 本身也是 MCP 服务，任何 Agent 都能接入。', tag: '' },
-      { t: 'API', d: '导入 OpenAPI 3 文档，每个接口都成为一个工具。密钥加密保存，只发往它自己的地址。', tag: '' },
-      { t: '模型服务', d: 'Claude、OpenAI、Gemini、DeepSeek，或任何兼容 OpenAI 的模型。用你的密钥或我们的，每次调用的成本都有记录。', tag: '' },
-      { t: '审批规则', d: '只读工具直接执行，会改数据的先问人。按工具和金额设规则，审批人由你指定。', tag: '' },
-      { t: 'Agent SDK', d: '用 Node 或 Python 运行你自己的 Agent，或接收 Webhook。同样的 Skills 和连接，会写到 Claude Code 读取的位置。', tag: '' },
-      { t: '连接应用', d: 'Slack、Salesforce、Gmail 等，每位用户用自己的账号授权。', tag: '即将推出' },
-    ],
-    fileTitle: 'roles/order-support.md',
-    fileNote: '内置的售后角色，接上你的订单 API 和承运商的 MCP 服务',
     link: '内置 Agent 指南',
   },
   cards: {
