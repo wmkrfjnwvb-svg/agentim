@@ -1,0 +1,82 @@
+---
+// /benchmarks: the measured numbers of README.md (server/bench/single-node.sh,
+// server/bench/cluster.sh, .github/workflows/scale.yml), with the machine,
+// the method and the limits. Update together with the README.
+import Layout from './Layout.astro';
+import { GITHUB, type Lang } from '../../i18n/site';
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+const zh = lang === 'zh';
+const t = (en: string, z: string) => (zh ? z : en);
+const dbs = ['SQLite', 'PostgreSQL', 'MySQL'];
+const conn = [
+  [t('10,000 connections, groups of 100, 1% sending: delivery p50 · p99', '1 万连接，100 人群，1% 在发送：投递 p50 · p99'), '3 · 21 ms', '4 · 11 ms', '4 · 14 ms'],
+  [t('All 10,000 dropped at once and reconnected, no message lost', '1 万连接同时断开并重连，无消息丢失'), '1.0 s', '1.4 s', '1.4 s'],
+  [t('Server memory per connection', '每个连接的服务端内存'), '13.6 KB', '13.5 KB', '13.5 KB'],
+  [t('1,000-member group at 50 msg/s (50,000 pushes/s): p50 · p99', '1,000 人群每秒 50 条（每秒 5 万次推送）：p50 · p99'), '7 · 13 ms', '7 · 17 ms', '7 · 15 ms'],
+  [t('200-member group, 20 members stop reading: everyone else p50 · p99', '200 人群，其中 20 人不读消息：其他人 p50 · p99'), '4 · 12 ms', '4 · 14 ms', '5 · 29 ms'],
+  [t('Restart after kill -9, process start to ready', 'kill -9 后重启，从进程启动到就绪'), '236 ms', '128 ms', '131 ms'],
+];
+const writes = [
+  [t('1 client', '1 个客户端'), '582 · 1.5 · 3.5', '604 · 1.5 · 3.0', '385 · 2.2 · 5.7'],
+  [t('10 clients', '10 个客户端'), '1,080 · 8.2 · 13', '995 · 8.5 · 14', '660 · 13 · 26'],
+  [t('50 clients', '50 个客户端'), '1,218 · 35 · 60', '1,219 · 36 · 58', '919 · 47 · 80'],
+  [t('200 clients', '200 个客户端'), '1,320 · 137 · 182', '1,327 · 134 · 192', '1,034 · 170 · 253'],
+  [t('Group of 50, all sending, 10 agents streaming (251k pushes)', '50 人群全员发送，10 个 Agent 流式（25.1 万次推送）'), '1,151 · 38 · 56', '794 · 53 · 101', '817 · 55 · 73'],
+  [t('Group of 200, all sending, 10 agents streaming (1.2M pushes)', '200 人群全员发送，10 个 Agent 流式（120 万次推送）'), '685 · 166 · 765', '641 · 153 · 1,000', '514 · 235 · 962'],
+];
+const scale = [
+  [t('20,000 connections, then all dropped at once', '2 万连接，然后全部同时断开'), t('Connected in 2.5 s, all back in 2.3 s, no failed send. p50 3 ms, p99 7 ms; 2.4M deliveries, none lost or out of order', '2.5 秒全部连上，断开后 2.3 秒全部恢复，期间无发送失败。p50 3 ms，p99 7 ms；240 万次投递，无丢失、无乱序')],
+  [t('2,000-member group, 50 msg/s (100,000 pushes/s)', '2,000 人群每秒 50 条（每秒 10 万次推送）'), t('12M deliveries, all in order. p50 14 ms, p99 43 ms; server memory 54 MB', '1,200 万次投递，全部有序。p50 14 ms，p99 43 ms；服务端内存 54 MB')],
+  [t('500-member group, 50 stop reading, 300 msg/s of 2 KB', '500 人群，50 人不读，每秒 300 条 2 KB 消息'), t('The 50 are told to resync and catch up. The other 450 miss nothing: p99 30 ms; memory 34 MB', '这 50 人被通知重新同步并追上，其他 450 人一条不漏：p99 30 ms；内存 34 MB')],
+];
+const bars = [
+  { l: 'SQLite', v: 1218 }, { l: 'PostgreSQL', v: 1219 }, { l: 'MySQL', v: 919 },
+];
+const max = 1400;
+---
+<Layout lang={lang} page="/benchmarks/" title={t('Benchmarks — AgentIM', '性能测试 — AgentIM')}>
+  <section class="page-head">
+    <div class="wrap">
+      <p class="eyebrow">{t('Benchmarks', '性能测试')}</p>
+      <h1>{t('Numbers you can reproduce', '可以复现的数字')}</h1>
+      <p class="lead">{t('Every acknowledgement waits for fsync, and every run checks correctness: gap-free logs, exactly-once messages, in-order pushes, nothing missing.', '每次确认都等待 fsync 落盘，每轮测试都同时检查正确性：日志无空洞、消息恰好一次、推送有序、一条不少。')}</p>
+    </div>
+  </section>
+  <section style="padding-top:0">
+    <div class="wrap">
+      <div class="option" style="margin-bottom:40px">
+        <h3>{t('How it was measured', '测试方法')}</h3>
+        <ul class="checks">
+          <li>{t('A 4-core Intel Xeon @ 2.1 GHz cloud VM with 15 GB of RAM; the load generator on the same machine.', '4 核 Intel Xeon 2.1 GHz 云主机，15 GB 内存；压测程序在同一台机器上。')}</li>
+          <li>{t('SQLite (bundled), PostgreSQL 16 and MariaDB 10.11 (the MySQL protocol).', 'SQLite（内置）、PostgreSQL 16 和 MariaDB 10.11（MySQL 协议）。')}</li>
+          <li>{t('Delivery latency is end to end: from the sender’s send to each receiver’s push.', '投递延迟是端到端：从发送方发出到每个接收方收到推送。')}</li>
+        </ul>
+        <div class="cmd"><code><span aria-hidden="true">$ </span>server/bench/single-node.sh</code><button data-copy="server/bench/single-node.sh" data-done={t('Copied', '已复制')}>{t('Copy', '复制')}</button></div>
+      </div>
+
+      <h2>{t('Connections and delivery', '连接和投递')}</h2>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th></th>{dbs.map((d) => <th>{d}</th>)}</tr></thead><tbody>{conn.map(([l, ...v]) => <tr><th scope="row">{l}</th>{v.map((x) => <td class="num">{x}</td>)}</tr>)}</tbody></table></div>
+
+      <h2 style="margin-top:64px">{t('Writes and fan-out', '写入和扇出')}</h2>
+      <p class="muted" style="margin-top:8px">{t('Throughput (msg/s) · acknowledgement p50 · p99 (ms)', '吞吐（条/秒）· 确认延迟 p50 · p99（毫秒）')}</p>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th></th>{dbs.map((d) => <th>{d}</th>)}</tr></thead><tbody>{writes.map(([l, ...v]) => <tr><th scope="row">{l}</th>{v.map((x) => <td class="num">{x}</td>)}</tr>)}</tbody></table></div>
+      <div class="bars" aria-label={t('Throughput with 50 clients', '50 个客户端时的吞吐')}>
+        <p class="muted small">{t('Throughput with 50 clients, every message on disk before it is acknowledged', '50 个客户端时的吞吐，每条消息落盘后才确认')}</p>
+        {bars.map((b) => <div class="bar"><span>{b.l}</span><span class="track"><span class="fill" style={`width:${(b.v / max) * 100}%`}></span></span><span class="val">{b.v.toLocaleString('en-US')} msg/s</span></div>)}
+      </div>
+
+      <h2 style="margin-top:64px">{t('Scale tests', '规模测试')}</h2>
+      <p class="muted" style="margin-top:8px">{t('On a standard GitHub runner with SQLite; each scenario sends for 120 s.', '在标准 GitHub 运行机上用 SQLite；每个场景持续发送 120 秒。')}</p>
+      <div class="table-wrap"><table class="data-table"><tbody>{scale.map(([l, r]) => <tr><th scope="row" style="width:34%">{l}</th><td>{r}</td></tr>)}</tbody></table></div>
+
+      <h2 style="margin-top:64px">{t('Cluster and costs', '集群和开销')}</h2>
+      <ul class="checks">
+        <li>{t('PostgreSQL, 50 clients per node: 874 msg/s on 1 node, 1,988 msg/s on 3 nodes.', 'PostgreSQL，每节点 50 个客户端：1 个节点 874 条/秒，3 个节点 1,988 条/秒。')}</li>
+        <li>{t('All nodes, the database and the load generators ran on one machine, so this shows the cost of forwarding between nodes, not how separate machines scale.', '所有节点、数据库和压测程序都在同一台机器上，所以这反映的是节点间转发的开销，而不是多台机器的扩展能力。')}</li>
+        <li>{t('Encryption at rest and trace ids are on by default; each costs about 2% of write throughput.', '静态加密和链路追踪 ID 默认开启，各自约占写入吞吐的 2%。')}</li>
+      </ul>
+      <p class="more"><a href={`${GITHUB}#performance`}>{t('The full tables in the README', 'README 中的完整表格')} →</a></p>
+    </div>
+  </section>
+</Layout>

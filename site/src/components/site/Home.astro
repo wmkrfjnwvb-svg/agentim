@@ -1,0 +1,186 @@
+---
+// The homepage (docs/24 in the private repo; docs/en/design/developer-experience.md):
+// positioning, the product live, measured numbers, guarantees, architecture,
+// features, AI, platforms, quality, Cloud or self-hosted, comparison, trust.
+import Layout from './Layout.astro';
+import ProductShowcase from '../ProductShowcase';
+import { copy, path, APP, PLATFORMS, type Lang } from '../../i18n/site';
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+const c = copy[lang];
+const zh = lang === 'zh';
+---
+<Layout lang={lang} page="/">
+  <section class="hero">
+    <div class="grid-bg" aria-hidden="true"></div>
+    <div class="wrap hero-text">
+      <p class="eyebrow">{c.hero.eyebrow}</p>
+      <h1>{c.hero.title[0]}<br /><span class="accent">{c.hero.title[1]}</span></h1>
+      <p class="lead">{c.hero.lead}</p>
+      <div class="actions">
+        <a href={APP} class="button primary large">{c.hero.primary} <span aria-hidden="true">→</span></a>
+        <a href="#deploy" class="button large">{c.hero.secondary}</a>
+      </div>
+      <ul class="ticks">{c.hero.small.map((s) => <li>{s}</li>)}</ul>
+    </div>
+    <div class="wrap wide" id="product">
+      <ProductShowcase client:visible lang={lang} />
+    </div>
+  </section>
+
+  <section class="proof" aria-labelledby="proof-title">
+    <div class="wrap">
+      <div class="proof-head">
+        <h2 id="proof-title">{c.proof.title}</h2>
+        <p>{c.proof.note} <a href={path(lang, '/benchmarks/')}>{c.proof.link} →</a></p>
+      </div>
+      <ul class="metrics">{c.proof.items.map((s) => <li><strong>{s.v}</strong><span>{s.l}</span></li>)}</ul>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="g-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.guarantees.eyebrow}</p>
+      <h2 id="g-title">{c.guarantees.title}</h2>
+      <p class="lead">{c.guarantees.lead}</p>
+      <ol class="pillars">
+        {c.guarantees.items.map((g, i) => (
+          <li><span class="num">0{i + 1}</span><h3>{g.k}</h3><p>{g.t}</p></li>
+        ))}
+      </ol>
+      <a class="more" href="/docs/concepts/sync-and-offline/">{c.guarantees.link} →</a>
+    </div>
+  </section>
+
+  <section aria-labelledby="a-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.arch.eyebrow}</p>
+      <h2 id="a-title">{c.arch.title}</h2>
+      <p class="lead">{c.arch.lead}</p>
+      <ol class="flow">
+        {c.arch.steps.map((s) => (
+          <li><span class="node">{s.n}</span><h3>{s.t}</h3><p>{s.d}</p></li>
+        ))}
+      </ol>
+      <div class="flow-under">
+        <span>{zh ? '数据库' : 'Databases'}: <b>SQLite</b> · <b>PostgreSQL</b> · <b>MySQL</b></span>
+        <span>{zh ? '集群' : 'Cluster'}: <b>{zh ? '分片交接' : 'shard hand-over'}</b> · <b>{zh ? '栅栏' : 'fencing'}</b> · <b>{zh ? '自动接管' : 'failover'}</b></span>
+        <span>{zh ? '接入' : 'Integrations'}: <b>SDK</b> · <b>MCP</b> · <b>Webhooks</b> · <b>Open API</b></span>
+      </div>
+      <a class="more" href="/docs/concepts/overview/">{c.arch.link} →</a>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="f-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.features.eyebrow}</p>
+      <h2 id="f-title">{c.features.title}</h2>
+      <p class="lead">{c.features.lead}</p>
+      <div class="feature-groups">
+        {c.features.groups.map((g) => (
+          <div><h3>{g.t}</h3><ul>{g.i.map((x) => <li>{x}</li>)}</ul></div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="ai-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.ai.eyebrow}</p>
+      <h2 id="ai-title">{c.ai.title}</h2>
+      <p class="lead">{c.ai.lead}</p>
+      <ul class="cards3">
+        {c.ai.items.map((x) => (
+          <li><a href={x.href}><h3>{x.t}</h3><p>{x.d}</p><span class="go" aria-hidden="true">→</span></a></li>
+        ))}
+      </ul>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="p-title">
+    <div class="wrap split">
+      <div>
+        <p class="eyebrow">{c.platforms.eyebrow}</p>
+        <h2 id="p-title">{c.platforms.title}</h2>
+        <p class="lead">{c.platforms.lead}</p>
+        <a class="more" href="/docs/client-sdks/">{c.platforms.link} →</a>
+      </div>
+      <ul class="chips">{PLATFORMS.map((p) => <li>{p}</li>)}</ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="q-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.quality.eyebrow}</p>
+      <h2 id="q-title">{c.quality.title}</h2>
+      <p class="lead">{c.quality.lead}</p>
+      <ul class="metrics four">{c.quality.items.map((s) => <li><strong>{s.v}</strong><span>{s.l}</span></li>)}</ul>
+      <ul class="checks">{c.quality.points.map((p) => <li>{p}</li>)}</ul>
+      <a class="more" href="/docs/reference/business-rules/">{c.quality.link} →</a>
+    </div>
+  </section>
+
+  <section class="band" id="deploy" aria-labelledby="d-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.deploy.eyebrow}</p>
+      <h2 id="d-title">{c.deploy.title}</h2>
+      <p class="lead">{c.deploy.lead}</p>
+      <div class="two">
+        <div class="option featured">
+          <h3>{c.deploy.cloud.t}</h3>
+          <p>{c.deploy.cloud.d}</p>
+          <ul class="checks">{c.deploy.cloud.points.map((p) => <li>{p}</li>)}</ul>
+          <div class="actions">
+            <a href={APP} class="button primary">{c.deploy.cloud.cta} →</a>
+            <a href={path(lang, '/cloud/')} class="text-link">{c.deploy.cloud.link}</a>
+          </div>
+        </div>
+        <div class="option">
+          <h3>{c.deploy.self.t}</h3>
+          <p>{c.deploy.self.d}</p>
+          <ul class="checks">{c.deploy.self.points.map((p) => <li>{p}</li>)}</ul>
+          <div class="cmd"><code><span aria-hidden="true">$ </span>{c.deploy.install}</code><button data-copy={c.deploy.install} data-done={zh ? '已复制' : 'Copied'}>{zh ? '复制' : 'Copy'}</button></div>
+          <div class="actions"><a href="/docs/operations/install/" class="text-link">{c.deploy.self.link} →</a></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="c-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.compare.eyebrow}</p>
+      <h2 id="c-title">{c.compare.title}</h2>
+      <div class="table-wrap">
+        <table class="compare">
+          <thead><tr><th></th>{c.compare.cols.map((col, i) => <th class={i < 2 ? 'ours' : ''}>{col}</th>)}</tr></thead>
+          <tbody>
+            {c.compare.rows.map(([label, ...cells]) => (
+              <tr><th scope="row">{label}</th>{cells.map((v, i) => <td class={i < 2 ? 'ours' : ''}>{v}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small">{c.compare.note}</p>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="s-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.security.eyebrow}</p>
+      <h2 id="s-title">{c.security.title}</h2>
+      <ul class="cards3 plain">{c.security.items.map((x) => <li><h3>{x.t}</h3><p>{x.d}</p></li>)}</ul>
+      <a class="more" href="/docs/security/">{c.security.link} →</a>
+    </div>
+  </section>
+
+  <section class="final">
+    <div class="wrap final-box">
+      <h2>{c.cta.title}</h2>
+      <p>{c.cta.lead}</p>
+      <div class="actions center">
+        <a href={APP} class="button primary large">{c.cta.primary} →</a>
+        <a href="/docs/" class="button large">{c.cta.secondary}</a>
+      </div>
+    </div>
+  </section>
+</Layout>

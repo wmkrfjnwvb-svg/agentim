@@ -1,0 +1,63 @@
+---
+// /cloud (private docs/16): what AgentIM Cloud is, where it runs, how
+// projects are isolated, and moving in and out.
+import Layout from './Layout.astro';
+import { APP, path, type Lang } from '../../i18n/site';
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+const zh = lang === 'zh';
+const t = (en: string, z: string) => (zh ? z : en);
+const facts = [
+  [t('Region', '区域'), t('EU (Paris). More regions later.', '欧盟（巴黎），之后开放更多区域')],
+  [t('Isolation', '隔离'), t('Every project has its own database and its own server instance', '每个项目有自己独立的数据库和服务实例')],
+  [t('Address', '地址'), t('your-project.agentim.co, HTTPS and WebSocket', 'your-project.agentim.co，HTTPS 和 WebSocket')],
+  [t('Sign-in', '登录'), t('Email, Google or GitHub', '邮箱、Google 或 GitHub')],
+  [t('Same as self-hosted', '和自己部署一致'), t('The same open-source server, SDKs and APIs', '同一套开源服务端、SDK 和 API')],
+];
+const steps = [
+  [t('Create a project', '创建项目'), t('Sign in at app.agentim.co and create a project. It is live in seconds at its own address.', '登录 app.agentim.co 创建项目，几秒内上线，拥有自己的地址。')],
+  [t('Get a key', '获取密钥'), t('Create an API key for your backend. Your backend signs tokens for your users.', '为你的后端创建 API Key，后端为你的用户签发登录令牌。')],
+  [t('Send the first message', '发出第一条消息'), t('Use the open API, a server SDK, or drop in the chat components.', '用开放 API、服务端 SDK，或直接放入聊天组件。')],
+];
+---
+<Layout lang={lang} page="/cloud/" title={t('AgentIM Cloud — hosted messaging for people and AI agents', 'AgentIM 云服务 — 托管的即时通讯，为人和 AI Agent')}>
+  <section class="page-head">
+    <div class="grid-bg" aria-hidden="true"></div>
+    <div class="wrap" style="position:relative">
+      <p class="eyebrow">AgentIM Cloud</p>
+      <h1>{t('Hosted AgentIM, in the EU', '托管的 AgentIM，运行在欧盟')}</h1>
+      <p class="lead">{t('We run the servers, the databases and the upgrades. You build the product. Free to start, unlimited users.', '服务器、数据库和升级都由我们负责，你专心做产品。免费开始，不限用户数。')}</p>
+      <div class="actions center"><a class="button primary large" href={APP}>{t('Start free', '免费开始')} →</a><a class="button large" href={path(lang, '/pricing/')}>{t('See pricing', '查看价格')}</a></div>
+    </div>
+  </section>
+  <section class="band">
+    <div class="wrap">
+      <h2>{t('What you get', '你得到什么')}</h2>
+      <table class="data-table" style="margin-top:28px;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden">
+        <tbody>{facts.map(([k, v]) => <tr><th scope="row" style="width:28%">{k}</th><td>{v}</td></tr>)}</tbody>
+      </table>
+    </div>
+  </section>
+  <section>
+    <div class="wrap">
+      <h2>{t('From sign-up to the first message', '从注册到发出第一条消息')}</h2>
+      <ol class="pillars" style="grid-template-columns:repeat(3,1fr)">
+        {steps.map(([h, d], i) => <li><span class="num">0{i + 1}</span><h3>{h}</h3><p>{d}</p></li>)}
+      </ol>
+    </div>
+  </section>
+  <section class="band">
+    <div class="wrap two">
+      <div class="option">
+        <h3>{t('No lock-in', '不锁定')}</h3>
+        <p>{t('Cloud runs the open-source server. Export a project and run it on your own servers whenever you want, or bring a self-hosted project to Cloud.', '云服务运行的就是开源服务端。随时可以导出项目到自己的服务器运行，也可以把自建的项目迁到云上。')}</p>
+      </div>
+      <div class="option">
+        <h3>{t('Built for compliance', '为合规而设计')}</h3>
+        <p>{t('Data stays in the EU region. Encryption at rest, GDPR export and erasure, EU AI Act labels and a data processing agreement.', '数据留在欧盟区域。静态加密、GDPR 导出和删除、欧盟 AI 法案标识，并提供数据处理协议。')}</p>
+        <div class="actions"><a class="text-link" href="/legal/dpa/">DPA →</a><a class="text-link" href="/legal/subprocessors/">{t('Subprocessors', '子处理方')} →</a></div>
+      </div>
+    </div>
+  </section>
+  <section class="final"><div class="wrap final-box"><h2>{t('Your first project is free', '第一个项目免费')}</h2><p>{t('No credit card. Unlimited users.', '无需绑卡，不限用户数。')}</p><div class="actions center"><a class="button primary large" href={APP}>{t('Start free', '免费开始')} →</a></div></div></section>
+</Layout>
