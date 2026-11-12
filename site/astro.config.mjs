@@ -6,7 +6,10 @@ import react from '@astrojs/react';
 import starlight from '@astrojs/starlight';
 import links from 'starlight-links-validator';
 
-const group = (label, dir, collapsed = false) => ({ label, collapsed, items: [{ autogenerate: { directory: `docs/${dir}` } }] });
+// Sidebar entries: a group by directory, a page by slug, and a labelled group of pages.
+const zh = (en, z) => ({ label: en, translations: { 'zh-CN': z } });
+const dir = (en, z, d, collapsed = true) => ({ ...zh(en, z), collapsed, items: [{ autogenerate: { directory: `docs/${d}` } }] });
+const pages = (en, z, slugs, collapsed = false) => ({ ...zh(en, z), collapsed, items: slugs.map((slug) => (typeof slug === 'string' ? { slug: `docs/${slug}` } : slug)) });
 
 export default defineConfig({
   site: 'https://agentim.co',
@@ -24,18 +27,26 @@ export default defineConfig({
       editLink: { baseUrl: 'https://github.com/wmkrfjnwvb-svg/agentim/edit/main/site/' },
       customCss: ['@fontsource-variable/inter', './src/styles/theme.css'],
       lastUpdated: true,
-      plugins: [links()],
+      // Untranslated Chinese pages fall back to English, so links to them are
+      // valid; the marketing pages are Astro pages outside the docs.
+      plugins: [links({ errorOnFallbackPages: false, exclude: ['/', '/zh/', '/cloud/', '/zh/cloud/', '/pricing/', '/zh/pricing/', '/benchmarks/', '/zh/benchmarks/'] })],
+      defaultLocale: 'root',
+      locales: {
+        root: { label: 'English', lang: 'en' },
+        zh: { label: '简体中文', lang: 'zh-CN' },
+      },
+      // Organized by capability (docs/24 §6 in the private repo): what the
+      // product does first, then SDKs, running it, and the references.
       sidebar: [
-        group('Get started', 'get-started'),
-        group('Concepts', 'concepts'),
-        group('Guides', 'guides', true),
-        group('Client SDKs', 'client-sdks', true),
-        group('Agent SDKs', 'agent-sdks', true),
-        group('Server SDKs', 'server-sdks', true),
-        group('API reference', 'reference', true),
-        group('Operations', 'operations', true),
-        group('Security & compliance', 'security', true),
-        { label: 'Legal', collapsed: true, items: [{ autogenerate: { directory: 'legal' } }] },
+        pages('Get started', '开始', [{ slug: 'docs', ...zh('Documentation home', '文档首页') }, 'concepts/overview', 'get-started/quickstart', 'get-started/platforms']),
+        pages('Messaging', 'IM 功能', ['concepts/conversations', 'concepts/permissions', 'concepts/threads-reactions-pins', 'concepts/sync-and-offline', 'concepts/files', 'concepts/devices-and-login', 'guides/before-send']),
+        pages('AI agents', 'AI Agent', ['concepts/agents', 'concepts/streaming', 'ai/roles-and-skills', 'ai/connections', 'guides/built-in-agents', 'concepts/approvals', 'concepts/guardrails', 'guides/chat-components', 'guides/migrate-agent']),
+        pages('UI components', 'UI 组件', ['client-sdks/react-api', 'client-sdks/react-native-ui-api', 'guides/theming'], true),
+        { ...zh('SDKs', 'SDK'), collapsed: true, items: [dir('Client SDKs', '客户端 SDK', 'client-sdks'), dir('Agent SDKs', 'Agent SDK', 'agent-sdks'), dir('Server SDKs', '服务端 SDK', 'server-sdks')] },
+        { ...zh('Deploy and operate', '部署和运维'), collapsed: true, items: [{ autogenerate: { directory: 'docs/operations' } }, { slug: 'docs/guides/launch-checklist' }] },
+        dir('Security and compliance', '安全和合规', 'security'),
+        { ...zh('Reference', '参考'), collapsed: true, items: [{ autogenerate: { directory: 'docs/reference' } }, { slug: 'docs/concepts/protocol-versions' }] },
+        { ...zh('Legal', '法律'), collapsed: true, items: [{ autogenerate: { directory: 'legal' } }] },
       ],
     }),
   ],

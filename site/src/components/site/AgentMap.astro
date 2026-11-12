@@ -6,6 +6,7 @@
 // Then three steps that show how little it takes.
 import type { Lang } from '../../i18n/site';
 import { BRAND } from './brand-icons';
+import '../../styles/agentmap.css';
 
 interface Props { lang: Lang }
 const { lang } = Astro.props;
@@ -88,7 +89,7 @@ const steps = [
 ];
 ---
 
-<figure class="amap" aria-labelledby="amap-cap">
+<figure class="amap not-content" aria-labelledby="amap-cap">
   <svg class="amap-svg" viewBox={`0 0 ${W} ${H}`} role="img" aria-labelledby="amap-cap">
     <defs>
       <radialGradient id="amap-glow" cx="50%" cy="50%" r="50%">

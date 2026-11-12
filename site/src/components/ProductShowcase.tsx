@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Observable } from '../../../sdk/client-web/src/view';
 import { AgentIM, Chat, ConversationList, Inbox, MemberList, Thread } from '../../../sdk/react/src/index';
 import '../../../sdk/react/theme.css';
+import '../styles/showcase.css';
 
 type Lang = 'en' | 'zh';
 const NOW = Date.parse('2026-10-26T17:30:00Z');
@@ -491,8 +492,9 @@ function CopilotPanel({ d, lang }: { d: ReturnType<typeof data>; lang: Lang }) {
   );
 }
 
-export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
-  const [tab, setTab] = useState('app');
+/** The homepage's four product views; `only` shows one of them alone (a docs page's demo). */
+export default function ProductShowcase({ lang = 'en', only }: { lang?: Lang; only?: 'app' | 'agent' | 'inbox' | 'market' }) {
+  const [tab, setTab] = useState<string>(only ?? 'app');
   // The examples speak the page's language.
   const demo = lang;
   const [conv, setConv] = useState('c_support');
@@ -528,7 +530,8 @@ export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
   const current = list.find((x) => x.id === tab)!;
   const common = { me: ME, locale, timeZone: tz, now: () => NOW, strings } as any;
   return (
-    <div className="showcase">
+    <div className={only ? 'showcase compact not-content' : 'showcase'}>
+      {only ? null : (
       <div className="showcase-tabs" role="tablist" aria-label={lang === 'zh' ? '产品界面' : 'Product views'}>
         {list.map((x) => (
           <button key={x.id} role="tab" aria-selected={tab === x.id} className={tab === x.id ? 'on' : ''} onClick={() => setTab(x.id)}>
@@ -536,6 +539,7 @@ export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
           </button>
         ))}
       </div>
+      )}
       <div className="showcase-window">
         <div className="showcase-bar">
           <span className="lights" aria-hidden="true"><i /><i /><i /></span>
@@ -600,7 +604,7 @@ export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
           )}
         </div>
       </div>
-      <p className="showcase-note">{current.note}</p>
+      {only ? null : <p className="showcase-note">{current.note}</p>}
     </div>
   );
 }

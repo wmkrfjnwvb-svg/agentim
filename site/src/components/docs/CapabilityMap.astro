@@ -1,0 +1,123 @@
+---
+// The docs home's capability map (docs/24 §6.5): five areas, each with what
+// it covers and a link per capability, then where to start by role.
+const zh = Astro.currentLocale === 'zh-CN' || Astro.currentLocale === 'zh';
+const t = (en: string, z: string) => (zh ? z : en);
+const href = (p: string) => (zh ? `/zh${p}` : p);
+
+const ICON: Record<string, string> = {
+  chat: 'M4 5h16v11H9l-5 4z',
+  ai: 'M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z',
+  ui: 'M4 4h16v16H4zM4 9h16M9 9v11',
+  ops: 'M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01',
+  shield: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6zM8.5 12l2.5 2.5 4.5-5',
+};
+
+const areas = [
+  {
+    icon: 'chat', title: t('Messaging', 'IM 功能'), lead: t('Everything a modern chat app needs, ordered and never lost.', '现代聊天应用需要的一切，有序、不丢。'),
+    links: [
+      [t('Direct messages, groups and channels', '单聊、群聊和频道'), '/docs/concepts/conversations/'],
+      [t('Members, roles and permissions', '成员、角色和权限'), '/docs/concepts/permissions/'],
+      [t('Threads, reactions and pins', '话题、回应和置顶'), '/docs/concepts/threads-reactions-pins/'],
+      [t('Sync, offline and read state', '多端同步、离线和已读'), '/docs/concepts/sync-and-offline/'],
+      [t('Files and images', '文件和图片'), '/docs/concepts/files/'],
+      [t('Check messages before they send', '发送前检查消息'), '/docs/guides/before-send/'],
+    ],
+  },
+  {
+    icon: 'ai', title: t('AI agents', 'AI Agent'), lead: t('Agents join conversations like people, with the controls a business needs.', 'Agent 像人一样加入会话，带着企业需要的管控。'), accent: true,
+    links: [
+      [t('Agents as members', 'Agent 作为成员'), '/docs/concepts/agents/'],
+      [t('Streaming replies', '流式回复'), '/docs/concepts/streaming/'],
+      [t('Roles and Skills', '角色和 Skills'), '/docs/ai/roles-and-skills/'],
+      [t('Connect your systems: OpenAPI and MCP', '连接你的系统：OpenAPI 和 MCP'), '/docs/ai/connections/'],
+      [t('Models and built-in agents', '模型和内置 Agent'), '/docs/guides/built-in-agents/'],
+      [t('Human approval', '人工审批'), '/docs/concepts/approvals/'],
+      [t('Guardrails', '安全护栏'), '/docs/concepts/guardrails/'],
+      [t('Cards, forms and steps', '卡片、表单和步骤'), '/docs/guides/chat-components/'],
+    ],
+  },
+  {
+    icon: 'ui', title: t('UI components and SDKs', 'UI 组件和 SDK'), lead: t('One Rust core under every client; ready-made chat UI.', '所有客户端共用一个 Rust 核心；现成的聊天界面。'),
+    links: [
+      [t('React components', 'React 组件'), '/docs/client-sdks/react-api/'],
+      [t('React Native components', 'React Native 组件'), '/docs/client-sdks/react-native-ui-api/'],
+      [t('Theming and branding', '主题和品牌'), '/docs/guides/theming/'],
+      [t('Client SDKs: Web, iOS, Android, Flutter…', '客户端 SDK：Web、iOS、Android、Flutter…'), '/docs/client-sdks/'],
+      [t('Server SDKs: Node, Python, Go', '服务端 SDK：Node、Python、Go'), '/docs/server-sdks/'],
+      [t('Agent SDKs: Node, Python', 'Agent SDK：Node、Python'), '/docs/agent-sdks/'],
+    ],
+  },
+  {
+    icon: 'ops', title: t('Deploy and operate', '部署和运维'), lead: t('AgentIM Cloud, or one binary on your own servers.', 'AgentIM 云服务，或在你自己的服务器上运行一个二进制。'),
+    links: [
+      [t('Install and run', '安装和运行'), '/docs/operations/install/'],
+      [t('Databases', '数据库'), '/docs/operations/databases/'],
+      [t('Cluster and failover', '集群和故障切换'), '/docs/operations/cluster/'],
+      [t('Console', '控制台'), '/docs/operations/dashboard/'],
+      [t('Monitoring and tracing', '监控和追踪'), '/docs/operations/monitoring/'],
+      [t('Before you go live', '上线检查表'), '/docs/guides/launch-checklist/'],
+    ],
+  },
+  {
+    icon: 'shield', title: t('Security and compliance', '安全和合规'), lead: t('Built for the EU: GDPR, the AI Act, the DSA and app stores.', '为欧盟设计：GDPR、AI 法案、DSA 和应用商店规则。'),
+    links: [
+      [t('Security overview', '安全概览'), '/docs/security/'],
+      [t('Encryption', '加密'), '/docs/operations/encryption/'],
+      [t('GDPR', 'GDPR'), '/docs/security/gdpr/'],
+      [t('EU AI Act', '欧盟 AI 法案'), '/docs/security/ai-act/'],
+      [t('Moderation and reports', '审核和举报'), '/docs/security/moderation/'],
+    ],
+  },
+];
+
+const paths = [
+  { who: t('Frontend', '前端'), links: [[t('Quick start', '5 分钟上手'), '/docs/get-started/quickstart/'], [t('React components', 'React 组件'), '/docs/client-sdks/react-api/'], [t('Sync and offline', '多端同步和离线'), '/docs/concepts/sync-and-offline/']] },
+  { who: t('Backend', '后端'), links: [[t('How AgentIM fits in', 'AgentIM 怎么接入'), '/docs/concepts/overview/'], [t('Devices and sign-in', '设备和登录'), '/docs/concepts/devices-and-login/'], [t('Open API', '开放 API'), '/docs/reference/open-api/']] },
+  { who: t('Agent developers', 'Agent 开发者'), links: [[t('Roles and Skills', '角色和 Skills'), '/docs/ai/roles-and-skills/'], [t('Connect your systems', '连接你的系统'), '/docs/ai/connections/'], [t('Agent SDKs', 'Agent SDK'), '/docs/agent-sdks/']] },
+  { who: t('Operators', '运维'), links: [[t('Install and run', '安装和运行'), '/docs/operations/install/'], [t('Cluster', '集群'), '/docs/operations/cluster/'], [t('Monitoring', '监控'), '/docs/operations/monitoring/']] },
+];
+---
+
+<div class="cmap not-content">
+  {areas.map((a) => (
+    <section class={a.accent ? 'cmap-area accent' : 'cmap-area'}>
+      <div class="cmap-head">
+        <span class="cmap-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d={ICON[a.icon]} /></svg></span>
+        <h3>{a.title}</h3>
+      </div>
+      <p>{a.lead}</p>
+      <ul>{a.links.map(([label, to]) => <li><a href={href(to)}>{label}</a></li>)}</ul>
+    </section>
+  ))}
+</div>
+
+<h2 id="start-by-role">{t('Start by role', '按角色开始')}</h2>
+<div class="cpaths not-content">
+  {paths.map((p) => (
+    <section>
+      <h3>{p.who}</h3>
+      <ol>{p.links.map(([label, to]) => <li><a href={href(to)}>{label}</a></li>)}</ol>
+    </section>
+  ))}
+</div>
+
+<style>
+  .cmap { display: grid; grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr)); gap: 1rem; margin: 1.5rem 0 2.5rem; }
+  .cmap-area { border: 1px solid var(--sl-color-gray-5); border-radius: 12px; padding: 1.1rem 1.25rem 1rem; background: var(--sl-color-black); }
+  .cmap-area.accent { border-color: color-mix(in srgb, var(--sl-color-accent) 45%, var(--sl-color-gray-5)); background: var(--sl-color-accent-low); }
+  .cmap-head { display: flex; align-items: center; gap: 0.6rem; }
+  .cmap-icon { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 8px; background: color-mix(in srgb, var(--sl-color-accent) 14%, transparent); }
+  .cmap-icon svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: var(--sl-color-accent); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+  .cmap h3 { margin: 0; font-size: 1.05rem; color: var(--sl-color-white); }
+  .cmap p { margin: 0.5rem 0 0.6rem; font-size: var(--sl-text-sm); color: var(--sl-color-gray-2); }
+  .cmap ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.2rem; }
+  .cmap li a { font-size: var(--sl-text-sm); text-decoration: none; }
+  .cmap li a::before { content: '→ '; color: var(--sl-color-gray-3); }
+  .cmap li a:hover { text-decoration: underline; }
+  .cpaths { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 1rem; margin-top: 1rem; }
+  .cpaths section { border-top: 2px solid var(--sl-color-accent); padding-top: 0.6rem; }
+  .cpaths h3 { margin: 0 0 0.4rem; font-size: 1rem; }
+  .cpaths ol { margin: 0; padding-inline-start: 1.1rem; font-size: var(--sl-text-sm); }
+</style>
