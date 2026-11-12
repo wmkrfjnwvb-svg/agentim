@@ -330,7 +330,7 @@ table.compare { width: 100%; border-collapse: collapse; font-size: 14.5px; min-w
 .cg-chat .aim-composer, .cg-chat .aim-typing, .cg-chat .aim-day, .cg-chat .aim-top { display: none; }
 .cg-tile figcaption { padding: 18px 20px; background: var(--bg-soft); }
 .cg-tile figcaption p { color: var(--fg-2); font-size: 14.5px; margin-top: 6px; }
-.cg-tile figcaption code { display: block; margin-top: 12px; font: 12px var(--mono); color: var(--fg-2); background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; overflow-x: auto; white-space: nowrap; }
+.cg-tile figcaption code { display: block; margin-top: 12px; font: 12px var(--mono); color: var(--fg-2); background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; overflow-x: auto; white-space: pre; }
 @media (max-width: 860px) { .cg-grid { grid-template-columns: 1fr; } }
 
 /* "A complete IM": grouped features and a fanned stack of screenshots */
@@ -350,44 +350,65 @@ main > section.imx { padding: 104px 0 72px; background: var(--bg-soft); border-t
 @media (max-width: 1000px) { .imx-grid { grid-template-columns: 1fr; } .imx-stack { height: 420px; margin-top: 8px; } .imx-note { text-align: left; } }
 @media (max-width: 560px) { .imx-groups { grid-template-columns: 1fr; } .imx-stack { height: 300px; } }
 
-/* AI platform mind map (AgentMap.astro) */
-.amap { margin: 40px 0 48px; background: var(--bg); border: 1px solid var(--line); border-radius: 16px; padding: 24px 24px 18px; }
+/* AI platform map (AgentMap.astro) */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.amap { margin: 40px 0 48px; background: var(--bg); border: 1px solid var(--line); border-radius: 18px; padding: 24px 24px 0; overflow: hidden; }
 .amap-svg { display: block; width: 100%; height: auto; font-family: var(--sans); }
 .amap-cols text { font: 600 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; fill: var(--muted); }
-.amap-lines path { fill: none; stroke: var(--line-2); stroke-width: 1.5; }
-.amap-flow path { fill: none; stroke: var(--blue-2); stroke-width: 1.6; stroke-dasharray: 6 90; stroke-linecap: round; opacity: 0.75; animation: amap-flow 3.2s linear infinite; }
-@keyframes amap-flow { to { stroke-dashoffset: -96; } }
+.amap-lines path { fill: none; stroke: #c7d4ea; stroke-width: 1.6; }
+.amap-flow path { fill: none; stroke: var(--blue-2); stroke-width: 2.4; stroke-dasharray: 2 70; stroke-linecap: round; animation: amap-flow 2.6s linear infinite; }
+@keyframes amap-flow { to { stroke-dashoffset: -72; } }
 @media (prefers-reduced-motion: reduce) { .amap-flow { display: none; } }
-.amap-node rect { fill: var(--bg); stroke: var(--line-2); stroke-width: 1; }
-.amap-node.link rect { fill: var(--bg-tint); stroke: #bfd3fb; }
-.amap-node.soon rect { fill: var(--bg); stroke-dasharray: 4 4; }
-.amap-node.people rect { fill: var(--bg-soft); }
-.amap .n-t { font-size: 14px; font-weight: 650; fill: var(--fg); }
-.amap .n-s { font-size: 11.5px; fill: var(--muted); }
-.amap-hub > rect:first-child { fill: #0b1d4a; stroke: #0b1d4a; }
+.amap-logo circle { fill: #fff; stroke: var(--line-2); }
+.amap-logo.model circle { stroke: #bfd3fb; stroke-width: 1.5; }
+.amap-logo .brand { fill: #0f172a; }
+.amap-logo .line, .amap-stack .line { fill: none; stroke: #0f172a; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.amap-logo .mono { font: 700 15px var(--mono); fill: #0f172a; }
+.amap-logo .name { font-size: 14px; font-weight: 600; fill: var(--fg); }
+.amap-logo .cap { font-size: 11.5px; fill: var(--muted); }
+.amap-hub .hub-bg { fill: #0b1d4a; }
 .amap-hub .hub-mark { fill: var(--blue-2); }
 .amap-hub .hub-glyph { fill: #fff; }
-.amap-hub .hub-t { font-size: 19px; font-weight: 700; fill: #fff; letter-spacing: -0.01em; }
-.amap-hub .hub-s { font: 11.5px var(--mono); fill: #9db4e8; }
-.amap-hub .hub-row rect { fill: #13285e; stroke: #24407f; }
-.amap-hub .hub-row .n-t { fill: #fff; }
-.amap-hub .hub-row .n-s { fill: #a9bce6; }
-.amap-leaf rect { fill: var(--bg); stroke: var(--line-2); }
-.amap-leaf text { font-size: 12.5px; font-weight: 550; fill: var(--fg-2); }
-.amap figcaption { margin-top: 14px; color: var(--muted); font-size: 14px; text-align: center; }
+.amap-hub .hub-t { font-size: 21px; font-weight: 700; fill: #fff; letter-spacing: -0.01em; }
+.hub-cell rect { fill: #13285e; stroke: #2a4789; }
+.hub-cell path { fill: none; stroke: #9fc0ff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.hub-cell text { font-size: 13px; font-weight: 600; fill: #fff; }
+.amap-group .pill { fill: var(--blue); }
+.amap-group .pill-t { font: 600 13px var(--sans); fill: #fff; }
+.amap-group .box { fill: var(--bg-soft); stroke: var(--line); }
+.amap-group.soon .pill { fill: #fff; stroke: var(--blue); stroke-dasharray: 4 3; }
+.amap-group.soon .pill-t { fill: var(--blue); }
+.amap-group .soon-t { font: 600 10px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; fill: var(--muted); }
+.amap-group.soon .amap-logo { opacity: 0.7; }
+.amap-people rect { fill: #fff; stroke: var(--line-2); }
+.amap-people path { fill: none; stroke: var(--blue); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.amap-people text { font-size: 12.5px; font-weight: 600; fill: var(--fg-2); }
 .amap-stack { display: none; }
+.amap-steps { list-style: none; margin: 8px -24px 0; padding: 22px 24px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; border-top: 1px solid var(--line); background: var(--bg-soft); }
+.amap-steps li { display: grid; grid-template-columns: 34px 1fr; gap: 12px; min-width: 0; }
+.amap-steps li > div { min-width: 0; }
+.amap-steps .num { width: 30px; height: 30px; border-radius: 50%; background: var(--blue); color: #fff; font: 700 14px/30px var(--mono); text-align: center; }
+.amap-steps h3 { font-size: 16px; }
+.amap-steps p { color: var(--fg-2); font-size: 14px; margin-top: 4px; }
+.amap-steps code { display: block; margin-top: 8px; font: 12px var(--mono); color: var(--blue); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; overflow-x: auto; white-space: pre; }
+@media (max-width: 900px) { .amap-steps { grid-template-columns: 1fr; } }
 @media (max-width: 760px) {
-  .amap { padding: 16px; }
+  .amap { padding: 16px 16px 0; }
+  .amap-steps { margin: 8px -16px 0; padding: 18px 16px; }
   .amap-svg { display: none; }
-  .amap-stack { display: grid; gap: 10px; }
-  .amap-stack > div { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; position: relative; }
-  .amap-stack > div + div::before { content: '↓'; position: absolute; top: -17px; left: 50%; transform: translateX(-50%); color: var(--blue); font-size: 14px; }
-  .amap-stack .hubbox { background: #0b1d4a; border-color: #0b1d4a; color: #a9bce6; }
-  .amap-stack .hubbox h4, .amap-stack .hubbox b { color: #fff; }
-  .amap-stack h4 { margin: 0 0 8px; font: 600 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
-  .amap-stack ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 14px; }
-  .amap-stack b { font-weight: 650; color: var(--fg); margin-right: 4px; }
-  .amap figcaption { text-align: left; }
+  .amap-stack { display: grid; gap: 14px; }
+  .amap-stack > div { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; position: relative; }
+  .amap-stack > div:nth-child(2), .amap-stack > div:nth-child(3) { margin-top: 4px; }
+  .amap-stack > div:nth-child(2)::before, .amap-stack > div:nth-child(3)::before { content: '↓'; position: absolute; top: -18px; left: 50%; transform: translateX(-50%); color: var(--blue); }
+  .amap-stack .hubbox { background: #0b1d4a; border-color: #0b1d4a; }
+  .amap-stack .hubbox h4, .amap-stack .hubbox span { color: #fff; }
+  .amap-stack .hubbox .line { stroke: #9fc0ff; }
+  .amap-stack h4 { margin: 0 0 10px; font: 600 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .amap-stack .logos { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px 16px; }
+  .amap-stack .logos li { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--fg); }
+  .amap-stack svg { width: 18px; height: 18px; }
+  .amap-stack .brand { fill: #0f172a; }
+  .amap-stack .mono { font: 700 12px var(--mono); }
 }
 
 /* Sub-headings inside a section, scale cards, SDKs, self-host, ops */
