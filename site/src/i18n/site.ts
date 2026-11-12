@@ -64,8 +64,8 @@ const en = {
   },
   features: {
     eyebrow: 'Everything chat needs',
-    title: 'A complete IM, not a demo',
-    lead: 'The features your users expect from a modern messenger, with the server rules behind them.',
+    title: 'Complete IM, with AI built into the core',
+    lead: 'Every feature your users expect from a modern messenger, on a server built for AI from the ground up: agents as members, streaming, approvals and guardrails are part of the core, not plug-ins.',
     groups: [
       { t: 'Conversations', i: ['Direct messages', 'Groups and channels', 'Roles and permissions', 'Member lifecycle', 'Friends and blocking'] },
       { t: 'Messages', i: ['Text, files and images', 'Edit and recall', 'Threads', 'Reactions', 'Pinned messages', 'Mentions', 'Drafts'] },
@@ -111,11 +111,49 @@ const en = {
     lead: 'Agents send declarative JSON from a fixed set of blocks, never scripts. Every client draws it natively, and the server checks every card and every answer.',
     link: 'Chat components guide',
   },
-  platforms: {
-    eyebrow: 'SDKs and UI',
-    title: 'One core, every platform',
-    lead: 'The sync, retry and offline rules live in one Rust core, so your app behaves the same everywhere. Ready-made UI for web and mobile.',
+  scale: {
+    title: 'Built for concurrency and scale',
+    items: [
+      { t: 'Parallel by design', d: 'One writer per conversation, so thousands of conversations write at once; writes are committed in batches.' },
+      { t: 'Light connections', d: '13.5 KB of memory per open connection: 10,000 people online fit in about 135 MB.' },
+      { t: 'Cluster', d: 'Conversations move between nodes with fencing; failed nodes are replaced, rolling restarts lose nothing; read replicas.' },
+      { t: 'Multi-tenant', d: 'Many projects in one deployment, each with its own database, address, keys and limits.' },
+    ],
+  },
+  dev: {
+    eyebrow: 'SDKs',
+    title: 'Every platform, a few lines each',
+    lead: 'The sync, retry and offline rules live in one Rust core shared by every client SDK, so your app behaves the same everywhere.',
+    groups: [
+      { t: 'Client SDKs and UI', i: ['Web', 'React', 'React Native', 'iOS · Swift', 'Android · Kotlin', 'Flutter', 'Unity', '.NET'] },
+      { t: 'Server SDKs', i: ['Node', 'Python', 'Go', 'Open API (HTTP)'] },
+      { t: 'Agents', i: ['Node', 'Python', 'MCP server', 'Webhooks'] },
+    ],
+    tabs: ['Your app', 'Your backend', 'Your agent'],
     link: 'Browse the SDKs',
+  },
+  selfhost: {
+    title: 'Self-host your way',
+    items: [
+      { t: 'Installer', d: 'macOS, Linux, Windows. Checks the download’s SHA-256.', cmd: 'curl -fsSL https://github.com/wmkrfjnwvb-svg/agentim/releases/latest/download/install.sh | sh' },
+      { t: 'Docker', d: 'A signed image for amd64 and arm64, with an SBOM.', cmd: 'docker run -p 8080:8080 -v agentim:/var/lib/agentim ghcr.io/wmkrfjnwvb-svg/agentim --db /var/lib/agentim/agentim.db' },
+      { t: 'Kubernetes', d: 'A signed Helm chart; one node or a cluster.', cmd: 'helm install agentim oci://ghcr.io/wmkrfjnwvb-svg/charts/agentim -f values.yaml' },
+      { t: 'Cluster', d: 'Three nodes on PostgreSQL or MySQL, with failover.', cmd: 'cd deploy/compose && docker compose up -d' },
+    ],
+  },
+  ops: {
+    eyebrow: 'Operations and audit',
+    title: 'Know what happened, and why',
+    lead: 'A console comes with every server, and every action leaves a record. Find out why a message did or did not arrive in seconds.',
+    points: [
+      { t: 'Console included', d: 'People, conversations, agents, keys, webhooks, reports, cluster and databases; nothing extra to host.' },
+      { t: 'Message trace', d: 'Who could see a message, which devices have it, what agents and webhooks did — without showing its content.' },
+      { t: 'Audit trail', d: 'Every admin and agent action with who, what and why; reading a conversation asks for a reason.' },
+      { t: 'Metrics and alerts', d: 'Prometheus metrics, ready alert rules, OpenTelemetry traces, and dye rules that trace one user end to end.' },
+      { t: 'Roles', d: 'Owners, developers, moderators and operators each see and do only their part.' },
+    ],
+    tabs: ['Message trace', 'Audit log', 'Connections'],
+    link: 'Monitoring and tracing',
   },
   quality: {
     eyebrow: 'Quality',
@@ -244,8 +282,8 @@ const zh: Copy = {
   },
   features: {
     eyebrow: '功能完整',
-    title: '完整的即时通讯，不是演示',
-    lead: '现代聊天软件该有的功能都有，背后都有服务端规则保障。',
+    title: '完整的 IM 功能，底层原生支持 AI',
+    lead: '现代聊天软件该有的功能一应俱全；服务端从底层为 AI 设计：Agent 作为成员、流式消息、人工审批和安全护栏都是核心能力，而不是插件。',
     groups: [
       { t: '会话', i: ['单聊', '群聊和频道', '角色和权限', '成员进出管理', '好友和拉黑'] },
       { t: '消息', i: ['文字、文件、图片', '编辑和撤回', '话题', '表情回应', '置顶', '@ 提及', '草稿'] },
@@ -291,11 +329,49 @@ const zh: Copy = {
     lead: 'Agent 发送的是固定积木组成的声明式 JSON，绝不是脚本。每个客户端原生渲染，服务端校验每张卡片和每个答案。',
     link: '聊天组件指南',
   },
-  platforms: {
-    eyebrow: 'SDK 和界面组件',
-    title: '一个核心，覆盖所有平台',
-    lead: '同步、重试、离线规则都在同一个 Rust 核心里，你的应用在每个平台上行为一致。Web 和移动端都有现成的界面组件。',
+  scale: {
+    title: '为高并发和大规模设计',
+    items: [
+      { t: '天然并行', d: '每个会话一个写入者，成千上万个会话同时写入；写入按批提交。' },
+      { t: '连接很轻', d: '每个在线连接只占 13.5 KB 内存：1 万人同时在线约 135 MB。' },
+      { t: '集群', d: '会话在节点间带栅栏交接；故障节点自动接替，滚动重启不丢消息；支持只读副本。' },
+      { t: '多租户', d: '一套部署承载多个项目，每个项目有自己的数据库、地址、密钥和限额。' },
+    ],
+  },
+  dev: {
+    eyebrow: 'SDK',
+    title: '全平台覆盖，每端几行代码',
+    lead: '同步、重试、离线规则都在同一个 Rust 核心里，所有客户端 SDK 共用，你的应用在每个平台上行为一致。',
+    groups: [
+      { t: '客户端 SDK 和界面组件', i: ['Web', 'React', 'React Native', 'iOS · Swift', 'Android · Kotlin', 'Flutter', 'Unity', '.NET'] },
+      { t: '服务端 SDK', i: ['Node', 'Python', 'Go', '开放 API（HTTP）'] },
+      { t: 'Agent', i: ['Node', 'Python', 'MCP 服务', 'Webhook'] },
+    ],
+    tabs: ['你的应用', '你的后端', '你的 Agent'],
     link: '浏览 SDK',
+  },
+  selfhost: {
+    title: '按你的方式自己部署',
+    items: [
+      { t: '安装脚本', d: 'macOS、Linux、Windows，自动校验下载文件的 SHA-256。', cmd: 'curl -fsSL https://github.com/wmkrfjnwvb-svg/agentim/releases/latest/download/install.sh | sh' },
+      { t: 'Docker', d: '签名镜像，支持 amd64 和 arm64，附带 SBOM。', cmd: 'docker run -p 8080:8080 -v agentim:/var/lib/agentim ghcr.io/wmkrfjnwvb-svg/agentim --db /var/lib/agentim/agentim.db' },
+      { t: 'Kubernetes', d: '签名的 Helm chart，单节点或集群。', cmd: 'helm install agentim oci://ghcr.io/wmkrfjnwvb-svg/charts/agentim -f values.yaml' },
+      { t: '集群', d: '三个节点跑在 PostgreSQL 或 MySQL 上，自动故障切换。', cmd: 'cd deploy/compose && docker compose up -d' },
+    ],
+  },
+  ops: {
+    eyebrow: '运维与审计',
+    title: '发生了什么、为什么，一查就知道',
+    lead: '每个服务端都自带控制台，每个操作都有记录。一条消息为什么到了或没到，几秒就能查清。',
+    points: [
+      { t: '自带控制台', d: '用户、会话、Agent、密钥、Webhook、举报、集群和数据库，无需额外部署。' },
+      { t: '消息轨迹', d: '谁能看到这条消息、哪些设备收到了、Agent 和 Webhook 做了什么，全程不显示消息内容。' },
+      { t: '审计记录', d: '每个管理员和 Agent 的操作都记录谁、做了什么、为什么；查看会话内容必须填写原因。' },
+      { t: '指标和告警', d: 'Prometheus 指标、现成的告警规则、OpenTelemetry 链路追踪，以及按用户全程追踪的染色规则。' },
+      { t: '角色分工', d: '所有者、开发者、审核员、运维各自只看到、只能操作自己负责的部分。' },
+    ],
+    tabs: ['消息轨迹', '审计日志', '连接管理'],
+    link: '监控与追踪',
   },
   quality: {
     eyebrow: '质量',

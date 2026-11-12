@@ -1,0 +1,131 @@
+---
+// The AI platform as a mind map: the model you bring on the left, the agent
+// AgentIM runs in the middle (role, Skills, knowledge, rules), and the ways it
+// reaches your business systems on the right. Pure SVG, no script; a stacked
+// list replaces it on narrow screens.
+import type { Lang } from '../../i18n/site';
+
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+const zh = lang === 'zh';
+const t = (en: string, z: string) => (zh ? z : en);
+
+const W = 1160;
+const H = 580;
+const hub = { x: 420, y: 70, w: 320, h: 400 };
+const hubMid = hub.y + hub.h / 2;
+
+const models = [
+  { t: 'Claude', s: 'Anthropic' },
+  { t: 'OpenAI', s: t('GPT · Codex', 'GPT · Codex') },
+  { t: 'Gemini', s: 'Google' },
+  { t: 'DeepSeek · Qwen', s: t('and more', '等') },
+  { t: t('Any compatible API', '任意兼容 API'), s: t('OpenAI-compatible endpoint', 'OpenAI 兼容接口') },
+  { t: t('Your own agent', '你自己的 Agent'), s: 'Node · Python SDK' },
+].map((m, i) => ({ ...m, x: 30, y: 62 + i * 76, w: 220, h: 52 }));
+
+const rows = [
+  { t: t('Role', '角色'), s: t('Instructions in Markdown · 12 ready', 'Markdown 写的指令 · 12 个现成角色') },
+  { t: 'Skills', s: t('SKILL.md, loaded when needed · 14 ready', 'SKILL.md 按需加载 · 14 个现成') },
+  { t: t('Knowledge', '知识库'), s: t('Your documents, answers cite them', '你的文档，回答注明出处') },
+  { t: t('Approval rules', '审批规则'), s: t('Writes wait for a person', '写操作先等人批准') },
+  { t: t('Guardrails', '护栏'), s: t('Budgets, loop and injection checks', '预算、防死循环、防注入') },
+].map((r, i) => ({ ...r, x: hub.x + 20, y: hub.y + 86 + i * 60, w: hub.w - 40, h: 50 }));
+
+const links = [
+  { t: 'OpenAPI', s: t('every operation a tool', '每个接口即工具'), leaves: [t('Orders · ERP', '订单 · ERP'), t('CRM · Billing', 'CRM · 计费')] },
+  { t: 'MCP', s: t('remote MCP servers', '远程 MCP 服务'), leaves: ['UPS · Stripe', 'GitHub · Linear'] },
+  { t: t('Connect apps', '连接应用'), s: t('coming soon', '即将推出'), soon: true, leaves: ['Slack · Gmail', 'Salesforce'] },
+  { t: t('Webhooks', 'Webhook'), s: t('your own code', '你自己的代码'), leaves: [t('Your services', '你的服务'), t('Your databases', '你的数据库')] },
+].map((l, i) => {
+  const y = 92 + i * 104;
+  return {
+    ...l,
+    x: 800, y, w: 170, h: 56,
+    leaves: l.leaves.map((leaf, j) => ({ t: leaf, x: 1010, y: y + (j === 0 ? -16 : 36), w: 130, h: 36 })),
+  };
+});
+
+const people = { x: hub.x + 40, y: 510, w: hub.w - 80, h: 48 };
+
+const curve = (x1: number, y1: number, x2: number, y2: number) => {
+  const mx = (x1 + x2) / 2;
+  return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
+};
+const leftPaths = models.map((m) => curve(m.x + m.w, m.y + m.h / 2, hub.x, hubMid));
+const rightPaths = links.map((l) => curve(hub.x + hub.w, hubMid, l.x, l.y + l.h / 2));
+const leafPaths = links.flatMap((l) => l.leaves.map((f) => curve(l.x + l.w, l.y + l.h / 2, f.x, f.y + f.h / 2)));
+const downPath = `M${hub.x + hub.w / 2},${hub.y + hub.h} L${hub.x + hub.w / 2},${people.y}`;
+---
+
+<figure class="amap" aria-labelledby="amap-cap">
+  <svg class="amap-svg" viewBox={`0 0 ${W} ${H}`} role="img" aria-labelledby="amap-cap">
+    <g class="amap-cols">
+      <text x={30} y={34}>{t('Your AI model · your key', '你的 AI 模型 · 你的密钥')}</text>
+      <text x={hub.x} y={34}>{t('AgentIM agent', 'AgentIM 里的 Agent')}</text>
+      <text x={800} y={34}>{t('Connections', '连接方式')}</text>
+      <text x={1010} y={34}>{t('Your business', '企业业务')}</text>
+    </g>
+
+    <g class="amap-lines">
+      {[...leftPaths, ...rightPaths, ...leafPaths, downPath].map((d) => <path d={d} />)}
+    </g>
+    <g class="amap-flow" aria-hidden="true">
+      {[...leftPaths, ...rightPaths, ...leafPaths, downPath].map((d, i) => <path d={d} style={`animation-delay:${-(i * 0.37).toFixed(2)}s`} />)}
+    </g>
+
+    {models.map((m) => (
+      <g class="amap-node">
+        <rect x={m.x} y={m.y} width={m.w} height={m.h} rx={10} />
+        <text class="n-t" x={m.x + 16} y={m.y + 22}>{m.t}</text>
+        <text class="n-s" x={m.x + 16} y={m.y + 40}>{m.s}</text>
+      </g>
+    ))}
+
+    <g class="amap-hub">
+      <rect x={hub.x} y={hub.y} width={hub.w} height={hub.h} rx={18} />
+      <rect class="hub-mark" x={hub.x + 20} y={hub.y + 22} width={34} height={34} rx={9} />
+      <path class="hub-glyph" d={`M${hub.x + 29},${hub.y + 33} h16 a3,3 0 0 1 3,3 v6 a3,3 0 0 1 -3,3 h-9 l-5,4 v-4 h-2 a3,3 0 0 1 -3,-3 v-6 a3,3 0 0 1 3,-3 z`} />
+      <text class="hub-t" x={hub.x + 66} y={hub.y + 38}>AgentIM</text>
+      <text class="hub-s" x={hub.x + 66} y={hub.y + 56}>{t('Agent = role + Skills + tools', 'Agent = 角色 + Skills + 工具')}</text>
+      {rows.map((r) => (
+        <g class="hub-row">
+          <rect x={r.x} y={r.y} width={r.w} height={r.h} rx={9} />
+          <text class="n-t" x={r.x + 14} y={r.y + 21}>{r.t}</text>
+          <text class="n-s" x={r.x + 14} y={r.y + 39}>{r.s}</text>
+        </g>
+      ))}
+    </g>
+
+    {links.map((l) => (
+      <g class={`amap-node link${l.soon ? ' soon' : ''}`}>
+        <rect x={l.x} y={l.y} width={l.w} height={l.h} rx={10} />
+        <text class="n-t" x={l.x + 16} y={l.y + 24}>{l.t}</text>
+        <text class="n-s" x={l.x + 16} y={l.y + 42}>{l.s}</text>
+      </g>
+    ))}
+    {links.flatMap((l) => l.leaves).map((f) => (
+      <g class="amap-leaf">
+        <rect x={f.x} y={f.y} width={f.w} height={f.h} rx={18} />
+        <text x={f.x + f.w / 2} y={f.y + 23} text-anchor="middle">{f.t}</text>
+      </g>
+    ))}
+
+    <g class="amap-node people">
+      <rect x={people.x} y={people.y} width={people.w} height={people.h} rx={24} />
+      <text class="n-t" x={people.x + people.w / 2} y={people.y + 21} text-anchor="middle">{t('People in chat', '聊天里的人')}</text>
+      <text class="n-s" x={people.x + people.w / 2} y={people.y + 38} text-anchor="middle">{t('Web · iOS · Android · desktop · your app', 'Web · iOS · Android · 桌面 · 你的 App')}</text>
+    </g>
+  </svg>
+
+  <div class="amap-stack">
+    <div><h4>{t('Your AI model · your key', '你的 AI 模型 · 你的密钥')}</h4><ul>{models.map((m) => <li><b>{m.t}</b> {m.s}</li>)}</ul></div>
+    <div class="hubbox"><h4>{t('AgentIM agent', 'AgentIM 里的 Agent')}</h4><ul>{rows.map((r) => <li><b>{r.t}</b> {r.s}</li>)}</ul></div>
+    <div><h4>{t('Connections → your business', '连接方式 → 企业业务')}</h4><ul>{links.map((l) => <li><b>{l.t}</b> {l.leaves.map((f) => f.t).join(' · ')}</li>)}</ul></div>
+  </div>
+
+  <figcaption id="amap-cap">
+    {t('Bring your own model, give the agent a role and Skills, and connect it to your systems through OpenAPI, MCP and webhooks. People talk to it in chat, on every platform.',
+       '接入你自己的模型，给 Agent 配上角色和 Skills，通过 OpenAPI、MCP 和 Webhook 连到你的业务系统。用户在各个平台的聊天里直接和它对话。')}
+  </figcaption>
+</figure>
