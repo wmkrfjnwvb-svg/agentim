@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Observable } from '../../../sdk/client-web/src/view';
-import { AgentIM, Chat, ConversationList, Inbox, MemberList } from '../../../sdk/react/src/index';
+import { AgentIM, Chat, ConversationList, Inbox, Thread } from '../../../sdk/react/src/index';
 import '../../../sdk/react/theme.css';
 
 type Lang = 'en' | 'zh';
@@ -20,7 +20,7 @@ class View extends Observable<any[]> {
   async loadOlder() {}
 }
 
-const zhStrings: Record<string, any> = {
+export const zhStrings: Record<string, any> = {
   ai: 'AI',
   you: '你',
   search: '搜索',
@@ -33,6 +33,10 @@ const zhStrings: Record<string, any> = {
   discard: '删除',
   sources: '来源',
   today: '今天',
+  thread: '话题',
+  threadPlaceholder: '在话题中回复…',
+  alsoInConversation: '同时发到会话',
+  close: '关闭',
   start: '会话从这里开始',
   empty: '还没有消息',
   loadOlder: '加载更早的消息',
@@ -106,6 +110,7 @@ function data(lang: Lang) {
       },
     }),
     m(jordan, t('Hey Maya, Jordan from support. I’ve got this one — what’s the new address?', '你好玛雅，我是客服乔丹，这个我来处理。新地址是？'), '2026-10-26T17:20:00Z', {
+      msg_id: 't1',
       thread: { replies: 3, last_at: at('2026-10-26T17:22:00Z'), participants: ['u_jordan', 'u_nova'] },
       reactions: [{ key: '🙌', count: 1, me: true, users: [ME] }],
     }),
@@ -128,6 +133,12 @@ function data(lang: Lang) {
     { conv_id: 'c_launch', title: t('Launch checklist', '上线清单'), unread: 0, last_message: { content: t('Ship it Thursday?', '周四上线？'), sender_id: ME, created_at: at('2026-10-25T19:00:00Z') } },
     { conv_id: 'c_ops', title: t('Ops agents', '运维 Agent 群'), unread: 12, last_message: { content: t('Deploy 2.4.1 finished on 3 nodes', '2.4.1 已在 3 个节点部署完成'), sender_id: 'u_bot', created_at: at('2026-10-25T13:00:00Z') } },
     { conv_id: 'c_nova', title: 'Nova', unread: 0, last_message: { content: t('Here’s your weekly summary.', '这是你的本周摘要。'), sender_id: 'u_nova', created_at: at('2026-10-22T13:00:00Z') } },
+  ];
+  const threadRoot = app.find((x) => x.msg_id === 't1');
+  const threadReplies = [
+    m(nova, t('The package is still at the UPS depot, so the address can change once.', '包裹还在 UPS 仓库，可以修改一次地址。'), '2026-10-26T17:21:00Z', { thread_id: 't1' }),
+    m(jordan, t('Changed it. UPS confirmed the new address for Thursday.', '已改好，UPS 确认周四按新地址送达。'), '2026-10-26T17:24:30Z', { thread_id: 't1' }),
+    m(maya, t('Perfect, thank you both! 🙏', '太好了，谢谢你们！🙏'), '2026-10-26T17:25:10Z', { thread_id: 't1' }),
   ];
   const pins = [{ msg_id: 'm2', msg: { content: t('Refunds over $30 need a manager’s approval.', '超过 30 美元的退款需要主管审批。') } }, { msg_id: 'm9', msg: { content: '…' } }];
 
@@ -206,7 +217,7 @@ function data(lang: Lang) {
     draft: t('Yes! Inspected on Oct 20: grade A-, no haze or fungus. With DHL Express it arrives in 2 days, so Friday works. Please pay through the checkout so you’re covered by buyer protection.', '在的！10 月 20 日检测为 A- 级，无起雾、无霉斑。DHL 特快 2 天送达，周五前没问题。请通过平台下单付款，这样能享受买家保障。'),
     flag: t('Payment outside the platform was suggested. The draft keeps it on the platform (policy 4.2).', '对方提议在平台外付款。草稿已引导回平台内交易（规则 4.2）。'),
   };
-  return { app, conversations, pins, cards, steps, inbox, desk, ops, market, copilot, title: t('Acme Support', 'Acme 客服'), subtitle: t('3 members · Nova (AI) and our team', '3 位成员 · Nova（AI）和客服团队'), cardsSub: t('Nova (AI) · orders and refunds', 'Nova（AI）· 订单和退款'), typing: 'u_jordan' };
+  return { app, conversations, threadRoot, threadReplies, pins, cards, steps, inbox, desk, ops, market, copilot, title: t('Acme Support', 'Acme 客服'), subtitle: t('3 members · Nova (AI) and our team', '3 位成员 · Nova（AI）和客服团队'), cardsSub: t('Nova (AI) · orders and refunds', 'Nova（AI）· 订单和退款'), typing: 'u_jordan' };
 }
 
 function client(messages: any[], d: ReturnType<typeof data>, onSide?: (emit: (e: any) => void) => void, typing = false, pins = true) {
@@ -226,7 +237,7 @@ function client(messages: any[], d: ReturnType<typeof data>, onSide?: (emit: (e:
     respond: noop,
     read: noop,
     call: async (op: string) =>
-      op === 'inbox' ? { items: d.inbox, more: false } : op === 'list_pins' ? (pins ? { pins: d.pins, count: d.pins.length } : { pins: [], count: 0 }) : op === 'card_answers' ? { answers: [] } : {},
+      op === 'inbox' ? { items: d.inbox, more: false } : op === 'pull_thread' ? { root: d.threadRoot, replies: d.threadReplies } : op === 'list_pins' ? (pins ? { pins: d.pins, count: d.pins.length } : { pins: [], count: 0 }) : op === 'card_answers' ? { answers: [] } : {},
     // Typing and steps are sent once something listens (a view mounts
     // when its tab opens, after this client was made).
     on: (t: string, f: (e: any) => void) => {
@@ -247,13 +258,13 @@ function client(messages: any[], d: ReturnType<typeof data>, onSide?: (emit: (e:
 
 const tabs = {
   en: [
-    { id: 'app', label: 'Messaging app', url: 'app.example.com/messages', note: 'Conversations, threads, reactions, pins, members, typing, AI replies streaming in' },
+    { id: 'app', label: 'Messaging app', url: 'app.example.com/messages', note: 'Conversations, a thread open beside the chat, reactions and likes, a pinned message, typing, AI replies streaming in' },
     { id: 'agent', label: 'AI support agent', url: 'desk.acme.com/conversations/1002', note: 'The customer’s chat on the left; on the right, what the agent did in your systems: every API call, the rule that held the refund, the guardrails' },
     { id: 'inbox', label: 'Approvals desk', url: 'desk.acme.com/approvals', note: 'Your team decides what agents may not do alone, with the customer, the risk, the policy and the audit trail in view' },
     { id: 'market', label: 'Marketplace copilot', url: 'market.example.com/inbox', note: 'A buyer and a seller; only the seller sees the assistant: the buyer’s intent, facts from your systems, a drafted reply and a policy warning' },
   ],
   zh: [
-    { id: 'app', label: '即时通讯应用', url: 'app.example.com/messages', note: '会话列表、话题、表情回应、置顶、成员、输入状态、AI 流式回复' },
+    { id: 'app', label: '即时通讯应用', url: 'app.example.com/messages', note: '会话列表、在旁边打开的话题、表情回应和点赞、置顶消息、输入状态、AI 流式回复' },
     { id: 'agent', label: 'AI 售后助手', url: 'desk.acme.com/conversations/1002', note: '左边是顾客的售后聊天；右边是 Agent 在你的系统里做了什么：每一次接口调用、拦下退款的规则、安全护栏' },
     { id: 'inbox', label: '审批中心', url: 'desk.acme.com/approvals', note: 'Agent 不能自己做主的事由团队决定，顾客、风险、规则和审计记录一目了然' },
     { id: 'market', label: '平台 AI 协助', url: 'market.example.com/inbox', note: '买家和卖家在聊天，只有卖家能看到 AI 助手：买家意图、你系统里的数据、拟好的回复和违规提醒' },
@@ -413,9 +424,8 @@ export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
                 <div className="sc-main">
                   <Chat convId="c_support" title={d.title} subtitle={d.subtitle} />
                 </div>
-                <aside className="sc-info">
-                  <div className="sc-head">{demo === 'zh' ? '成员' : 'Members'}</div>
-                  <MemberList convId="c_support" />
+                <aside className="sc-info sc-thread">
+                  <Thread convId="c_support" threadId="t1" />
                 </aside>
               </div>
             </AgentIM>

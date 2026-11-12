@@ -4,11 +4,25 @@
 // features, AI, platforms, quality, Cloud or self-hosted, comparison, trust.
 import Layout from './Layout.astro';
 import ProductShowcase from '../ProductShowcase';
+import CardsGallery from '../CardsGallery';
+import ImWall from './ImWall.astro';
 import { copy, path, APP, PLATFORMS, type Lang } from '../../i18n/site';
 interface Props { lang: Lang }
 const { lang } = Astro.props;
 const c = copy[lang];
 const zh = lang === 'zh';
+const roleFile = `---
+name: order-support
+description: After-sales assistant for online shops
+skills: [support-replies, show-data-as-cards,
+         collect-details-with-forms,
+         actions-with-approval, handoff-to-a-person]
+apis: [orders]      # your OpenAPI connection
+mcp: [ups]          # the carrier's MCP server
+---
+You are the after-sales assistant of an online shop.
+Find the order first and show it as a data card.
+Before a refund, ask why with a short form…`;
 ---
 <Layout lang={lang} page="/">
   <section class="hero">
@@ -71,18 +85,7 @@ const zh = lang === 'zh';
     </div>
   </section>
 
-  <section class="band" aria-labelledby="f-title">
-    <div class="wrap">
-      <p class="eyebrow">{c.features.eyebrow}</p>
-      <h2 id="f-title">{c.features.title}</h2>
-      <p class="lead">{c.features.lead}</p>
-      <div class="feature-groups">
-        {c.features.groups.map((g) => (
-          <div><h3>{g.t}</h3><ul>{g.i.map((x) => <li>{x}</li>)}</ul></div>
-        ))}
-      </div>
-    </div>
-  </section>
+  <ImWall lang={lang} />
 
   <section aria-labelledby="ai-title">
     <div class="wrap">
@@ -94,6 +97,37 @@ const zh = lang === 'zh';
           <li><a href={x.href}><h3>{x.t}</h3><p>{x.d}</p><span class="go" aria-hidden="true">→</span></a></li>
         ))}
       </ul>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="pl-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.platform.eyebrow}</p>
+      <h2 id="pl-title">{c.platform.title}</h2>
+      <p class="lead">{c.platform.lead}</p>
+      <div class="platform">
+        <ul class="tiles">
+          {c.platform.items.map((x) => (
+            <li class={x.tag ? 'soon' : ''}><h3>{x.t}{x.tag && <span class="soon-tag">{x.tag}</span>}</h3><p>{x.d}</p></li>
+          ))}
+        </ul>
+        <figure class="file">
+          <div class="file-bar"><span class="lights" aria-hidden="true"><i></i><i></i><i></i></span><code>{c.platform.fileTitle}</code></div>
+          <pre><code>{roleFile}</code></pre>
+          <figcaption>{c.platform.fileNote}</figcaption>
+        </figure>
+      </div>
+      <a class="more" href="/docs/guides/built-in-agents/">{c.platform.link} →</a>
+    </div>
+  </section>
+
+  <section aria-labelledby="cg-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.cards.eyebrow}</p>
+      <h2 id="cg-title">{c.cards.title}</h2>
+      <p class="lead">{c.cards.lead}</p>
+      <CardsGallery client:visible lang={lang} />
+      <a class="more" href="/docs/guides/chat-components/">{c.cards.link} →</a>
     </div>
   </section>
 

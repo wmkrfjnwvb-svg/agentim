@@ -1,0 +1,42 @@
+---
+// "A complete IM": a tilted wall of real screenshots of our components
+// (the baselines of sdk/react/test/screens, rendered in CI), behind the
+// headline and the list of features. The rows drift slowly unless the
+// visitor prefers reduced motion.
+import { Image } from 'astro:assets';
+import { copy, type Lang } from '../../i18n/site';
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+const c = copy[lang];
+const files = import.meta.glob<{ default: ImageMetadata }>('../../assets/screens/*.png', { eager: true });
+const img = (n: string) => files[`../../assets/screens/${n}.png`].default;
+const rows = [
+  ['web-app-light', 'web-phone', 'web-cards', 'web-inbox-phone', 'web-viewer', 'rn-light'],
+  ['web-inbox', 'web-files-dark', 'web-app-dark', 'web-cards-phone', 'web-support', 'web-offline'],
+  ['web-cards-dark', 'web-viewer-phone', 'web-files', 'rn-dark', 'web-inbox-dark', 'web-phone'],
+];
+const chips = c.features.groups.flatMap((g) => g.i);
+---
+<section class="wall" aria-labelledby="f-title">
+  <div class="wall-bg" aria-hidden="true">
+    <div class="wall-plane">
+      {rows.map((row, r) => (
+        <div class={`wall-row r${r}`}>
+          {[...row, ...row].map((n) => (
+            <Image src={img(n)} alt="" height={520} densities={[1]} format="webp" quality={72} loading="lazy" class="wall-shot" />
+          ))}
+        </div>
+      ))}
+    </div>
+  </div>
+  <div class="wall-fade" aria-hidden="true"></div>
+  <div class="wrap wall-front">
+    <div class="wall-card">
+      <p class="eyebrow">{c.features.eyebrow}</p>
+      <h2 id="f-title">{c.features.title}</h2>
+      <p class="lead">{c.features.lead}</p>
+      <ul class="wall-chips">{chips.map((x) => <li>{x}</li>)}</ul>
+      <p class="wall-note">{lang === 'zh' ? '背景是 AgentIM 界面组件的真实截图：Web、手机、React Native，浅色和深色。' : 'Behind: real screenshots of the AgentIM components — web, phone and React Native, light and dark.'}</p>
+    </div>
+  </div>
+</section>
