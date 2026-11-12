@@ -348,9 +348,11 @@ function CopilotPanel({ d, lang }: { d: ReturnType<typeof data>; lang: Lang }) {
 
 export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
   const [tab, setTab] = useState('app');
-  const d = useMemo(() => data(lang), [lang]);
-  const strings = lang === 'zh' ? zhStrings : undefined;
-  const locale = lang === 'zh' ? 'zh-CN' : 'en-US';
+  // The examples have their own language, English by default on every page.
+  const [demo, setDemo] = useState<Lang>('en');
+  const d = useMemo(() => data(demo), [demo]);
+  const strings = demo === 'zh' ? zhStrings : undefined;
+  const locale = demo === 'zh' ? 'zh-CN' : 'en-US';
   const tz = 'America/Los_Angeles';
   const appClient = useMemo(() => client(d.app, d, undefined, true), [d]);
   const agentClient = useMemo(
@@ -389,23 +391,30 @@ export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
         ))}
       </div>
       <div className="showcase-window">
-        <div className="showcase-bar" aria-hidden="true">
-          <span className="lights"><i /><i /><i /></span>
+        <div className="showcase-bar">
+          <span className="lights" aria-hidden="true"><i /><i /><i /></span>
           <span className="showcase-url">{current.url}</span>
+          <span className="showcase-lang" role="group" aria-label={lang === 'zh' ? '示例语言' : 'Example language'}>
+            {(['en', 'zh'] as Lang[]).map((l) => (
+              <button key={l} type="button" aria-pressed={demo === l} className={demo === l ? 'on' : ''} onClick={() => setDemo(l)} lang={l === 'zh' ? 'zh-CN' : 'en'}>
+                {l === 'zh' ? '中文' : 'EN'}
+              </button>
+            ))}
+          </span>
         </div>
         <div className="showcase-body" role="tabpanel" aria-label={current.label}>
           {tab === 'app' && (
             <AgentIM client={appClient} {...common}>
               <div className="sc-app">
                 <aside className="sc-side">
-                  <div className="sc-head">{lang === 'zh' ? '消息' : 'Messages'}</div>
+                  <div className="sc-head">{demo === 'zh' ? '消息' : 'Messages'}</div>
                   <ConversationList selected="c_support" onSelect={() => {}} />
                 </aside>
                 <div className="sc-main">
                   <Chat convId="c_support" title={d.title} subtitle={d.subtitle} />
                 </div>
                 <aside className="sc-info">
-                  <div className="sc-head">{lang === 'zh' ? '成员' : 'Members'}</div>
+                  <div className="sc-head">{demo === 'zh' ? '成员' : 'Members'}</div>
                   <MemberList convId="c_support" />
                 </aside>
               </div>
@@ -417,7 +426,7 @@ export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
                 <div className="sc-main">
                   <Chat convId="c_support" title={d.title} subtitle={d.cardsSub} />
                 </div>
-                <DeskPanel d={d} lang={lang} />
+                <DeskPanel d={d} lang={demo} />
               </div>
             </AgentIM>
           )}
@@ -429,7 +438,7 @@ export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
                   <div className="sc-inbox">
                     <Inbox onOpen={() => {}} />
                   </div>
-                  <OpsPanel d={d} lang={lang} />
+                  <OpsPanel d={d} lang={demo} />
                 </div>
               </div>
             </AgentIM>
@@ -438,9 +447,9 @@ export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
             <AgentIM client={marketClient} {...common}>
               <div className="sc-biz">
                 <div className="sc-main">
-                  <Chat convId="c_support" title="Sigma 35mm f/1.4 Art · €640" subtitle={L(lang, 'Leo (buyer) and Ana (seller)', 'Leo（买家）和 Ana（卖家）')} />
+                  <Chat convId="c_support" title="Sigma 35mm f/1.4 Art · €640" subtitle={L(demo, 'Leo (buyer) and Ana (seller)', 'Leo（买家）和 Ana（卖家）')} />
                 </div>
-                <CopilotPanel d={d} lang={lang} />
+                <CopilotPanel d={d} lang={demo} />
               </div>
             </AgentIM>
           )}

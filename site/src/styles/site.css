@@ -295,3 +295,6 @@ table.compare { width: 100%; border-collapse: collapse; font-size: 14.5px; min-w
 .biz-actions button { font: 600 13px var(--sans); border: 1px solid var(--line-2); background: #fff; border-radius: 8px; padding: 6px 14px; cursor: pointer; }
 .biz-actions button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
 @media (max-width: 1000px) { .sc-biz { grid-template-columns: 1fr; } .biz { display: none; } .sc-kpis { grid-template-columns: 1fr 1fr; } }
+.showcase-lang { margin-left: auto; display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
+.showcase-lang button { font: 600 12px var(--sans); color: var(--muted); background: transparent; border: 0; padding: 4px 10px; cursor: pointer; }
+.showcase-lang button.on { background: var(--fg); color: #fff; }
