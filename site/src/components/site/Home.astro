@@ -1,0 +1,272 @@
+---
+// The homepage (docs/24 in the private repo; docs/en/design/developer-experience.md):
+// positioning, the product live, measured numbers, guarantees, architecture,
+// features, AI, platforms, quality, Cloud or self-hosted, comparison, trust.
+import Layout from './Layout.astro';
+import ProductShowcase from '../ProductShowcase';
+import CardsGallery from '../CardsGallery';
+import ImWall from './ImWall.astro';
+import AgentMap from './AgentMap.astro';
+import { Image } from 'astro:assets';
+import consoleTrace from '../../assets/console/trace.png';
+import consoleAudit from '../../assets/console/audit.png';
+import consoleConn from '../../assets/console/connections.png';
+import { copy, path, APP, type Lang } from '../../i18n/site';
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+const c = copy[lang];
+const zh = lang === 'zh';
+const codeApp = `// React: your app renders the chat
+const client = await AgentIMClient.create({
+  url: 'https://chat.example.com',
+  deviceId,
+  tokenProvider: () => fetch('/token').then((r) => r.text()),
+});
+client.connect();
+
+<AgentIM client={client}>
+  <Chat convId={convId} />
+</AgentIM>`;
+const codeBackend = `// Node: sign a token for your user
+// (no call to AgentIM needed)
+const token = createUserToken(signingKey, user.id);
+
+# or the open API from any language
+curl -X POST https://your-project.agentim.co/v1/users/sam/messages \\
+  -H "authorization: Bearer $AGENTIM_API_KEY" \\
+  -d '{"as": "maya", "text": "Your order has shipped"}'`;
+const codeAgent = `import { Agent } from '@agentimhq/agent';
+
+const agent = new Agent({ url, key: process.env.AGENTIM_KEY });
+
+agent.onMessage(async (msg, ctx) => {
+  const s = await ctx.stream();
+  for await (const token of llm(msg.content)) {
+    await s.append(token);
+  }
+  await s.end();
+});
+
+await agent.start();`;
+---
+<Layout lang={lang} page="/">
+  <section class="hero">
+    <div class="grid-bg" aria-hidden="true"></div>
+    <div class="wrap hero-text">
+      <p class="eyebrow">{c.hero.eyebrow}</p>
+      <h1>{c.hero.title[0]}<br /><span class="accent">{c.hero.title[1]}</span></h1>
+      <p class="lead">{c.hero.lead}</p>
+      <div class="actions">
+        <a href={APP} class="button primary large">{c.hero.primary} <span aria-hidden="true">→</span></a>
+        <a href="#deploy" class="button large">{c.hero.secondary}</a>
+      </div>
+      <ul class="ticks">{c.hero.small.map((s) => <li>{s}</li>)}</ul>
+    </div>
+    <div class="wrap wide" id="product">
+      <ProductShowcase client:visible lang={lang} />
+    </div>
+  </section>
+
+  <section class="proof" aria-labelledby="proof-title">
+    <div class="wrap">
+      <div class="proof-head">
+        <h2 id="proof-title">{c.proof.title}</h2>
+        <p>{c.proof.note} <a href={path(lang, '/benchmarks/')}>{c.proof.link} →</a></p>
+      </div>
+      <ul class="metrics">{c.proof.items.map((s) => <li><strong>{s.v}</strong><span>{s.l}</span></li>)}</ul>
+    </div>
+  </section>
+
+  <ImWall lang={lang} />
+
+  <section class="band" aria-labelledby="pl-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.platform.eyebrow}</p>
+      <h2 id="pl-title">{c.platform.title}</h2>
+      <p class="lead">{c.platform.lead}</p>
+      <AgentMap lang={lang} />
+      <ul class="flist four">
+        {c.ai.items.slice(0, 4).map((x) => (
+          <li><a href={x.href}><h3>{x.t}</h3><p>{x.d}</p></a></li>
+        ))}
+      </ul>
+      <a class="more" href="/docs/guides/built-in-agents/">{c.platform.link} →</a>
+    </div>
+  </section>
+
+  <section aria-labelledby="cg-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.cards.eyebrow}</p>
+      <h2 id="cg-title">{c.cards.title}</h2>
+      <p class="lead">{c.cards.lead}</p>
+      <CardsGallery client:visible lang={lang} />
+      <a class="more" href="/docs/guides/chat-components/">{c.cards.link} →</a>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="g-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.guarantees.eyebrow}</p>
+      <h2 id="g-title">{c.guarantees.title}</h2>
+      <p class="lead">{c.guarantees.lead}</p>
+      <ol class="pillars">
+        {c.guarantees.items.map((g, i) => (
+          <li><span class="num">0{i + 1}</span><h3>{g.k}</h3><p>{g.t}</p></li>
+        ))}
+      </ol>
+      <a class="more" href="/docs/concepts/sync-and-offline/">{c.guarantees.link} →</a>
+    </div>
+  </section>
+
+  <section aria-labelledby="a-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.arch.eyebrow}</p>
+      <h2 id="a-title">{c.arch.title}</h2>
+      <p class="lead">{c.arch.lead}</p>
+      <ol class="flow">
+        {c.arch.steps.map((s) => (
+          <li><span class="node">{s.n}</span><h3>{s.t}</h3><p>{s.d}</p></li>
+        ))}
+      </ol>
+      <div class="flow-under">
+        <span>{zh ? '数据库' : 'Databases'}: <b>SQLite</b> · <b>PostgreSQL</b> · <b>MySQL</b></span>
+        <span>{zh ? '集群' : 'Cluster'}: <b>{zh ? '分片交接' : 'shard hand-over'}</b> · <b>{zh ? '栅栏' : 'fencing'}</b> · <b>{zh ? '自动接管' : 'failover'}</b></span>
+        <span>{zh ? '接入' : 'Integrations'}: <b>SDK</b> · <b>MCP</b> · <b>Webhooks</b> · <b>Open API</b></span>
+      </div>
+      <h3 class="sub-h">{c.scale.title}</h3>
+      <ul class="flist four">{c.scale.items.map((x) => <li><h3>{x.t}</h3><p>{x.d}</p></li>)}</ul>
+      <a class="more" href="/docs/concepts/overview/">{c.arch.link} →</a>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="dev-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.dev.eyebrow}</p>
+      <h2 id="dev-title">{c.dev.title}</h2>
+      <p class="lead">{c.dev.lead}</p>
+      <div class="dev">
+        <div class="dev-groups">
+          {c.dev.groups.map((g) => (
+            <div><h3>{g.t}</h3><ul class="chips-inline">{g.i.map((x) => <li>{x}</li>)}</ul></div>
+          ))}
+          <a class="more" href="/docs/client-sdks/">{c.dev.link} →</a>
+        </div>
+        <div class="code-tabs">
+          {c.dev.tabs.map((t, i) => <input type="radio" name="dev-tab" id={`dev-${i}`} checked={i === 0} />)}
+          <div class="code-bar">
+            <span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+            {c.dev.tabs.map((t, i) => <label for={`dev-${i}`}>{t}</label>)}
+          </div>
+          <pre class="p0"><code>{codeApp}</code></pre>
+          <pre class="p1"><code>{codeBackend}</code></pre>
+          <pre class="p2"><code>{codeAgent}</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="deploy" aria-labelledby="d-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.deploy.eyebrow}</p>
+      <h2 id="d-title">{c.deploy.title}</h2>
+      <p class="lead">{c.deploy.lead}</p>
+      <div class="two">
+        <div class="option featured">
+          <h3>{c.deploy.cloud.t}</h3>
+          <p>{c.deploy.cloud.d}</p>
+          <ul class="checks">{c.deploy.cloud.points.map((p) => <li>{p}</li>)}</ul>
+          <div class="actions">
+            <a href={APP} class="button primary">{c.deploy.cloud.cta} →</a>
+            <a href={path(lang, '/cloud/')} class="text-link">{c.deploy.cloud.link}</a>
+          </div>
+        </div>
+        <div class="option">
+          <h3>{c.deploy.self.t}</h3>
+          <p>{c.deploy.self.d}</p>
+          <ul class="checks">{c.deploy.self.points.map((p) => <li>{p}</li>)}</ul>
+          <div class="actions"><a href="/docs/operations/install/" class="text-link">{c.deploy.self.link} →</a></div>
+        </div>
+      </div>
+      <h3 class="sub-h">{c.selfhost.title}</h3>
+      <ul class="hosts">
+        {c.selfhost.items.map((x) => (
+          <li>
+            <h3>{x.t}</h3>
+            <p>{x.d}</p>
+            <div class="cmd small-cmd"><code>{x.cmd}</code><button data-copy={x.cmd} data-done={zh ? '已复制' : 'Copied'}>{zh ? '复制' : 'Copy'}</button></div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="ops-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.ops.eyebrow}</p>
+      <h2 id="ops-title">{c.ops.title}</h2>
+      <p class="lead">{c.ops.lead}</p>
+      <div class="ops">
+        <ul class="ops-points">{c.ops.points.map((x) => <li><h3>{x.t}</h3><p>{x.d}</p></li>)}</ul>
+        <div class="shot-tabs">
+          {c.ops.tabs.map((t, i) => <input type="radio" name="ops-tab" id={`ops-${i}`} checked={i === 0} />)}
+          <div class="shot-bar">{c.ops.tabs.map((t, i) => <label for={`ops-${i}`}>{t}</label>)}</div>
+          <div class="shot-frame">
+            <Image src={consoleTrace} alt={c.ops.tabs[0]} width={1360} densities={[1]} format="webp" quality={82} class="s0" loading="lazy" />
+            <Image src={consoleAudit} alt={c.ops.tabs[1]} width={1360} densities={[1]} format="webp" quality={82} class="s1" loading="lazy" />
+            <Image src={consoleConn} alt={c.ops.tabs[2]} width={1360} densities={[1]} format="webp" quality={82} class="s2" loading="lazy" />
+          </div>
+        </div>
+      </div>
+      <a class="more" href="/docs/operations/monitoring/">{c.ops.link} →</a>
+    </div>
+  </section>
+
+  <section aria-labelledby="q-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.quality.eyebrow}</p>
+      <h2 id="q-title">{c.quality.title}</h2>
+      <p class="lead">{c.quality.lead}</p>
+      <ul class="metrics four">{c.quality.items.map((s) => <li><strong>{s.v}</strong><span>{s.l}</span></li>)}</ul>
+      <ul class="checks">{c.quality.points.map((p) => <li>{p}</li>)}</ul>
+      <a class="more" href="/docs/reference/business-rules/">{c.quality.link} →</a>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="s-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.security.eyebrow}</p>
+      <h2 id="s-title">{c.security.title}</h2>
+      <ul class="flist">{c.security.items.map((x) => <li><h3>{x.t}</h3><p>{x.d}</p></li>)}</ul>
+      <a class="more" href="/docs/security/">{c.security.link} →</a>
+    </div>
+  </section>
+
+  <section aria-labelledby="c-title">
+    <div class="wrap">
+      <p class="eyebrow">{c.compare.eyebrow}</p>
+      <h2 id="c-title">{c.compare.title}</h2>
+      <div class="table-wrap">
+        <table class="compare">
+          <thead><tr><th></th>{c.compare.cols.map((col, i) => <th class={i < 2 ? 'ours' : ''}>{col}</th>)}</tr></thead>
+          <tbody>
+            {c.compare.rows.map(([label, ...cells]) => (
+              <tr><th scope="row">{label}</th>{cells.map((v, i) => <td class={i < 2 ? 'ours' : ''}>{v}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small">{c.compare.note}</p>
+    </div>
+  </section>
+
+  <section class="final">
+    <div class="wrap final-box">
+      <h2>{c.cta.title}</h2>
+      <p>{c.cta.lead}</p>
+      <div class="actions center">
+        <a href={APP} class="button primary large">{c.cta.primary} →</a>
+        <a href="/docs/" class="button large">{c.cta.secondary}</a>
+      </div>
+    </div>
+  </section>
+</Layout>

@@ -1,0 +1,36 @@
+---
+// "A complete IM": the features, grouped, next to a fanned stack of real
+// screenshots of our components (the CI baselines of sdk/react/test/screens):
+// the desktop app dark and light, and the phone in front.
+import { Image } from 'astro:assets';
+import { copy, type Lang } from '../../i18n/site';
+import appDark from '../../assets/screens/web-app-dark.png';
+import appLight from '../../assets/screens/web-app-light.png';
+import phone from '../../assets/screens/web-phone.png';
+interface Props { lang: Lang }
+const { lang } = Astro.props;
+const c = copy[lang];
+---
+<section class="imx" aria-labelledby="f-title">
+  <div class="wrap imx-grid">
+    <div class="imx-text">
+      <p class="eyebrow">{c.features.eyebrow}</p>
+      <h2 id="f-title">{c.features.title}</h2>
+      <p class="lead">{c.features.lead}</p>
+      <div class="imx-groups">
+        {c.features.groups.map((g) => (
+          <div>
+            <h3>{g.t}</h3>
+            <ul>{g.i.map((x) => <li>{x}</li>)}</ul>
+          </div>
+        ))}
+      </div>
+    </div>
+    <div class="imx-stack" aria-hidden="true">
+      <Image src={appDark} alt="" width={1360} densities={[1]} format="webp" quality={78} loading="lazy" class="imx-shot back" />
+      <Image src={appLight} alt="" width={1360} densities={[1]} format="webp" quality={80} loading="lazy" class="imx-shot mid" />
+      <Image src={phone} alt="" width={390} densities={[1, 2]} format="webp" quality={85} loading="lazy" class="imx-shot front" />
+    </div>
+  </div>
+  <p class="wrap imx-note">{lang === 'zh' ? '右侧为 AgentIM 界面组件的真实截图（Web 深色、浅色和手机）。' : 'Right: real screenshots of the AgentIM components (web dark and light, and phone).'}</p>
+</section>
