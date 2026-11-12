@@ -17,6 +17,12 @@ export const ArrowUp = () => (
     <path d="m5 12 7-7 7 7" />
   </Svg>
 );
+export const Pin = () => (
+  <Svg size={16}>
+    <path d="M12 17v5" />
+    <path d="M9 10.76V4h6v6.76l2.5 2.74V15h-11v-1.5z" />
+  </Svg>
+);
 export const ArrowDown = () => (
   <Svg size={16}>
     <path d="M12 5v14" />

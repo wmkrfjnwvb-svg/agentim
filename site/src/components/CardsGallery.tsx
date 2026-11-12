@@ -1,9 +1,9 @@
 // The chat components agents send (docs/en/design/chat-components.md), live:
 // a data card, a form, an approval and buttons with steps, each drawn by
-// our React components from the same JSON an agent sends. English or
-// Chinese, English first.
+// our React components from the same JSON an agent sends, in the page's
+// language.
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { Observable } from '../../../sdk/client-web/src/view';
 import { AgentIM, Chat } from '../../../sdk/react/src/index';
 import '../../../sdk/react/theme.css';
@@ -117,20 +117,12 @@ function client(tile: ReturnType<typeof tiles>[number]) {
 }
 
 export default function CardsGallery({ lang = 'en' }: { lang?: Lang }) {
-  const [demo, setDemo] = useState<Lang>('en');
+  // The examples speak the page's language.
+  const demo = lang;
   const list = useMemo(() => tiles(demo).map((x) => ({ ...x, client: client(x) })), [demo]);
   const common: any = { me: ME, locale: demo === 'zh' ? 'zh-CN' : 'en-US', timeZone: 'America/Los_Angeles', now: () => NOW, strings: demo === 'zh' ? zhStrings : undefined };
   return (
     <div className="cg">
-      <div className="cg-bar">
-        <span className="showcase-lang" role="group" aria-label={lang === 'zh' ? '示例语言' : 'Example language'}>
-          {(['en', 'zh'] as Lang[]).map((l) => (
-            <button key={l} type="button" aria-pressed={demo === l} className={demo === l ? 'on' : ''} onClick={() => setDemo(l)} lang={l === 'zh' ? 'zh-CN' : 'en'}>
-              {l === 'zh' ? '中文' : 'EN'}
-            </button>
-          ))}
-        </span>
-      </div>
       <div className="cg-grid">
         {list.map((x) => (
           <figure key={x.id + demo} className="cg-tile">

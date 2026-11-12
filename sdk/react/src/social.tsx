@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { Message } from '@agentimhq/client-web';
 import { useClient } from './hooks.js';
+import { Pin } from './icons.js';
 import type { Strings } from './strings.js';
 
 /** The reactions offered by the add button; apps pass their own. */
@@ -187,7 +188,7 @@ export function ThreadPanel({
   );
 }
 
-/** The conversation's pinned messages: the latest one, and how many (opens the list). */
+/** The conversation's pinned messages: the latest one, and how many. A click hands the pins to `onOpen` (in `Chat`, it jumps to the latest one). */
 export function PinnedBar({ convId, strings, onOpen }: { convId: string; strings: Strings; onOpen?(pins: any[]): void }) {
   const client = useClient();
   const [pins, setPins] = useState<any[]>([]);
@@ -212,11 +213,18 @@ export function PinnedBar({ convId, strings, onOpen }: { convId: string; strings
   const latest = pins[0];
   return (
     <button type="button" className="aim-pinned" onClick={() => onOpen?.(pins)} aria-label={strings.pinnedCount(count)}>
-      <span className="aim-pinned-label">{strings.pinned}</span>
-      <span className="aim-pinned-text" dir="auto">
-        {latest.msg?.content}
+      <span className="aim-pinned-icon">
+        <Pin />
       </span>
-      {count > 1 ? <span className="aim-pinned-count">{count}</span> : null}
+      <span className="aim-pinned-body">
+        <span className="aim-pinned-label">
+          {strings.pinned}
+          {count > 1 ? <span className="aim-pinned-count">{count}</span> : null}
+        </span>
+        <span className="aim-pinned-text" dir="auto">
+          {latest.msg?.content}
+        </span>
+      </span>
     </button>
   );
 }

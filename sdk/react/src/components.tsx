@@ -611,7 +611,7 @@ export function MessageList({ convId, notices = [], onOpenThread }: { convId: st
                   <span>{strings.newMessages}</span>
                 </div>
               ) : null}
-              <div className="aim-row" data-mine={mine || undefined} data-first={first || undefined} data-last={last || undefined} data-sender-type={m.sender_type}>
+              <div className="aim-row" data-msg-id={m.msg_id || undefined} data-mine={mine || undefined} data-first={first || undefined} data-last={last || undefined} data-sender-type={m.sender_type}>
                 {!mine ? <div className="aim-gutter">{first ? <components.Avatar id={m.sender_id} name={m.sender_name} kind={m.sender_type} /> : null}</div> : null}
                 <div className="aim-col">
                   {first && !mine ? (
@@ -988,9 +988,20 @@ export function PinnedMessages({ convId, onOpen }: { convId: string; onOpen?(pin
 /** A whole chat window (the customer-service widget): header, status, messages, typing, composer. */
 export function Chat({ convId, title, subtitle }: { convId: string; title?: ReactNode; subtitle?: ReactNode }) {
   const [thread, setThread] = useState<string | null>(null);
+  const root = useRef<HTMLElement>(null);
+  // The pinned bar jumps to the latest pin when it is loaded in the list,
+  // and marks it for a moment so the eye finds it.
+  const toPin = (pins: any[]) => {
+    const id = pins[0]?.msg_id;
+    const row = id ? root.current?.querySelector<HTMLElement>(`.aim-row[data-msg-id="${CSS.escape(String(id))}"]`) : null;
+    if (!row) return;
+    row.scrollIntoView?.({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
+    row.setAttribute('data-flash', '');
+    setTimeout(() => row.removeAttribute('data-flash'), 1600);
+  };
   if (thread) return <Thread convId={convId} threadId={thread} onClose={() => setThread(null)} />;
   return (
-    <section className="aim-root aim-chat">
+    <section ref={root} className="aim-root aim-chat">
       {title ? (
         <header className="aim-chat-header">
           <div className="aim-chat-title">{title}</div>
@@ -999,7 +1010,7 @@ export function Chat({ convId, title, subtitle }: { convId: string; title?: Reac
       ) : null}
       <ConnectionBanner />
       <HandoffNotice convId={convId} />
-      <PinnedMessages convId={convId} />
+      <PinnedMessages convId={convId} onOpen={toPin} />
       <MessageList convId={convId} onOpenThread={setThread} />
       <ConversationSteps convId={convId} />
       <ApprovalCards convId={convId} />

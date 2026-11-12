@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Observable } from '../../../sdk/client-web/src/view';
-import { AgentIM, Chat, ConversationList, Inbox, Thread } from '../../../sdk/react/src/index';
+import { AgentIM, Chat, ConversationList, Inbox, MemberList, Thread } from '../../../sdk/react/src/index';
 import '../../../sdk/react/theme.css';
 
 type Lang = 'en' | 'zh';
@@ -67,6 +67,69 @@ export const zhStrings: Record<string, any> = {
   inboxHandoffFrom: (agent: string) => `${agent} 把会话转给了你`,
   inboxOpen: '打开会话',
   inboxWaiting: (ago: string) => `已等待 ${ago}`,
+  aiTitle: 'AI 助手',
+  sending: '发送中…',
+  sent: '已发送',
+  edit: '编辑',
+  editing: '编辑消息',
+  save: '保存',
+  cancel: '取消',
+  recalled: '这条消息已删除',
+  cancelled: '已停止',
+  streamFailed: '没能完成',
+  edited: '已编辑',
+  loading: '加载中…',
+  retention: '更早的消息已不再保留',
+  emptyHint: '打个招呼开始聊天吧。',
+  noConversations: '还没有会话',
+  noMatches: '没有匹配的结果',
+  newMessages: '新消息',
+  jumpToLatest: (n: number) => (n ? `${n} 条新消息` : '回到最新'),
+  pin: '置顶',
+  unpin: '取消置顶',
+  helpful: '有帮助',
+  notHelpful: '没帮助',
+  attach: '添加文件',
+  image: '图片',
+  viewOriginal: '查看原图',
+  download: '下载',
+  uploading: (pct: number) => `上传中… ${pct}%`,
+  fileUnavailable: '文件已不可用',
+  dropFiles: '松开即可发送文件',
+  fileTypes: { pdf: 'PDF', doc: '文档', sheet: '表格', slides: '演示文稿', archive: '压缩包', audio: '音频', video: '视频', code: '代码', image: '图片', other: '文件' } as Record<string, string>,
+  connection: { closed: '离线', connecting: '连接中…', connected: '', disconnected: '重新连接中…', suspended: '等待网络…', failed: '无法连接' } as Record<string, string>,
+  messages: '消息',
+  conversations: '会话',
+  members: '成员',
+  roles: { owner: '群主', admin: '管理员', member: '' } as Record<string, string>,
+  handedOff: '正在为你转接人工',
+  handedBack: 'AI 助手回来了',
+  approvalTitle: '需要审批',
+  approvalFor: 'AI 助手想要',
+  approved: '已批准',
+  declined: '已拒绝',
+  approvalExpired: '已过期',
+  approvalCancelled: '已取消',
+  approvalAmount: '金额',
+  cardWaiting: '等待回答',
+  cardAnswered: '已回答',
+  answeredBy: (name: string) => `${name} 已提交`,
+  fieldRequired: '必填',
+  fieldInvalid: '请检查这个值',
+  emptyValue: '—',
+  inboxEmpty: '都处理完了',
+  inboxEmptyHint: '需要你处理的审批、草稿和转人工会显示在这里。',
+  inboxDeclineReason: '原因（可选）',
+  inboxHandBack: '交还给 AI',
+  inboxSend: '发送',
+  inboxSendEdited: '发送修改后的内容',
+  inboxDiscard: '丢弃',
+  inboxAnswer: '回答',
+  inboxBack: '返回',
+  inboxDecidedBy: (name: string, state: string) => `${name}${state}`,
+  inboxYou: '你',
+  ended: (reason: string, by?: string) => (reason === 'removed' ? (by ? `${by} 把你移出了会话` : '你已被移出这个会话') : reason === 'dissolved' ? (by ? `${by} 关闭了这个会话` : '这个会话已关闭') : '你已离开这个会话'),
+  endedComposer: (reason: string) => (reason === 'dissolved' ? '这个会话已关闭，你仍可以查看历史消息。' : '你已不是成员，无法发送消息。'),
 };
 
 function data(lang: Lang) {
@@ -127,20 +190,76 @@ function data(lang: Lang) {
     { user_id: 'u_jordan', name: jordan[1], kind: 'human', role: 'admin' },
     { user_id: 'u_nova', name: 'Nova', kind: 'agent', role: 'member' },
   ];
+  const priya: [string, string, string] = ['u_priya', t('Priya Shah', '普丽雅'), 'human'];
+  const bot: [string, string, string] = ['u_bot', t('Deploy bot', '部署机器人'), 'agent'];
+  const c = (conv: string) => (sender: [string, string, string], content: string, iso: string, extra: any = {}) => m(sender, content, iso, { conv_id: conv, ...extra });
+  const dz = c('c_design');
+  const design = [
+    dz(priya, t('New checkout mocks are in Figma 🎨 Two options for the order page.', '新的结算页设计稿已放到 Figma 🎨 订单页有两个方案。'), '2026-10-26T14:40:00Z', { reactions: [{ key: '🔥', count: 3, me: true, users: [ME, 'u_jordan', 'u_nova'] }] }),
+    dz(priya, t('A keeps the summary on the right. B puts it on top, which is easier on phones.', 'A 方案把摘要放在右边；B 方案放在顶部，手机上更好看。'), '2026-10-26T14:41:00Z'),
+    dz(jordan, t('B reads better on small screens.', 'B 在小屏上更清楚。'), '2026-10-26T14:55:00Z', { reactions: [{ key: '👍', count: 2, me: false, users: ['u_priya', 'u_nova'] }] }),
+    dz(nova, t('Here’s the vote so far', '目前的投票结果'), '2026-10-26T14:58:00Z', {
+      msg_id: 'd_vote', kind: 'agentim.card',
+      payload: { title: t('Order page: A or B?', '订单页：A 还是 B？'), blocks: [{ type: 'facts', items: [{ label: t('Option A', '方案 A'), value: t('1 vote', '1 票') }, { label: t('Option B', '方案 B'), value: t('4 votes', '4 票'), tone: 'success' }] }, { type: 'buttons', id: 'v', options: [{ id: 'a', label: t('Vote A', '投 A') }, { id: 'b', label: t('Vote B', '投 B'), style: 'primary' }] }] },
+    }),
+    dz(maya, t('Let’s go with B. Final mocks by Friday?', '就选 B。周五前出终稿？'), '2026-10-26T15:00:00Z', { msg_id: 'd_due' }),
+    dz(priya, t('On it 👌', '没问题 👌'), '2026-10-26T15:02:00Z', { reactions: [{ key: '🙏', count: 1, me: true, users: [ME] }] }),
+  ];
+  const ln = c('c_launch');
+  const launch = [
+    ln(jordan, t('Release 2.5 checklist 👇', '2.5 版本上线清单 👇'), '2026-10-25T17:30:00Z'),
+    ln(nova, t('Release 2.5', '2.5 版本'), '2026-10-25T17:31:00Z', {
+      msg_id: 'l_list', kind: 'agentim.card',
+      payload: { title: t('Release 2.5', '2.5 版本'), blocks: [{ type: 'table', columns: [{ label: t('Task', '任务') }, { label: t('Owner', '负责人') }, { label: t('Status', '状态') }], rows: [[t('Release notes', '发布说明'), 'Jordan', t('Done', '完成')], [t('Migration test', '迁移测试'), 'Nova', t('Done', '完成')], [t('App Store review', 'App Store 审核'), 'Maya', t('Waiting', '等待中')]] }] },
+    }),
+    ln(maya, t('Ship it Thursday?', '周四上线？'), '2026-10-25T19:00:00Z'),
+    ln(jordan, t('Thursday works. I’ll post the notes.', '周四可以，我来发上线说明。'), '2026-10-25T19:04:00Z', { reactions: [{ key: '🚀', count: 3, me: true, users: [ME, 'u_nova', 'u_priya'] }] }),
+  ];
+  const op = c('c_ops');
+  const ops_ = [
+    op(bot, t('Deploy 2.4.1', '部署 2.4.1'), '2026-10-25T12:52:00Z', {
+      msg_id: 'o_deploy', kind: 'agentim.card',
+      payload: { title: t('Deploy 2.4.1', '部署 2.4.1'), blocks: [{ type: 'facts', items: [{ label: t('Nodes', '节点'), value: '3 / 3', tone: 'success' }, { label: t('Duration', '耗时'), value: '4m 12s' }, { label: t('Messages lost', '丢失消息'), value: '0', tone: 'success' }] }] },
+    }),
+    op(bot, t('Deploy 2.4.1 finished on 3 nodes', '2.4.1 已在 3 个节点部署完成'), '2026-10-25T13:00:00Z'),
+    op(nova, t('p95 delivery latency is back to 38 ms after the rolling restart.', '滚动重启后，P95 投递延迟回到 38 毫秒。'), '2026-10-25T13:02:00Z', { reactions: [{ key: '🙌', count: 2, me: false, users: ['u_jordan', 'u_priya'] }] }),
+  ];
+  const nv = c('c_nova');
+  const novaDm = [
+    nv(maya, t('Can you summarize this week?', '帮我总结一下这周？'), '2026-10-22T12:59:00Z'),
+    nv(nova, t('Your week', '你的一周'), '2026-10-22T13:00:00Z', {
+      msg_id: 'n_week', kind: 'agentim.card',
+      payload: { title: t('Support this week', '本周客服'), blocks: [{ type: 'facts', items: [{ label: t('Conversations', '会话'), value: '1,284' }, { label: t('Answered by Nova', 'Nova 解决'), value: '82%', tone: 'success' }, { label: t('Handed to the team', '转人工'), value: '41' }, { label: t('Satisfaction', '满意度'), value: '4.7 / 5' }] }] },
+    }),
+    nv(nova, t('Here’s your weekly summary.', '这是你的本周摘要。'), '2026-10-22T13:00:10Z', { envelope: { sources: [{ title: t('Support analytics', '客服数据'), url: '#' }] } }),
+  ];
+  const team = [
+    { user_id: ME, name: maya[1], kind: 'human', role: 'owner' },
+    { user_id: 'u_priya', name: priya[1], kind: 'human', role: 'member' },
+    { user_id: 'u_jordan', name: jordan[1], kind: 'human', role: 'admin' },
+    { user_id: 'u_nova', name: 'Nova', kind: 'agent', role: 'member' },
+  ];
   const conversations = [
     { conv_id: 'c_support', title: t('Acme Support', 'Acme 客服'), unread: 0, last_message: app[app.length - 1], members },
-    { conv_id: 'c_design', title: t('Design team', '设计组'), unread: 3, last_message: { content: t('New mocks are in Figma 🎨', '新设计稿已放到 Figma 🎨'), sender_id: 'u_jordan', created_at: at('2026-10-26T15:02:00Z') } },
-    { conv_id: 'c_launch', title: t('Launch checklist', '上线清单'), unread: 0, last_message: { content: t('Ship it Thursday?', '周四上线？'), sender_id: ME, created_at: at('2026-10-25T19:00:00Z') } },
-    { conv_id: 'c_ops', title: t('Ops agents', '运维 Agent 群'), unread: 12, last_message: { content: t('Deploy 2.4.1 finished on 3 nodes', '2.4.1 已在 3 个节点部署完成'), sender_id: 'u_bot', created_at: at('2026-10-25T13:00:00Z') } },
-    { conv_id: 'c_nova', title: 'Nova', unread: 0, last_message: { content: t('Here’s your weekly summary.', '这是你的本周摘要。'), sender_id: 'u_nova', created_at: at('2026-10-22T13:00:00Z') } },
+    { conv_id: 'c_design', title: t('Design team', '设计组'), unread: 3, last_message: design[design.length - 1], members: team },
+    { conv_id: 'c_launch', title: t('Launch checklist', '上线清单'), unread: 0, last_message: launch[launch.length - 1], members: team },
+    { conv_id: 'c_ops', title: t('Ops agents', '运维 Agent 群'), unread: 12, last_message: ops_[ops_.length - 1], members: [team[0], team[2], { user_id: 'u_bot', name: bot[1], kind: 'agent', role: 'member' }, team[3]] },
+    { conv_id: 'c_nova', title: 'Nova', unread: 0, last_message: novaDm[novaDm.length - 1], members: [team[0], team[3]] },
   ];
+  const convs: Record<string, { messages: any[]; title: string; subtitle: string; pins: any[] }> = {
+    c_support: { messages: app, title: t('Acme Support', 'Acme 客服'), subtitle: t('3 members · Nova (AI) and our team', '3 位成员 · Nova（AI）和客服团队'), pins: [{ msg_id: 'm2', msg: { content: t('Order #4821 ships with UPS, arriving Thursday, Oct 29', '订单 #4821 由 UPS 发货，10 月 29 日（周四）送达') } }] },
+    c_design: { messages: design, title: t('Design team', '设计组'), subtitle: t('4 members · Figma reviews', '4 位成员 · 设计评审'), pins: [{ msg_id: 'd_due', msg: { content: t('Go with B. Final mocks by Friday', '选 B 方案，周五前出终稿') } }] },
+    c_launch: { messages: launch, title: t('Launch checklist', '上线清单'), subtitle: t('4 members · release 2.5', '4 位成员 · 2.5 版本'), pins: [{ msg_id: 'l_list', msg: { content: t('Release 2.5 checklist', '2.5 版本上线清单') } }] },
+    c_ops: { messages: ops_, title: t('Ops agents', '运维 Agent 群'), subtitle: t('2 people, 2 agents', '2 人，2 个 Agent'), pins: [] },
+    c_nova: { messages: novaDm, title: 'Nova', subtitle: t('AI assistant', 'AI 助手'), pins: [] },
+  };
   const threadRoot = app.find((x) => x.msg_id === 't1');
   const threadReplies = [
     m(nova, t('The package is still at the UPS depot, so the address can change once.', '包裹还在 UPS 仓库，可以修改一次地址。'), '2026-10-26T17:21:00Z', { thread_id: 't1' }),
     m(jordan, t('Changed it. UPS confirmed the new address for Thursday.', '已改好，UPS 确认周四按新地址送达。'), '2026-10-26T17:24:30Z', { thread_id: 't1' }),
     m(maya, t('Perfect, thank you both! 🙏', '太好了，谢谢你们！🙏'), '2026-10-26T17:25:10Z', { thread_id: 't1' }),
   ];
-  const pins = [{ msg_id: 'm2', msg: { content: t('Refunds over $30 need a manager’s approval.', '超过 30 美元的退款需要主管审批。') } }, { msg_id: 'm9', msg: { content: '…' } }];
+  const agentPins = [{ msg_id: 'r1', msg: { content: t('Order 1002 · Bluetooth speaker, $120, delayed at UPS', '订单 1002 · 蓝牙音箱，120 美元，UPS 延误') } }];
 
   const cards = [
     m(maya, t('Where is my order 1002? It should have arrived by now.', '我的订单 1002 怎么还没到？'), '2026-10-26T17:20:00Z'),
@@ -217,17 +336,19 @@ function data(lang: Lang) {
     draft: t('Yes! Inspected on Oct 20: grade A-, no haze or fungus. With DHL Express it arrives in 2 days, so Friday works. Please pay through the checkout so you’re covered by buyer protection.', '在的！10 月 20 日检测为 A- 级，无起雾、无霉斑。DHL 特快 2 天送达，周五前没问题。请通过平台下单付款，这样能享受买家保障。'),
     flag: t('Payment outside the platform was suggested. The draft keeps it on the platform (policy 4.2).', '对方提议在平台外付款。草稿已引导回平台内交易（规则 4.2）。'),
   };
-  return { app, conversations, threadRoot, threadReplies, pins, cards, steps, inbox, desk, ops, market, copilot, title: t('Acme Support', 'Acme 客服'), subtitle: t('3 members · Nova (AI) and our team', '3 位成员 · Nova（AI）和客服团队'), cardsSub: t('Nova (AI) · orders and refunds', 'Nova（AI）· 订单和退款'), typing: 'u_jordan' };
+  return { app, conversations, convs, threadRoot, threadReplies, agentPins, cards, steps, inbox, desk, ops, market, copilot, title: t('Acme Support', 'Acme 客服'), subtitle: t('3 members · Nova (AI) and our team', '3 位成员 · Nova（AI）和客服团队'), cardsSub: t('Nova (AI) · orders and refunds', 'Nova（AI）· 订单和退款'), typing: 'u_jordan' };
 }
 
-function client(messages: any[], d: ReturnType<typeof data>, onSide?: (emit: (e: any) => void) => void, typing = false, pins = true) {
-  const view = new View(messages);
+function client(byConv: Record<string, any[]>, d: ReturnType<typeof data>, onSide?: (emit: (e: any) => void) => void, typing = false, pins: Record<string, any[]> = {}) {
+  const views = new Map(Object.entries(byConv).map(([k, v]) => [k, new View(v)]));
+  const empty = new View([]);
   const listeners = new Map<string, Set<(e: any) => void>>();
   const noop = async () => ({});
+  const conversations = new Observable<any[]>(d.conversations);
   const c: any = {
     connection: new Observable<any>({ state: 'connected' }),
-    conversations: new Observable<any[]>(d.conversations),
-    messages: () => view,
+    conversations,
+    messages: (conv: string) => views.get(conv) ?? empty,
     send: noop,
     edit: noop,
     recall: noop,
@@ -235,9 +356,22 @@ function client(messages: any[], d: ReturnType<typeof data>, onSide?: (emit: (e:
     discard: noop,
     feedback: noop,
     respond: noop,
-    read: noop,
-    call: async (op: string) =>
-      op === 'inbox' ? { items: d.inbox, more: false } : op === 'pull_thread' ? { root: d.threadRoot, replies: d.threadReplies } : op === 'list_pins' ? (pins ? { pins: d.pins, count: d.pins.length } : { pins: [], count: 0 }) : op === 'card_answers' ? { answers: [] } : {},
+    // Opening a conversation reads it: its unread count goes away.
+    read: async (conv: string) => {
+      const list = conversations.get();
+      if (list.some((x) => x.conv_id === conv && x.unread)) conversations.set(list.map((x) => (x.conv_id === conv ? { ...x, unread: 0 } : x)));
+      return {};
+    },
+    call: async (op: string, args: any = {}) => {
+      if (op === 'inbox') return { items: d.inbox, more: false };
+      if (op === 'pull_thread') return { root: d.threadRoot, replies: d.threadReplies };
+      if (op === 'list_pins') {
+        const p = pins[args.conv_id] ?? [];
+        return { pins: p, count: p.length };
+      }
+      if (op === 'card_answers') return { answers: [] };
+      return {};
+    },
     // Typing and steps are sent once something listens (a view mounts
     // when its tab opens, after this client was made).
     on: (t: string, f: (e: any) => void) => {
@@ -359,26 +493,27 @@ function CopilotPanel({ d, lang }: { d: ReturnType<typeof data>; lang: Lang }) {
 
 export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
   const [tab, setTab] = useState('app');
-  // The examples have their own language, English by default on every page.
-  const [demo, setDemo] = useState<Lang>('en');
+  // The examples speak the page's language.
+  const demo = lang;
+  const [conv, setConv] = useState('c_support');
   const d = useMemo(() => data(demo), [demo]);
   const strings = demo === 'zh' ? zhStrings : undefined;
   const locale = demo === 'zh' ? 'zh-CN' : 'en-US';
   const tz = 'America/Los_Angeles';
-  const appClient = useMemo(() => client(d.app, d, undefined, true), [d]);
+  const appClient = useMemo(() => client(Object.fromEntries(Object.entries(d.convs).map(([k, v]) => [k, v.messages])), d, undefined, true, Object.fromEntries(Object.entries(d.convs).map(([k, v]) => [k, v.pins]))), [d]);
   const agentClient = useMemo(
     () =>
-      client(d.cards, d, (emit) => {
+      client({ c_support: d.cards }, d, (emit) => {
         const t0 = at('2026-10-26T17:20:01Z');
         d.steps.r1.forEach((s, i) => emit({ event: { type: 'progress', conv_id: 'c_support', created_at: t0 + i * 4000, data: { kind: 'step', text: s.title, msg_id: 'r1', data: s } } }));
         const t1 = at('2026-10-26T17:22:31Z');
         emit({ event: { type: 'progress', conv_id: 'c_support', created_at: t1, data: { kind: 'plan', text: 'plan', msg_id: 'r4', data: { steps: d.steps.r4.map(({ id, title }) => ({ id, title })) } } } });
         d.steps.r4.filter((s) => s.state !== 'pending').forEach((s, i) => emit({ event: { type: 'progress', conv_id: 'c_support', created_at: t1 + i * 2000, data: { kind: 'step', text: s.title, msg_id: 'r4', data: s } } }));
-      }),
+      }, false, { c_support: d.agentPins }),
     [d],
   );
-  const inboxClient = useMemo(() => client([], d), [d]);
-  const marketClient = useMemo(() => client(d.market, d, undefined, false, false), [d]);
+  const inboxClient = useMemo(() => client({}, d), [d]);
+  const marketClient = useMemo(() => client({ c_support: d.market }, d), [d]);
   useEffect(() => {
     if (tab !== 'inbox') return;
     let n = 0;
@@ -405,13 +540,6 @@ export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
         <div className="showcase-bar">
           <span className="lights" aria-hidden="true"><i /><i /><i /></span>
           <span className="showcase-url">{current.url}</span>
-          <span className="showcase-lang" role="group" aria-label={lang === 'zh' ? '示例语言' : 'Example language'}>
-            {(['en', 'zh'] as Lang[]).map((l) => (
-              <button key={l} type="button" aria-pressed={demo === l} className={demo === l ? 'on' : ''} onClick={() => setDemo(l)} lang={l === 'zh' ? 'zh-CN' : 'en'}>
-                {l === 'zh' ? '中文' : 'EN'}
-              </button>
-            ))}
-          </span>
         </div>
         <div className="showcase-body" role="tabpanel" aria-label={current.label}>
           {tab === 'app' && (
@@ -419,14 +547,21 @@ export default function ProductShowcase({ lang = 'en' }: { lang?: Lang }) {
               <div className="sc-app">
                 <aside className="sc-side">
                   <div className="sc-head">{demo === 'zh' ? '消息' : 'Messages'}</div>
-                  <ConversationList selected="c_support" onSelect={() => {}} />
+                  <ConversationList selected={conv} onSelect={setConv} />
                 </aside>
                 <div className="sc-main">
-                  <Chat convId="c_support" title={d.title} subtitle={d.subtitle} />
+                  <Chat key={conv} convId={conv} title={d.convs[conv].title} subtitle={d.convs[conv].subtitle} />
                 </div>
-                <aside className="sc-info sc-thread">
-                  <Thread convId="c_support" threadId="t1" />
-                </aside>
+                {conv === 'c_support' ? (
+                  <aside className="sc-info sc-thread">
+                    <Thread convId="c_support" threadId="t1" />
+                  </aside>
+                ) : (
+                  <aside className="sc-info">
+                    <div className="sc-head">{demo === 'zh' ? '成员' : 'Members'}</div>
+                    <MemberList convId={conv} />
+                  </aside>
+                )}
               </div>
             </AgentIM>
           )}

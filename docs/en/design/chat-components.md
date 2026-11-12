@@ -30,7 +30,7 @@ The design aims:
 | UI-12 | Theming | Design tokens (`tokens.json` → CSS variables `--aim-*` and React Native values), light and dark, contrast checked in tests. A live theme preview on the docs site generates the CSS |
 | UI-13 | Extension points | `components.cardBlocks`, `components.formFields` (also to redraw built-in types), `components.Steps`, `useSteps`, `useInbox`, `useCardAnswers`, `<Inbox extraItems renderItem types onOpen>`, `strings` |
 | UI-14 | Agent tools | Built-in assistants: `show_card`, `ask_form`, steps per tool call. Agent SDKs: `ctx.showCard`, `ctx.askForm` (waits for the answers), `ctx.steps` |
-| UI-15 | Threads, reactions and pins | Reaction chips under a message (mine highlighted, a picker of common emoji) and "N replies" under a thread's root; replies only in a thread stay out of the message list; `Thread` shows a thread with its own composer ("also send to the conversation"); `PinnedMessages` shows the latest pin and how many. React and React Native (reactions and replies) ([messaging](messaging.md), MSG-19 to MSG-21) |
+| UI-15 | Threads, reactions and pins | Reaction chips under a message (mine highlighted, a picker of common emoji) and "N replies" under a thread's root; replies only in a thread stay out of the message list; `Thread` shows a thread with its own composer ("also send to the conversation"); `PinnedMessages` shows the latest pin and how many; in `Chat`, clicking it scrolls to that message and marks it for a moment (nothing happens when the message is not loaded). React and React Native (reactions and replies) ([messaging](messaging.md), MSG-19 to MSG-21) |
 
 ## 3. Design
 
@@ -140,7 +140,7 @@ A refused answer writes nothing.
 | UI-11, UI-12 | `sdk/react/test/components.test.tsx` (components); `sdk/react/test/format.test.ts` and `scripts/tokens.mjs` (contrast of every token pair); `sdk/react/test/e2e.mjs` (against a real server); `sdk/react/test/screens.mjs` (screenshots in light, dark, phone, RTL compared with baselines in CI) |
 | React Native | `sdk/react-native-ui/test/chat-components.test.tsx`: data cards, form cards, own blocks and fields, steps, inbox and badge; `components.test.tsx` |
 | UI-14 (SDKs) | `sdk/agent-node/e2e.mjs`, `sdk/agent-python/e2e.py`: `showCard`, `askForm` with answers, `steps` |
-| UI-15 | `sdk/react/test/social.test.tsx`: all 7 tests; `sdk/react-native-ui/test/components.test.tsx`: `keeps thread-only replies out, shows the reply count and toggles reactions` |
+| UI-15 | `sdk/react/test/social.test.tsx`: all 8 tests; `sdk/react-native-ui/test/components.test.tsx`: `keeps thread-only replies out, shows the reply count and toggles reactions` |
 | End to end | `examples/test/e2e.mjs`: the after-sales example (order card, refund form, steps, approvals in the chat and in the inbox, hand-off) and the advisor example (drafts in the inbox) |
 
 ## 7. Limits and next steps
