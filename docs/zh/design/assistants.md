@@ -89,7 +89,7 @@
 
 ### 3.6 内置库
 
-从模板开始是业内通行的做法：Anthropic 的 Agent Skills 仓库以"文件夹 + `SKILL.md` + 参考文件"的形式提供示例 Skill；Claude Code 的 Agent 是带头部的 Markdown 文件；Dify 和 Copilot Studio 提供现成 Agent 的模板库，复制后再改。AgentIM 用同样的格式提供同类的库，所以每个内置角色、每个 Skill 同时也是合法的 Claude Code Agent 和 Agent Skill。
+从模板开始是业内通行的做法：Anthropic 的 Agent Skills 仓库以"文件夹 + `SKILL.md` + 参考文件"的形式提供示例 Skill，Claude Code 的 Agent 是带头部的 Markdown 文件。AgentIM 用同样的格式提供同类的库，所以每个内置角色、每个 Skill 同时也是合法的 Claude Code Agent 和 Agent Skill。
 
 - **自带什么**：角色在 `server/crates/agentim-core/builtin/agents/*.md`，Skill 在 `builtin/skills/<名字>/SKILL.md` 加 `references/`，编译进程序（`library.rs`）。Skill 只有说明，从不带脚本，也不执行脚本。
 - **添加**：在控制库的写线程里一次写入，把它复制进应用自己的库：

@@ -243,19 +243,6 @@ table.compare { width: 100%; border-collapse: collapse; font-size: 14.5px; min-w
 @media (max-width: 760px) { .tiles { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 520px) { .tiles { grid-template-columns: 1fr; } }
 
-/* Chat components gallery */
-.cg { margin-top: 36px; }
-.cg-bar { display: flex; justify-content: flex-end; margin-bottom: 12px; }
-.cg-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
-.cg-tile { margin: 0; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
-.cg-chat { height: 380px; border-bottom: 1px solid var(--line); background: #fff; }
-.cg-chat > * { height: 100%; }
-.cg-chat .aim-composer, .cg-chat .aim-typing, .cg-chat .aim-day, .cg-chat .aim-top { display: none; }
-.cg-tile figcaption { padding: 18px 20px; background: var(--bg-soft); }
-.cg-tile figcaption p { color: var(--fg-2); font-size: 14.5px; margin-top: 6px; }
-.cg-tile figcaption code { display: block; margin-top: 12px; font: 12px var(--mono); color: var(--fg-2); background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; overflow-x: auto; white-space: pre; }
-@media (max-width: 860px) { .cg-grid { grid-template-columns: 1fr; } }
-
 /* "A complete IM": grouped features and a fanned stack of screenshots */
 main > section.imx { padding: 104px 0 72px; background: var(--bg-soft); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); overflow: hidden; }
 .imx-grid { display: grid; grid-template-columns: 1fr 1.05fr; gap: 56px; align-items: center; }

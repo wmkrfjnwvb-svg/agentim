@@ -1,9 +1,27 @@
 ---
 title: "Chat components"
 description: "Data cards, form cards, steps next to a reply and the approval inbox: what they look like, how an agent uses them, and how to extend them."
-sidebar:
-  order: 2
 ---
+
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+import Support from '../../../../components/docs/Support.astro';
+import CardsGallery from '../../../../components/CardsGallery';
+
+<Capabilities>
+- Data cards: facts and tables with money, dates and statuses in each reader’s format
+- Forms: text, numbers, dates and choices, checked by the server
+- Buttons for quick choices, and the steps of the agent’s work as they happen
+- Approval cards with the values and the rule that asked
+- Declarative JSON from a fixed set of blocks, never scripts
+- Drawn natively by React and React Native, themed like the rest of your app
+- One line from an agent: showCard, askForm, steps
+</Capabilities>
+
+## See it
+
+Each tile is drawn by the React components from the JSON an agent sends.
+
+<CardsGallery client:visible lang="en" />
 
 Four components make an assistant that does things look like part of your product rather than a chat bot:
 
@@ -134,3 +152,11 @@ Python has the same: `ctx.steps`, `ctx.show_card`, `ctx.ask_form` (it waits for 
 | The inbox in your own to-do list | `useInbox()` (items, counts, `decide`, `answer`, `approveDraft`, `discardDraft`, `handBack`), or `<Inbox extraItems={…} renderItem={…} types={…} onOpen={…}>` |
 | Approvals from any agent | Your own agent's `request_human` with `context.operation` (`name`, `description`, `fields`, `amount`) shows the same operation card |
 | Texts and look | `strings` and the theme variables |
+
+## Where it works
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} />
+
+## Related
+
+[Streaming, progress, cards and feedback](/docs/concepts/streaming/) · [Theming](/docs/guides/theming/) · [Agent SDKs](/docs/agent-sdks/) · [React components](/docs/client-sdks/react-api/)

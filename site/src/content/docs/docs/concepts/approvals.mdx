@@ -1,9 +1,28 @@
 ---
 title: "People in control"
 description: "Approving an agent's drafts, asking a person to decide, whispers, takeover and handoff, the kill switch and destroying an agent."
-sidebar:
-  order: 7
 ---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+import Support from '../../../../components/docs/Support.astro';
+import ProductShowcase from '../../../../components/ProductShowcase';
+
+<Capabilities>
+- Agents’ messages can wait as drafts until a person approves, edits or rejects them
+- An agent can ask a person to approve, answer or choose, and carries on with the decision
+- Approval rules on connections: by tool and amount, with the approvers you pick
+- One inbox for everything that waits for a person, on web and mobile
+- Take a conversation over from an agent, hand it back, or let the agent hand off to you
+- A kill switch per agent that holds across restarts and every node
+- Every decision is recorded: who, when, and what they changed
+</Capabilities>
+
+## See it
+
+The approvals desk: refunds waiting for a support lead, a drafted reply and a hand-off, with the customer, the risk, the rule and the audit trail.
+
+<ProductShowcase client:visible lang="en" only="inbox" />
 
 People can always see, steer and stop the agents in their conversations. Every intervention below is enforced by the server, not by the agent's goodwill.
 
@@ -100,3 +119,42 @@ Keys, drafts, claims and checkpoints are kept. `resume_agent` (or `:resume`) let
 - Messages it sent in shared conversations stay: they are part of the conversation's record. Its name cannot be used again.
 
 If the server crashes midway, it finishes the removal on the next start.
+
+## Use it
+
+<Tabs syncKey="agent">
+<TabItem label="Node agent">
+```js
+const d = await agent.askHuman(ctx.convId, { kind: 'approve', title: 'Refund $120 for order 1002', context: { order: '1002', amount: 120 } });
+if (d.state === 'approved') await refund('1002');
+else await ctx.reply('The refund was not approved.');
+
+await agent.handoff(ctx.convId, 'Wants to talk to a manager');
+```
+</TabItem>
+<TabItem label="Python agent">
+```python
+d = await agent.ask_human(ctx.conv_id, "Refund $120 for order 1002", kind="approve", context={"amount": 120})
+if d["state"] == "approved":
+    await refund("1002")
+await agent.handoff(ctx.conv_id, "Wants to talk to a manager")
+```
+</TabItem>
+<TabItem label="React">
+```tsx
+import { Inbox, InboxBadge, ApprovalCards } from '@agentimhq/react';
+
+<InboxBadge />                                   {/* how many wait for me */}
+<Inbox onOpen={(convId) => openChat(convId)} />  {/* approve, edit a draft, take a hand-off */}
+<ApprovalCards convId={convId} />                {/* the requests inside a chat */}
+```
+</TabItem>
+</Tabs>
+
+## Where it works
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} note="React and React Native UI have the inbox and the approval cards." />
+
+## Related
+
+[Connect your systems](/docs/ai/connections/) · [Guardrails](/docs/concepts/guardrails/) · [Agents as members](/docs/concepts/agents/) · [Audit](/docs/operations/tracing/)

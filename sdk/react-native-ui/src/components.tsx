@@ -1180,7 +1180,7 @@ const NEAR_BOTTOM = 48;
 
 /**
  * The messages in an inverted list (newest at the bottom, scroll up for
- * older ones; Stream Chat does the same), in runs per sender with day
+ * older ones), in runs per sender with day
  * separators, notices and "New messages"; a button brings you back down.
  */
 export function MessageList({ convId, notices = [], onOpenThread }: { convId: string; notices?: Notice<ReactNode>[]; onOpenThread?(threadId: string): void }) {

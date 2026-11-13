@@ -1,9 +1,20 @@
 ---
 title: "Files and images"
 description: "Uploads straight to S3 or through the server, thumbnails made on the device, location data removed, and links that check permission every time."
-sidebar:
-  order: 9
 ---
+
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+import Support from '../../../../components/docs/Support.astro';
+
+<Capabilities>
+- Send files and images in one call, from any client SDK, agent or backend
+- Location and camera metadata removed on the device; upright thumbnails made there
+- Shown at once with a progress bar; uploads resume after network changes and restarts
+- Straight to S3 (or R2, MinIO…): the server never sees the bytes
+- The real type is checked from the file; SVG is never treated as an image
+- Download links checked every time and valid for 5 minutes; removed members lose access at once
+- Unsent and recalled files are cleaned up; retention per app
+</Capabilities>
 
 ## Sending
 
@@ -68,3 +79,11 @@ region = "us-east-1"
 ```
 
 Credentials come from `AGENTIM_S3_ACCESS_KEY_ID` and `AGENTIM_S3_SECRET_ACCESS_KEY`. The bucket needs CORS for browser uploads ([file storage](/docs/operations/file-storage/)). A cluster needs S3, or a local folder shared by every node (`shared = true`).
+
+## Where it works
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} note="React and React Native UI show images, a viewer with View original, and file cards with a download button." />
+
+## Related
+
+[File storage](/docs/operations/file-storage/) · [Conversations and messages](/docs/concepts/conversations/) · [Agent SDKs](/docs/agent-sdks/) · [Open API](/docs/reference/open-api/)

@@ -1,0 +1,74 @@
+---
+title: "Architecture: how a message travels"
+description: "One Rust program: the gateway, one writer per conversation, the event log, fan-out to every device, and a cluster that needs nothing but the database."
+---
+
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+
+<Capabilities>
+- One program: no queue, cache or coordination service to run beside it
+- One writer per conversation, so every member sees the same order without a global lock
+- Acknowledged only after the database has the message on disk
+- Many messages committed together with one disk write (group commit)
+- Each event serialised once and shared by every connection that gets it
+- Bounded queues everywhere: overload is refused, never allowed to exhaust memory
+- A cluster of equal nodes on the same database, with shards that move on failure
+</Capabilities>
+
+## The life of a message
+
+```
+client SDK ──send──▶ gateway ──▶ conversation writer ──▶ event log (SQLite, PostgreSQL or MySQL)
+   ▲                 auth, rules,   seq, idempotency,        │ COMMIT (one fsync per batch)
+   │                 rate limits    permissions again        ▼
+   └──── push, in order ◀──── fan-out to every device, agent, webhook and the audit trail
+```
+
+1. **Client core.** Every client SDK shares one Rust core: the offline queue, retries with the same `client_msg_id`, the local cache and sync.
+2. **Gateway.** WebSocket and HTTP: the token or key, rate limits, permissions and business rules. A refused request stops here and leaves no trace.
+3. **Conversation writer.** One writer per database (per shard in a cluster) takes the queued commands, gives each message the next `seq`, checks the rules again inside the transaction and writes the deduplication key with it.
+4. **Event log.** The commit is the moment of truth: only after `COMMIT` returns are the sender acknowledged and the event pushed.
+5. **Fan-out.** The event is serialised once and handed to each connection's bounded send queue, in order. A device that can't keep up loses only its own pushes and is told to sync.
+
+## The write path
+
+```
+connections (in arrival order)          writer (one per database or shard)
+──cmd──▶ bounded command queue ──▶ ┌──────────────────────────────────────────┐
+                                    │ take one command, then all that are queued │
+                                    │ BEGIN                                       │
+                                    │   SAVEPOINT; cmd1; RELEASE  (a failure rolls back only itself)
+                                    │   SAVEPOINT; cmd2; RELEASE                  │
+                                    │ COMMIT  ← one fsync for the whole batch     │
+                                    └──────┬─────────────────────────────────────┘
+                                           │ after commit: ACKs and events, in order
+                                           ▼
+                           fan-out: shared bytes, bounded per-connection queues
+```
+
+| Risk | Handling |
+|---|---|
+| Acknowledging before it is durable | ACKs and pushes happen only after `COMMIT` returns |
+| One failing command spoils the batch | Each command runs in its own savepoint; a failure rolls back only that command |
+| A rolled-back command leaves a gap | The `seq` counter is updated inside the savepoint and rolls back with it |
+| The whole commit fails | Every command in the batch gets an error and the client retries with the same id. An fsync error is fatal: the process stops writing and recovers from the database's log |
+| Slow clients | Bounded send queues; when full, the push is dropped and the client resyncs |
+| Write overload | A bounded command queue; when full, `overloaded`, and the client retries safely |
+
+## Storage
+
+Three databases with the same behaviour and the same tests: **SQLite** for one node, **PostgreSQL** and **MySQL** (or MariaDB) for clusters and replicas. Message content, side-channel content, drafts and audit details are encrypted at rest, with a key per conversation wrapped by your master key ([encryption](/docs/operations/encryption/)).
+
+## Cluster
+
+- Nodes are equal: no leader, no election, nothing to run beside the database.
+- Conversations map to virtual shards. A shard is written by the node holding its lease in the database, and every batch checks the lease's fencing token in the same transaction.
+- Any node accepts any client and forwards writes to the shard's node over TLS.
+- A crashed node's shards are taken over when the lease expires (about 15–18 s). Adding or draining a node and rolling upgrades hand shards over at once.
+- With database replicas, the server waits for the replica before acknowledging, so a failover keeps every acknowledged message.
+
+See [Cluster](/docs/operations/cluster/) to run one.
+
+## Related
+
+[Delivery guarantees](/docs/reliability/guarantees/) · [Performance and capacity](/docs/reliability/performance/) · [How we test](/docs/reliability/testing/) · [How AgentIM fits in](/docs/concepts/overview/)

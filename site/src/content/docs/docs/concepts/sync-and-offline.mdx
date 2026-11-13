@@ -1,9 +1,28 @@
 ---
 title: "Sync and offline"
 description: "How every device gets every event exactly once and in order, what the client SDKs keep offline, and how much history a new device or member sees."
-sidebar:
-  order: 3
 ---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+import Support from '../../../../components/docs/Support.astro';
+
+<Capabilities>
+- Every device gets every event exactly once and in order, after any disconnect
+- An offline queue: sends, edits, read marks and card answers go out after the network or the app comes back
+- An encrypted local cache: the list and recent messages show at once, also offline
+- Edits and sends show immediately and are confirmed by the server
+- Read on one device, read everywhere; unread counts and mentions kept by the server
+- Mute a conversation on every device, for a while or for good
+- History for new devices and new members, with clear limits
+- Reconnects by itself with backoff, at once when the network returns
+</Capabilities>
+
+## See it
+
+The same conversation on the web and on a phone: what you read on one is read on the other.
+
+![The same conversation on the web and on a phone](../../../../assets/screens/web-phone.png)
 
 ## Push is a hint, sync is the truth
 
@@ -76,3 +95,53 @@ Every option is listed in the [configuration reference](/docs/operations/configu
 ## Retention
 
 Events older than `retention.days` are deleted from the start of each log, never from the middle. A device that was away longer than that starts at the oldest event still kept and shows "Earlier messages are no longer available".
+
+## Use it
+
+<Tabs syncKey="platform">
+<TabItem label="Web">
+```ts
+client.connection.subscribe((c) => showStatus(c.state));      // connected, disconnected, suspended…
+const view = client.messages(convId);
+view.subscribe((messages) => render(messages));                // sending, failed, pending edits included
+if (view.hasOlder) await view.loadOlder();                      // 50 at a time
+view.jumpTo(seq);                                               // a page around a message
+await client.read(convId);                                      // read on every device
+await client.call('set_mute', { conv_id: convId, mode: 'mentions' });
+```
+</TabItem>
+<TabItem label="React">
+```tsx
+<AgentIM client={client}>
+  <ConnectionBanner />           {/* offline, reconnecting… */}
+  <Chat convId={convId} />       {/* unread divider, jump to latest, retry a failed send */}
+</AgentIM>
+```
+</TabItem>
+<TabItem label="iOS">
+```swift
+let view = client.messages(convId)
+try await view.loadOlder()
+client.setNetwork(online: false)      // from NWPathMonitor
+client.setForeground(true)            // from the app's scene phase
+try await client.read(convId)
+```
+</TabItem>
+<TabItem label="Android">
+```kotlin
+val view = client.messages(convId)
+view.loadOlder()
+client.setNetwork(online = false)     // from ConnectivityManager
+client.setForeground(true)            // from the process lifecycle
+client.read(convId)
+```
+</TabItem>
+</Tabs>
+
+## Where it works
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} note="Every client SDK runs the same Rust core, so the queue, cache and retry rules are identical everywhere." />
+
+## Related
+
+[Conversations and messages](/docs/concepts/conversations/) · [Devices and login](/docs/concepts/devices-and-login/) · [Client protocol](/docs/reference/client-protocol/) · [Configuration](/docs/operations/configuration/)
