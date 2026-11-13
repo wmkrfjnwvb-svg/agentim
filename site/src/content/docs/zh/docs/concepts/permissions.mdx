@@ -1,0 +1,88 @@
+---
+title: "权限"
+description: "终端用户在你的应用里能做什么（按应用、按用户），以及会话里的角色怎么运作。"
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../../components/docs/Capabilities.astro';
+import Support from '../../../../../components/docs/Support.astro';
+
+<Capabilities>
+- 决定用户能做什么：建群、发起单聊、加人、查找用户、创建 Agent
+- 给编辑和撤回自己的消息设时限
+- 全应用的默认值，以及从你的后端按用户覆盖
+- 每个会话里的群主、管理员和成员角色
+- 客户端连接时和权限变化时都会知道自己的权限，用来显示或隐藏按钮
+- 被拒绝的请求什么都不写，并说明是哪条规则拒绝的
+- 带权限范围的 API 密钥；读取历史和合规导出需要单独的范围
+</Capabilities>
+
+## 你的应用决定用户能做什么
+
+| 键 | 默认 | 允许用户 |
+|---|---|---|
+| `create_groups` | `true` | 建群 |
+| `create_direct` | `true` | 发起单聊 |
+| `add_members` | `true` | 往自己能管理的会话里加人 |
+| `find_users` | `true` | 查找用户（`find_user`） |
+| `create_agents` | **`false`** | 创建自己的 Agent 并管理它们的密钥 |
+| `edit_minutes` | 不限 | 在这段时间内编辑自己的消息 |
+| `recall_minutes` | 不限 | 在这段时间内撤回自己的消息 |
+
+在[控制台](/zh/docs/operations/dashboard/)（应用设置）或用 `PUT /admin/v1/app/settings/clients` 设置默认值。配置文件里的 `[clients.allow]` 只是初始值。修改会同时在所有节点生效。
+
+从你的后端为某个用户单独覆盖：
+
+```http
+PATCH /v1/users/maya
+{"permissions": {"create_agents": true}}
+```
+
+某个键或整个对象设为 `null` 就恢复默认。客户端连接时拿到自己的权限（`me.permissions`），权限变化时收到 `user.updated`，应用可以据此显示或隐藏按钮。
+
+- 被拒绝的请求返回 `forbidden`（"应用不允许：…"），不写入任何东西。
+- 你的后端**以用户身份**（`"as": "maya"`）操作时遵守同样的规则；**以 `system` 身份**操作时不受限。
+- Agent 遵循它所有者的权限。
+- 时限只针对自己的消息。群主和管理员撤回别人的消息不受限。
+- 收回 `create_agents` 后，用户已有的 Agent 照常运行。监督它们（停止、批准、接管）始终可以：这是所有者的安全职责。
+
+## 会话里的角色
+
+| | 群主 | 管理员 | 成员 |
+|---|---|---|---|
+| 发送、编辑和撤回自己的消息 | ✓ | ✓ | ✓ |
+| 添加成员 | ✓ | ✓ | 应用允许时 |
+| 移除成员 | ✓ | ✓（不能移除群主和管理员） | 自己添加的 Agent |
+| 撤回别人的消息 | ✓ | ✓ | |
+| 修改角色、转让群主、解散 | ✓ | | |
+| 修改团队 Agent 的策略 | ✓ | ✓ | |
+
+## 开放 API
+
+API 密钥有权限范围（[开放 API](/zh/docs/reference/open-api/)）。读取消息历史需要单独的范围（`messages:read`），因为它会暴露私密会话，每次读取都会记入审计。导出和删除用户数据需要 `compliance`。这两个默认都不授予。
+
+## 怎么用
+
+<Tabs syncKey="platform">
+<TabItem label="管理 API">
+```bash
+# The app's defaults (also in the console: App settings)
+curl -X PUT "$AGENTIM/admin/v1/app/settings/clients" -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "content-type: application/json" -d '{"create_groups": true, "create_agents": false, "edit_minutes": 15}'
+```
+</TabItem>
+<TabItem label="开放 API">
+```bash
+# One user may create agents; null goes back to the defaults
+curl -X PATCH "$AGENTIM/v1/users/maya" -H "authorization: Bearer $API_KEY" -d '{"permissions": {"create_agents": true}}'
+```
+</TabItem>
+</Tabs>
+
+## 哪些端支持
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} note="每个客户端 SDK 都通过 me.permissions 和 user.updated 拿到权限；无论客户端怎么做，服务端都会执行这些规则。" />
+
+## 相关
+
+[会话和消息](/zh/docs/concepts/conversations/) · [开放 API](/zh/docs/reference/open-api/) · [管理 API](/zh/docs/reference/admin-api/) · [业务规则](/zh/docs/reference/business-rules/) · [控制台](/zh/docs/operations/dashboard/)

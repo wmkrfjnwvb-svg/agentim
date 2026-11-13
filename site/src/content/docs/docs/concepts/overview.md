@@ -48,7 +48,7 @@ The split is deliberate:
 | **Stability** | Overload is refused (`overloaded`, `rate_limited`) instead of queued without bound. A slow or stuck client cannot hurt others. |
 | **Scale** | Tens of thousands of connections per node and groups of thousands. Several nodes share the databases as a [cluster](/docs/operations/cluster/). |
 
-These are tested on SQLite, PostgreSQL and MySQL, on Linux and Windows, on every change. The test list is in the repository (`docs/en/testing.md` §5).
+These are tested on SQLite, PostgreSQL and MySQL, on Linux and Windows, for every release ([how we test](/docs/reliability/testing/)).
 
 ## Where things are stored
 

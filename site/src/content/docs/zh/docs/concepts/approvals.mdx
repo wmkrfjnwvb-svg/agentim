@@ -1,0 +1,160 @@
+---
+title: "人工审批和管控"
+description: "审批 Agent 的草稿、请人做决定、悄悄话、接管和转人工、紧急停止，以及销毁 Agent。"
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../../components/docs/Capabilities.astro';
+import Support from '../../../../../components/docs/Support.astro';
+import ProductShowcase from '../../../../../components/ProductShowcase';
+
+<Capabilities>
+- Agent 的消息可以先作为草稿，等人批准、修改或拒绝
+- Agent 可以请人批准、回答或选择，然后按决定继续
+- 连接上的审批规则：按工具和金额，审批人由你指定
+- 一个收件箱汇集所有等人处理的事，网页和手机都有
+- 从 Agent 手里接管会话、交还给它，或让 Agent 转给你
+- 每个 Agent 都有紧急停止开关，重启和所有节点上都生效
+- 每个决定都有记录：谁、什么时候、改了什么
+</Capabilities>
+
+## 看一眼
+
+审批中心：等客服主管批准的退款、一份草稿回复和一个转人工，同时显示顾客、风险、规则和审计记录。
+
+<ProductShowcase client:visible lang="zh" only="inbox" />
+
+人始终能看到、引导和停止自己会话里的 Agent。下面每种干预都由服务端强制执行，而不是靠 Agent 自觉。
+
+| 方式 | 操作 | 效果 |
+|---|---|---|
+| **旁观** | `observe {conv_id, agent_id}` | 所有者在自己也在的会话里看到 Agent 看到的内容。记入审计 |
+| **悄悄话** | `whisper` | 走旁路通道给 Agent 的私下提示，其他成员永远看不到 |
+| **审批草稿** | `set_agent_policy {approval}`（或 `required_approval`）、`list_drafts`、`approve`、`reject`、`escalate` | Agent 的全部或部分消息变成草稿，只有批准后才进入会话 |
+| **打断** | `stream_cancel` | 停止流式回复（会话里任何人都能点停止） |
+| **接管** | `takeover`、`release` | 人回复期间，Agent 的消息会被拒绝（`taken_over`） |
+| **编辑或撤回** | `edit`、`recall` | 所有者可以修改或删除 Agent 说的话 |
+| **重置护栏** | `reset_guard` | 让触发了护栏的 Agent 继续 |
+| **停止** | `stop_agent`、`resume_agent`，或 `POST /v1/agents/{id}:stop` | 紧急停止，所有地方同时生效 |
+
+## 草稿和审批
+
+消息需要审批时，Agent 的 `send` 返回 `draft_id` 而不是消息。草稿在旁路通道里等待：只有 Agent、它的审批人和复核者能看到，并且不占 `seq`。审批人可以修改后批准，或者拒绝。两人同时批准时只算一次。发布的消息仍然属于 Agent，它的事件记录了谁批准的（`approval: {by, by_type, edited, reviewed_by?}`），应用可以显示"经 AI 复核批准"。
+
+### 哪些消息需要审批
+
+`approval` 可以是 `true`（每条消息）、`false`，或一组规则：
+
+```json
+{"op": "set_agent_policy", "conv_id": "c_…", "agent_id": "support-bot",
+ "approval": {"mode": "rules", "rules": ["first_message", "links"], "topics": ["payment"],
+              "approvers": ["owner", "managers"], "reviewer": "qa-bot", "human_required": true,
+              "ttl_secs": 86400, "review_secs": 1800}}
+```
+
+| 字段 | |
+|---|---|
+| `mode` | `off`、`all` 或 `rules`：只审批匹配规则的消息 |
+| `rules` | `files`（文件或图片）、`links`（网址）、`mentions`（@ 了别人）、`cards`、`first_message`（它在这个会话里的第一条消息） |
+| `topics` | 带有这些话题之一的消息 |
+| `approvers` | 1–20 个：`owner`（默认）、`managers`（会话的群主和管理员），或按 id、名字指定的人。谁先决定算谁的；决定时必须仍在会话里 |
+| `reviewer` | 会话里先看一遍的 Agent。它只能 `approve`，或 `escalate {draft_id, note?}` 交给人。它不能拒绝或修改，不能复核自己，两个 Agent 也不能互相复核 |
+| `human_required` | 复核者批准后，仍须有人批准（欧盟 AI 法案第 14 条） |
+| `ttl_secs` | 60 秒到 7 天，默认 24 小时。到期后草稿失效，Agent 收到 `state: expired` 的 `draft.decided` |
+| `review_secs` | 60 秒到 1 天，默认 30 分钟。复核者到时没处理，草稿转给人（`draft.escalated`，原因 `timeout`） |
+
+流式回复开始时还不知道内容。所以在 `all`、`links` 或 `mentions` 规则下，或者是 Agent 的第一条消息时，流式回复会变成草稿。
+
+### 谁来设置
+
+- Agent 的**所有者**设置 `approval`。团队 Agent 的话，会话的管理者也可以设置。
+- 会话的**群主和管理员**可以给会话里任何 Agent 设置 `required_approval`（格式相同），Agent 的所有者不能解除。任一方匹配，消息就需要审批；匹配 `required_approval` 时，用它指定的审批人和复核者。
+
+Agent 发送时如果没有任何审批人在会话里，发送会得到 `conflict`（`draft.no_approver`）：没人能批准它。
+
+## 请人做决定
+
+Agent 可以停下来请人决定：
+
+```js
+const d = await agent.askHuman(convId, { kind: 'approve', title: 'Refund $42 to order #4821?', ttlSecs: 3600 });
+if (d.state === 'approved') await refund(4821);
+```
+
+| | |
+|---|---|
+| 类型 | `approve`（批准或拒绝，可修改）、`answer`（自由文本）、`choose`（2–20 个选项选一个） |
+| 谁来决定 | 默认是所有者，或会话里点名的 1–20 个人。所有者始终可以决定；第一个决定生效，之后的得到 `conflict` |
+| 谁能看到 | Agent、它的所有者和被点名的人（旁路通道） |
+| 过期 | 60 秒到 30 天，默认 24 小时；之后为 `expired`。Agent 可以取消；移除 Agent 会取消它未处理的请求 |
+| 收件箱 | `inbox` 跨会话列出等我处理的事：请求、我的 Agent 的草稿，以及我负责审批或复核的草稿。新请求会推送给被点名的人 |
+
+用同一个 `client_req_id` 重试会返回同一个请求。一个 Agent 同时最多 100 个未处理的请求。
+
+## 接管和转人工
+
+- **接管**：人从 Agent 手里接过会话。所有人看到 `agent.state: taken_over`。Agent 的发送和流式回复被拒绝（`taken_over`），进行中的流被取消，Agent 不再被唤醒。
+- **转人工**：Agent 自己把会话交给人：`handoff {conv_id, note, to?}`，`to` 默认是它的所有者。效果和接管一样，并会通知这个人。
+- **交还**：`handback {conv_id, agent_id, note?}` 或 `release`。Agent 会带着备注被唤醒。
+- **空闲超时**：人 30 分钟没说话（`agents.takeover_idle_minutes`，设 0 关闭），会话自动交还给 Agent。
+
+## 紧急停止
+
+`stop_agent {agent_id, reason?}`（所有者）或 `POST /v1/agents/{id}:stop`（你的后端）：
+
+1. 停止先写入控制数据库，所以重启后和所有节点上都生效。
+2. 此后 Agent 从任何入口发起的操作都被拒绝（`conflict`：已被所有者停止），它的连接被关闭。
+3. 每个数据库的写入者会再检查一次，所以停止事件之后 Agent 的任何内容都提交不了。
+4. 它所在的每个会话显示 `agent.state: stopped`。进行中的流被取消，发言权被收回。
+
+密钥、草稿、认领和检查点都保留。`resume_agent`（或 `:resume`）让它恢复运行。
+
+## 销毁 Agent
+
+`DELETE /v1/agents/{id}`（应用允许时，所有者也可以用 `destroy_agent`）。不可撤销：
+
+- Agent 被标记为已销毁，密钥被吊销，连接被关闭。
+- 它的检查点连同加密密钥一起删除。
+- 每个会话里它的流、未处理的请求、草稿、认领和摘要被删除，它也被移出成员（`member.removed`，原因 `destroyed`）。
+- 它在共享会话里发过的消息保留：它们是会话记录的一部分。它的名字不能再被使用。
+
+如果服务端中途崩溃，下次启动时会完成删除。
+
+## 怎么用
+
+<Tabs syncKey="agent">
+<TabItem label="Node Agent">
+```js
+const d = await agent.askHuman(ctx.convId, { kind: 'approve', title: 'Refund $120 for order 1002', context: { order: '1002', amount: 120 } });
+if (d.state === 'approved') await refund('1002');
+else await ctx.reply('The refund was not approved.');
+
+await agent.handoff(ctx.convId, 'Wants to talk to a manager');
+```
+</TabItem>
+<TabItem label="Python Agent">
+```python
+d = await agent.ask_human(ctx.conv_id, "Refund $120 for order 1002", kind="approve", context={"amount": 120})
+if d["state"] == "approved":
+    await refund("1002")
+await agent.handoff(ctx.conv_id, "Wants to talk to a manager")
+```
+</TabItem>
+<TabItem label="React">
+```tsx
+import { Inbox, InboxBadge, ApprovalCards } from '@agentimhq/react';
+
+<InboxBadge />                                   {/* how many wait for me */}
+<Inbox onOpen={(convId) => openChat(convId)} />  {/* approve, edit a draft, take a hand-off */}
+<ApprovalCards convId={convId} />                {/* the requests inside a chat */}
+```
+</TabItem>
+</Tabs>
+
+## 哪些端支持
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} note="React 和 React Native UI 都有收件箱和审批卡片。" />
+
+## 相关
+
+[连接你的系统](/zh/docs/ai/connections/) · [安全护栏](/zh/docs/concepts/guardrails/) · [Agent 作为成员](/zh/docs/concepts/agents/) · [审计](/zh/docs/operations/tracing/)

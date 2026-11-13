@@ -1,0 +1,238 @@
+---
+title: "各平台快速上手"
+description: "在 Next.js、React Native、SwiftUI、Jetpack Compose、Flutter 和 Unity 里做出第一屏聊天，以及你的后端提供的令牌接口。"
+sidebar:
+  order: 2
+---
+
+import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+每个平台都需要同样三样东西：
+
+1. **后端的令牌接口。** 它检查你自己的登录会话，并为这个用户签发客户端令牌（[见下文](#你的后端)）。
+2. **设备 id**，生成一次并保存下来。
+3. **客户端**，用服务端地址、设备 id 和一个调用你接口的 `tokenProvider` 创建。
+
+然后应用只需要关注三样可订阅的东西：连接状态、会话列表和一个会话的消息。如果还没有服务端、密钥和会话，先做[5 分钟上手](/zh/docs/get-started/quickstart/)。
+
+## 你的后端
+
+<Tabs syncKey="server">
+<TabItem label="Node (Express)">
+```js
+import { createUserToken } from '@agentimhq/server';
+const signingKey = { kid: process.env.AGENTIM_KID, secret: process.env.AGENTIM_SECRET };
+
+app.get('/api/chat-token', requireLogin, (req, res) => {
+  res.type('text/plain').send(createUserToken(signingKey, req.user.id, { expiresIn: 3600 }));
+});
+```
+</TabItem>
+<TabItem label="Python (FastAPI)">
+```python
+from agentim import create_user_token
+
+@app.get("/api/chat-token", response_class=PlainTextResponse)
+def chat_token(user = Depends(current_user)):
+    return create_user_token(os.environ["AGENTIM_KID"], os.environ["AGENTIM_SECRET"], user.id, expires_in=3600)
+```
+</TabItem>
+<TabItem label="Go">
+```go
+http.HandleFunc("/api/chat-token", func(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r) // your own session check
+	token, err := agentim.CreateUserToken(kid, secret, user.ID, time.Hour)
+	if err != nil { http.Error(w, "", 500); return }
+	w.Write([]byte(token))
+})
+```
+</TabItem>
+</Tabs>
+
+## 你的应用
+
+<Tabs syncKey="platform">
+<TabItem label="Next.js">
+客户端运行在浏览器里，所以聊天是一个客户端组件。
+
+```tsx title="app/chat/chat.tsx"
+'use client';
+import { useEffect, useState } from 'react';
+import { AgentIMClient } from '@agentimhq/client-web';
+import { AgentIM, Chat } from '@agentimhq/react';
+import '@agentimhq/react/theme.css';
+
+export default function SupportChat({ convId }: { convId: string }) {
+  const [client, setClient] = useState<AgentIMClient>();
+  useEffect(() => {
+    let c: AgentIMClient | undefined;
+    AgentIMClient.create({
+      url: process.env.NEXT_PUBLIC_AGENTIM_URL!,
+      deviceId: (localStorage.agentimDevice ??= crypto.randomUUID()),
+      tokenProvider: () => fetch('/api/chat-token').then((r) => r.text()),
+    }).then((created) => {
+      c = created;
+      setClient(created);
+      created.connect();
+    });
+    return () => void c?.dispose();
+  }, []);
+  if (!client) return null;
+  return (
+    <AgentIM client={client}>
+      <Chat convId={convId} title="Support" />
+    </AgentIM>
+  );
+}
+```
+
+把你网站的来源加到 `server.allowed_origins`。同一个浏览器的所有标签页共用一个连接。
+</TabItem>
+<TabItem label="React Native">
+```tsx
+import { AppState } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
+import { AgentIMClient } from '@agentimhq/client-react-native';
+import { AgentIM, Chat } from '@agentimhq/react-native-ui';
+
+const client = AgentIMClient.create({
+  url: 'https://chat.example.com',
+  deviceId: await storedDeviceId(),
+  storeDir: `${documentsDir}/agentim`,
+  tokenProvider: () => fetch(`${API}/api/chat-token`, { headers: auth() }).then((r) => r.text()),
+});
+AppState.addEventListener('change', (s) => client.setForeground(s === 'active'));
+NetInfo.addEventListener((s) => client.setNetwork(!!s.isConnected));
+client.connect();
+
+export function SupportScreen({ convId }: { convId: string }) {
+  return (
+    <AgentIM client={client}>
+      <Chat convId={convId} />
+    </AgentIM>
+  );
+}
+```
+
+核心通过 JSI 原生运行，SQLite 缓存在 `storeDir`。把应用状态和网络变化告诉客户端，它就能立刻重连，不用等退避时间。
+</TabItem>
+<TabItem label="SwiftUI">
+```swift
+import AgentIM
+import SwiftUI
+
+let chat = try! AgentIMClient(ClientOptions(
+    url: "https://chat.example.com",
+    deviceId: DeviceId.stored(),
+    storeDir: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].path,
+    tokenProvider: { try await Backend.shared.chatToken() }))
+
+struct ConversationView: View {
+    let messages: Messages   // chat.messages(convId)
+    @State private var text = ""
+
+    var body: some View {
+        List(messages.list, id: \.key) { m in
+            Text(m.content)
+        }
+        HStack {
+            TextField("Message", text: $text)
+            Button("Send") {
+                let t = text; text = ""
+                Task { try await chat.send(messages.convId, t) }
+            }
+        }
+    }
+}
+```
+
+`AgentIMClient` 和 `Messages` 是 `@Observable`，在主队列上变化，SwiftUI 会随之重绘。启动时调用 `try await chat.connect()`，在 scene phase 里调用 `chat.setForeground(_:)`。
+</TabItem>
+<TabItem label="Compose">
+```kotlin
+val client = AgentIMClient.create(ClientOptions(
+    url = "https://chat.example.com",
+    deviceId = deviceId(context),
+    storeDir = context.filesDir.resolve("agentim").path,
+    tokenProvider = { backend.chatToken() },
+))
+
+@Composable
+fun ConversationScreen(convId: String) {
+    val messages by remember { client.messages(convId) }.list.collectAsState()
+    val scope = rememberCoroutineScope()
+    var text by remember { mutableStateOf("") }
+    Column {
+        LazyColumn(Modifier.weight(1f)) {
+            items(messages, key = { it.getString("key") }) { m -> Text(m.getString("content")) }
+        }
+        Row {
+            TextField(text, { text = it })
+            Button(onClick = { val t = text; text = ""; scope.launch { client.send(convId, t) } }) { Text("Send") }
+        }
+    }
+}
+```
+
+连接一次（在协程里调用 `client.connect()`），在生命周期观察者里调用 `client.setForeground(…)`。AAR 里带有四种 ABI 的原生核心，支持 16 KB 页面。
+</TabItem>
+<TabItem label="Flutter">
+```dart
+final client = AgentIMClient.create(ClientOptions(
+  url: 'https://chat.example.com',
+  deviceId: await storedDeviceId(),
+  storeDir: '${(await getApplicationSupportDirectory()).path}/agentim',
+  tokenProvider: () => backend.chatToken(),
+));
+await client.connect();
+
+class ConversationView extends StatelessWidget {
+  const ConversationView(this.convId, {super.key});
+  final String convId;
+
+  @override
+  Widget build(BuildContext context) {
+    final messages = client.messages(convId);
+    return StreamBuilder(
+      stream: messages.list.watch(),
+      builder: (context, snap) => ListView(
+        children: [for (final m in snap.data ?? const []) ListTile(key: ValueKey(m['key']), title: Text(m['content']))],
+      ),
+    );
+  }
+}
+```
+</TabItem>
+<TabItem label="Unity">
+```csharp
+using AgentIM.Client;
+using UnityEngine;
+
+public class Chat : MonoBehaviour
+{
+    AgentIMClient client;
+
+    async void Start()
+    {
+        client = AgentIMClient.Create(new ClientOptions {
+            Url = "https://chat.example.com",
+            DeviceId = SystemInfo.deviceUniqueIdentifier,
+            StoreDir = System.IO.Path.Combine(Application.persistentDataPath, "agentim"),
+            TokenProvider = ct => Backend.ChatTokenAsync(ct),
+        });
+        client.Messages(convId).List.Subscribe(list => Render(list));   // on the main thread
+        await client.ConnectAsync();
+    }
+
+    void OnApplicationPause(bool paused) => client.SetForeground(!paused);
+    void OnDestroy() => client.Dispose();
+}
+```
+
+事件和状态变化在 Unity 主线程上回调。WebGL 构建通过 `.jslib` 桥接使用浏览器 SDK，API 相同。
+</TabItem>
+</Tabs>
+
+<Aside type="tip">
+每个 SDK 的完整 API 和每个方法的说明，见[客户端 SDK](/zh/docs/client-sdks/)。
+</Aside>

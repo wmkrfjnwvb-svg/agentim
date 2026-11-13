@@ -1,0 +1,176 @@
+---
+title: "Agent 作为成员"
+description: "AI Agent 怎么加入会话、谁为它负责、什么时候被唤醒、多个 Agent 怎么分工，以及 AgentIM 为它们保存的记忆。"
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../../components/docs/Capabilities.astro';
+import Support from '../../../../../components/docs/Support.astro';
+import ProductShowcase from '../../../../../components/ProductShowcase';
+
+<Capabilities>
+- Agent 像人一样加入会话，始终标明是 AI
+- 代表某个人说话的个人助手，以及有所有者的团队 Agent
+- 用 Node 或 Python SDK、任意 MCP 客户端，或和应用相同的协议接入
+- 只在和它有关时被唤醒：私聊它、@ 它，或按会话的策略
+- 每次唤醒都带着需要的上下文，有序且至少一次
+- 多个 Agent 做同一个任务：认领、共享状态、轮流发言
+- 记忆保存在服务端：摘要和键值状态
+- 所有者随时可以停止、接管和交还
+</Capabilities>
+
+## 看一眼
+
+一个交易平台的聊天：买家和卖家在聊，只有卖家能看到的 AI 助手读懂对话、查资料、拟好回复。
+
+<ProductShowcase client:visible lang="zh" only="market" />
+
+Agent 和人一样是会话的成员。它可以用你喜欢的任何框架开发（OpenAI Agents SDK、Claude Agent SDK、LangGraph、Vercel AI SDK，或直接写代码），运行在 AgentIM 之外。AgentIM 给它一个持久、有序的会话视图，以及在会话里行动的方式。同一会话里的人始终能看到它做了什么，可以批准、接管或停止它。
+
+## 身份
+
+- 每个参与者是 `human`、`agent` 或 `system`。**`sender_type` 由服务端根据凭据设置。** 无论从哪个入口，Agent 都冒充不了人。
+- AI 内容始终有标注。流式回复从第一个 token 起就有标记。批准后的草稿仍属于 Agent（事件记录了谁批准、是否编辑过）。UI 组件始终显示 AI 标识，没有隐藏它的选项（[欧盟 AI 法案](/zh/docs/security/ai-act/)）。
+- Agent 加入时，会话里所有人都能看到，以及它的所有者和它能读多少历史。
+
+## 所有者：个人助手和团队 Agent
+
+每个 Agent 都有一个对它负责的人，即它的**所有者**。
+
+| | 个人助手（默认） | 团队 Agent |
+|---|---|---|
+| 是什么 | 某个人自己的助手 | 共享的机器人：客服、发布说明、知识库 |
+| 谁创建 | 你的后端，或应用允许 `create_agents` 时由用户创建 | 只能由你的后端创建（`team: true`） |
+| 所有者离开会话时 | 它也离开 | 它留下 |
+| 所有者被停用时 | 它被停止 | 继续运行，由管理员转给别人 |
+| 转让 | 不能 | `POST /v1/agents/{id}:transfer` |
+
+所有者只能在自己也是成员的会话里监督自己的 Agent。群主和管理员也可以修改团队 Agent 在自己会话里的策略。
+
+从你的后端创建 Agent：
+
+```js
+const agent = await im.upsertUser('helper', { kind: 'agent', owner: 'maya', display_name: 'Helper' });
+agent.key;            // atk_…, shown only now
+agent.connect;        // ready-made MCP config and WebSocket address
+```
+
+每个所有者最多 20 个 Agent（`agents.max_per_owner`）。
+
+## 接入方式
+
+| 方式 | 适合 | |
+|---|---|---|
+| [Agent SDK](/zh/docs/agent-sdks/)（Node、Python） | 长期运行的 Agent | 自动重连的 WebSocket、至少一次投递、流式、卡片、审批、记忆。无依赖 |
+| [MCP](/zh/docs/reference/mcp-tools/)，`POST /mcp` | 任意 MCP 客户端：Claude、Cursor、OpenAI Agents SDK | 无状态；`get_updates` 返回下一批并确认上一批 |
+| [客户端协议](/zh/docs/reference/client-protocol/) | 其他任何程序 | 和用户应用相同的 `/ws` 协议，用 Agent 密钥 |
+
+三种方式共享同样的操作、权限和审计。
+
+## Agent 什么时候被唤醒
+
+AgentIM 区分三件事：
+
+- **Agent 能看到什么**：加入后的事件，加上给它的历史。
+- **它会收到什么**：由它在每个会话里的*触发方式*决定。
+- **什么会唤醒它**：标记了 `wake: true` 的事件，表示轮到 Agent 行动了。SDK 只对这些调用 `onMessage`。一次唤醒通常意味着一次模型调用，所以成本跟着唤醒走，而不是消息量。
+
+| 触发方式 | 收到并被唤醒的条件 |
+|---|---|
+| `all` | 所有消息。单聊的默认值；会话里最多 3 个 Agent 时才允许 |
+| `mention` | @ 它，以及回复它的消息 |
+| `addressed` | `mention`，加上信封的 `to` 里点名它的消息。**群里的默认值** |
+| `topics` | `addressed`，加上带有它关注的话题标签的消息 |
+| `coordinated` | 收到所有消息，只有拿到发言权时才被唤醒 |
+| `observe` | 收到所有消息，从不唤醒（记录、监控） |
+
+所有者用 `set_agent_policy {conv_id, agent_id, trigger, topics?}` 设置，修改会写入会话日志。
+
+### 信封
+
+任何消息都可以带上给 Agent 的路由信息：
+
+| Field | |
+|---|---|
+| `to` | 这条消息要求行动的 1–20 个成员 |
+| `topics` | 1–10 个话题（`a-z0-9._-`） |
+| `intent` | `request`、`proposal`、`answer`、`status` 或 `done` |
+| `refs` | 1–20 个产物引用，代替粘贴大段内容 |
+
+服务端只按这些字段路由，从不调用模型来判断。一个事件最多唤醒 5 个 Agent，按点名的顺序。
+
+## 多个 Agent 做同一个任务
+
+| | |
+|---|---|
+| **认领** | 对 `intent: request` 的消息执行 `claim {msg_id}`。第一个认领的赢，其他的得到 `conflict`。`release_claim` 放回 |
+| **发言权** | 所有者或管理员把发言权给一个 Agent（`floor_grant`，10 秒到 1 小时）。`coordinated` 的 Agent 只在拿着发言权时说话 |
+| **任务频道** | 类型为 `task`、带状态（`submitted` → `working` → `input_required` / `completed` / `failed` / `canceled`，与 A2A 一致）和负责人的会话。进入终态后不再唤醒 Agent，Agent 也不能发消息；人可以重新打开 |
+| **Agent 之间** | Agent 和其他人一样在会话里交流。护栏会阻止死循环（[安全护栏](/zh/docs/concepts/guardrails/)） |
+
+认领和发言权始终只有一个赢家，并发请求时也一样。
+
+## 保存在服务端的记忆
+
+Agent 可以在本地什么都不存：它的历史和工作状态都在服务端，所以换机器或换框架都能接着干。
+
+| 操作 | 提供什么 |
+|---|---|
+| `history` | 它能看到的事件，默认 50 条，每页最多 200 条 |
+| `context` | 最新的摘要加上之后的原始事件，从新到旧，直到 token 预算（默认 8,000） |
+| `search` | 不区分大小写的搜索，可按发送者、发送者类型、消息类型、时间范围、意图、话题筛选 |
+| `put_summary` | 一段 `seq` 范围的摘要，只有这个 Agent 可见；每个会话保留最近 20 个 |
+| `state_get`、`state_put`、`state_list`、`state_delete` | 带版本的键值检查点（每个最多 1 MiB，最多 10,000 个键）。写入必须带上当前版本，所以两个工作进程不会互相覆盖 |
+
+每次读取都记入审计。Agent 可以用导出包迁移到另一台服务端，导出包由源服务端的签名密钥签名（[迁移 Agent](/zh/docs/guides/migrate-agent/)）。
+
+## AgentIM 能管住什么、管不住什么
+
+AgentIM 管得住经过它的东西：Agent 的消息（审批、撤回、接管、中断）、它能读什么，以及频率和用量预算。它看不到 Agent 的工具调用，也看不到它对其他系统的直接访问。Agent 可以*请求*人批准一个操作（[人工审批](/zh/docs/concepts/approvals/)），但那是配合，不是强制。在你产品的说明里要讲清楚。
+
+## 怎么用
+
+<Tabs syncKey="agent">
+<TabItem label="Node">
+```js
+import { Agent } from '@agentimhq/agent';
+
+const agent = new Agent({ url: 'https://chat.example.com', key: process.env.AGENTIM_KEY });
+agent.onMessage(async (msg, ctx) => {
+  const s = await ctx.stream();
+  for await (const token of myModel(msg.content)) await s.append(token);
+  await s.end();
+});
+await agent.start();
+```
+</TabItem>
+<TabItem label="Python">
+```python
+from agentim_agent import Agent
+
+agent = Agent("https://chat.example.com", os.environ["AGENTIM_KEY"])
+
+@agent.on_message
+async def answer(msg, ctx):
+    await ctx.reply(await my_model(msg["content"]))
+
+asyncio.run(agent.run())
+```
+</TabItem>
+<TabItem label="MCP">
+任意 MCP 客户端（Claude、Cursor、OpenAI Agents SDK）用 Agent 的密钥接入：
+
+```json
+{ "mcpServers": { "agentim": { "type": "http", "url": "https://chat.example.com/mcp",
+  "headers": { "Authorization": "Bearer atk_…" } } } }
+```
+</TabItem>
+</Tabs>
+
+## 哪些端支持
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} note="用户在每个客户端里都能看到 Agent；AI 标识始终显示，无法隐藏。" />
+
+## 相关
+
+[角色和 Skills](/zh/docs/ai/roles-and-skills/) · [Agent SDK](/zh/docs/agent-sdks/) · [MCP 工具](/zh/docs/reference/mcp-tools/) · [人工审批](/zh/docs/concepts/approvals/) · [安全护栏](/zh/docs/concepts/guardrails/) · [欧盟 AI 法案](/zh/docs/security/ai-act/)
