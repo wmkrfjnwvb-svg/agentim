@@ -1,0 +1,54 @@
+---
+title: "我们怎么测试"
+description: "消息的 bug 就是数据的 bug，所以 AgentIM 像数据库一样测试：每条规则跑三种数据库、并发竞争、崩溃、故障注入，以及回放日志的校验器。"
+---
+
+import Capabilities from '../../../../../components/docs/Capabilities.astro';
+
+<Capabilities>
+- 约 500 个业务测试，每个都在 SQLite、PostgreSQL 和 MySQL 上各跑一遍
+- 在 Linux 和 Windows 上，在真实流量中用 `kill -9` 杀进程：已确认的消息一条都不能丢
+- 并发竞争场景反复跑很多轮，每轮之后检查不变量
+- 故障注入：提交失败、回复丢失、数据库黑洞、时钟跳变、节点间丢帧
+- 每道防护都有变异测试：故意去掉它，确认测试会失败
+- 校验器回放每份日志，并和存储的状态逐一比对
+- 每次拒绝都是一条编号的规则，每条规则都有测试触发
+</Capabilities>
+
+## 每个服务端测试都检查
+
+- 每个成员的序号连续，推送按顺序到达。
+- 不管重试多少次，每条消息都恰好存在一份。
+- 被拒绝的请求什么都没改变：没有事件、没有对这次尝试的审计、没有副作用。
+- 重启后所有已确认的内容都还在，状态一致。
+- 竞争测试里，每一轮之后不变量都成立：只有一个赢家、回放等于状态、终态之后没有任何东西。
+
+## 测试套件
+
+| 套件 | 测什么 | 什么时候跑 |
+|---|---|---|
+| 服务端业务测试 | 每个操作和规则、并发竞争、重启，三种数据库 | 每次发布 |
+| 集群测试 | 多节点：转发、故障切换、租约防护、交接、故障注入、变异检查 | 每次发布，PostgreSQL 和 MySQL |
+| 崩溃测试 | 流量中 `kill -9`；每条已确认的消息都必须在 | 每次发布，Linux 和 Windows |
+| 副本故障切换 | 真实的主从数据库，在负载下故障切换 | 每次发布 |
+| 业务校验器 | `agentim verify`：在测试用过的每个数据库上回放日志并和状态比对 | 每次发布 |
+| 规则覆盖 | 规则目录和代码一致；每次拒绝都是一条规则；每条规则都被触发 | 每次发布 |
+| 客户端核心 | 假时钟、假网络、假存储；数千个随机种子的模拟；100% 行和分支覆盖 | 每次发布 |
+| SDK 一致性 | 同样的场景对真实服务端跑一遍：Rust、C、Swift、Kotlin、C#、Dart、React Native 和浏览器 | 每次发布 |
+| Agent 和服务端 SDK | 真实的 Agent 和一个人对话；每个接口都对真实服务端测试 | 每次发布 |
+| UI 组件和示例 | 组件、对比度、端到端运行，截图和基准图比对 | 每次发布 |
+| 规模测试 | 2 万连接加重连风暴、2,000 人的群、慢读者 | 手动 |
+
+## 自己验证
+
+```bash
+cd server
+cargo test                                                   # SQLite
+AGENTIM_TEST_PG=postgres://user:pass@127.0.0.1 \
+AGENTIM_TEST_MYSQL=mysql://user:pass@127.0.0.1 cargo test    # all three databases
+agentim --config agentim.toml verify --since 24h               # check your own server: replay against state
+```
+
+## 相关
+
+[投递保证](/zh/docs/reliability/guarantees/) · [业务规则](/zh/docs/reference/business-rules/) · [性能](/zh/docs/reliability/performance/)

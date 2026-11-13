@@ -1,0 +1,211 @@
+---
+title: "5 分钟上手"
+description: "运行服务端，从你的后端让用户登录，接入一个 AI Agent，并在 React 应用里和它聊天，大约五分钟。"
+sidebar:
+  order: 1
+---
+
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+读完这一页，你会有：
+
+- 一台在你电脑上运行的 AgentIM 服务端；
+- 一个让用户登录的后端；
+- 一个流式回复的 AI Agent；
+- 一个让人和这个 Agent 聊天的 React 页面。
+
+需要 Node.js 22 或更高版本。
+
+<Steps>
+
+1. **安装并启动服务端。**
+
+   <Tabs syncKey="os">
+   <TabItem label="Linux, macOS">
+   ```sh
+   curl -fsSL https://github.com/wmkrfjnwvb-svg/agentim/releases/latest/download/install.sh | sh
+   ```
+   </TabItem>
+   <TabItem label="Windows">
+   ```powershell
+   irm https://github.com/wmkrfjnwvb-svg/agentim/releases/latest/download/install.ps1 | iex
+   ```
+   </TabItem>
+   <TabItem label="Docker">
+   ```sh
+   docker run -p 8080:8080 -v agentim:/var/lib/agentim ghcr.io/wmkrfjnwvb-svg/agentim --db /var/lib/agentim/agentim.db
+   ```
+   </TabItem>
+   </Tabs>
+
+   安装脚本把 `agentim` 放到 `~/.agentim/bin`，不需要 root 权限。下载文件的 SHA-256 不匹配时会停止。
+
+   你的 React 页面会运行在 `http://localhost:5173`。浏览器会带上 `Origin` 头，服务端只接受配置里列出的来源。给服务端建一个文件夹，在里面写 `agentim.toml`：
+
+   ```toml title="agentim.toml"
+   [storage]
+   control = "main"
+
+   [[storage.databases]]
+   name = "main"
+   url = "sqlite://agentim.db?mode=rwc"
+
+   [server]
+   allowed_origins = ["http://localhost:5173"]
+   ```
+
+   然后在这个文件夹里启动服务端：
+
+   ```sh
+   agentim --config agentim.toml
+   ```
+
+   ```text
+   AgentIM listening on http://127.0.0.1:8080
+   Created the master key agentim.db.key: back it up with the database. Without it the encrypted content cannot be read.
+   Set up the console (once, from this machine): http://127.0.0.1:8080/console/setup?token=setup_…
+   ```
+
+   内容从一开始就是静态加密的。把 `agentim.db.key` 和 `agentim.db` 放在一起备份：没有它，加密的内容就读不出来。设置链接会打开[控制台](/zh/docs/operations/dashboard/)，这个上手教程用不到控制台。
+
+2. **给你的后端创建两把密钥。** 在同一个文件夹里另开一个终端运行（服务端运行时也能用）：
+
+   ```sh
+   agentim --config agentim.toml signing-key create --name backend
+   agentim --config agentim.toml api-key create --name backend \
+     --scopes users:write,conversations:write,messages:write,agents:write
+   ```
+
+   - **签名密钥**（`kid` 和 `secret`）用来签发用户的客户端令牌。签名在本地完成：你的后端让用户登录时不用调用 AgentIM。
+   - **API 密钥**（`ak_…`）用于[开放 API](/zh/docs/reference/open-api/)。你的后端用它创建用户、Agent 和会话。
+
+   两个密钥都只显示一次。只放在后端，绝不要放进应用里。
+
+3. **写后端。** 它创建用户 `maya`、一个归 `maya` 所有的 Agent `helper`，以及他们的单聊会话；还提供 `/token`，应用从这里拿到 `maya` 的客户端令牌。
+
+   ```sh
+   mkdir backend && cd backend && npm init -y && npm pkg set type=module && npm install @agentimhq/server
+   ```
+
+   ```js title="backend/server.js"
+   import { createServer } from 'node:http';
+   import { AgentIM, createUserToken } from '@agentimhq/server';
+
+   const im = new AgentIM({ baseUrl: 'http://127.0.0.1:8080', apiKey: process.env.AGENTIM_API_KEY });
+   const signingKey = { kid: process.env.AGENTIM_KID, secret: process.env.AGENTIM_SECRET };
+
+   // Your users keep your own ids; creating them again is harmless.
+   await im.upsertUser('maya', { display_name: 'Maya Chen' });
+   // An agent is a user too. Its key is returned only when the agent is created.
+   const agent = await im.upsertUser('helper', { kind: 'agent', owner: 'maya', display_name: 'Helper' });
+   if (agent.key) console.log(`AGENTIM_AGENT_KEY=${agent.key}`);
+   const conv = await im.createConversation({ as: 'system', kind: 'dm', title: 'Helper', owner: 'maya', members: ['helper'] });
+   console.log(`conversation: ${conv.id}`);
+
+   createServer((req, res) => {
+     // In your app: check your own session first, then sign for that user.
+     res.setHeader('access-control-allow-origin', 'http://localhost:5173');
+     res.end(createUserToken(signingKey, 'maya', { expiresIn: 3600 }));
+   }).listen(3000);
+   ```
+
+   ```sh
+   AGENTIM_API_KEY=ak_… AGENTIM_KID=sk_… AGENTIM_SECRET=sks_… node server.js
+   ```
+
+   记下它打印出的 Agent 密钥和会话 id。Agent 密钥只在第一次运行、创建 Agent 时打印；再次运行后端，用户和单聊会话都保持不变。
+
+   - 令牌就是普通的 HS256 JWT，带 `kid`、`sub`、`iat` 和 `exp`，任何 JWT 库都能生成（[令牌怎么工作](/zh/docs/concepts/devices-and-login/)）。
+   - 服务端没见过的用户 id，会在这个用户第一次用有效令牌连接时自动创建。像这里一样提前创建用户仍然有用：Agent 的所有者和会话成员必须已经存在。
+
+4. **运行 Agent。** Agent 用它的密钥连接，回答每条唤醒它的消息。单聊里每条消息都会唤醒它；群里只有 @ 它或点名给它的消息才会（[Agent 什么时候被唤醒](/zh/docs/concepts/agents/)）。
+
+   ```sh
+   mkdir agent && cd agent && npm init -y && npm pkg set type=module && npm install @agentimhq/agent
+   ```
+
+   ```js title="agent/agent.js"
+   import { Agent } from '@agentimhq/agent';
+
+   const agent = new Agent({ url: 'http://127.0.0.1:8080', key: process.env.AGENTIM_AGENT_KEY });
+
+   agent.onMessage(async (msg, ctx) => {
+     // A real agent calls its model here and appends the tokens as they come.
+     const s = await ctx.stream();
+     for (const word of `You said: ${msg.content}`.split(' ')) await s.append(word + ' ');
+     await s.end();
+   });
+
+   await agent.start();
+   ```
+
+   ```sh
+   AGENTIM_AGENT_KEY=atk_… node agent.js
+   ```
+
+   也可以用任意 MCP 客户端充当 Agent。Agent 的记录里还有一份 `POST /mcp` 的 MCP 配置（[MCP 工具](/zh/docs/reference/mcp-tools/)）。
+
+5. **在 React 里显示聊天。**
+
+   ```sh
+   npm create vite@latest web -- --template react-ts && cd web
+   npm install @agentimhq/client-web @agentimhq/react
+   ```
+
+   ```tsx title="web/src/App.tsx"
+   import { useEffect, useState } from 'react';
+   import { AgentIMClient } from '@agentimhq/client-web';
+   import { AgentIM, Chat } from '@agentimhq/react';
+   import '@agentimhq/react/theme.css';
+
+   const CONV = 'c_…'; // the conversation id the backend printed
+
+   // One id per device, kept across runs: the server keeps sync positions per device.
+   const deviceId = (localStorage.deviceId ??= crypto.randomUUID());
+
+   export default function App() {
+     const [client, setClient] = useState<AgentIMClient>();
+     useEffect(() => {
+       let c: AgentIMClient | undefined;
+       AgentIMClient.create({
+         url: 'http://127.0.0.1:8080',
+         deviceId,
+         // Called whenever the client needs a token: first connect, reconnects, expiry.
+         tokenProvider: () => fetch('http://localhost:3000/token').then((r) => r.text()),
+       }).then((created) => {
+         c = created;
+         setClient(created);
+         created.connect();
+       });
+       return () => void c?.dispose();
+     }, []);
+     if (!client) return null;
+     return (
+       <AgentIM client={client}>
+         <Chat convId={CONV} title="Helper" />
+       </AgentIM>
+     );
+   }
+   ```
+
+   ```sh
+   npm run dev
+   ```
+
+   打开 `http://localhost:5173` 打个招呼。回复会一个词一个词地流式出现。它被标为 AI，因为服务端知道 `helper` 是 Agent：Agent 不能冒充人。
+
+</Steps>
+
+## 刚才发生了什么
+
+- **你的后端**拥有账号。AgentIM 只知道你的后端给它的 id，信任令牌是因为它由你的签名密钥签发（[角色和入口](/zh/docs/concepts/overview/)）。
+- **客户端**先存下消息再发送。它立刻显示消息，并按顺序只发一次，断网或重启后也一样。它有本地缓存，所以下次打开会话是瞬间的（[多端同步和离线](/zh/docs/concepts/sync-and-offline/)）。
+- **服务端**在消息真正落盘提交后才确认，并给消息分配了会话里的下一个序号。它唤醒了 Agent，因为在单聊里每条消息都是给它的。
+- **Agent** 流式发送了回复。会话里的人边到边看，并且可以停止它（[流式回复](/zh/docs/concepts/streaming/)）。
+
+## 下一步
+
+- 试试完整演示：`agentim --demo`，然后打开 `http://127.0.0.1:8080`，以 Alice、Bob 或 Carol 登录。它演示审批、接管、护栏、卡片和 Agent 之间的对话。
+- [概念](/zh/docs/concepts/overview/)：会话、同步、Agent、审批和护栏。
+- iOS、Android、Flutter、React Native、Unity 和 .NET 的[客户端 SDK](/zh/docs/client-sdks/)。
+- [上线检查表](/zh/docs/guides/launch-checklist/)：TLS、PostgreSQL、备份、监控。

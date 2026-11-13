@@ -1,0 +1,74 @@
+---
+title: "架构：一条消息怎么走完全程"
+description: "一个 Rust 程序：网关、每个会话一个写入者、事件日志、扇出到每台设备，以及除了数据库什么都不需要的集群。"
+---
+
+import Capabilities from '../../../../../components/docs/Capabilities.astro';
+
+<Capabilities>
+- 一个程序：旁边不用再跑队列、缓存或协调服务
+- 每个会话一个写入者，所以每个成员看到同样的顺序，不需要全局锁
+- 只有数据库把消息写到磁盘后才确认
+- 多条消息一起提交，只写一次盘（组提交）
+- 每个事件只序列化一次，共享给所有收到它的连接
+- 所有队列都有上限：过载时拒绝，绝不耗尽内存
+- 集群由对等节点组成，共用同一套数据库，分片在故障时迁移
+</Capabilities>
+
+## 一条消息的一生
+
+```
+client SDK ──send──▶ gateway ──▶ conversation writer ──▶ event log (SQLite, PostgreSQL or MySQL)
+   ▲                 auth, rules,   seq, idempotency,        │ COMMIT (one fsync per batch)
+   │                 rate limits    permissions again        ▼
+   └──── push, in order ◀──── fan-out to every device, agent, webhook and the audit trail
+```
+
+1. **客户端核心。** 所有客户端 SDK 共用一个 Rust 核心：离线队列、用同一个 `client_msg_id` 重试、本地缓存和同步。
+2. **网关。** WebSocket 和 HTTP：令牌或密钥、限流、权限和业务规则。被拒绝的请求停在这里，不留任何痕迹。
+3. **会话写入者。** 每个数据库（集群里每个分片）一个写入者，取出排队的命令，给每条消息分配下一个 `seq`，在事务里再检查一次规则，并把去重键一起写入。
+4. **事件日志。** 提交就是事实确立的时刻：只有 `COMMIT` 返回后，才确认发送者、推送事件。
+5. **扇出。** 事件只序列化一次，按顺序交给每个连接的有界发送队列。跟不上的设备只丢自己的推送，并被通知去同步。
+
+## 写入路径
+
+```
+connections (in arrival order)          writer (one per database or shard)
+──cmd──▶ bounded command queue ──▶ ┌──────────────────────────────────────────┐
+                                    │ take one command, then all that are queued │
+                                    │ BEGIN                                       │
+                                    │   SAVEPOINT; cmd1; RELEASE  (a failure rolls back only itself)
+                                    │   SAVEPOINT; cmd2; RELEASE                  │
+                                    │ COMMIT  ← one fsync for the whole batch     │
+                                    └──────┬─────────────────────────────────────┘
+                                           │ after commit: ACKs and events, in order
+                                           ▼
+                           fan-out: shared bytes, bounded per-connection queues
+```
+
+| 风险 | 处理 |
+|---|---|
+| 还没落盘就确认 | 只有 `COMMIT` 返回后才确认和推送 |
+| 一条命令失败拖累整批 | 每条命令有自己的保存点；失败只回滚它自己 |
+| 回滚的命令留下空洞 | `seq` 计数器在保存点内更新，和它一起回滚 |
+| 整个提交失败 | 这一批的每条命令都得到错误，客户端用同一个 id 重试。fsync 出错是致命的：进程停止写入，从数据库日志恢复 |
+| 慢客户端 | 有界发送队列；满了就丢掉推送，让客户端重新同步 |
+| 写入过载 | 有界命令队列；满了返回 `overloaded`，客户端可以安全重试 |
+
+## 存储
+
+三种数据库行为一致、测试相同：单节点用 **SQLite**，集群和副本用 **PostgreSQL** 和 **MySQL**（或 MariaDB）。消息内容、旁路通道内容、草稿和审计详情静态加密，每个会话一把密钥，由你的主密钥包裹（[加密](/zh/docs/operations/encryption/)）。
+
+## 集群
+
+- 节点都是对等的：没有主节点、没有选举，数据库之外什么都不用跑。
+- 会话映射到虚拟分片。分片由在数据库里持有租约的节点写入，每一批都在同一个事务里检查租约的防护令牌。
+- 任何节点都能接入任何客户端，并通过 TLS 把写入转发给分片所在的节点。
+- 崩溃节点的分片在租约到期后（约 15–18 秒）被接管。增删节点和滚动升级时分片立即交接。
+- 有数据库副本时，服务端等副本收到后才确认，所以故障切换不丢任何已确认的消息。
+
+运行集群见[集群](/zh/docs/operations/cluster/)。
+
+## 相关
+
+[投递保证](/zh/docs/reliability/guarantees/) · [性能和容量](/zh/docs/reliability/performance/) · [我们怎么测试](/zh/docs/reliability/testing/) · [AgentIM 怎么接入](/zh/docs/concepts/overview/)

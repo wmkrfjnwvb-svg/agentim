@@ -1,0 +1,177 @@
+---
+title: "会话和消息"
+description: "每个会话背后的有序事件日志、消息字段和状态、自定义消息类型和成员管理。"
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../../components/docs/Capabilities.astro';
+import Support from '../../../../../components/docs/Support.astro';
+import ProductShowcase from '../../../../../components/ProductShowcase';
+
+<Capabilities>
+- 单聊、数千人的群，以及 Agent 和人一起干活的任务频道
+- 发送文字、文件、卡片和你自定义的消息类型；编辑和撤回
+- 每条消息拿到会话里的下一个序号：每台设备上顺序都一样
+- 重复发送不会产生两条消息（幂等的 `client_msg_id`）
+- 群主、管理员和成员；添加、移除、退出、转让、解散
+- 只给部分成员看的消息（旁路通道），其他人的序列也没有空洞
+- 输入状态这类实时信号，从不存储
+- 拉黑，以及离开的人仍可只读查看历史
+</Capabilities>
+
+## 看一眼
+
+点左边切换会话：带 Agent 的客服会话、有投票的设计组、上线清单、Agent 发消息的运维群，以及和 AI 助手的单聊。
+
+<ProductShowcase client:visible lang="zh" only="app" />
+
+## 会话是一份有序日志
+
+每个会话有一份事件日志。每个事件拿到下一个 **`seq`**：只增不减、没有空洞、对每个成员都一样。客户端按 `seq` 同步，所以既不会漏，也不会乱序（[多端同步和离线](/zh/docs/concepts/sync-and-offline/)）。
+
+| 事件 | 含义 |
+|---|---|
+| `conv.created`、`conv.updated` | 会话被创建，或标题、自定义字段被修改 |
+| `member.joined`、`members.joined` | 一个成员加入，或一批成员一起加入（建群时每个事件最多 200 人） |
+| `member.left`、`member.removed`、`member.policy` | 有人退出或被移除；Agent 的策略变了 |
+| `msg.created` | 一条新消息。流式回复在开始时创建，状态是 `streaming` |
+| `msg.updated` | 编辑、流式结束，或审核替换（`version` 加 1） |
+| `msg.recalled` | 消息被撤回，内容已删除 |
+| `agent.state` | Agent 被接管、交还、停止或触发了护栏。所有人都能看到 |
+| `conv.dissolved` | 群主解散了会话 |
+
+消息还会保留它的 **`created_seq`**，也就是它在会话里的位置。列表按 `created_seq` 排序。之后的编辑作为新事件到达，但会在原位置更新这条消息。
+
+### 旁路通道
+
+有些内容只给部分成员：对 Agent 的悄悄话、只有一个人能看的消息、等待审批的 Agent 草稿、护栏提示。它们进入每个会话独立的**旁路通道**，有自己的 `side_seq` 和可见名单。其他成员收不到，所以主日志对任何人都没有空洞，也不会暗示有东西被隐藏。
+
+## 会话类型
+
+| 类型 | 规则 |
+|---|---|
+| `dm` | 两个成员。每对人只有一个单聊：再次创建会返回已有的那个。加第三个人会新建一个群，所以原来的消息仍然私密。 |
+| `group` | 最多数千成员，角色有 `owner`、`admin` 和 `member`。 |
+| `task` | 带状态（`submitted`、`working`、`input_required`、`completed`、`failed`、`canceled`）和负责人的群，用于 Agent 和人协作的工作（[Agent](/zh/docs/concepts/agents/#多个-agent-做同一个任务)）。 |
+
+## 消息
+
+| 字段 | 含义 |
+|---|---|
+| `msg_id` | 消息 id |
+| `conv_id`、`created_seq` | 它在哪里 |
+| `sender_id`、`sender_type` | 谁发的：`human`、`agent` 或 `system`。类型由服务端根据凭据设置，所以 Agent 冒充不了人 |
+| `on_behalf_of` | 对 Agent 而言：它代表谁说话（只能是它的所有者） |
+| `kind`、`content`、`payload` | `text`、`image`、`file`、`agentim.card` 或你自定义的类型；文字和结构化内容 |
+| `state` | `committed`；流式消息先是 `streaming`，然后是 `complete`、`cancelled` 或 `failed`；`recalled` |
+| `state_reason` | 原因，例如 `timeout`、`taken_over`、`policy:…` |
+| `version` | 每次编辑加一 |
+| `reply_to`、`mentions` | 回复的是哪条消息；@ 了哪些成员 |
+| `client_msg_id` | 发送者自己给它的 id，只有发送者的设备能看到 |
+| `created_at`、`updated_at` | 自 1970 年起的毫秒数，由服务端设置 |
+
+### 发送是幂等的
+
+发送者选一个 `client_msg_id`。用同一个 id 再发一次（比如回复丢了之后），会返回第一条消息，而不会写第二条。客户端 SDK 会自动做这件事。去重按发送者和会话进行，保留 7 天。
+
+### 编辑和撤回
+
+- **编辑**：发送者修改文字（以及自定义类型的 payload），其他人在原位置看到新版本。应用可以限制允许编辑的时长（`edit_minutes`，见[权限](/zh/docs/concepts/permissions/)）。
+- **撤回**：发送者、群主或管理员、Agent 的所有者可以为所有人删除一条消息。内容会从数据库和之前的事件快照中删除，只留下一个"已撤回"的占位。
+
+### 自定义消息类型
+
+用带命名空间的 `kind` 和 JSON `payload` 发送你自己的消息类型：
+
+```json
+{ "kind": "acme.poll", "text": "[Poll] Lunch: pizza or sushi?", "payload": { "options": ["pizza", "sushi"] } }
+```
+
+- 类型至少有两段，用点分隔，小写，最多 64 字节。`agentim.` 是保留的。
+- payload 是最多 32 KiB 的 JSON 对象。
+- `text` 必填：不认识这个类型的旧客户端会显示它。
+
+自定义消息和文字走同一条写入路径：同样的顺序、去重、权限、加密和审计。
+
+### 信号
+
+`signal` 给当前在线的成员发送实时、不存储的内容：`typing`，或你自己的带命名空间的类型，数据最多 4 KiB。它不占 `seq`，之后也不会补发。每个用户每秒最多 20 个。
+
+## 成员管理
+
+| 操作 | 谁能做 | 结果 |
+|---|---|---|
+| 添加成员 | 群主和管理员（应用允许 `add_members` 时成员也可以） | `member.joined`；新成员默认能看到最近的历史（[同步](/zh/docs/concepts/sync-and-offline/#新成员能看到的历史)） |
+| 移除成员 | 群主和管理员；成员可以移除自己添加的 Agent | `member.removed`；这个人立刻收不到也读不了 |
+| 退出 | 任何成员；群主要先转让 | `member.left` |
+| 设置角色 | 群主 | 管理员可以加人、移除成员、撤回别人的消息 |
+| 转让群主 | 群主 | 新的群主 |
+| 解散 | 群主 | `conv.dissolved`；所有人失去访问，内容被删除 |
+| 拉黑 | 任何人 | 被拉黑的人不能和你开单聊、给你发私信或 @ 你。共同所在的群不受影响 |
+
+退出、被移除或会话被解散的人，列表里仍保留这个会话。它是只读的，并说明原因（"Bob 把你移出了会话"）。在那里发送会直接在设备上被拒绝，不用往返服务端。
+
+移除和发送不会竞争：`member.removed` 的序号是 N 时，被移除的人在 N 之后没有任何消息。两者由同一个写入者依次执行。
+
+## 怎么用
+
+<Tabs syncKey="platform">
+<TabItem label="React">
+```tsx
+import { AgentIM, ConversationList, Chat, MemberList } from '@agentimhq/react';
+
+<AgentIM client={client}>
+  <ConversationList selected={convId} onSelect={setConvId} />
+  <Chat convId={convId} title="Design team" />
+  <MemberList convId={convId} />
+</AgentIM>
+```
+</TabItem>
+<TabItem label="Web">
+```ts
+const { conv_id } = await client.call('create_conv', { kind: 'group', title: 'Design team', members: ['priya', 'jordan'] });
+await client.send(conv_id, 'Kick-off at 10');
+await client.edit(conv_id, { msgId }, 'Kick-off at 10:30');
+await client.recall(conv_id, { msgId });
+await client.call('add_member', { conv_id, user_id: 'sam', history: 50 });
+await client.call('set_role', { conv_id, user_id: 'priya', role: 'admin' });
+
+client.conversations.subscribe((list) => renderList(list));
+client.messages(conv_id).subscribe((messages) => renderChat(messages));
+```
+</TabItem>
+<TabItem label="iOS">
+```swift
+let r = try await client.call("create_conv", ["kind": "group", "title": "Design team", "members": ["priya", "jordan"]])
+let convId = r["conv_id"] as! String
+try await client.send(convId, "Kick-off at 10")
+try await client.edit(convId, msgId: msgId, "Kick-off at 10:30")
+try await client.recall(convId, msgId: msgId)
+```
+</TabItem>
+<TabItem label="Android">
+```kotlin
+val r = client.call("create_conv", JSONObject(mapOf("kind" to "group", "title" to "Design team", "members" to listOf("priya", "jordan"))))
+val convId = r.getString("conv_id")
+client.send(convId, "Kick-off at 10")
+client.edit(convId, msgId, "Kick-off at 10:30")
+client.recall(convId, msgId)
+```
+</TabItem>
+<TabItem label="Open API">
+```bash
+curl -X POST "$AGENTIM/v1/conversations" -H "authorization: Bearer $API_KEY" \
+  -d '{"as": "maya", "kind": "group", "title": "Design team", "members": ["priya", "jordan"]}'
+curl -X POST "$AGENTIM/v1/conversations/$CONV/members" -H "authorization: Bearer $API_KEY" -d '{"as": "maya", "users": ["sam"]}'
+curl -X POST "$AGENTIM/v1/conversations/$CONV/messages" -H "authorization: Bearer $API_KEY" -d '{"as": "maya", "text": "Kick-off at 10"}'
+```
+</TabItem>
+</Tabs>
+
+## 哪些端支持
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} />
+
+## 相关
+
+[权限](/zh/docs/concepts/permissions/) · [多端同步和离线](/zh/docs/concepts/sync-and-offline/) · [话题、回应和置顶](/zh/docs/concepts/threads-reactions-pins/) · [客户端协议](/zh/docs/reference/client-protocol/) · [事件](/zh/docs/reference/events/) · [业务规则](/zh/docs/reference/business-rules/)

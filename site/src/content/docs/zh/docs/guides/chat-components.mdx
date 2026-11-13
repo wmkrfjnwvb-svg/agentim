@@ -1,0 +1,162 @@
+---
+title: "卡片、表单和步骤"
+description: "数据卡片、表单卡片、回复旁的步骤和审批收件箱：长什么样、Agent 怎么用，以及怎么扩展。"
+---
+
+import Capabilities from '../../../../../components/docs/Capabilities.astro';
+import Support from '../../../../../components/docs/Support.astro';
+import CardsGallery from '../../../../../components/CardsGallery';
+
+<Capabilities>
+- 数据卡片：事实和表格，金额、日期、状态按每位读者的语言和地区显示
+- 表单：文字、数字、日期和选项，由服务端校验
+- 用按钮快速选择，Agent 办事的每一步实时可见
+- 审批卡片写明数值和触发的规则
+- 由固定积木组成的声明式 JSON，绝不是脚本
+- 由 React 和 React Native 原生绘制，和你应用的其他部分同一套主题
+- Agent 一行代码就能用：showCard、askForm、steps
+</Capabilities>
+
+## 看一眼
+
+每一块都是 React 组件根据 Agent 发来的 JSON 绘制的。
+
+<CardsGallery client:visible lang="zh" />
+
+有了这四个组件，能办事的助手看起来就是你产品的一部分，而不是一个聊天机器人：
+
+| | 用户看到什么 | 谁发送 |
+|---|---|---|
+| **数据卡片** | 订单的字段和值、表格里的记录、一个短列表 | `show_card`（内置 Agent）、`ctx.showCard`（Agent SDK），或任何卡片消息 |
+| **表单卡片** | 一次填几个字段（原因、日期、邮箱），发送前校验，之后显示为已提交的内容 | `ask_form`、`ctx.askForm`，或带 `form` 块的卡片 |
+| **步骤** | 回复旁显示"查询订单 ✓ → 退款 120 美元 · 等待 Sam"，完成后折叠成一行 | 内置 Agent 每次工具调用自动生成；Agent SDK 里用 `ctx.steps` |
+| **审批收件箱** | 跨会话等这个人处理的一切：待批准的操作、草稿、转人工、提问 | `<Inbox>`，数据来自服务端的 `inbox` |
+
+不用任何设置就能用：`<Chat>` 绘制卡片和步骤，`<Inbox>` 列出待办。内置 Agent 默认使用卡片、表单和步骤，可以关闭（控制台 › 内置 Agent，或助手的 `settings`：`cards`、`forms`、`steps`、`handoff`）。外观由你决定：见[组件主题](/zh/docs/guides/theming/)。
+
+## 卡片
+
+卡片是类型为 `agentim.card` 的消息，payload 是由固定积木组成的 JSON（绝不是脚本），最多 16 KB：
+
+```json
+{
+  "title": "Order 1002",
+  "to": ["u_maya"],
+  "once": true,
+  "blocks": [
+    { "type": "facts", "items": [
+      { "label": "Total", "value": 120, "format": "currency:USD" },
+      { "label": "Status", "value": "Delayed", "tone": "warning" }
+    ] },
+    { "type": "form", "id": "refund", "submit": "Request refund", "fields": [
+      { "id": "reason", "label": "Reason", "type": "select", "options": ["Arrived late", "Damaged"], "required": true },
+      { "id": "pickup", "label": "Pickup date", "type": "date", "min": "2026-11-08", "hint": "We collect it from your address" }
+    ] }
+  ]
+}
+```
+
+| 卡片字段 | 含义 |
+|---|---|
+| `title` | 最多 100 字节 |
+| `blocks` | 1 到 20 个块 |
+| `to` | 只有这些人（id 或名字，1 到 20 个）能回答，其他人只读。其他人回答会得到 `forbidden`（`card.not_for_you`） |
+| `once` | 这张卡片总共只接受一个回答 |
+
+### 块
+
+| 块 | 字段 | 限制 |
+|---|---|---|
+| `text` | `text` | 1 字节到 4 KB |
+| `facts` | `items: [{label, value, format?, tone?}]` | 1 到 20 项；值是文字（≤ 500 字节）、数字、true/false 或 null |
+| `table` | `columns: [{label, align?, format?}]`、`rows: [[value, …]]`、`caption?` | 1 到 8 列、1 到 50 行，每列一个值，文字总共 8 KB |
+| `list` | `items: [{id, title, subtitle?, meta?, badge?: {label, tone?}}]`、`select?`、`id` | 1 到 20 项；设 `select: true`（并有 `id`）时可以选一行：回答的 `action` 就是这一行的 id |
+| `buttons` | `id`、`options: [{id, label, style?}]` | 1 到 10 个选项；`style` 是 `primary` 或 `danger` |
+| `form` | `id`、`submit`、`fields` | 1 到 10 个字段 |
+| `x-…` | `data?`、`fallback`、`id?` | 你自己的块，见下文 |
+
+**`format`**（值怎么显示，按查看者的语言和地区）：`text`、`number`、`currency:XXX`（任意 ISO 4217 代码）、`date`（`YYYY-MM-DD`，日历日期）、`datetime`（ISO 8601，按查看者的时区）、`percent`（`0.4` 即 40%）。同一张卡片在美国显示 `$1,200.00`，在德国显示 `1.200,00 $`。
+
+**`tone`**（标签的颜色）：`neutral`、`success`、`warning`、`danger`、`info`。
+
+### 表单字段
+
+| `type` | 额外字段 | 回答 |
+|---|---|---|
+| `text` | `max`（≤ 1000）、`pattern`（整个回答要匹配的正则）、`error`（不匹配时显示） | 文字 |
+| `textarea` | `max`（≤ 4000） | 文字 |
+| `number` | `min`、`max` | 数字 |
+| `select` | `options`（1 到 10 个） | 选项之一 |
+| `checkbox` | | true 或 false |
+| `date` | `min`、`max`（`YYYY-MM-DD`） | `YYYY-MM-DD` |
+| `time` | `min`、`max`（`HH:MM`） | `HH:MM` |
+| `email` | | 邮箱地址 |
+| `x-…` | `config`（≤ 1 KB） | 任意 JSON（≤ 1 KB） |
+
+每个字段都可以有 `id`、`label`、`required`、`placeholder`、`hint` 和 `default`（它本身必须是有效回答）。组件在发送前按服务端的规则校验；服务端会再校验一次，不通过返回 `bad_request`（`card.input`）。
+
+### 回答
+
+回答作为会话事件 `card.response`（`msg_id`、`block_id`、`action` 或 `values`、`by`）回到卡片的发送者。因为它在会话日志里，订阅了 `card.*` 的 [Webhook](/zh/docs/reference/events/) 也会收到：你的后端不用任何 Agent 就能处理表单。
+
+已回答的表单显示为提交的内容，刷新后也一样：组件读取 `card_answers`（`{op: "card_answers", msg_id}`），它列出谁在什么时候回答了哪个块；具体值只给回答者本人和卡片发送者看。
+
+## 步骤
+
+Agent 通过旁路上报进度（`progress`），组件把它整理成步骤。数据遵循一个小约定：
+
+- `kind: "plan"`、`data: {steps: [{id, title}]}` 列出接下来的步骤。
+- `kind: "step"`、`data: {id, state, title?, detail?}` 设置一步；`state` 是 `running`、`waiting`、`done`、`failed` 或 `skipped`。`data` 里的其他内容会保留，供你自己绘制。
+- 没有 id 的 `tool_call` 和 `tool_result` 各自成为一步。
+
+带 `msg_id`（Agent 自己的某条消息）时，步骤显示在那条回复上方；不带时显示在会话末尾。有步骤在运行、等待或失败时列表展开，全部完成后折叠成"3 个步骤 · 8 秒"。内置 Agent 把每次工具调用作为一步上报，标题是工具的说明，从不显示参数；等待审批的调用在决定前是 `waiting`。
+
+## 审批收件箱
+
+`<Inbox>` 跨会话列出等当前登录者处理的事，最新的在前：Agent 想执行的操作（带操作卡片：做什么、数值、金额、要求审批的规则，以及发起请求的消息）、Agent 的草稿（发送、修改后发送、丢弃）、转给他的会话（打开、交还）和提问（回答或选择）。标签页显示每类的数量，可以搜索。窄屏上列表和详情分成两页。`<InboxBadge>` 是放在你导航里的数量角标。
+
+服务端的 `inbox`（`{op: "inbox", limit?}`，1 到 500，默认 100，带 `more`）给每一项提供 `conv_title`、`agent_name`，操作类还有 `asker_name`。点名了决定人的请求只显示给这些人，不显示给 Agent 的所有者。
+
+## 内置 Agent
+
+| 工具 | 作用 |
+|---|---|
+| `show_card` | 用卡片回复，内容是 `text`、`facts`、`table` 或 `list` 块 |
+| `ask_form` | 发一个只有被回答的人能填、只能填一次的表单。填完会触发下一次回复，以"Maya 填写了表单……"和每个值开头 |
+| `handoff_to_person` | 回复后把会话转给 Agent 的所有者 |
+
+## Agent SDK
+
+```js
+agent.onMessage(async (msg, ctx) => {
+  const s = await ctx.steps(['Look up order', 'Refund']);
+  await s.start(0);
+  const order = await shop.order(msg.content);
+  await s.done(0);
+  await ctx.showCard(`Order ${order.id}`, [{ type: 'facts', items: [{ label: 'Total', value: order.total, format: 'currency:USD' }] }]);
+  const v = await ctx.askForm('Refund', [{ id: 'reason', label: 'Reason', type: 'select', options: ['Late', 'Damaged'], required: true }]);
+  await s.wait(1, 'Waiting for approval');
+  // …
+});
+```
+
+Python 也一样：`ctx.steps`、`ctx.show_card`、`ctx.ask_form`（等待并返回回答；`timeout` 以秒为单位）。
+
+## 扩展
+
+| 扩展点 | 方法 |
+|---|---|
+| 自定义卡片块 | 类型为 `x-<name>` 的块（如 `x-acme.chart`），带 `data`（≤ 8 KB）和 `fallback`（文字，或 `"drop"`）。在 `components.cardBlocks['x-acme.chart']` 注册组件；没注册的客户端显示 fallback。带 `id` 时可以回答（`action` 或 `values`，≤ 1 KB） |
+| 自定义表单字段 | 类型为 `x-<name>` 的字段，带 `config`；注册 `components.formFields['x-<name>']`。也可以为内置类型注册，用你的方式绘制，比如在 React Native 里给 `date` 用原生日期选择器 |
+| 自定义步骤 | `components.Steps`，或用 `useSteps(convId, msgId)` 自己绘制 |
+| 把收件箱放进你自己的待办 | `useInbox()`（列表、计数、`decide`、`answer`、`approveDraft`、`discardDraft`、`handBack`），或 `<Inbox extraItems={…} renderItem={…} types={…} onOpen={…}>` |
+| 任何 Agent 的审批 | 你自己的 Agent 用带 `context.operation`（`name`、`description`、`fields`、`amount`）的 `request_human`，会显示同样的操作卡片 |
+| 文案和外观 | `strings` 和主题变量 |
+
+## 哪些端支持
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} />
+
+## 相关
+
+[流式回复、进度、卡片和反馈](/zh/docs/concepts/streaming/) · [主题](/zh/docs/guides/theming/) · [Agent SDK](/zh/docs/agent-sdks/) · [React 组件](/zh/docs/client-sdks/react-api/)

@@ -1,0 +1,89 @@
+---
+title: "文件和图片"
+description: "直传 S3 或经服务端上传，缩略图在设备上生成，去除位置信息，下载链接每次都检查权限。"
+---
+
+import Capabilities from '../../../../../components/docs/Capabilities.astro';
+import Support from '../../../../../components/docs/Support.astro';
+
+<Capabilities>
+- 一次调用发送文件和图片，任何客户端 SDK、Agent 或后端都可以
+- 在设备上去除位置和相机元数据，并生成方向正确的缩略图
+- 立刻显示并带进度条；网络变化或重启后断点续传
+- 直传 S3（或 R2、MinIO……）：服务端从不经手文件内容
+- 根据文件内容判断真实类型；SVG 永远不当作图片
+- 下载链接每次都检查权限，5 分钟有效；被移除的成员立刻失去访问
+- 未发送和已撤回的文件会被清理；每个应用可设保留期
+</Capabilities>
+
+## 发送
+
+在客户端 SDK 里，一次调用：
+
+```ts
+await client.sendFile(convId, file, { caption: 'The signed contract' });   // browser: a File
+```
+
+```swift
+try await client.sendFile(convId, path: url.path, caption: "The signed contract")   // Swift, Kotlin, C#, Dart, React Native: a path
+```
+
+其余的由 SDK 完成：
+
+1. **在设备上准备文件。** 对图片，它在不重新编码的情况下去除 EXIF 和 XMP 元数据（包括 GPS），生成方向正确、最大 320 像素的缩略图（JPEG，透明时用 PNG），并记录正确方向的宽高。
+2. **立刻显示**，带本地预览和上传进度条（`status: uploading`）。
+3. **分片上传**，同时最多 4 片，网络变化或重启后续传。用 S3 时分片直接传到存储桶，服务端从不经手内容。
+4. **发送消息**，类型为 `image` 或 `file`，在服务端检查完上传之后。
+
+上传不会卡住会话：上传期间输入的消息照常发出，文件完成后按顺序占据它的位置。
+
+Agent 和后端也可以一次请求发送整个文件：[Agent SDK](/zh/docs/agent-sdks/) 里的 `sendFile`、MCP 的 `send_file`（最多 16 MiB），或从你的后端调用 `POST /v1/conversations/{id}/files`（最多 64 MiB）。这时由服务端去除元数据并生成缩略图。
+
+## 服务端检查什么
+
+- 发送者可以在这个会话里发消息：被移除的成员、被拉黑的单聊、已解散的会话和处于草稿模式的 Agent，和发消息一样会被拒绝。
+- 大小在 `files.max_bytes` 以内（默认 4 GiB）且不为零。
+- 真实类型根据开头的字节判断，不信任扩展名和声明的类型。JPEG、PNG、WebP 和 GIF 是图片，其他（包括 SVG）都是文件。
+- 缩略图是最大 320 像素的 JPEG 或 PNG。
+- 一个文件只属于一条消息。另一条消息再用它会得到 `conflict`。
+
+## 下载
+
+`fileUrl(convId, fileId, 'thumb' | 'original')` 返回一个 5 分钟有效的链接。每次都检查权限：上传者，或能看到含这个文件的消息的人。被移除的成员立刻失去访问。用 S3 时是预签名链接，内容不经过服务端。文件不会变，所以应用按 `file_id` 缓存。
+
+普通文件以 `Content-Disposition: attachment` 下载；本地存储时还会加上 `nosniff` 和沙箱策略，所以文件永远不会被当作网页运行。
+
+UI 组件把图片显示为缩略图，用**查看原图**打开查看器；其他文件显示为带类型图标、文件名、大小和下载按钮的卡片。
+
+## 生命周期
+
+| | |
+|---|---|
+| 未完成的上传 | 24 小时后删除 |
+| 上传了但没发送 | 24 小时后删除 |
+| 撤回的消息、被拒绝的草稿、解散的会话、删除的账号 | 文件随之删除 |
+| 保留期 | `files.retention_days`（默认一直保留）。过期的文件显示"文件已过期"，消息保留 |
+| Agent 上传的文件 | 标记 `ai_generated: true` |
+
+## 配置
+
+```toml
+[files]
+storage = "s3"            # or "local" (default), with dir = "./data/files"
+max_bytes = 4294967296    # 4 GiB
+
+[files.s3]
+bucket = "agentim-files"
+region = "us-east-1"
+# endpoint = "https://…"  # MinIO, Cloudflare R2 and other S3-compatible stores
+```
+
+凭据来自 `AGENTIM_S3_ACCESS_KEY_ID` 和 `AGENTIM_S3_SECRET_ACCESS_KEY`。浏览器上传需要给存储桶配置 CORS（[文件存储](/zh/docs/operations/file-storage/)）。集群需要 S3，或所有节点共享的本地文件夹（`shared = true`）。
+
+## 哪些端支持
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} note="React 和 React Native UI 会显示图片、带查看原图的查看器，以及带下载按钮的文件卡片。" />
+
+## 相关
+
+[文件存储](/zh/docs/operations/file-storage/) · [会话和消息](/zh/docs/concepts/conversations/) · [Agent SDK](/zh/docs/agent-sdks/) · [开放 API](/zh/docs/reference/open-api/)

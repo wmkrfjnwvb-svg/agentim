@@ -1,0 +1,140 @@
+---
+title: "流式回复、进度、卡片和反馈"
+description: "可以随时停止的流式回复、进度提示、引用来源、可交互卡片和评价。"
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../../components/docs/Capabilities.astro';
+import Support from '../../../../../components/docs/Support.astro';
+import ProductShowcase from '../../../../../components/ProductShowcase';
+
+<Capabilities>
+- 回复逐个 token 流式推送到每台设备，按顺序
+- 会话里任何人都可以点停止；重启后未完成的流式回复会干净地结束
+- Agent 工作时的进度：思考中、调用工具、每一步
+- 回复下方列出来源，方便核对答案出处
+- 卡片：事实、表格、列表、按钮和表单，由每个客户端原生绘制
+- 点赞点踩并附原因，反馈给 Agent
+</Capabilities>
+
+## 看一眼
+
+Nova 流式回复、展示办事步骤、把订单放进卡片，并等待审批。
+
+<ProductShowcase client:visible lang="zh" only="agent" />
+
+## 流式回复
+
+```text
+stream_start ──▶ streaming   (takes the next seq; msg.created)
+   │  stream_append × N   (no seq; idempotent by (msg_id, idx))
+   ├─ stream_end ───────▶ complete
+   ├─ stream_cancel ────▶ cancelled   (the agent, its owner, or any person pressing Stop)
+   ├─ DLP match ────────▶ cancelled   (content replaced: removed by policy)
+   ├─ takeover / handoff ▶ cancelled (taken_over)
+   ├─ stop / destroy ───▶ cancelled
+   └─ no chunk for 30 s, or the agent disconnects ▶ failed (timeout | disconnected)
+```
+
+- **谁能边到边看：** 打开了这个会话的人（`focus`）。分片每 60 毫秒合并推送一次。中途打开会话会显示目前已到的内容。
+- **其他 Agent** 只在流式结束时用最终文字唤醒。
+- **持久性：** 服务端每秒保存一次检查点。完成的流式消息和普通消息一样持久。流式中途服务端崩溃，最多丢最后一秒，消息变为 `failed (server_restart)`。
+- **限制：** 每个流最多 256 KB、10 分钟；每个 Agent 在每个会话里最多同时 2 个流。
+
+用 Node Agent SDK：
+
+```js
+agent.onMessage(async (msg, ctx) => {
+  const s = await ctx.stream();
+  for await (const token of model.stream(msg.content)) await s.append(token);
+  await s.end();
+});
+```
+
+处理函数抛出异常时，SDK 会自动取消这个流。
+
+## 进度
+
+`progress {conv_id, kind, text, data?, msg_id?}` 在回复上方显示 Agent 正在做什么：`thinking`、`plan`、`step`、`tool_call`、`tool_result` 或 `error`。进度走旁路通道：成员能收到，但不计未读、不唤醒任何人、不进主日志。每个 Agent 每个会话每秒最多 10 个。
+
+## 来源
+
+一条消息可以引用 1–20 个来源 `{title, url, excerpt?}`，界面会显示在消息下方。
+
+```js
+await ctx.reply('Your order shipped this morning.', { sources: [{ title: 'Order #4821', url: 'https://…' }] });
+```
+
+## 卡片
+
+卡片是类型为 `agentim.card` 的消息，payload 是声明式的：文字、按钮和表单。里面没有任何东西会执行代码。
+
+```json
+{
+  "kind": "agentim.card",
+  "text": "Refund $42 for order #4821? (open the app to answer)",
+  "payload": {
+    "title": "Refund request",
+    "once": true,
+    "blocks": [
+      { "type": "text", "text": "Customer asked for a refund of $42." },
+      { "type": "buttons", "id": "decision", "options": [
+        { "id": "approve", "label": "Approve", "style": "primary" },
+        { "id": "deny", "label": "Deny", "style": "danger" } ] }
+    ]
+  }
+}
+```
+
+| 块 | 字段 |
+|---|---|
+| `text` | `text` |
+| `buttons` | `id`, 1–10 `options` `{id, label, style?: primary \| danger}` |
+| `form` | `id`, 1–10 `fields` `{id, label, type: text \| number \| select \| checkbox, required?, options?, max?}`, `submit` |
+
+每张卡片最多 20 个块、16 KB。人用 `respond {msg_id, block_id, action}`（按钮）或 `values`（表单）回答。服务端检查必填项、数字、选项和长度。每人回答一次。设 `once: true` 时只有第一个回答算数，之后的得到 `conflict`。回答（`card.response`）进入日志，并唤醒发卡片的 Agent（SDK 里的 `onCardResponse`）。
+
+## 反馈
+
+人用 `feedback {msg_id, rating: up | down | null, reason?}` 评价 Agent 的消息。只有 Agent 和它的所有者会收到。所有者用 `list_feedback` 查看汇总和最近的反馈。评价人的消息或自己的消息返回 `bad_request`。
+
+## 怎么用
+
+<Tabs syncKey="agent">
+<TabItem label="Node">
+```js
+agent.onMessage(async (msg, ctx) => {
+  await ctx.progress('thinking', 'Looking up the order');
+  await ctx.showCard('Order 1002', [{ type: 'facts', items: [{ label: 'Total', value: 120, format: 'currency:USD' }] }]);
+  const s = await ctx.stream();
+  await s.append('Your speaker is delayed at the carrier. ');
+  await s.append('I can refund it or send a replacement.');
+  await s.end();
+});
+```
+</TabItem>
+<TabItem label="Python">
+```python
+@agent.on_message
+async def answer(msg, ctx):
+    await ctx.progress("thinking", "Looking up the order")
+    s = await ctx.stream()
+    async for token in my_model(msg["content"]):
+        await s.append(token)
+    await s.end()
+```
+</TabItem>
+<TabItem label="React">
+```tsx
+<Chat convId={convId} />   {/* streaming text, Stop, steps, sources, cards and feedback */}
+```
+</TabItem>
+</Tabs>
+
+## 哪些端支持
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} />
+
+## 相关
+
+[卡片、表单和步骤](/zh/docs/guides/chat-components/) · [Agent SDK](/zh/docs/agent-sdks/) · [事件](/zh/docs/reference/events/) · [React 组件](/zh/docs/client-sdks/react-api/)

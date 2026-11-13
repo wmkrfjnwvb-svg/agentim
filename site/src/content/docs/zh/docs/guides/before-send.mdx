@@ -1,0 +1,62 @@
+---
+title: "发送前钩子"
+description: "让你的后端在每条消息写入前放行、拒绝或改写它。"
+---
+
+import Capabilities from '../../../../../components/docs/Capabilities.astro';
+
+<Capabilities>
+- 你的后端在每条消息写入前都能看到它
+- 放行、带上你的理由拒绝，或改写它的文字和 payload
+- 像 Webhook 一样签名；有超时，出错时怎么处理可以选
+- 在会话写入者之外运行，所以别的会话不用等
+- 按结果计入监控指标
+</Capabilities>
+
+发送前钩子在消息到达写入者之前，为每次 `send` 同步调用你的后端。可以用来执行你自己的内容规则、接审核模型，或改写链接。
+
+```toml
+[before_send]
+url = "https://api.example.com/agentim/before-send"
+secret = "whsec_…"
+timeout_ms = 2000
+on_error = "allow"     # or "reject": what to do on timeout, non-2xx, bad JSON or an unknown action
+```
+
+## 请求
+
+和 [Webhook](/zh/docs/reference/webhooks/) 一样签名（`webhook-id`、`webhook-timestamp`、`webhook-signature`）：
+
+```json
+{
+  "type": "message.before_send",
+  "conv_id": "c_…",
+  "client_msg_id": "…",
+  "kind": "text",
+  "text": "Call me at 555-0100",
+  "payload": null,
+  "reply_to": null,
+  "to_user": null,
+  "sender": { "id": "u_…", "name": "maya", "kind": "human" }
+}
+```
+
+## 回复
+
+| 回复 | 效果 |
+|---|---|
+| `{"action": "allow"}` | 消息原样继续 |
+| `{"action": "reject", "reason": "Phone numbers are not allowed"}` | 发送者收到带你的理由的 `policy_blocked`；什么都不写入 |
+| `{"action": "replace", "text": "Call me at [hidden]", "payload": null}` | 经过常规检查后，用你的文字和 payload 写入（无效时返回 `bad_request`） |
+
+## 它能看到什么、看不到什么
+
+- 格式错误的请求在调用钩子之前就被拒绝。成员资格、拉黑和其他规则照常在它之后检查。
+- 编辑和流式回复不经过钩子。Agent 的输出还会经过内置的[安全护栏](/zh/docs/concepts/guardrails/)。
+- 钩子在写入者之外运行，不会拖慢其他会话；但它的延迟会加到每次发送上：要快，并且离服务端近。
+
+`agentim_before_send_total{result}` 按结果计数（[监控](/zh/docs/operations/monitoring/)）。
+
+## 相关
+
+[Webhook](/zh/docs/reference/webhooks/) · [安全护栏](/zh/docs/concepts/guardrails/) · [审核](/zh/docs/security/moderation/) · [监控](/zh/docs/operations/monitoring/)
