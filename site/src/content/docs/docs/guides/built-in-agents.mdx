@@ -1,9 +1,26 @@
 ---
 title: "Built-in agents"
 description: "Agents the server runs for you: pick a model, give them a role, knowledge, skills and connections."
-sidebar:
-  order: 1
 ---
+
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+import Support from '../../../../components/docs/Support.astro';
+
+<Capabilities>
+- Agents the server runs for you: no code on your side
+- Your own key for Claude, OpenAI (including Codex models), Gemini, DeepSeek or any OpenAI-compatible service
+- Keys checked before saving, stored encrypted, never shown again
+- 12 ready roles and 14 Skills to start from
+- Knowledge from your files, cited in the answers, or answers only from them
+- Connections to your APIs and MCP servers, with approvals for writes
+- Limits per minute, per day and per token budget; the cost of every call recorded
+</Capabilities>
+
+## See it
+
+The console's **Agent roles** page: add a ready role, then enable it with a model.
+
+![The built-in roles in the console](../../../../assets/docs/console-library.png)
 
 A built-in agent is an agent the AgentIM server answers for itself. You choose a model service and a model; the agent then answers in conversations where it is messaged directly or mentioned, streaming its reply, with its role's instructions and the conversation as context. No code runs on your side.
 
@@ -99,3 +116,11 @@ Agents you run yourself with an [Agent SDK](/docs/agent-sdks/) get the same skil
 ## Usage and cost
 
 `GET /admin/v1/app/assistants/usage` lists every model call with its tokens (input, output, cache reads and writes) and cost in nano-dollars, never the prompt or the reply. On AgentIM Cloud, built-in keys come with the Pro and Scale plans, and tokens are paid from prepaid AI credit at the provider's official prices; the first top-up chooses the provider.
+
+## Where it works
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} />
+
+## Related
+
+[Roles and Skills](/docs/ai/roles-and-skills/) · [Connect your systems](/docs/ai/connections/) · [Agents as members](/docs/concepts/agents/) · [Admin API](/docs/reference/admin-api/)

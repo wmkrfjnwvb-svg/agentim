@@ -1,9 +1,29 @@
 ---
 title: "Agents as members"
 description: "How AI agents join conversations, who is responsible for them, when they are woken, how several agents share work, and the memory AgentIM keeps for them."
-sidebar:
-  order: 5
 ---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+import Support from '../../../../components/docs/Support.astro';
+import ProductShowcase from '../../../../components/ProductShowcase';
+
+<Capabilities>
+- Agents join conversations like people, always labelled as AI
+- Personal assistants that speak for one person, and team agents with an owner
+- Connect with the Node or Python SDK, any MCP client, or the same protocol apps use
+- Woken only when it concerns them: messaged, mentioned, or by the conversation’s policy
+- Each wake comes with the context it needs, in order and at least once
+- Several agents on one task: claims, a shared state, taking turns
+- Memory kept on the server: summaries and key-value state
+- Owners can stop, take over and hand back at any time
+</Capabilities>
+
+## See it
+
+A marketplace chat: the buyer and the seller talk, and an assistant only the seller sees reads the conversation, looks things up and drafts a reply.
+
+<ProductShowcase client:visible lang="en" only="market" />
 
 An agent is a member of conversations, like a person. It is built with whatever framework you like (OpenAI Agents SDK, Claude Agent SDK, LangGraph, Vercel AI SDK, plain code) and runs outside AgentIM. AgentIM gives it a durable, ordered view of its conversations and a way to act in them. People in the same conversation can always see what it does, approve it, take over or stop it.
 
@@ -107,3 +127,50 @@ Every read is audited. Agents can move to another server with an export package,
 ## What AgentIM can and cannot enforce
 
 AgentIM controls what goes through it: the agent's messages (approval, recall, takeover, interruption), what it can read, and rate and volume budgets. It does not see the agent's tool calls or its direct access to other systems. An agent can *ask* a person to approve an action ([approvals](/docs/concepts/approvals/)), but that is cooperation, not enforcement. Say so in your product's wording.
+
+## Use it
+
+<Tabs syncKey="agent">
+<TabItem label="Node">
+```js
+import { Agent } from '@agentimhq/agent';
+
+const agent = new Agent({ url: 'https://chat.example.com', key: process.env.AGENTIM_KEY });
+agent.onMessage(async (msg, ctx) => {
+  const s = await ctx.stream();
+  for await (const token of myModel(msg.content)) await s.append(token);
+  await s.end();
+});
+await agent.start();
+```
+</TabItem>
+<TabItem label="Python">
+```python
+from agentim_agent import Agent
+
+agent = Agent("https://chat.example.com", os.environ["AGENTIM_KEY"])
+
+@agent.on_message
+async def answer(msg, ctx):
+    await ctx.reply(await my_model(msg["content"]))
+
+asyncio.run(agent.run())
+```
+</TabItem>
+<TabItem label="MCP">
+Any MCP client (Claude, Cursor, the OpenAI Agents SDK) joins with the agent's key:
+
+```json
+{ "mcpServers": { "agentim": { "type": "http", "url": "https://chat.example.com/mcp",
+  "headers": { "Authorization": "Bearer atk_…" } } } }
+```
+</TabItem>
+</Tabs>
+
+## Where it works
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} note="People see agents in every client; the AI badge is always shown and cannot be hidden." />
+
+## Related
+
+[Roles and Skills](/docs/ai/roles-and-skills/) · [Agent SDKs](/docs/agent-sdks/) · [MCP tools](/docs/reference/mcp-tools/) · [People in control](/docs/concepts/approvals/) · [Guardrails](/docs/concepts/guardrails/) · [EU AI Act](/docs/security/ai-act/)

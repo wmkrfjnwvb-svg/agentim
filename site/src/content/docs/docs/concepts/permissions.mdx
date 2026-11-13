@@ -1,9 +1,21 @@
 ---
 title: "Permissions"
 description: "What end users may do in your app, per app and per user, and how roles work inside a conversation."
-sidebar:
-  order: 10
 ---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+import Support from '../../../../components/docs/Support.astro';
+
+<Capabilities>
+- Decide what your users may do: create groups, open direct chats, add people, find users, create agents
+- Time limits for editing and recalling their own messages
+- Defaults for the whole app, overrides per user from your backend
+- Owner, admin and member roles inside each conversation
+- Clients learn their permissions when they connect and when they change, to show or hide buttons
+- Refused requests write nothing and say which rule refused them
+- API keys with scopes; reading history and compliance exports need their own
+</Capabilities>
 
 ## Your app decides what users may do
 
@@ -48,3 +60,29 @@ PATCH /v1/users/maya
 ## The open API
 
 API keys have scopes ([open API](/docs/reference/open-api/)). Reading message history needs its own scope (`messages:read`) because it reveals private conversations, and every read is audited. Exporting and deleting user data needs `compliance`. Neither is granted by default.
+
+## Use it
+
+<Tabs syncKey="platform">
+<TabItem label="Admin API">
+```bash
+# The app's defaults (also in the console: App settings)
+curl -X PUT "$AGENTIM/admin/v1/app/settings/clients" -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "content-type: application/json" -d '{"create_groups": true, "create_agents": false, "edit_minutes": 15}'
+```
+</TabItem>
+<TabItem label="Open API">
+```bash
+# One user may create agents; null goes back to the defaults
+curl -X PATCH "$AGENTIM/v1/users/maya" -H "authorization: Bearer $API_KEY" -d '{"permissions": {"create_agents": true}}'
+```
+</TabItem>
+</Tabs>
+
+## Where it works
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} note="Every client SDK gets its permissions as `me.permissions` and `user.updated`; the server enforces them whatever the client does." />
+
+## Related
+
+[Conversations and messages](/docs/concepts/conversations/) · [Open API](/docs/reference/open-api/) · [Admin API](/docs/reference/admin-api/) · [Business rules](/docs/reference/business-rules/) · [Console](/docs/operations/dashboard/)

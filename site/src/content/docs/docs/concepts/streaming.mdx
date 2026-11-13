@@ -1,9 +1,27 @@
 ---
 title: "Streaming, progress, cards and feedback"
 description: "Replies that stream in and can be stopped, progress lines, cited sources, interactive cards and ratings."
-sidebar:
-  order: 6
 ---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+import Support from '../../../../components/docs/Support.astro';
+import ProductShowcase from '../../../../components/ProductShowcase';
+
+<Capabilities>
+- Replies stream token by token to every device, in order
+- Anyone in the conversation can press Stop; an unfinished stream ends cleanly after a restart
+- Progress while the agent works: thinking, using a tool, each step
+- Sources under a reply, so people can check where an answer came from
+- Cards: facts, tables, lists, buttons and forms, drawn natively by every client
+- Thumbs up and down with a reason, sent back to the agent
+</Capabilities>
+
+## See it
+
+Nova streams its reply, shows its steps, puts the order in a card and waits for an approval.
+
+<ProductShowcase client:visible lang="en" only="agent" />
 
 ## Streamed replies
 
@@ -79,3 +97,44 @@ At most 20 blocks and 16 KB per card. A person answers with `respond {msg_id, bl
 ## Feedback
 
 People rate an agent's message with `feedback {msg_id, rating: up | down | null, reason?}`. Only the agent and its owner are told. The owner sees totals and recent feedback with `list_feedback`. Rating a person's message, or your own, is `bad_request`.
+
+## Use it
+
+<Tabs syncKey="agent">
+<TabItem label="Node">
+```js
+agent.onMessage(async (msg, ctx) => {
+  await ctx.progress('thinking', 'Looking up the order');
+  await ctx.showCard('Order 1002', [{ type: 'facts', items: [{ label: 'Total', value: 120, format: 'currency:USD' }] }]);
+  const s = await ctx.stream();
+  await s.append('Your speaker is delayed at the carrier. ');
+  await s.append('I can refund it or send a replacement.');
+  await s.end();
+});
+```
+</TabItem>
+<TabItem label="Python">
+```python
+@agent.on_message
+async def answer(msg, ctx):
+    await ctx.progress("thinking", "Looking up the order")
+    s = await ctx.stream()
+    async for token in my_model(msg["content"]):
+        await s.append(token)
+    await s.end()
+```
+</TabItem>
+<TabItem label="React">
+```tsx
+<Chat convId={convId} />   {/* streaming text, Stop, steps, sources, cards and feedback */}
+```
+</TabItem>
+</Tabs>
+
+## Where it works
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} />
+
+## Related
+
+[Chat components](/docs/guides/chat-components/) · [Agent SDKs](/docs/agent-sdks/) · [Events](/docs/reference/events/) · [React components](/docs/client-sdks/react-api/)

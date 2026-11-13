@@ -1,9 +1,29 @@
 ---
 title: "Conversations and messages"
 description: "The ordered event log behind every conversation, message fields and states, custom message kinds, and membership."
-sidebar:
-  order: 2
 ---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+import Support from '../../../../components/docs/Support.astro';
+import ProductShowcase from '../../../../components/ProductShowcase';
+
+<Capabilities>
+- Direct messages, groups with thousands of members, and task channels for agents and people
+- Send text, files, cards and your own message kinds; edit and recall
+- Every message gets the next number in its conversation: the same order on every device
+- Sending twice never makes two messages (idempotent `client_msg_id`)
+- Owners, admins and members; add, remove, leave, transfer, dissolve
+- Messages only some members see (the side channel), without gaps for the others
+- Live signals such as typing, never stored
+- Blocking, and read-only history for people who left
+</Capabilities>
+
+## See it
+
+Switch conversations on the left: a support chat with an agent, a design group with a vote, a launch checklist, an ops channel where agents post, and a direct chat with an assistant.
+
+<ProductShowcase client:visible lang="en" only="app" />
 
 ## A conversation is an ordered log
 
@@ -92,3 +112,66 @@ Custom messages go through the same write path as text: same order, deduplicatio
 People who left, were removed, or saw the conversation dissolved keep it in their list. It is read-only and says why ("Bob removed you"). Sending there is refused on the device itself, without a round trip.
 
 Removal and sending never race: when `member.removed` has seq N, the removed person has no message after N. The same writer runs both, one after the other.
+
+## Use it
+
+<Tabs syncKey="platform">
+<TabItem label="React">
+```tsx
+import { AgentIM, ConversationList, Chat, MemberList } from '@agentimhq/react';
+
+<AgentIM client={client}>
+  <ConversationList selected={convId} onSelect={setConvId} />
+  <Chat convId={convId} title="Design team" />
+  <MemberList convId={convId} />
+</AgentIM>
+```
+</TabItem>
+<TabItem label="Web">
+```ts
+const { conv_id } = await client.call('create_conv', { kind: 'group', title: 'Design team', members: ['priya', 'jordan'] });
+await client.send(conv_id, 'Kick-off at 10');
+await client.edit(conv_id, { msgId }, 'Kick-off at 10:30');
+await client.recall(conv_id, { msgId });
+await client.call('add_member', { conv_id, user_id: 'sam', history: 50 });
+await client.call('set_role', { conv_id, user_id: 'priya', role: 'admin' });
+
+client.conversations.subscribe((list) => renderList(list));
+client.messages(conv_id).subscribe((messages) => renderChat(messages));
+```
+</TabItem>
+<TabItem label="iOS">
+```swift
+let r = try await client.call("create_conv", ["kind": "group", "title": "Design team", "members": ["priya", "jordan"]])
+let convId = r["conv_id"] as! String
+try await client.send(convId, "Kick-off at 10")
+try await client.edit(convId, msgId: msgId, "Kick-off at 10:30")
+try await client.recall(convId, msgId: msgId)
+```
+</TabItem>
+<TabItem label="Android">
+```kotlin
+val r = client.call("create_conv", JSONObject(mapOf("kind" to "group", "title" to "Design team", "members" to listOf("priya", "jordan"))))
+val convId = r.getString("conv_id")
+client.send(convId, "Kick-off at 10")
+client.edit(convId, msgId, "Kick-off at 10:30")
+client.recall(convId, msgId)
+```
+</TabItem>
+<TabItem label="Open API">
+```bash
+curl -X POST "$AGENTIM/v1/conversations" -H "authorization: Bearer $API_KEY" \
+  -d '{"as": "maya", "kind": "group", "title": "Design team", "members": ["priya", "jordan"]}'
+curl -X POST "$AGENTIM/v1/conversations/$CONV/members" -H "authorization: Bearer $API_KEY" -d '{"as": "maya", "users": ["sam"]}'
+curl -X POST "$AGENTIM/v1/conversations/$CONV/messages" -H "authorization: Bearer $API_KEY" -d '{"as": "maya", "text": "Kick-off at 10"}'
+```
+</TabItem>
+</Tabs>
+
+## Where it works
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} />
+
+## Related
+
+[Permissions](/docs/concepts/permissions/) · [Sync and offline](/docs/concepts/sync-and-offline/) · [Threads, reactions and pins](/docs/concepts/threads-reactions-pins/) · [Client protocol](/docs/reference/client-protocol/) · [Events](/docs/reference/events/) · [Business rules](/docs/reference/business-rules/)

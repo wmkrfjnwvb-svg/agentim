@@ -1,0 +1,54 @@
+---
+title: "How we test"
+description: "Messaging bugs are data bugs, so AgentIM is tested like a database: every rule on three databases, races, crashes, faults, and a verifier that replays the log."
+---
+
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+
+<Capabilities>
+- About 500 business tests, each run on SQLite, PostgreSQL and MySQL
+- A real process killed with `kill -9` mid-traffic on Linux and Windows: nothing acknowledged may be lost
+- Races repeated many rounds, with the invariants checked after each
+- Fault injection: failed commits, lost answers, database black holes, clock jumps, lost frames between nodes
+- Every guard has a mutation test that removes it and expects the failure
+- A verifier replays every log and compares it with the stored state
+- Every refusal is a numbered rule, and every rule is triggered by a test
+</Capabilities>
+
+## What every server test checks
+
+- Sequence numbers are contiguous for every member, and pushes arrive in order.
+- Every message exists exactly once, however often it was retried.
+- A refused request changed nothing: no event, no audit of the attempt, no side effect.
+- After a restart, everything acknowledged is still there and the state is the same.
+- In race tests, the invariant holds after every round: one winner, replay equals state, nothing after a terminal event.
+
+## The suites
+
+| Suite | What | When |
+|---|---|---|
+| Server business tests | Every operation and rule, races, restarts, three databases | Every release |
+| Cluster tests | Several nodes: forwarding, failover, fencing, hand-over, fault injection, mutation checks | Every release, PostgreSQL and MySQL |
+| Crash tests | `kill -9` mid-traffic; every acknowledged message must be there | Every release, Linux and Windows |
+| Replica failover | Real primary and replica pairs, failover under load | Every release |
+| Business verifier | `agentim verify`: log replay against state on every database the tests used | Every release |
+| Rule coverage | The catalogue matches the code; every refusal is a rule; every rule is triggered | Every release |
+| Client core | Fake clock, network and storage; random simulation over thousands of seeds; 100% line and branch coverage | Every release |
+| SDK conformance | The same scenarios against a real server in Rust, C, Swift, Kotlin, C#, Dart, React Native and the browser | Every release |
+| Agent and server SDKs | Real agents with a person; every endpoint against a real server | Every release |
+| UI components and examples | Components, contrast, end-to-end runs and screenshots compared with baselines | Every release |
+| Scale tests | 20,000 connections with a reconnect storm, a 2,000-member group, slow readers | By hand |
+
+## Check it yourself
+
+```bash
+cd server
+cargo test                                                   # SQLite
+AGENTIM_TEST_PG=postgres://user:pass@127.0.0.1 \
+AGENTIM_TEST_MYSQL=mysql://user:pass@127.0.0.1 cargo test    # all three databases
+agentim --config agentim.toml verify --since 24h               # check your own server: replay against state
+```
+
+## Related
+
+[Delivery guarantees](/docs/reliability/guarantees/) · [Business rules](/docs/reference/business-rules/) · [Performance](/docs/reliability/performance/)

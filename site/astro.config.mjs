@@ -44,6 +44,7 @@ export default defineConfig({
         pages('UI components', 'UI 组件', ['client-sdks/react-api', 'client-sdks/react-native-ui-api', 'guides/theming'], true),
         { ...zh('SDKs', 'SDK'), collapsed: true, items: [dir('Client SDKs', '客户端 SDK', 'client-sdks'), dir('Agent SDKs', 'Agent SDK', 'agent-sdks'), dir('Server SDKs', '服务端 SDK', 'server-sdks')] },
         { ...zh('Deploy and operate', '部署和运维'), collapsed: true, items: [{ autogenerate: { directory: 'docs/operations' } }, { slug: 'docs/guides/launch-checklist' }] },
+        pages('Reliability and performance', '可靠性和性能', ['reliability/architecture', 'reliability/guarantees', 'reliability/performance', 'reliability/testing'], true),
         dir('Security and compliance', '安全和合规', 'security'),
         { ...zh('Reference', '参考'), collapsed: true, items: [{ autogenerate: { directory: 'docs/reference' } }, { slug: 'docs/concepts/protocol-versions' }] },
         { ...zh('Legal', '法律'), collapsed: true, items: [{ autogenerate: { directory: 'legal' } }] },

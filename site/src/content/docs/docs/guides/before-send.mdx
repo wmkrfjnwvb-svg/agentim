@@ -1,9 +1,17 @@
 ---
 title: "Before-send hook"
 description: "Let your backend allow, reject or rewrite every message before it is written."
-sidebar:
-  order: 3
 ---
+
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+
+<Capabilities>
+- Your backend sees every message before it is written
+- Allow it, reject it with your reason, or rewrite its text and payload
+- Signed like a webhook; a time limit and a choice of what happens on errors
+- Runs outside the conversation writer, so other conversations do not wait
+- Counted in the metrics by outcome
+</Capabilities>
 
 The before-send hook calls your backend synchronously for every `send`, before the message reaches the writer. Use it for your own content rules, a moderation model, or rewriting links.
 
@@ -48,3 +56,7 @@ Signed like a [webhook](/docs/reference/webhooks/) (`webhook-id`, `webhook-times
 - The hook runs outside the writer, so it doesn't slow other conversations down. It does add its latency to each send: keep it fast and close to the server.
 
 `agentim_before_send_total{result}` counts the outcomes ([monitoring](/docs/operations/monitoring/)).
+
+## Related
+
+[Webhooks](/docs/reference/webhooks/) · [Guardrails](/docs/concepts/guardrails/) · [Moderation](/docs/security/moderation/) · [Monitoring](/docs/operations/monitoring/)

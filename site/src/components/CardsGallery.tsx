@@ -7,6 +7,7 @@ import { useMemo } from 'react';
 import { Observable } from '../../../sdk/client-web/src/view';
 import { AgentIM, Chat } from '../../../sdk/react/src/index';
 import '../../../sdk/react/theme.css';
+import '../styles/showcase.css';
 import { zhStrings } from './ProductShowcase';
 
 type Lang = 'en' | 'zh';
@@ -122,7 +123,7 @@ export default function CardsGallery({ lang = 'en' }: { lang?: Lang }) {
   const list = useMemo(() => tiles(demo).map((x) => ({ ...x, client: client(x) })), [demo]);
   const common: any = { me: ME, locale: demo === 'zh' ? 'zh-CN' : 'en-US', timeZone: 'America/Los_Angeles', now: () => NOW, strings: demo === 'zh' ? zhStrings : undefined };
   return (
-    <div className="cg">
+    <div className="cg not-content">
       <div className="cg-grid">
         {list.map((x) => (
           <figure key={x.id + demo} className="cg-tile">

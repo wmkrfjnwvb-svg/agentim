@@ -89,7 +89,7 @@ model error or timeout (120 s) ──▶ "I can't answer right now", logged, no 
 
 ### 3.6 The built-in library
 
-Templates are the common way to start: Anthropic's Agent Skills repository ships example Skills as folders with a `SKILL.md` and reference files; Claude Code agents are Markdown files with a header; Dify and Copilot Studio offer galleries of ready-made agents to copy and adapt. AgentIM ships the same kind of library, in the same formats, so a built-in role or Skill is also a valid Claude Code agent or Agent Skill.
+Templates are the common way to start: Anthropic's Agent Skills repository ships example Skills as folders with a `SKILL.md` and reference files, and Claude Code agents are Markdown files with a header. AgentIM ships the same kind of library, in the same formats, so a built-in role or Skill is also a valid Claude Code agent or Agent Skill.
 
 - **What ships**: roles in `server/crates/agentim-core/builtin/agents/*.md` and Skills in `builtin/skills/<name>/SKILL.md` with `references/`. They are compiled into the program (`library.rs`). Skills are instructions only; scripts are never shipped or run.
 - **Installing** copies the item into the app's own library in one write in the control database's writer:
