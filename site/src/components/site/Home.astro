@@ -87,10 +87,10 @@ await agent.start();`;
       <AgentMap lang={lang} />
       <ul class="flist four">
         {c.ai.items.slice(0, 4).map((x) => (
-          <li><a href={x.href}><h3>{x.t}</h3><p>{x.d}</p></a></li>
+          <li><a href={path(lang, x.href)}><h3>{x.t}</h3><p>{x.d}</p></a></li>
         ))}
       </ul>
-      <a class="more" href="/docs/guides/built-in-agents/">{c.platform.link} →</a>
+      <a class="more" href={path(lang, '/docs/guides/built-in-agents/')}>{c.platform.link} →</a>
     </div>
   </section>
 
@@ -100,7 +100,7 @@ await agent.start();`;
       <h2 id="cg-title">{c.cards.title}</h2>
       <p class="lead">{c.cards.lead}</p>
       <CardsGallery client:visible lang={lang} />
-      <a class="more" href="/docs/guides/chat-components/">{c.cards.link} →</a>
+      <a class="more" href={path(lang, '/docs/guides/chat-components/')}>{c.cards.link} →</a>
     </div>
   </section>
 
@@ -114,7 +114,7 @@ await agent.start();`;
           <li><span class="num">0{i + 1}</span><h3>{g.k}</h3><p>{g.t}</p></li>
         ))}
       </ol>
-      <a class="more" href="/docs/concepts/sync-and-offline/">{c.guarantees.link} →</a>
+      <a class="more" href={path(lang, '/docs/concepts/sync-and-offline/')}>{c.guarantees.link} →</a>
     </div>
   </section>
 
@@ -135,7 +135,7 @@ await agent.start();`;
       </div>
       <h3 class="sub-h">{c.scale.title}</h3>
       <ul class="flist four">{c.scale.items.map((x) => <li><h3>{x.t}</h3><p>{x.d}</p></li>)}</ul>
-      <a class="more" href="/docs/concepts/overview/">{c.arch.link} →</a>
+      <a class="more" href={path(lang, '/docs/concepts/overview/')}>{c.arch.link} →</a>
     </div>
   </section>
 
@@ -149,7 +149,7 @@ await agent.start();`;
           {c.dev.groups.map((g) => (
             <div><h3>{g.t}</h3><ul class="chips-inline">{g.i.map((x) => <li>{x}</li>)}</ul></div>
           ))}
-          <a class="more" href="/docs/client-sdks/">{c.dev.link} →</a>
+          <a class="more" href={path(lang, '/docs/client-sdks/')}>{c.dev.link} →</a>
         </div>
         <div class="code-tabs">
           {c.dev.tabs.map((t, i) => <input type="radio" name="dev-tab" id={`dev-${i}`} checked={i === 0} />)}
@@ -184,7 +184,7 @@ await agent.start();`;
           <h3>{c.deploy.self.t}</h3>
           <p>{c.deploy.self.d}</p>
           <ul class="checks">{c.deploy.self.points.map((p) => <li>{p}</li>)}</ul>
-          <div class="actions"><a href="/docs/operations/install/" class="text-link">{c.deploy.self.link} →</a></div>
+          <div class="actions"><a href={path(lang, '/docs/operations/install/')} class="text-link">{c.deploy.self.link} →</a></div>
         </div>
       </div>
       <h3 class="sub-h">{c.selfhost.title}</h3>
@@ -217,7 +217,7 @@ await agent.start();`;
           </div>
         </div>
       </div>
-      <a class="more" href="/docs/operations/monitoring/">{c.ops.link} →</a>
+      <a class="more" href={path(lang, '/docs/operations/monitoring/')}>{c.ops.link} →</a>
     </div>
   </section>
 
@@ -228,7 +228,7 @@ await agent.start();`;
       <p class="lead">{c.quality.lead}</p>
       <ul class="metrics four">{c.quality.items.map((s) => <li><strong>{s.v}</strong><span>{s.l}</span></li>)}</ul>
       <ul class="checks">{c.quality.points.map((p) => <li>{p}</li>)}</ul>
-      <a class="more" href="/docs/reference/business-rules/">{c.quality.link} →</a>
+      <a class="more" href={path(lang, '/docs/reference/business-rules/')}>{c.quality.link} →</a>
     </div>
   </section>
 
@@ -237,7 +237,7 @@ await agent.start();`;
       <p class="eyebrow">{c.security.eyebrow}</p>
       <h2 id="s-title">{c.security.title}</h2>
       <ul class="flist">{c.security.items.map((x) => <li><h3>{x.t}</h3><p>{x.d}</p></li>)}</ul>
-      <a class="more" href="/docs/security/">{c.security.link} →</a>
+      <a class="more" href={path(lang, '/docs/security/')}>{c.security.link} →</a>
     </div>
   </section>
 
@@ -265,7 +265,7 @@ await agent.start();`;
       <p>{c.cta.lead}</p>
       <div class="actions center">
         <a href={APP} class="button primary large">{c.cta.primary} →</a>
-        <a href="/docs/" class="button large">{c.cta.secondary}</a>
+        <a href={path(lang, '/docs/')} class="button large">{c.cta.secondary}</a>
       </div>
     </div>
   </section>

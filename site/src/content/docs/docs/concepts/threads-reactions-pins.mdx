@@ -1,0 +1,137 @@
+---
+title: "Threads, reactions and pins"
+description: "Reply to a message in its own thread, react with an emoji, and keep important messages pinned at the top of a conversation."
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+import Support from '../../../../components/docs/Support.astro';
+import ProductShowcase from '../../../../components/ProductShowcase';
+
+<Capabilities>
+- Reply to any message in a **thread** that opens beside the chat
+- Thread replies keep the conversation quiet; "also send to the conversation" when it matters
+- Follow threads, with their own unread counts on every device
+- **React** with any emoji or your app's own short names; one tap to add or remove
+- **Pin** important messages; a click on the pinned bar jumps to the message
+- Choose who may pin in a group: everyone, or only admins
+- Agents answer in the thread they were asked in, and can react and pin
+- Every change is ordered, survives restarts and reaches every device
+</Capabilities>
+
+## See it
+
+Open a conversation on the left, open the thread under Jordan's message, add a reaction, or click the pinned bar.
+
+<ProductShowcase client:visible lang="en" only="app" />
+
+## How it works
+
+All three are part of the conversation's log: every change is an event with its own `seq`, so it arrives in order on every device, survives restarts and is replayed by `agentim verify` like any message.
+
+**Threads**
+- A reply names its root message with `thread_id`. It is an ordinary message, so replies, mentions, files, cards and streaming all work in a thread.
+- One level: the root is a message of the conversation that is not itself a reply, not a system message and not recalled.
+- Thread replies don't count in the conversation's unread count, and notify only the thread's followers and the people they mention. Send with `also_in_conv` to show a reply in the conversation too.
+- The root's sender, everyone who replies and everyone mentioned follow the thread; `follow_thread` and `unfollow_thread` change it. `read_thread` moves the read position on all the person's devices.
+- `msg_summary` returns, for up to 100 messages, the thread summary (replies, latest reply, up to 5 people), the reactions and the pin.
+
+**Reactions**
+- A key is one emoji (skin tones, flags and ZWJ sequences included) or one of the app's short names, written `:name:` and listed in `[messages] reaction_names`.
+- One per message, person and key. Adding one twice or removing one that isn't there answers `changed: false` and writes nothing, so retries are safe.
+- With `reaction_mode = "single"` a new reaction replaces the person's old one.
+- Reactions don't count as unread and don't notify. An agent receives the reactions to its own messages; with `reactions_as_feedback = true` a 👍 or 👎 on an agent's message also counts as feedback.
+
+**Pins**
+- In a group everyone pins by default; the owner or an admin can set `pin_policy: "admins"`. In a direct conversation both people pin.
+- Someone else's pin is unpinned only by the owner and admins. Agents pin only with `agents_pin = true`.
+- Pins appear in the log as `msg.pinned` and `msg.unpinned` (show them as a notice), and are audited.
+
+## Use it
+
+<Tabs syncKey="platform">
+<TabItem label="React">
+The `Chat` component shows reactions, thread summaries and the pinned bar; `Thread` opens a thread with its own composer.
+
+```tsx
+import { AgentIM, Chat, Thread, PinnedMessages } from '@agentimhq/react';
+
+<AgentIM client={client}>
+  <Chat convId={convId} />                                  {/* reactions, "3 replies", pinned bar */}
+  <Thread convId={convId} threadId={rootMsgId} />           {/* a thread beside the chat */}
+  <PinnedMessages convId={convId} onOpen={(pins) => show(pins)} />
+</AgentIM>
+```
+</TabItem>
+<TabItem label="Web">
+```ts
+await client.send(convId, 'I can do 3pm', { threadId: rootMsgId });
+await client.send(convId, 'Decided: 3pm', { threadId: rootMsgId, alsoInConv: true });
+const { root, replies } = await client.pullThread(convId, rootMsgId);
+
+await client.react(convId, msgId, '👍');   // { changed: true }
+await client.unreact(convId, msgId, '👍');
+await client.pin(convId, msgId);
+await client.unpin(convId, msgId);
+```
+</TabItem>
+<TabItem label="iOS">
+```swift
+try await client.send(convId, "I can do 3pm", threadId: rootMsgId)
+let thread = try await client.pullThread(convId, threadId: rootMsgId)
+
+try await client.react(convId, msgId: msgId, key: "👍")
+try await client.pin(convId, msgId: msgId)
+```
+</TabItem>
+<TabItem label="Android">
+```kotlin
+client.send(convId, "I can do 3pm", threadId = rootMsgId)
+val thread = client.pullThread(convId, threadId = rootMsgId)
+
+client.react(convId, msgId, "👍")
+client.pin(convId, msgId)
+```
+</TabItem>
+<TabItem label="Agent">
+An agent's reply goes to the thread it was asked in by itself.
+
+```python
+@agent.on_message
+async def answer(msg, ctx):
+    await ctx.react("👀")                       # on the message being handled
+    await ctx.reply("Checking the depot now")  # in the same thread, if it was in one
+```
+</TabItem>
+<TabItem label="Open API">
+```bash
+# Reply in a thread as Jordan
+curl -X POST "$AGENTIM/v1/conversations/$CONV/messages" -H "authorization: Bearer $API_KEY" \
+  -d '{"as": "jordan", "text": "Changed it", "thread_id": "'$ROOT'"}'
+
+# React and pin as a member
+curl -X PUT "$AGENTIM/v1/conversations/$CONV/messages/$MSG/reactions/%F0%9F%91%8D" -H "authorization: Bearer $API_KEY" -d '{"as": "jordan"}'
+curl -X PUT "$AGENTIM/v1/conversations/$CONV/pins/$MSG" -H "authorization: Bearer $API_KEY" -d '{"as": "jordan"}'
+```
+`GET …/threads`, `GET …/threads/{thread}` and `GET …/pins` list them. Webhooks receive `reaction.added`, `reaction.removed`, `msg.pinned` and `msg.unpinned`; a thread reply is a `msg.created` with `thread_id`.
+</TabItem>
+</Tabs>
+
+## Where it works
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} note="React: threads, reactions and the pinned bar. React Native UI: reactions and reply counts." />
+
+## Limits and errors
+
+| Limit | Default | Setting |
+|---|---|---|
+| Different reaction keys per message | 50 | `[messages] reaction_keys` |
+| Reactions per person per message | 20 | `[messages] reactions_per_user` |
+| Pins per conversation | 100 | `[messages] pins_per_conv` |
+| Messages per `msg_summary` | 100 | — |
+
+A recalled root, message or pin target is `conflict`; a reaction or pin limit is `conflict`; an invalid key, a nested thread or a system message is `bad_request`; someone who may not pin is `forbidden`. Every refusal names its rule (`thread.*`, `reaction.*`, `pin.*`) in the [rule catalog](/docs/reference/business-rules/).
+
+## Related
+
+[Conversations and messages](/docs/concepts/conversations/) · [Permissions](/docs/concepts/permissions/) · [Client protocol](/docs/reference/client-protocol/) · [Events](/docs/reference/events/) · [Webhooks](/docs/reference/webhooks/) · [React components](/docs/client-sdks/react-api/)

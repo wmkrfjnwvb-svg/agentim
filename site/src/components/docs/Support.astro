@@ -1,0 +1,22 @@
+---
+// "Where it works": the client SDKs and UI components that support a feature
+// (docs/24 §6.4). `sdk` and `ui` name what supports it; the rest show a dash.
+interface Props { sdk: string[]; ui?: string[]; note?: string }
+const { sdk, ui = [], note } = Astro.props;
+const zh = Astro.currentLocale === 'zh-CN' || Astro.currentLocale === 'zh';
+const all = ['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET'];
+const uis = ['React', 'React Native UI'];
+---
+
+<div class="support not-content">
+  <table>
+    <thead><tr><th>{zh ? '客户端 SDK' : 'Client SDK'}</th>{all.map((x) => <th>{x}</th>)}</tr></thead>
+    <tbody>
+      <tr><th>{zh ? '接口' : 'API'}</th>{all.map((x) => <td class={sdk.includes(x) ? 'yes' : 'no'}>{sdk.includes(x) ? '✓' : '—'}</td>)}</tr>
+    </tbody>
+  </table>
+  {ui.length > 0 && (
+    <p class="support-ui">{zh ? '现成的界面组件：' : 'Ready-made UI: '}{uis.filter((x) => ui.includes(x)).join(' · ')}</p>
+  )}
+  {note && <p class="support-note">{note}</p>}
+</div>

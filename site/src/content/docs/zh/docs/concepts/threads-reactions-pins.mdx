@@ -1,0 +1,137 @@
+---
+title: "话题、回应和置顶"
+description: "在单独的话题里回复一条消息，用表情回应，把重要消息置顶在会话上方。"
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../../components/docs/Capabilities.astro';
+import Support from '../../../../../components/docs/Support.astro';
+import ProductShowcase from '../../../../../components/ProductShowcase';
+
+<Capabilities>
+- 对任何消息开一个**话题**，在聊天旁边展开
+- 话题里的回复不打扰会话；重要的可以"同时发到会话"
+- 关注话题，每台设备上都有它自己的未读数
+- 用任意表情或你应用自定义的短名**回应**，点一下加上或取消
+- **置顶**重要消息；点置顶栏直接跳到那条消息
+- 群里谁能置顶可以设置：所有人，或只有管理员
+- Agent 在被提问的话题里回答，也能回应和置顶
+- 每个变化都有序、重启不丢、同步到每台设备
+</Capabilities>
+
+## 看一眼
+
+点左边的会话切换，打开乔丹那条消息下的话题，加一个回应，或者点置顶栏。
+
+<ProductShowcase client:visible lang="zh" only="app" />
+
+## 怎么工作
+
+三者都是会话日志的一部分：每个变化都是一个带自己 `seq` 的事件，所以在每台设备上按顺序到达、重启不丢，并且像普通消息一样能被 `agentim verify` 回放校验。
+
+**话题**
+- 回复用 `thread_id` 指向它的根消息。它就是一条普通消息，所以回复、@、文件、卡片和流式回复在话题里都能用。
+- 只有一层：根消息必须是会话里的消息，本身不是回复、不是系统消息、没有被撤回。
+- 话题里的回复不计入会话的未读数，只通知话题的关注者和被 @ 的人。发送时带 `also_in_conv`，回复也会出现在会话里。
+- 根消息的发送者、所有回复的人和被 @ 的人自动关注话题；`follow_thread` 和 `unfollow_thread` 可以修改。`read_thread` 会在这个人的所有设备上移动已读位置。
+- `msg_summary` 一次最多返回 100 条消息的话题摘要（回复数、最新回复、最多 5 个参与者）、回应和置顶状态。
+
+**回应**
+- 回应是一个表情（包括肤色、旗帜和 ZWJ 组合），或应用自定义的短名，写作 `:name:`，在 `[messages] reaction_names` 里配置。
+- 每条消息、每个人、每个回应只算一次。重复添加或删除不存在的回应会返回 `changed: false` 且不写入，所以重试是安全的。
+- 设置 `reaction_mode = "single"` 后，新回应会替换这个人原来的回应。
+- 回应不计入未读、不发通知。Agent 能收到对它自己消息的回应；开启 `reactions_as_feedback = true` 后，Agent 消息上的 👍 或 👎 也算作反馈。
+
+**置顶**
+- 群里默认所有人都能置顶；群主或管理员可以设置 `pin_policy: "admins"`。单聊里双方都能置顶。
+- 别人置顶的消息只有群主和管理员能取消。Agent 只有在 `agents_pin = true` 时才能置顶。
+- 置顶在日志里是 `msg.pinned` 和 `msg.unpinned`（显示为一条提示），并记入审计。
+
+## 怎么用
+
+<Tabs syncKey="platform">
+<TabItem label="React">
+`Chat` 组件会显示回应、话题摘要和置顶栏；`Thread` 打开一个带自己输入框的话题。
+
+```tsx
+import { AgentIM, Chat, Thread, PinnedMessages } from '@agentimhq/react';
+
+<AgentIM client={client}>
+  <Chat convId={convId} />                                  {/* 回应、"3 条回复"、置顶栏 */}
+  <Thread convId={convId} threadId={rootMsgId} />           {/* 聊天旁边的话题 */}
+  <PinnedMessages convId={convId} onOpen={(pins) => show(pins)} />
+</AgentIM>
+```
+</TabItem>
+<TabItem label="Web">
+```ts
+await client.send(convId, '下午 3 点可以', { threadId: rootMsgId });
+await client.send(convId, '定了：下午 3 点', { threadId: rootMsgId, alsoInConv: true });
+const { root, replies } = await client.pullThread(convId, rootMsgId);
+
+await client.react(convId, msgId, '👍');   // { changed: true }
+await client.unreact(convId, msgId, '👍');
+await client.pin(convId, msgId);
+await client.unpin(convId, msgId);
+```
+</TabItem>
+<TabItem label="iOS">
+```swift
+try await client.send(convId, "下午 3 点可以", threadId: rootMsgId)
+let thread = try await client.pullThread(convId, threadId: rootMsgId)
+
+try await client.react(convId, msgId: msgId, key: "👍")
+try await client.pin(convId, msgId: msgId)
+```
+</TabItem>
+<TabItem label="Android">
+```kotlin
+client.send(convId, "下午 3 点可以", threadId = rootMsgId)
+val thread = client.pullThread(convId, threadId = rootMsgId)
+
+client.react(convId, msgId, "👍")
+client.pin(convId, msgId)
+```
+</TabItem>
+<TabItem label="Agent">
+Agent 的回复会自动发到它被提问的那个话题里。
+
+```python
+@agent.on_message
+async def answer(msg, ctx):
+    await ctx.react("👀")                  # 回应正在处理的消息
+    await ctx.reply("我去仓库确认一下")      # 如果提问在话题里，就回在同一个话题
+```
+</TabItem>
+<TabItem label="开放 API">
+```bash
+# 以乔丹的身份在话题里回复
+curl -X POST "$AGENTIM/v1/conversations/$CONV/messages" -H "authorization: Bearer $API_KEY" \
+  -d '{"as": "jordan", "text": "已改好", "thread_id": "'$ROOT'"}'
+
+# 以成员身份回应和置顶
+curl -X PUT "$AGENTIM/v1/conversations/$CONV/messages/$MSG/reactions/%F0%9F%91%8D" -H "authorization: Bearer $API_KEY" -d '{"as": "jordan"}'
+curl -X PUT "$AGENTIM/v1/conversations/$CONV/pins/$MSG" -H "authorization: Bearer $API_KEY" -d '{"as": "jordan"}'
+```
+`GET …/threads`、`GET …/threads/{thread}` 和 `GET …/pins` 用来列出。Webhook 会收到 `reaction.added`、`reaction.removed`、`msg.pinned` 和 `msg.unpinned`；话题回复是一条带 `thread_id` 的 `msg.created`。
+</TabItem>
+</Tabs>
+
+## 哪些端支持
+
+<Support sdk={['Web', 'React Native', 'iOS', 'Android', 'Flutter', '.NET']} ui={['React', 'React Native UI']} note="React：话题、回应和置顶栏。React Native UI：回应和回复数。" />
+
+## 限制和错误
+
+| 限制 | 默认 | 配置 |
+|---|---|---|
+| 每条消息不同回应的数量 | 50 | `[messages] reaction_keys` |
+| 每人每条消息的回应数 | 20 | `[messages] reactions_per_user` |
+| 每个会话的置顶数 | 100 | `[messages] pins_per_conv` |
+| 每次 `msg_summary` 的消息数 | 100 | — |
+
+根消息、目标消息或置顶目标已撤回返回 `conflict`；回应或置顶超过上限返回 `conflict`；无效的回应、嵌套话题或系统消息返回 `bad_request`；无权置顶返回 `forbidden`。每次拒绝都会给出对应的规则（`thread.*`、`reaction.*`、`pin.*`），见[业务规则目录](/zh/docs/reference/business-rules/)。
+
+## 相关
+
+[会话和消息](/zh/docs/concepts/conversations/) · [权限](/zh/docs/concepts/permissions/) · [客户端协议](/zh/docs/reference/client-protocol/) · [事件](/zh/docs/reference/events/) · [Webhook](/zh/docs/reference/webhooks/) · [React 组件](/zh/docs/client-sdks/react-api/)

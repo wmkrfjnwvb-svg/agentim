@@ -28,7 +28,7 @@
 | DX-09 | Swift 包的仓库 | SwiftPM 要求 `Package.swift` 在仓库根目录，所以发布时把包提交到 [`agentim-swift`](https://github.com/wmkrfjnwvb-svg/agentim-swift) 并打标签；XCFramework 和它的 checksum 挂在 Release 上 |
 | DX-10 | 控制台 | 嵌在程序里的 React 应用，地址 `/console`（[access](access.md)）。页面：概览、密钥、人员、Agent、助手、模型服务、连接和审批规则、角色、Skills、会话、举报、Webhook、审计、设置、消息轨迹、染色规则、集群和数据库、管理员 |
 | DX-11 | 演示 | 一个网页应用（React，基于浏览器 SDK 和组件），`--demo` 时嵌入，带演示用户和脚本化的 Agent |
-| DX-12 | 文档站 | `site/`（Astro + Starlight）：首页、云服务、价格和性能页，中英文两版（`/zh/`），产品界面用 React 组件按页面语言实时展示（可切换的会话、话题、点击跳到原消息的置顶、Agent 卡片和审批）；快速开始、概念、指南、主题预览，以及由代码生成的参考。有端点、协议消息、错误、规则或 SDK 方法没有页面，CI 就失败 |
+| DX-12 | 文档站 | `site/`（Astro + Starlight）：首页、云服务、价格和性能页，中英文两版（`/zh/`），产品界面用 React 组件按页面语言实时展示（可切换的会话、话题、点击跳到原消息的置顶、Agent 卡片和审批）；文档按能力组织（IM 功能、AI Agent、UI 组件、SDK、部署和运维、安全、参考），每个功能页用同一模板（能做什么、实时演示或截图、怎么工作、各平台代码、哪些端支持、限制和错误），文档首页是能力地图，中文文档在 `/zh/docs/`（未翻译的页面显示英文），右上角切换语言；参考由代码生成。有端点、协议消息、错误、规则或 SDK 方法没有页面，CI 就失败 |
 | DX-13 | 示例 | 三个应用，各一条命令，不需要模型 Key：售后助手、顾问和 AI 助理、多 Agent 任务房间。另有 OpenAI Agents SDK、Claude Agent SDK、LangGraph 的模板 |
 | DX-14 | 谁都能跑的压测 | `server/bench/single-node.sh` 和 `server/bench/cluster.sh` 打印 README 里的表 |
 

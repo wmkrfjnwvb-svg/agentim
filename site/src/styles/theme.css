@@ -101,3 +101,18 @@ site-search button[data-open-modal] { border-radius: 10px; background: var(--sl-
 .tp-css { position: relative; }
 .tp-css pre { margin: 0; font-size: 12.5px; }
 .tp-css button { position: absolute; top: 8px; right: 8px; padding: 4px 10px; font: inherit; font-size: 12px; border-radius: 6px; border: 1px solid var(--sl-color-gray-5); background: var(--sl-color-gray-6); color: var(--sl-color-white); cursor: pointer; }
+
+/* Feature pages (docs/24 §6.4): the capability box and the support table. */
+.cap-box { margin: 1.25rem 0 1.75rem; padding: 1rem 1.25rem 0.75rem; border: 1px solid var(--sl-color-gray-5); border-inline-start: 3px solid var(--sl-color-accent); border-radius: 10px; background: var(--sl-color-accent-low); }
+.cap-title { margin: 0 0 0.5rem; font-size: var(--sl-text-sm); font-weight: 700; color: var(--sl-color-accent-high); }
+.cap-list ul { margin: 0; padding-inline-start: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 0.35rem 1.5rem; }
+.cap-list li { position: relative; padding-inline-start: 1.4rem; margin: 0 0 0.35rem; color: var(--sl-color-white); line-height: 1.5; }
+.cap-list li::before { content: '✓'; position: absolute; inset-inline-start: 0; color: var(--sl-color-accent); font-weight: 700; }
+.support { margin: 1rem 0 1.5rem; overflow-x: auto; }
+.support table { border-collapse: collapse; width: 100%; font-size: var(--sl-text-sm); }
+.support th, .support td { padding: 0.45rem 0.6rem; border: 1px solid var(--sl-color-gray-5); text-align: center; }
+.support thead th { background: var(--sl-color-gray-6); font-weight: 600; }
+.support tbody th { text-align: start; font-weight: 600; }
+.support td.yes { color: #16a34a; font-weight: 700; }
+.support td.no { color: var(--sl-color-gray-3); }
+.support-ui, .support-note { margin: 0.5rem 0 0; font-size: var(--sl-text-sm); color: var(--sl-color-gray-2); }

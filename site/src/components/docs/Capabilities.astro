@@ -1,0 +1,11 @@
+---
+// The first block of every feature page (docs/24 §6.4): what it does, as a
+// short list (the page's Markdown list goes in the slot).
+const zh = Astro.currentLocale === 'zh-CN' || Astro.currentLocale === 'zh';
+const { title } = Astro.props as { title?: string };
+---
+
+<section class="cap-box not-content">
+  <p class="cap-title">{title ?? (zh ? '能做什么' : 'What you can do')}</p>
+  <div class="cap-list"><slot /></div>
+</section>

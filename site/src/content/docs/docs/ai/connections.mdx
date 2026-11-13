@@ -1,0 +1,105 @@
+---
+title: "Connect your systems"
+description: "Give agents your business systems as tools: an HTTP API described by OpenAPI, or a remote MCP server. Reads run at once; writes can wait for a person."
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import Capabilities from '../../../../components/docs/Capabilities.astro';
+import AgentMap from '../../../../components/site/AgentMap.astro';
+
+<Capabilities>
+- Import an **OpenAPI 3** document: every operation becomes a tool the agent can call
+- Add a remote **MCP server** (Streamable HTTP): its tools become the agent's
+- Reads run at once; **writes** are off, **ask first**, or allowed
+- **Approval rules** by tool and amount: a refund over $30 waits for a support lead
+- An approved call runs exactly once, with the arguments the person saw
+- The credential is stored encrypted and sent only to the connection's own address
+- A role names its connections; built-in agents and your own agents both get them
+- Connect apps people sign in to themselves (Slack, Salesforce, Gmail): coming soon
+</Capabilities>
+
+## See it
+
+<AgentMap lang="en" />
+
+The console's **Connections** page: an orders API from its OpenAPI document, writes set to *Ask first*, and one approval rule.
+
+![The Connections page of the console](../../../../assets/docs/console-connections.png)
+
+## How it works
+
+| | OpenAPI | MCP |
+|---|---|---|
+| You give | the OpenAPI 3 document (JSON), the base URL, an auth header | the server's URL (Streamable HTTP), an auth header |
+| Tools | each operation, named `{connection}__{operationId}`, with its summary and parameters | the tools the server lists (it must list them before it is saved) |
+| Reads | `GET`, `HEAD` | tools annotated read-only (`readOnlyHint`) |
+| Writes | `POST`, `PUT`, `PATCH`, `DELETE` | every other tool |
+
+**Writes.** A connection's `writes` is `read_only` (only reads are used), `confirm` (each write asks first) or `allow`.
+
+With `confirm`, a write call doesn't run: the agent asks the person it is answering to approve it, showing the tool and its arguments, never the credential. The agent tells them it is waiting; nothing blocks, and a restart loses nothing. After approval the stored call runs **once**, with the stored arguments, after checking that the connection still allows writes and the tool is still on the role. API calls carry `Idempotency-Key: <request id>`. A refusal goes back to the agent with the reason; an expiry (one hour) or a cancellation means it never runs. See [human approval](/docs/concepts/approvals/).
+
+**Approval rules** make it finer: up to 20 per connection, first match wins. Each has a `tool`, an optional `amount_field` and `over` (a missing or non-number amount counts as over), the `approvers`, or `confirm: false` for a write that runs at once.
+
+**Security.** The credential is stored encrypted, never listed or audited, and sent only to the connection's own host. Private and loopback addresses are refused (unless `[ai] private_addresses = true` for tests and internal deployments).
+
+## Use it
+
+<Tabs syncKey="agent">
+<TabItem label="Console">
+1. **Connections** → name, *HTTP API (OpenAPI)* or *MCP server*, URL, auth header and credential, writes.
+2. **Tools** shows what the agent will get; **Approval rules** adds rules by tool and amount.
+3. Add `apis: [orders]` or `mcp: [ups]` to a role's header.
+</TabItem>
+<TabItem label="Admin API">
+```bash
+# An HTTP API from its OpenAPI document; writes ask first, and a rule for refunds over 30
+curl -X PUT "$AGENTIM/admin/v1/app/connections/orders" -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "content-type: application/json" -d @- <<'JSON'
+{"kind": "api", "url": "https://shop.example.com/api", "auth_header": "X-Api-Key", "secret": "…",
+ "spec": { "openapi": "3.0.3", "paths": { … } }, "writes": "confirm",
+ "approvals": [{"tool": "createRefund", "amount_field": "amount", "over": 30}]}
+JSON
+
+# A remote MCP server
+curl -X PUT "$AGENTIM/admin/v1/app/connections/ups" -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "content-type: application/json" -d '{"kind": "mcp", "url": "https://mcp.example.com/ups", "auth_header": "Authorization", "secret": "Bearer …", "writes": "read_only"}'
+
+curl "$AGENTIM/admin/v1/app/connections/orders/tools" -H "Authorization: Bearer $ADMIN_KEY"
+```
+</TabItem>
+<TabItem label="Role">
+```markdown
+---
+name: order-support
+description: After-sales assistant for online shops
+apis: [orders]
+mcp: [ups]
+---
+Look up the order before you answer. Refunds go through createRefund.
+```
+</TabItem>
+<TabItem label="Your own agent">
+Agents you run with the Node or Python SDK get the role's connections, with their headers, in `agent.config`. For Claude Code and the Claude Agent SDK, the SDK writes them to `.mcp.json` and `.agentim/apis/<name>.openapi.json`:
+
+```js
+const agent = new Agent({ url, key, files: { dir: './workdir' } });
+agent.mcpServers();   // [{ name, url, headers }] for other frameworks
+```
+</TabItem>
+</Tabs>
+
+## Limits and errors
+
+| | |
+|---|---|
+| Connections per app | 20 (`429 connection.limit`) |
+| Approval rules per connection | 20 |
+| An approval request expires after | 1 hour |
+| Deleting a connection a role uses | `409 connection.in_use` |
+
+Connections are written by owners and developers. The full request is in the [admin API](/docs/reference/admin-api/).
+
+## Related
+
+[Roles and Skills](/docs/ai/roles-and-skills/) · [Human approval](/docs/concepts/approvals/) · [Guardrails](/docs/concepts/guardrails/) · [Built-in agents](/docs/guides/built-in-agents/) · [Agent SDKs](/docs/agent-sdks/)
